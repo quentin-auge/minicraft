@@ -403,10 +403,10 @@ function updatePlayer(dt) {
   const fwd = new THREE.Vector3(-Math.sin(yaw), 0, -Math.cos(yaw));
   const right = new THREE.Vector3(Math.cos(yaw), 0, -Math.sin(yaw));
   const move = new THREE.Vector3();
-  const w = keys["KeyW"] || keys["ArrowUp"];
-  const s = keys["KeyS"] || keys["ArrowDown"];
-  const d = keys["KeyD"] || keys["ArrowRight"];
-  const a = keys["KeyA"] || keys["ArrowLeft"];
+  const w = keys["ArrowUp"];
+  const s = keys["ArrowDown"];
+  const d = keys["ArrowRight"];
+  const a = keys["ArrowLeft"];
   const sprintKey = keys["ShiftLeft"] || keys["ShiftRight"];
 
   if (w) move.add(fwd);
@@ -690,9 +690,6 @@ async function apiLoad(name) {
   const res = await fetch("api/worlds/" + encodeURIComponent(name));
   if (!res.ok) throw new Error("Save not found");
   return await res.arrayBuffer();
-}
-async function apiDelete(name) {
-  await fetch("api/worlds/" + encodeURIComponent(name), { method: "DELETE" });
 }
 function normalizeWorldName(raw) {
   let n = (raw || "").trim().replace(/[\\/]/g, "_");
@@ -1063,24 +1060,7 @@ document.addEventListener("keydown", (e) => {
   if (keys[e.code]) { e.preventDefault(); return; }
   keys[e.code] = true;
   if (e.code === "KeyF") flying = !flying;
-  if (e.code === "KeyR") regenerate();
-  if (e.code === "KeyJ") { if (started) pickSaveFile(); }
-  if (e.code === "KeyX") {
-    if (apiOk && saveName && confirm("Delete save/" + saveName + "?")) {
-      apiDelete(saveName);
-      saveName = "";
-      updateAutosaveEl();
-    } else if (!fileMode && hasIDB && confirm("Delete the stored autosave in this browser?")) {
-      storageClear();
-    }
-  }
-  if (e.code === "KeyP") { vel.set(0, 0, 0); spawnPlayer(); }
   if (e.code === "Escape") { if (saveName) saveToFile(); }
-  if (e.code === "KeyE") { select((selected + 1) % HOTBAR.length); }
-  if (e.code === "KeyQ") { select((selected - 1 + HOTBAR.length) % HOTBAR.length); }
-  const n = parseInt(e.key, 10);
-  if (n >= 1 && n <= 9) select(n - 1);
-  if (e.key === "0") select(8);
   if (["Space", "Tab", "ArrowUp", "ArrowDown"].includes(e.code)) e.preventDefault();
 });
 document.addEventListener("keyup", (e) => { keys[e.code] = false; });
