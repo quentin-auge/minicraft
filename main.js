@@ -1520,10 +1520,16 @@ overlay.addEventListener("click", () => {
   if (!started) return;
   renderer.domElement.requestPointerLock();
 });
+renderer.domElement.addEventListener("click", () => {
+  if (started && !locked && !helpOpen) renderer.domElement.requestPointerLock();
+});
 
 document.addEventListener("pointerlockchange", () => {
   const wasLocked = locked;
   locked = document.pointerLockElement === renderer.domElement;
+  if (suppressMenu) { suppressMenu = false; return; }
+  if (helpOpen) return;
+  if (!locked && Date.now() - helpCloseTime < 2000) return;
   if (wasLocked && !locked && started) saveToFile();
   overlay.style.display = locked ? "none" : "flex";
   crosshair.style.display = locked ? "block" : "none";
@@ -1546,17 +1552,41 @@ document.addEventListener("mousedown", (e) => {
 
 const helpEl = document.getElementById("help");
 let helpOpen = false;
-function openHelp() { helpOpen = true; helpEl.style.display = "flex"; }
-function closeHelp() { helpOpen = false; helpEl.style.display = "none"; }
-helpEl.querySelector("#btnHelpClose").addEventListener("click", closeHelp);
+let suppressMenu = false;
+let helpCloseTime = 0;
+function openHelp() {
+  helpOpen = true;
+  helpEl.style.display = "flex";
+  if (document.pointerLockElement === renderer.domElement) {
+    suppressMenu = true;
+    document.exitPointerLock();
+  }
+}
+function closeHelp() {
+  helpOpen = false;
+  helpEl.style.display = "none";
+}
+function closeHelpAndResume() {
+  closeHelp();
+  helpCloseTime = Date.now();
+  if (!started) return;
+  const tryLock = (attempt) => {
+    if (document.pointerLockElement === renderer.domElement) return;
+    const r = renderer.domElement.requestPointerLock();
+    if (r && r.catch) r.catch(() => { if (attempt < 5) setTimeout(() => tryLock(attempt + 1), 400); });
+  };
+  tryLock(0);
+}
+helpEl.addEventListener("click", (e) => { if (e.target === helpEl) closeHelpAndResume(); });
+helpEl.querySelector("#btnHelpClose").addEventListener("click", closeHelpAndResume);
 
 document.addEventListener("keydown", (e) => {
-  if (e.code === "KeyH" && !helpOpen && !keys[e.code]) { openHelp(); e.preventDefault(); }
-  if (keys[e.code]) { e.preventDefault(); return; }
   if (helpOpen) {
-    if (e.code === "Escape") { closeHelp(); }
+    if (e.code === "Escape") { closeHelpAndResume(); e.preventDefault(); }
     return;
   }
+  if (e.code === "KeyH" && !keys[e.code]) { openHelp(); e.preventDefault(); return; }
+  if (keys[e.code]) { e.preventDefault(); return; }
   keys[e.code] = true;
   if (e.code === "KeyF") { freeCam = !freeCam; if (freeCam) camPos.copy(camera.position); else exitFreeCam(); }
   if (e.code === "Escape") { if (saveName) saveToFile(); }
