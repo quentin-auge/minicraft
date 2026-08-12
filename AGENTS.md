@@ -50,16 +50,20 @@ small Python server for saving/loading worlds.
   `highlight` box on the targeted block. Left click places, right click breaks.
 - **TNT**: lighting fuses (HUD fuse sprite), delayed explosions with blocks
   destroyed/tossed and particle flashes. Breaking a TNT lights a 3s fuse;
-  re-breaking it while lit detonates it immediately.
+  re-breaking it while lit detonates it immediately. In the End, a lit TNT
+  targets the Ender Dragon: the TNT cube flies up at it, sticks onto its body
+  and detonates on contact with a big purple particle burst (each stuck blast
+  = 1/4 of its HP; blasts merely near it deal 1/4 down to a minimum 1/10 by
+  distance).
 - **Portals / dimensions**: build a horizontal 5×5 frame in the Overworld
   (4 sides, corners optional), walk into its 3×3 interior to jump to the End;
   solid black fill marks an active portal. The End has a grey END_STONE
-  platform and black sky; a vertical 5×5 return portal (upright frame, same
-  black-fill core) is auto-built on the platform to get back to the
-  Overworld. Returning drops you beside the Overworld portal (never on it),
-  flying is forbidden in the End, and free-cam (F) is disabled there; you
-  land just short of the return portal (cooldown + zeroed movement prevent an
-  instant round-trip).
+  platform and black sky; the vertical 5×5 return portal (upright frame, same
+  black-fill core) is absent until the Ender Dragon is slain, then appears on
+  the platform to get back to the Overworld. Returning drops you beside the
+  Overworld portal (never on it), flying is forbidden in the End, and free-cam
+  (F) is disabled there; you land just short of the return portal (cooldown +
+  zeroed movement prevent an instant round-trip).
 - **Ender Dragon**: ambient dragon that spawns in the End and flies along a
   random closed aerial path (arc-length-sampled Catmull-Rom spline through
   random waypoints, low "skim the floor" runs and high soars (about twice the
@@ -77,8 +81,10 @@ small Python server for saving/loading worlds.
   occasional level-flight breaths in between. Its flight has small random
   speed bursts (surge) with slightly faster wing flaps. Animated via
   spline-driven yaw/pitch/bank orientation, wing flap with speed, neck/head
-  sway, tail wave and body bob. Purely decorative — no HP bar or boss fight.
-  Resources are disposed when leaving the End.
+  sway, tail wave and body bob. It has a boss health bar (HUD) and can be
+  killed with TNT blasts (see TNT). Death triggers a huge double-layer purple
+  explosion, opens the return portal and removes the dragon. Resources are
+  disposed when leaving the End.
 - **Save/load**: binary format (`SAVE_MAGIC`, version 2) capturing world
   blocks, dim, seeds, player pos/yaw/pitch, fly state, hotbar selection.
   Backends: File System Access API (`pickSaveFile`/`saveToFile`),

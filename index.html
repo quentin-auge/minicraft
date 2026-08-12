@@ -77,6 +77,26 @@
       opacity: 0; transition: opacity .4s; pointer-events: none; text-align: center;
     }
 
+    /* End boss bar */
+    #bossbar {
+      position: fixed; top: 52px; left: 50%; transform: translateX(-50%);
+      width: 340px; max-width: 60vw; text-align: center; display: none; pointer-events: none;
+      font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    }
+    #bossbar .boss-label {
+      color: #fff; font-size: 12px; font-weight: 800; letter-spacing: 3px;
+      text-shadow: 1px 1px 2px #000; margin-bottom: 4px;
+    }
+    #bossbar .boss-track {
+      height: 18px; background: rgba(0,0,0,0.55); border: 2px solid rgba(255,255,255,0.6);
+      border-radius: 3px; overflow: hidden; box-shadow: 0 0 14px rgba(160,50,255,0.5);
+    }
+    #bossbar .boss-fill {
+      height: 100%; width: 100%;
+      background: linear-gradient(#e077ff, #6f16b8);
+      transition: width .2s ease;
+    }
+
     /* Help menu */
     #help {
       position: fixed; inset: 0; z-index: 30; display: none;
@@ -180,6 +200,7 @@
   <div id="hotbar"></div>
   <div id="info"><div id="autosave"></div></div>
   <div id="dim"></div>
+  <div id="bossbar"><div class="boss-label">ENDER DRAGON</div><div class="boss-track"><div id="bossfill" class="boss-fill"></div></div></div>
   <div id="toast"></div>
   <div id="help">
     <div class="panel">
@@ -200,7 +221,7 @@
       <div class="portal-diagram">
         <div id="portalArt"></div>
       </div>
-      <p class="note">A vertical return portal (same purple frame, black core) is auto-built on the End platform to get back to the Overworld.</p>
+      <p class="note">The return portal to the Overworld is absent until the Ender Dragon is slain — the vertical purple-frame portal then appears on the End platform.</p>
       <button class="closebtn" id="btnHelpClose">Close</button>
     </div>
   </div>

@@ -636,25 +636,51 @@ function intersectsPlayer(bx, by, bz) {
 // ---------------------------------------------------------------------------
 const FUSE_TIME = 3;
 const BLAST_RADIUS = 3;
+const DRAGON_HIT_DIST = 4.5;
+const DRAGON_FULL_DMG = 0.25;
+const DRAGON_MIN_DMG = 0.10;
+const TNT_HOME_SPEED = 11;
+const DRAGON_STICK_DIST = 1.2;
+const tntBombGeo = new THREE.BoxGeometry(0.9, 0.9, 0.9);
+const tntBombMats = materialsFor(TNT);
 const tntLit = new Map();
 const bursts = [];
 const flashes = [];
+
+function makeTNTBomb() {
+  return new THREE.Mesh(tntBombGeo, tntBombMats);
+}
+
+function clearTNTVisual(t) {
+  scene.remove(t.spr);
+  t.spr.material.map.dispose();
+  t.spr.material.dispose();
+  if (t.mesh) { scene.remove(t.mesh); t.mesh = null; }
+}
 
 function igniteTNT(x, y, z) {
   const k = key(x, y, z);
   if (tntLit.has(k)) {
     const t = tntLit.get(k);
-    scene.remove(t.spr);
-    t.spr.material.map.dispose();
-    t.spr.material.dispose();
+    clearTNTVisual(t);
     tntLit.delete(k);
-    explodeTNT(x, y, z);
+    explodeTNT(x, y, z, t.stuck);
     return;
   }
   const spr = makeFuseSprite();
   spr.position.set(x + 0.5, y + 1.35, z + 0.5);
   scene.add(spr);
-  tntLit.set(k, { x, y, z, fuse: FUSE_TIME, spr });
+  const t = { x: x + 0.5, y: y + 1.1, z: z + 0.5, fuse: FUSE_TIME, spr, mesh: null, stuck: false, ax: 0, ay: 0, az: 0 };
+  if (dim === "end" && dragon.mesh) {
+    setBlock(x, y, z, AIR);
+    rebuildMeshes();
+    queueSave();
+    const m = makeTNTBomb();
+    m.position.set(x + 0.5, y + 1.1, z + 0.5);
+    scene.add(m);
+    t.mesh = m;
+  }
+  tntLit.set(k, t);
 }
 
 function makeFuseSprite() {
@@ -681,24 +707,53 @@ function drawFuseSprite(spr, v) {
   tex.needsUpdate = true;
 }
 
+function updateTNTTarget(t, dt) {
+  if (dim !== "end" || !dragon.mesh) return;
+  const p = dragon.mesh.position;
+  if (t.stuck) {
+    t.x = p.x + t.ax; t.y = p.y + t.ay; t.z = p.z + t.az;
+    return;
+  }
+  const dx = p.x - t.x, dy = p.y + 1 - t.y, dz = p.z - t.z;
+  const d = Math.hypot(dx, dy, dz);
+  if (d <= DRAGON_STICK_DIST) {
+    t.stuck = true;
+    t.ax = t.x - p.x; t.ay = t.y - p.y; t.az = t.z - p.z;
+    return;
+  }
+  const sp = Math.min(d, TNT_HOME_SPEED * dt);
+  t.x += (dx / d) * sp; t.y += (dy / d) * sp; t.z += (dz / d) * sp;
+}
+
 function tickTNT(dt) {
   for (const [k, t] of [...tntLit]) {
     t.fuse -= dt;
+    updateTNTTarget(t, dt);
+    t.spr.position.set(t.x, t.y + 0.95, t.z);
+    if (t.mesh) t.mesh.position.set(t.x, t.y, t.z);
     if (t.fuse <= 0) {
-      scene.remove(t.spr);
-      t.spr.material.map.dispose();
-      t.spr.material.dispose();
+      clearTNTVisual(t);
       tntLit.delete(k);
-      explodeTNT(t.x, t.y, t.z);
+      explodeTNT(t.x, t.y, t.z, t.stuck);
     } else {
       drawFuseSprite(t.spr, t.fuse);
     }
   }
 }
 
-function explodeTNT(x, y, z) {
+function dragonBlastDamage(dist, pointBlank) {
+  if (pointBlank) return DRAGON_FULL_DMG;
+  return DRAGON_FULL_DMG - (DRAGON_FULL_DMG - DRAGON_MIN_DMG) * Math.min(1, dist / DRAGON_HIT_DIST);
+}
+
+function explodeTNT(x, y, z, pointBlank) {
   setBlock(x, y, z, AIR);
-  spawnExplosion(x + 0.5, y + 0.5, z + 0.5);
+  if (pointBlank) spawnDragonBurst(x + 0.5, y + 0.5, z + 0.5);
+  else spawnExplosion(x + 0.5, y + 0.5, z + 0.5);
+  if (dim === "end" && dragon.mesh) {
+    const cd = Math.hypot(dragon.mesh.position.x - (x + 0.5), dragon.mesh.position.y - (y + 0.5), dragon.mesh.position.z - (z + 0.5));
+    damageDragon(dragonBlastDamage(cd, pointBlank));
+  }
   const R = BLAST_RADIUS, R2 = R * R;
   const affected = [];
   for (let dx = -R; dx <= R; dx++)
@@ -720,6 +775,106 @@ function explodeTNT(x, y, z) {
     rebuildMeshes();
     queueSave();
   }
+}
+
+function spawnDragonDeath(cx, cy, cz) {
+  const flash = new THREE.Mesh(
+    new THREE.SphereGeometry(4, 18, 12),
+    new THREE.MeshBasicMaterial({ color: 0xe8d6ff, transparent: true, opacity: 0.95 })
+  );
+  flash.position.set(cx, cy, cz);
+  scene.add(flash);
+  flashes.push({ mesh: flash, born: performance.now(), life: 0.6 });
+
+  const N = 220;
+  const posA = new Float32Array(N * 3);
+  const colA = new Float32Array(N * 3);
+  const vel = new Float32Array(N * 3);
+  for (let i = 0; i < N; i++) {
+    posA[i * 3] = cx; posA[i * 3 + 1] = cy; posA[i * 3 + 2] = cz;
+    colA[i * 3] = Math.random() * 0.35;
+    colA[i * 3 + 1] = Math.random() * 0.3;
+    colA[i * 3 + 2] = 0.7 + Math.random() * 0.3;
+    const th = Math.random() * Math.PI * 2;
+    const ph = Math.acos(2 * Math.random() - 1);
+    const s = 9 + Math.random() * 20;
+    vel[i * 3] = s * Math.sin(ph) * Math.cos(th);
+    vel[i * 3 + 1] = s * Math.cos(ph) + 6;
+    vel[i * 3 + 2] = s * Math.sin(ph) * Math.sin(th);
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute("position", new THREE.BufferAttribute(posA, 3));
+  geo.setAttribute("color", new THREE.BufferAttribute(colA, 3));
+  const mat = new THREE.PointsMaterial({
+    size: 0.65, vertexColors: true, transparent: true, opacity: 1,
+    depthWrite: false, blending: THREE.AdditiveBlending,
+  });
+  const pts = new THREE.Points(geo, mat);
+  scene.add(pts);
+  bursts.push({ pts, geo, mat, vel, life: 2.0, max: 2.0 });
+
+  const N2 = 80;
+  const posB = new Float32Array(N2 * 3);
+  const colB = new Float32Array(N2 * 3);
+  const velB = new Float32Array(N2 * 3);
+  for (let i = 0; i < N2; i++) {
+    posB[i * 3] = cx; posB[i * 3 + 1] = cy; posB[i * 3 + 2] = cz;
+    const near = 0.9 + Math.random() * 0.1;
+    colB[i * 3] = near; colB[i * 3 + 1] = near; colB[i * 3 + 2] = 1;
+    const th = Math.random() * Math.PI * 2;
+    const ph = Math.acos(2 * Math.random() - 1);
+    const s = 5 + Math.random() * 10;
+    velB[i * 3] = s * Math.sin(ph) * Math.cos(th);
+    velB[i * 3 + 1] = s * Math.cos(ph) + 8;
+    velB[i * 3 + 2] = s * Math.sin(ph) * Math.sin(th);
+  }
+  const geoB = new THREE.BufferGeometry();
+  geoB.setAttribute("position", new THREE.BufferAttribute(posB, 3));
+  geoB.setAttribute("color", new THREE.BufferAttribute(colB, 3));
+  const matB = new THREE.PointsMaterial({
+    size: 0.3, vertexColors: true, transparent: true, opacity: 1,
+    depthWrite: false, blending: THREE.AdditiveBlending,
+  });
+  const ptsB = new THREE.Points(geoB, matB);
+  scene.add(ptsB);
+  bursts.push({ pts: ptsB, geo: geoB, mat: matB, vel: velB, life: 1.2, max: 1.2 });
+}
+
+function spawnDragonBurst(cx, cy, cz) {
+  const flash = new THREE.Mesh(
+    new THREE.SphereGeometry(1.6, 14, 10),
+    new THREE.MeshBasicMaterial({ color: 0xd06bff, transparent: true, opacity: 0.9 })
+  );
+  flash.position.set(cx, cy, cz);
+  scene.add(flash);
+  flashes.push({ mesh: flash, born: performance.now(), life: 0.35 });
+
+  const N = 96;
+  const posA = new Float32Array(N * 3);
+  const colA = new Float32Array(N * 3);
+  const vel = new Float32Array(N * 3);
+  for (let i = 0; i < N; i++) {
+    posA[i * 3] = cx; posA[i * 3 + 1] = cy; posA[i * 3 + 2] = cz;
+    colA[i * 3] = 0.55 + Math.random() * 0.35;
+    colA[i * 3 + 1] = 0.25 + Math.random() * 0.25;
+    colA[i * 3 + 2] = 0.85 + Math.random() * 0.25;
+    const th = Math.random() * Math.PI * 2;
+    const ph = Math.acos(2 * Math.random() - 1);
+    const s = 6 + Math.random() * 12;
+    vel[i * 3] = s * Math.sin(ph) * Math.cos(th);
+    vel[i * 3 + 1] = s * Math.cos(ph) + 4;
+    vel[i * 3 + 2] = s * Math.sin(ph) * Math.sin(th);
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute("position", new THREE.BufferAttribute(posA, 3));
+  geo.setAttribute("color", new THREE.BufferAttribute(colA, 3));
+  const mat = new THREE.PointsMaterial({
+    size: 0.42, vertexColors: true, transparent: true, opacity: 1,
+    depthWrite: false, blending: THREE.AdditiveBlending,
+  });
+  const pts = new THREE.Points(geo, mat);
+  scene.add(pts);
+  bursts.push({ pts, geo, mat, vel, life: 1.1, max: 1.1 });
 }
 
 function spawnExplosion(cx, cy, cz) {
@@ -833,7 +988,6 @@ function goToDimension(name, sx, sy, sz) {
   world = worlds[name];
   if (name === "end") {
     if (worlds.end.size === 0) generateEnd();
-    buildReturnPortal();
     spawnDragon();
     setDimensionEnv();
     prePortalFly = flying;
@@ -1063,7 +1217,7 @@ const dragon = {
   mesh: null, wingL: null, wingR: null, neck: null, neckBaseX: 0, head: null, tail: null,
   path: null, s: 0, seg: 0, yaw: 0, pitch: 0, bank: 0, prevYaw: 0, t: 0, nextRun: 0,
   mouth: null, fx: null, parts: [], spitTimer: 0, spitting: 0,
-  surgeT: 0, surge: 1, speedMul: 1,
+  surgeT: 0, surge: 1, speedMul: 1, hp: 0,
 };
 const dragonMat = (color, opts = {}) =>
   new THREE.MeshStandardMaterial(Object.assign({ color, roughness: 0.5, metalness: 0.08 }, opts));
@@ -1221,6 +1375,8 @@ function spawnDragon() {
   dragon.spitTimer = 3 + Math.random() * 4;
   dragon.spitting = 0;
   dragon.surgeT = 0; dragon.surge = 1; dragon.speedMul = 1;
+  dragon.hp = 1;
+  updateBossBar();
   buildDragonPath();
 }
 
@@ -1245,6 +1401,7 @@ function removeDragon() {
   dragon.wingL = null; dragon.wingR = null;
   dragon.neck = null; dragon.head = null; dragon.tail = null;
   dragon.path = null;
+  updateBossBar();
 }
 
 function dragonCatmull(p0, p1, p2, p3, u, out) {
@@ -1631,7 +1788,30 @@ function updateCamera() {
 // ---------------------------------------------------------------------------
 const dimEl = document.getElementById("dim");
 const toastEl = document.getElementById("toast");
+const bossBarEl = document.getElementById("bossbar");
+const bossFillEl = document.getElementById("bossfill");
 let toastTimer = 0;
+
+function updateBossBar() {
+  if (!dragon.mesh || dragon.hp <= 0) { bossBarEl.style.display = "none"; return; }
+  bossFillEl.style.width = Math.max(0, Math.round(dragon.hp * 100)) + "%";
+  bossBarEl.style.display = "block";
+}
+
+function damageDragon(amount) {
+  if (!dragon.mesh || dragon.hp <= 0) return;
+  dragon.hp = Math.max(0, dragon.hp - amount);
+  updateBossBar();
+  if (dragon.hp <= 0) {
+    const dx = dragon.mesh.position.x, dy = dragon.mesh.position.y + 1, dz = dragon.mesh.position.z;
+    removeDragon();
+    buildReturnPortal();
+    rebuildMeshes();
+    queueSave();
+    spawnDragonDeath(dx, dy, dz);
+    showMsg("Ender Dragon is defeated");
+  }
+}
 
 function updateDimLabel() {
   if (!started) { dimEl.style.display = "none"; return; }
