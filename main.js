@@ -1269,8 +1269,8 @@ document.addEventListener("mousemove", (e) => {
 
 document.addEventListener("mousedown", (e) => {
   if (!locked) return;
-  if (e.button === 0) breakBlock();
-  if (e.button === 2) placeBlock(HOTBAR[selected]);
+  if (e.button === 0) placeBlock(HOTBAR[selected]);
+  if (e.button === 2) breakBlock();
 });
 
 document.addEventListener("keydown", (e) => {
