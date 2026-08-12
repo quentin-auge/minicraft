@@ -607,7 +607,6 @@ function placeBlock(id) {
   if (getBlock(px, py, pz) !== AIR) return;
   if (intersectsPlayer(px, py, pz)) return;
   setBlock(px, py, pz, id);
-  if (id === PORTAL) tryLightPortal(px, py, pz);
   rebuildMeshes();
   queueSave();
 }
@@ -783,85 +782,6 @@ let portalCd = 0;
 let returnPortalBuilt = false;
 let overPortalSpawn = { x: 0.5, y: 1.01, z: 0.5 };
 
-function rowFrame(minX, maxX, z, y) {
-  for (let x = minX; x <= maxX; x++) if (getBlock(x, y, z) !== PORTAL) return false;
-  return true;
-}
-function colFrame(x, minZ, maxZ, y) {
-  for (let z = minZ; z <= maxZ; z++) if (getBlock(x, y, z) !== PORTAL) return false;
-  return true;
-}
-
-function tryLightPortal(px, py, pz) {
-  const seen = new Set();
-  const stack = [[px, py, pz]];
-  const cells = [];
-  while (stack.length) {
-    const [x, y, z] = stack.pop();
-    const k = key(x, y, z);
-    if (seen.has(k)) continue;
-    seen.add(k);
-    if (getBlock(x, y, z) !== PORTAL) continue;
-    cells.push([x, y, z]);
-    stack.push([x + 1, y, z], [x - 1, y, z], [x, y + 1, z], [x, y - 1, z], [x, y, z + 1], [x, y, z - 1]);
-  }
-  if (cells.length < 12) return;
-  const sameZ = cells.every((c) => c[2] === cells[0][2]);
-  const sameX = cells.every((c) => c[0] === cells[0][0]);
-  let xy, fixed;
-  if (sameZ) { xy = true; fixed = cells[0][2]; }
-  else if (sameX) { xy = false; fixed = cells[0][0]; }
-  else return;
-  let minA = Infinity, maxA = -Infinity, minY = Infinity, maxY = -Infinity;
-  for (const [x, y, z] of cells) {
-    const a = xy ? x : z;
-    minA = Math.min(minA, a); maxA = Math.max(maxA, a);
-    minY = Math.min(minY, y); maxY = Math.max(maxY, y);
-  }
-  const W = maxA - minA + 1, H = maxY - minY + 1;
-  if (W < 5 || H < 5 || W !== H) return;
-  const isFrame = (x, y, z) => getBlock(x, y, z) === PORTAL;
-  for (let a = minA; a <= maxA; a++) {
-    if (!isFrame(xy ? a : fixed, minY, xy ? fixed : a)) return;
-    if (!isFrame(xy ? a : fixed, maxY, xy ? fixed : a)) return;
-  }
-  for (let y = minY; y <= maxY; y++) {
-    if (!isFrame(xy ? minA : fixed, y, xy ? fixed : minA)) return;
-    if (!isFrame(xy ? maxA : fixed, y, xy ? fixed : maxA)) return;
-  }
-  for (let a = minA + 1; a < maxA; a++)
-    for (let y = minY + 1; y < maxY; y++)
-      if (getBlock(xy ? a : fixed, y, xy ? fixed : a) !== AIR) return;
-  let lit = false;
-  for (let a = minA + 1; a < maxA; a++)
-    for (let y = minY + 1; y < maxY; y++) {
-      const x = xy ? a : fixed, z = xy ? fixed : a;
-      if (getBlock(x, y, z) === AIR) { setBlock(x, y, z, PORTAL); lit = true; }
-    }
-  if (lit) { rebuildMeshes(); queueSave(); }
-}
-
-function getPortalInfo(bx, by, bz) {
-  const xy = getBlock(bx - 1, by, bz) === PORTAL || getBlock(bx + 1, by, bz) === PORTAL;
-  if (xy) {
-    let minA = bx, maxA = bx;
-    while (getBlock(minA - 1, by, bz) === PORTAL) minA--;
-    while (getBlock(maxA + 1, by, bz) === PORTAL) maxA++;
-    let minY = by, maxY = by;
-    while (rowFrame(minA, maxA, bz, minY - 1)) minY--;
-    while (rowFrame(minA, maxA, bz, maxY + 1)) maxY++;
-    return { cx: (minA + maxA) / 2, cz: bz, top: maxY };
-  } else {
-    let minA = bz, maxA = bz;
-    while (getBlock(bx, by, minA - 1) === PORTAL) minA--;
-    while (getBlock(bx, by, maxA + 1) === PORTAL) maxA++;
-    let minY = by, maxY = by;
-    while (colFrame(bx, minA, maxA, minY - 1)) minY--;
-    while (colFrame(bx, minA, maxA, maxY + 1)) maxY++;
-    return { cx: bx, cz: (minA + maxA) / 2, top: maxY };
-  }
-}
-
 function setDimensionEnv() {
   if (dim === "end") {
     scene.background.setHex(0x07070f);
@@ -877,10 +797,9 @@ function setDimensionEnv() {
 }
 
 function buildReturnPortal() {
-  const z = 0;
-  for (let x = -2; x <= 2; x++) { setBlock(x, 21, z, PORTAL); setBlock(x, 25, z, PORTAL); }
-  for (let y = 21; y <= 25; y++) { setBlock(-2, y, z, PORTAL); setBlock(2, y, z, PORTAL); }
-  for (let x = -1; x <= 1; x++) for (let y = 22; y <= 24; y++) setBlock(x, y, z, PORTAL);
+  for (let x = -1; x <= 1; x++)
+    for (let z = -1; z <= 1; z++)
+      setBlock(x, 21, z, PORTAL);
   returnPortalBuilt = true;
 }
 
@@ -908,11 +827,20 @@ function goToDimension(name, sx, sy, sz) {
 
 function checkPortal() {
   if (portalCd > 0 || freeCam) return;
-  const bx = Math.floor(pos.x), by = Math.floor(pos.y + 0.9), bz = Math.floor(pos.z);
-  if (getBlock(bx, by, bz) !== PORTAL) return;
-  const info = getPortalInfo(bx, by, bz);
+  const bx = Math.floor(pos.x), bz = Math.floor(pos.z);
+  const by = Math.floor(pos.y + 0.9);
+  let py = by;
+  if (getBlock(bx, by, bz) !== PORTAL) {
+    py = by - 1;
+    if (getBlock(bx, py, bz) !== PORTAL) return;
+  }
+  let count = 0;
+  for (let dx = -1; dx <= 1; dx++)
+    for (let dz = -1; dz <= 1; dz++)
+      if (getBlock(bx + dx, py, bz + dz) === PORTAL) count++;
+  if (count < 9) return;
   if (dim === "over") {
-    overPortalSpawn = { x: info.cx + 0.5, y: info.top + 1.01, z: info.cz + 0.5 };
+    overPortalSpawn = { x: bx + 0.5, y: py + 1.01, z: bz + 0.5 };
     goToDimension("end", 0.5, 21.6, 4);
     showMsg("You arrived in The End");
   } else {
@@ -1675,7 +1603,7 @@ requestAnimationFrame(loop);
 function buildPortalArt() {
   const host = document.getElementById("portalArt");
   if (!host) return;
-  const N = 5, cell = 19, size = 15, off = 6;
+  const N = 3, cell = 30, size = 26, off = 12;
   const w = off * 2 + (N - 1) * cell + size;
   const svg = document.createElementNS(SVGNS, "svg");
   svg.setAttribute("viewBox", `0 0 ${w} ${w}`);
@@ -1683,21 +1611,13 @@ function buildPortalArt() {
   svg.setAttribute("height", "150");
   for (let r = 0; r < N; r++)
     for (let c = 0; c < N; c++) {
-      const frame = r === 0 || r === N - 1 || c === 0 || c === N - 1;
       const x = off + c * cell, y = off + r * cell;
       const rect = document.createElementNS(SVGNS, "rect");
       rect.setAttribute("x", x); rect.setAttribute("y", y);
       rect.setAttribute("width", size); rect.setAttribute("height", size); rect.setAttribute("rx", 3);
-      if (frame) {
-        rect.setAttribute("fill", "#5a2da6");
-        rect.setAttribute("stroke", "#7b2ff7"); rect.setAttribute("stroke-width", "1.5");
-        svg.appendChild(rect);
-      } else {
-        rect.setAttribute("fill", "rgba(155,48,247,0.10)");
-        rect.setAttribute("stroke", "rgba(155,48,247,0.35)"); rect.setAttribute("stroke-width", "1");
-        rect.setAttribute("stroke-dasharray", "2 2");
-        svg.appendChild(rect);
-      }
+      rect.setAttribute("fill", "#5a2da6");
+      rect.setAttribute("stroke", "#7b2ff7"); rect.setAttribute("stroke-width", "1.5");
+      svg.appendChild(rect);
     }
   host.appendChild(svg);
 }
