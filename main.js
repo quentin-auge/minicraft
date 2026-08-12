@@ -313,8 +313,9 @@ const WALK = 4.4, SPRINT = 7.2, FLY = 10;
 
 const pos = new THREE.Vector3(0, 20, 0);
 const vel = new THREE.Vector3();
+const camPos = new THREE.Vector3();
 let yaw = 0, pitch = 0;
-let onGround = false, flying = false, locked = false;
+let onGround = false, flying = false, freeCam = false, locked = false;
 const keys = {};
 
 function spawnPlayer() {
@@ -439,6 +440,49 @@ function updatePlayer(dt) {
     if (vel.y < -40) vel.y = -40;
   }
   collide();
+}
+
+// Free camera (spectator): detach from the player, fly through anything.
+function updateFreeCam(dt) {
+  const cp = Math.cos(pitch);
+  const fwd = new THREE.Vector3(-Math.sin(yaw) * cp, Math.sin(pitch), -Math.cos(yaw) * cp);
+  const right = new THREE.Vector3(Math.cos(yaw), 0, -Math.sin(yaw));
+  const move = new THREE.Vector3();
+  if (keys["ArrowUp"]) move.add(fwd);
+  if (keys["ArrowDown"]) move.sub(fwd);
+  if (keys["ArrowRight"]) move.add(right);
+  if (keys["ArrowLeft"]) move.sub(right);
+  if (keys["Space"]) move.y += 1;
+  if (keys["ShiftLeft"] || keys["ShiftRight"]) move.y -= 1;
+  if (move.lengthSq() > 0) move.normalize().multiplyScalar(FLY * dt);
+  const r = 0.3;
+  const tryAxis = (axis, v) => {
+    if (v === 0) return;
+    const nx = camPos.x + (axis === "x" ? v : 0);
+    const ny = camPos.y + (axis === "y" ? v : 0);
+    const nz = camPos.z + (axis === "z" ? v : 0);
+    if (!freeCamBlocked(nx, ny, nz, r)) camPos.set(nx, ny, nz);
+  };
+  tryAxis("x", move.x);
+  tryAxis("z", move.z);
+  tryAxis("y", move.y);
+}
+
+function freeCamBlocked(x, y, z, r) {
+  for (const ox of [-r, r])
+    for (const oy of [-r, r])
+      for (const oz of [-r, r])
+        if (isSolid(Math.floor(x + ox), Math.floor(y + oy), Math.floor(z + oz))) return true;
+  return false;
+}
+
+function exitFreeCam() {
+  pos.set(camPos.x, Math.max(0, camPos.y), camPos.z);
+  vel.set(0, 0, 0);
+  const outOfLevel =
+    Math.abs(pos.x) > WORLD_RADIUS || Math.abs(pos.z) > WORLD_RADIUS ||
+    pos.y < 0 || pos.y > 60;
+  if (outOfLevel) spawnPlayer();
 }
 
 function headInWater() {
@@ -1059,7 +1103,7 @@ document.addEventListener("mousedown", (e) => {
 document.addEventListener("keydown", (e) => {
   if (keys[e.code]) { e.preventDefault(); return; }
   keys[e.code] = true;
-  if (e.code === "KeyF") flying = !flying;
+  if (e.code === "KeyF") { freeCam = !freeCam; if (freeCam) camPos.copy(camera.position); else exitFreeCam(); }
   if (e.code === "Escape") { if (saveName) saveToFile(); }
   if (["Space", "Tab", "ArrowUp", "ArrowDown"].includes(e.code)) e.preventDefault();
 });
@@ -1114,8 +1158,14 @@ function loop(now) {
   dt = Math.min(0.05, (now - last) / 1000);
   last = now;
 
-  updatePlayer(dt);
-  camera.position.set(pos.x, pos.y + EYE, pos.z);
+  if (freeCam) {
+    updateFreeCam(dt);
+    camera.position.copy(camPos);
+  } else {
+    updatePlayer(dt);
+    camera.position.set(pos.x, pos.y + EYE, pos.z);
+    if (pos.y < -20) { vel.set(0, 0, 0); spawnPlayer(); }
+  }
   camera.rotation.set(pitch, yaw, 0);
   updateTarget();
 
