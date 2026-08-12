@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>MiniCraft</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body { width: 100%; height: 100%; overflow: hidden; font-family: "Segoe UI", system-ui, sans-serif; }
+    body { background: #87ceeb; }
+
+    #game { position: fixed; inset: 0; }
+
+    /* Crosshair */
+    #crosshair {
+      position: fixed; left: 50%; top: 50%;
+      width: 22px; height: 22px;
+      transform: translate(-50%, -50%);
+      pointer-events: none;
+      display: none;
+    }
+    #crosshair::before, #crosshair::after {
+      content: ""; position: absolute; background: rgba(255,255,255,0.9);
+      box-shadow: 0 0 2px rgba(0,0,0,0.8);
+    }
+    #crosshair::before { left: 50%; top: 0; width: 2px; height: 100%; transform: translateX(-50%); }
+    #crosshair::after  { top: 50%; left: 0; height: 2px; width: 100%; transform: translateY(-50%); }
+
+    /* Hotbar */
+    #hotbar {
+      position: fixed; bottom: 14px; left: 50%;
+      transform: translateX(-50%);
+      display: flex; gap: 4px; padding: 4px;
+      background: rgba(0,0,0,0.45);
+      border: 2px solid rgba(0,0,0,0.6);
+      border-radius: 6px;
+      display: none;
+    }
+    #hotbar .slot {
+      width: 46px; height: 46px;
+      border: 2px solid rgba(255,255,255,0.25);
+      background: rgba(0,0,0,0.5);
+      border-radius: 4px;
+      display: flex; align-items: center; justify-content: center;
+      position: relative;
+      cursor: pointer;
+    }
+    #hotbar .slot img { width: 34px; height: 34px; image-rendering: pixelated; pointer-events: none; }
+    #hotbar .slot .key {
+      position: absolute; left: 3px; bottom: 1px;
+      font-size: 10px; color: rgba(255,255,255,0.6); font-weight: bold;
+    }
+    #hotbar .slot.selected { border-color: #fff; box-shadow: 0 0 0 2px rgba(255,255,255,0.9); }
+
+    /* HUD info */
+    #info {
+      position: fixed; top: 10px; left: 50%; transform: translateX(-50%);
+      color: #fff; font-size: 13px; text-shadow: 1px 1px 2px #000;
+      background: rgba(0,0,0,0.35); padding: 6px 12px; border-radius: 6px;
+      display: none;
+      text-align: center; line-height: 1.5;
+    }
+
+    /* Overlay / start screen */
+    #overlay {
+      position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
+      background: linear-gradient(180deg, #4a90d9, #87ceeb);
+      z-index: 10; cursor: pointer;
+    }
+    #overlay .panel {
+      background: rgba(0,0,0,0.6); color: #fff;
+      padding: 40px 56px; border-radius: 14px; text-align: center;
+      border: 2px solid rgba(255,255,255,0.2);
+    }
+    #overlay h1 { font-size: 44px; margin-bottom: 6px; letter-spacing: 2px; }
+    #overlay h1 span { color: #7bc043; }
+    #overlay .controls { margin-top: 22px; font-size: 14px; color: #cfd8e0; line-height: 1.8; text-align: left; display: inline-block; }
+    #overlay .controls b { color: #fff; }
+    #overlay .start { margin-top: 24px; font-size: 18px; color: #ffe97a; animation: pulse 1.6s infinite; }
+    @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
+  </style>
+</head>
+<body>
+  <div id="game"></div>
+  <div id="crosshair"></div>
+  <div id="hotbar"></div>
+  <div id="info"></div>
+
+  <div id="overlay">
+    <div class="panel">
+      <h1>Mini<span>Craft</span></h1>
+      <div class="controls">
+        <div><b>W A S D / Arrows</b> &nbsp; Move</div>
+        <div><b>Space</b> &nbsp; Jump / swim up</div>
+        <div><b>Shift</b> &nbsp; Sprint</div>
+        <div><b>Mouse</b> &nbsp; Look around</div>
+        <div><b>Left Click</b> &nbsp; Break block</div>
+        <div><b>Right Click</b> &nbsp; Place block</div>
+        <div><b>1-9 / Wheel / E Q</b> &nbsp; Select block</div>
+        <div><b>F</b> &nbsp; Toggle fly</div>
+        <div><b>P</b> &nbsp; Respawn at spawn point</div>
+        <div><b>R</b> &nbsp; Generate a new world</div>
+      </div>
+      <div class="start">Click to Play</div>
+    </div>
+  </div>
+
+  <script type="importmap">
+    { "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js" } }
+  </script>
+  <script type="module" src="main.js"></script>
+</body>
+</html>
