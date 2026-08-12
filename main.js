@@ -3,7 +3,7 @@ import * as THREE from "three";
 // ---------------------------------------------------------------------------
 // Block definitions
 // ---------------------------------------------------------------------------
-const AIR = 0, GRASS = 1, DIRT = 2, STONE = 3, SAND = 4, LOG = 5, LEAVES = 6, WATER = 7, PLANKS = 8, GLASS = 9;
+const AIR = 0, GRASS = 1, DIRT = 2, STONE = 3, SAND = 4, LOG = 5, LEAVES = 6, WATER = 7, PLANKS = 8, GLASS = 9, TNT = 10;
 
 const BLOCK_INFO = {
   [GRASS]:  { name: "Grass",   solid: true,  opaque: true,  placeable: true },
@@ -15,6 +15,7 @@ const BLOCK_INFO = {
   [WATER]:  { name: "Water",   solid: false, opaque: false, placeable: true },
   [PLANKS]: { name: "Planks",  solid: true,  opaque: true,  placeable: true },
   [GLASS]:  { name: "Glass",   solid: true,  opaque: false, placeable: true },
+  [TNT]:    { name: "TNT",     solid: true,  opaque: true,  placeable: true },
 };
 
 // ---------------------------------------------------------------------------
@@ -124,6 +125,20 @@ const TEX = {
     for (let y = 0; y < 4; y++) ctx.fillRect(0, y * 4, 16, 1);
     ctx.fillRect(4, 0, 1, 4); ctx.fillRect(11, 4, 1, 4); ctx.fillRect(6, 8, 1, 4); ctx.fillRect(13, 12, 1, 4);
   }),
+  tnt: canvasTex((ctx) => {
+    ctx.fillStyle = "#c0392b"; ctx.fillRect(0, 0, 16, 16);
+    pxNoise(ctx, [192, 57, 43], 14);
+    ctx.fillStyle = "#ece6d0"; ctx.fillRect(0, 6, 16, 4);
+    pxNoise(ctx, [236, 230, 208], 8, 0.7);
+    ctx.fillStyle = "#222";
+    ctx.fillRect(0, 7, 16, 1);
+    ctx.fillRect(0, 9, 16, 1);
+    ctx.fillStyle = "#1a1a1a";
+    ctx.font = "bold 7px monospace"; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+    ctx.fillText("TNT", 8, 8);
+    ctx.fillStyle = "#5d2b22";
+    ctx.fillRect(8, 0, 2, 2);
+  }),
   glass: canvasTex((ctx) => {
     ctx.fillStyle = "rgba(190,230,255,0.55)"; ctx.fillRect(0, 0, 16, 16);
     ctx.strokeStyle = "rgba(255,255,255,0.9)"; ctx.lineWidth = 1.5;
@@ -151,6 +166,7 @@ function materialsFor(id) {
     case PLANKS:return faceTex(TEX.planks);
     case GLASS: return faceTex(TEX.glass, { transparent: true, opacity: 0.8, depthWrite: false });
     case WATER: return faceTex(TEX.water, { transparent: true, opacity: 0.65, depthWrite: false });
+    case TNT:   return faceTex(TEX.tnt);
     default: return faceTex(TEX.dirt);
   }
 }
@@ -556,6 +572,7 @@ function breakBlock() {
   if (!currentBlock) return;
   const { x, y, z } = currentBlock;
   if (getBlock(x, y, z) === STONE && y === 0) return;
+  if (getBlock(x, y, z) === TNT) { igniteTNT(x, y, z); return; }
   setBlock(x, y, z, AIR);
   rebuildMeshes();
   queueSave();
@@ -576,6 +593,162 @@ function intersectsPlayer(bx, by, bz) {
     by + 1 > pos.y && by < pos.y + PLAYER_H &&
     bz + 1 > pos.z - PLAYER_HW && bz < pos.z + PLAYER_HW
   );
+}
+
+// ---------------------------------------------------------------------------
+// TNT: breaking a TNT block lights a 3s fuse, then it explodes, destroying
+// nearby blocks (with particles) and igniting any TNT caught in the blast.
+// ---------------------------------------------------------------------------
+const FUSE_TIME = 3;
+const BLAST_RADIUS = 3;
+const tntLit = new Map();
+const bursts = [];
+const flashes = [];
+
+function igniteTNT(x, y, z) {
+  const k = key(x, y, z);
+  if (tntLit.has(k)) return;
+  const spr = makeFuseSprite();
+  spr.position.set(x + 0.5, y + 1.35, z + 0.5);
+  scene.add(spr);
+  tntLit.set(k, { x, y, z, fuse: FUSE_TIME, spr });
+}
+
+function makeFuseSprite() {
+  const c = document.createElement("canvas");
+  c.width = 128; c.height = 64;
+  const ctx = c.getContext("2d");
+  const tex = new THREE.CanvasTexture(c);
+  const spr = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, transparent: true, depthTest: false }));
+  spr.scale.set(1.5, 0.75, 1);
+  spr.userData = { c, ctx, tex };
+  return spr;
+}
+function drawFuseSprite(spr, v) {
+  const { c, ctx, tex } = spr.userData;
+  ctx.clearRect(0, 0, c.width, c.height);
+  ctx.font = "bold 52px monospace";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.lineWidth = 10;
+  ctx.strokeStyle = "rgba(0,0,0,0.85)";
+  ctx.strokeText(v.toFixed(1), 64, 32);
+  ctx.fillStyle = v <= 1 ? "#ff6a3d" : "#ffffff";
+  ctx.fillText(v.toFixed(1), 64, 32);
+  tex.needsUpdate = true;
+}
+
+function tickTNT(dt) {
+  for (const [k, t] of [...tntLit]) {
+    t.fuse -= dt;
+    if (t.fuse <= 0) {
+      scene.remove(t.spr);
+      t.spr.material.map.dispose();
+      t.spr.material.dispose();
+      tntLit.delete(k);
+      explodeTNT(t.x, t.y, t.z);
+    } else {
+      drawFuseSprite(t.spr, t.fuse);
+    }
+  }
+}
+
+function explodeTNT(x, y, z) {
+  setBlock(x, y, z, AIR);
+  spawnExplosion(x + 0.5, y + 0.5, z + 0.5);
+  const R = BLAST_RADIUS, R2 = R * R;
+  const affected = [];
+  for (let dx = -R; dx <= R; dx++)
+    for (let dy = -R; dy <= R; dy++)
+      for (let dz = -R; dz <= R; dz++) {
+        if (dx * dx + dy * dy + dz * dz > R2) continue;
+        const bx = x + dx, by = y + dy, bz = z + dz;
+        const id = getBlock(bx, by, bz);
+        if (id === AIR || id === WATER) continue;
+        if (id === STONE && by === 0) continue;
+        if (id === TNT) {
+          if (!tntLit.has(key(bx, by, bz))) igniteTNT(bx, by, bz);
+          continue;
+        }
+        affected.push([bx, by, bz]);
+      }
+  if (affected.length) {
+    for (const [bx, by, bz] of affected) setBlock(bx, by, bz, AIR);
+    rebuildMeshes();
+    queueSave();
+  }
+}
+
+function spawnExplosion(cx, cy, cz) {
+  const flash = new THREE.Mesh(
+    new THREE.SphereGeometry(1, 10, 8),
+    new THREE.MeshBasicMaterial({ color: 0xffdd77, transparent: true, opacity: 0.95 })
+  );
+  flash.position.set(cx, cy, cz);
+  scene.add(flash);
+  flashes.push({ mesh: flash, born: performance.now(), life: 0.28 });
+
+  const N = 64;
+  const posA = new Float32Array(N * 3);
+  const colA = new Float32Array(N * 3);
+  const vel = new Float32Array(N * 3);
+  for (let i = 0; i < N; i++) {
+    posA[i * 3] = cx; posA[i * 3 + 1] = cy; posA[i * 3 + 2] = cz;
+    colA[i * 3] = 1; colA[i * 3 + 1] = 0.55 + Math.random() * 0.4; colA[i * 3 + 2] = 0.1 + Math.random() * 0.2;
+    const th = Math.random() * Math.PI * 2;
+    const ph = Math.acos(2 * Math.random() - 1);
+    const s = 4 + Math.random() * 8;
+    vel[i * 3] = s * Math.sin(ph) * Math.cos(th);
+    vel[i * 3 + 1] = s * Math.cos(ph) + 3;
+    vel[i * 3 + 2] = s * Math.sin(ph) * Math.sin(th);
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute("position", new THREE.BufferAttribute(posA, 3));
+  geo.setAttribute("color", new THREE.BufferAttribute(colA, 3));
+  const mat = new THREE.PointsMaterial({
+    size: 0.18, vertexColors: true, transparent: true, opacity: 1,
+    depthWrite: false, blending: THREE.AdditiveBlending,
+  });
+  const pts = new THREE.Points(geo, mat);
+  scene.add(pts);
+  bursts.push({ pts, geo, mat, vel, life: 0.8, max: 0.8 });
+}
+
+function tickEffects(dt) {
+  for (let i = bursts.length - 1; i >= 0; i--) {
+    const b = bursts[i];
+    b.life -= dt;
+    const attr = b.pts.geometry.attributes.position;
+    for (let j = 0; j < attr.count; j++) {
+      attr.array[j * 3] += b.vel[j * 3] * dt;
+      attr.array[j * 3 + 1] += b.vel[j * 3 + 1] * dt;
+      attr.array[j * 3 + 2] += b.vel[j * 3 + 2] * dt;
+      b.vel[j * 3 + 1] -= 22 * dt;
+    }
+    attr.needsUpdate = true;
+    if (b.life <= 0) {
+      scene.remove(b.pts);
+      b.geo.dispose();
+      b.mat.dispose();
+      bursts.splice(i, 1);
+    } else {
+      b.mat.opacity = Math.min(1, b.life / b.max);
+    }
+  }
+  for (let i = flashes.length - 1; i >= 0; i--) {
+    const f = flashes[i];
+    const age = (performance.now() - f.born) / 1000;
+    if (age >= f.life) {
+      scene.remove(f.mesh);
+      f.mesh.geometry.dispose();
+      f.mesh.material.dispose();
+      flashes.splice(i, 1);
+      continue;
+    }
+    const t = age / f.life;
+    f.mesh.scale.setScalar(0.4 + t * 4.2);
+    f.mesh.material.opacity = 0.95 * (1 - t);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1034,7 +1207,7 @@ document.addEventListener("visibilitychange", () => { if (document.hidden && can
 // ---------------------------------------------------------------------------
 // UI / hotbar
 // ---------------------------------------------------------------------------
-const HOTBAR = [GRASS, DIRT, STONE, SAND, LOG, PLANKS, GLASS, LEAVES, WATER];
+const HOTBAR = [GRASS, DIRT, STONE, SAND, LOG, PLANKS, GLASS, LEAVES, WATER, TNT];
 let selected = 0;
 const hotbarEl = document.getElementById("hotbar");
 
@@ -1168,8 +1341,8 @@ function loop(now) {
   }
   camera.rotation.set(pitch, yaw, 0);
   updateTarget();
-
-  if (pos.y < -20) { vel.set(0, 0, 0); spawnPlayer(); }
+  tickTNT(dt);
+  tickEffects(dt);
 
   // Gentle water shimmer
   if (instanced[WATER]) {
