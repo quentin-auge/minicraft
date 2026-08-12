@@ -602,6 +602,7 @@ function breakBlock() {
 }
 function placeBlock(id) {
   if (!currentBlock) return;
+  if (!BLOCK_INFO[id] || !BLOCK_INFO[id].placeable) return;
   const [nx, ny, nz] = currentBlock.face;
   const px = currentBlock.x + nx, py = currentBlock.y + ny, pz = currentBlock.z + nz;
   if (getBlock(px, py, pz) !== AIR) return;
@@ -829,8 +830,8 @@ function goToDimension(name, sx, sy, sz) {
 }
 
 function findPortalWindow(bx, by, bz) {
-  for (let wx = -1; wx <= 1; wx++)
-    for (let wz = -1; wz <= 1; wz++) {
+  for (let wx = -3; wx <= 1; wx++)
+    for (let wz = -3; wz <= 1; wz++) {
       const minX = bx + wx, minZ = bz + wz;
       const maxX = minX + 4, maxZ = minZ + 4;
       let ok = true;
@@ -848,37 +849,50 @@ function findPortalWindow(bx, by, bz) {
   return null;
 }
 
-let portalGlow = null;
+let portalFillGroup = null;
+let portalFillKey = null;
 
-function syncPortalGlow(win) {
-  if (!win) { clearPortalGlow(); return; }
-  const key = `${win.minX},${win.minZ},${win.by}`;
-  if (portalGlow && portalGlow.userData.key === key) return;
-  clearPortalGlow();
-  const geo = new THREE.PlaneGeometry(3, 3);
-  const mat = new THREE.MeshBasicMaterial({ color: 0x00ff00, transparent: true, opacity: 0.25, side: THREE.DoubleSide, depthWrite: false, blending: THREE.AdditiveBlending });
-  const mesh = new THREE.Mesh(geo, mat);
-  mesh.rotation.x = -Math.PI / 2;
-  mesh.position.set(win.minX + 2, win.by + 0.55, win.minZ + 2);
-  mesh.userData.key = key;
-  scene.add(mesh);
-  portalGlow = mesh;
+function ensurePortalFillGroup() {
+  if (portalFillGroup) return;
+  portalFillGroup = new THREE.Group();
+  const geo = new THREE.BoxGeometry(0.98, 0.98, 0.98);
+  const mat = new THREE.MeshBasicMaterial({ color: 0x000000 });
+  for (let i = 0; i < 9; i++) portalFillGroup.add(new THREE.Mesh(geo, mat));
+  portalFillGroup.visible = false;
+  scene.add(portalFillGroup);
 }
 
-function clearPortalGlow() {
-  if (portalGlow) {
-    scene.remove(portalGlow);
-    portalGlow.geometry.dispose();
-    portalGlow.material.dispose();
-    portalGlow = null;
-  }
+function showPortalFill(win) {
+  ensurePortalFillGroup();
+  const key = `${win.minX},${win.minZ},${win.by}`;
+  let i = 0;
+  for (let x = win.minX + 1; x <= win.minX + 3; x++)
+    for (let z = win.minZ + 1; z <= win.minZ + 3; z++)
+      portalFillGroup.children[i++].position.set(x + 0.5, win.by + 0.5, z + 0.5);
+  portalFillGroup.visible = true;
+  portalFillKey = key;
+}
+
+function hidePortalFill() {
+  if (portalFillGroup) portalFillGroup.visible = false;
+  portalFillKey = null;
 }
 
 function updatePortalVisual() {
-  if (dim !== "over" || freeCam) { clearPortalGlow(); return; }
+  if (freeCam) { hidePortalFill(); return; }
   const bx = Math.floor(pos.x), bz = Math.floor(pos.z);
   const by = Math.floor(pos.y + 0.9);
-  syncPortalGlow(findPortalWindow(bx, by, bz));
+  let win = null;
+  for (let dy = -2; dy <= 2 && !win; dy++)
+    for (let wx = -8; wx <= 8 && !win; wx++)
+      for (let wz = -8; wz <= 8 && !win; wz++)
+        win = findPortalWindow(bx + wx, by + dy, bz + wz);
+  if (win) { showPortalFill(win); return; }
+  if (portalFillKey) {
+    const [mx, mz, my] = portalFillKey.split(",").map(Number);
+    const w = findPortalWindow(mx + 2, my, mz + 2);
+    if (!w || `${w.minX},${w.minZ},${w.by}` !== portalFillKey) hidePortalFill();
+  }
 }
 
 function checkPortal() {
@@ -1674,7 +1688,6 @@ function loop(now) {
     const o = 0.55 + 0.1 * Math.sin(now * 0.002);
     for (const m of instanced[WATER].material) m.opacity = o;
   }
-  if (portalGlow) portalGlow.material.opacity = 0.2 + 0.1 * Math.sin(now * 0.004);
 
   renderer.render(scene, camera);
 }
