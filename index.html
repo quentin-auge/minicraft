@@ -46,7 +46,11 @@
       cursor: pointer;
     }
     #hotbar .slot img { width: 34px; height: 34px; image-rendering: pixelated; pointer-events: none; }
-    #hotbar .slot.selected { border-color: #fff; box-shadow: 0 0 0 2px rgba(255,255,255,0.9); }
+    #hotbar .slot.selected {
+      border-color: #fff; border-width: 3px;
+      box-shadow: 0 0 10px 2px rgba(255,255,255,0.9), inset 0 0 8px rgba(255,255,255,0.5);
+      transform: translateY(-4px);
+    }
 
     /* HUD info */
     #info {
