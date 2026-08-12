@@ -658,25 +658,25 @@ function clearTNTVisual(t) {
   if (t.mesh) { scene.remove(t.mesh); t.mesh = null; }
 }
 
-function igniteTNT(x, y, z) {
-  const k = key(x, y, z);
+function igniteTNT(bx, by, bz) {
+  const k = key(bx, by, bz);
   if (tntLit.has(k)) {
     const t = tntLit.get(k);
     clearTNTVisual(t);
     tntLit.delete(k);
-    explodeTNT(x, y, z, t.stuck);
+    explodeTNT(bx, by, bz, t.stuck);
     return;
   }
   const spr = makeFuseSprite();
-  spr.position.set(x + 0.5, y + 1.35, z + 0.5);
+  spr.position.set(bx + 0.5, by + 1.35, bz + 0.5);
   scene.add(spr);
-  const t = { x: x + 0.5, y: y + 1.1, z: z + 0.5, fuse: FUSE_TIME, spr, mesh: null, stuck: false, ax: 0, ay: 0, az: 0 };
+  const t = { bx, by, bz, px: bx + 0.5, py: by + 1.1, pz: bz + 0.5, fuse: FUSE_TIME, spr, mesh: null, stuck: false, ax: 0, ay: 0, az: 0 };
   if (dim === "end" && dragon.mesh) {
-    setBlock(x, y, z, AIR);
+    setBlock(bx, by, bz, AIR);
     rebuildMeshes();
     queueSave();
     const m = makeTNTBomb();
-    m.position.set(x + 0.5, y + 1.1, z + 0.5);
+    m.position.set(bx + 0.5, by + 1.1, bz + 0.5);
     scene.add(m);
     t.mesh = m;
   }
@@ -711,30 +711,30 @@ function updateTNTTarget(t, dt) {
   if (dim !== "end" || !dragon.mesh) return;
   const p = dragon.mesh.position;
   if (t.stuck) {
-    t.x = p.x + t.ax; t.y = p.y + t.ay; t.z = p.z + t.az;
+    t.px = p.x + t.ax; t.py = p.y + t.ay; t.pz = p.z + t.az;
     return;
   }
-  const dx = p.x - t.x, dy = p.y + 1 - t.y, dz = p.z - t.z;
+  const dx = p.x - t.px, dy = p.y + 1 - t.py, dz = p.z - t.pz;
   const d = Math.hypot(dx, dy, dz);
   if (d <= DRAGON_STICK_DIST) {
     t.stuck = true;
-    t.ax = t.x - p.x; t.ay = t.y - p.y; t.az = t.z - p.z;
+    t.ax = t.px - p.x; t.ay = t.py - p.y; t.az = t.pz - p.z;
     return;
   }
   const sp = Math.min(d, TNT_HOME_SPEED * dt);
-  t.x += (dx / d) * sp; t.y += (dy / d) * sp; t.z += (dz / d) * sp;
+  t.px += (dx / d) * sp; t.py += (dy / d) * sp; t.pz += (dz / d) * sp;
 }
 
 function tickTNT(dt) {
   for (const [k, t] of [...tntLit]) {
     t.fuse -= dt;
     updateTNTTarget(t, dt);
-    t.spr.position.set(t.x, t.y + 0.95, t.z);
-    if (t.mesh) t.mesh.position.set(t.x, t.y, t.z);
+    t.spr.position.set(t.px, t.py + 0.85, t.pz);
+    if (t.mesh) t.mesh.position.set(t.px, t.py, t.pz);
     if (t.fuse <= 0) {
       clearTNTVisual(t);
       tntLit.delete(k);
-      explodeTNT(t.x, t.y, t.z, t.stuck);
+      explodeTNT(t.mesh ? t.px : t.bx, t.mesh ? t.py : t.by, t.mesh ? t.pz : t.bz, t.stuck);
     } else {
       drawFuseSprite(t.spr, t.fuse);
     }
@@ -747,7 +747,8 @@ function dragonBlastDamage(dist, pointBlank) {
 }
 
 function explodeTNT(x, y, z, pointBlank) {
-  setBlock(x, y, z, AIR);
+  const bx = Math.floor(x), by = Math.floor(y), bz = Math.floor(z);
+  setBlock(bx, by, bz, AIR);
   if (pointBlank) spawnDragonBurst(x + 0.5, y + 0.5, z + 0.5);
   else spawnExplosion(x + 0.5, y + 0.5, z + 0.5);
   if (dim === "end" && dragon.mesh) {
@@ -760,18 +761,28 @@ function explodeTNT(x, y, z, pointBlank) {
     for (let dy = -R; dy <= R; dy++)
       for (let dz = -R; dz <= R; dz++) {
         if (dx * dx + dy * dy + dz * dz > R2) continue;
-        const bx = x + dx, by = y + dy, bz = z + dz;
-        const id = getBlock(bx, by, bz);
+        const gx = bx + dx, gy = by + dy, gz = bz + dz;
+        const id = getBlock(gx, gy, gz);
         if (id === AIR || id === WATER) continue;
-        if (id === STONE && by === 0) continue;
+        if (id === STONE && gy === 0) continue;
         if (id === TNT) {
-          if (!tntLit.has(key(bx, by, bz))) igniteTNT(bx, by, bz);
+          const tk = key(gx, gy, gz);
+          if (tntLit.has(tk)) {
+            const lt = tntLit.get(tk);
+            if (!lt.mesh) {
+              clearTNTVisual(lt);
+              tntLit.delete(tk);
+              explodeTNT(gx, gy, gz, lt.stuck);
+            }
+          } else {
+            igniteTNT(gx, gy, gz);
+          }
           continue;
         }
-        affected.push([bx, by, bz]);
+        affected.push([gx, gy, gz]);
       }
   if (affected.length) {
-    for (const [bx, by, bz] of affected) setBlock(bx, by, bz, AIR);
+    for (const [axc, ayc, azc] of affected) setBlock(axc, ayc, azc, AIR);
     rebuildMeshes();
     queueSave();
   }

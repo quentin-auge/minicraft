@@ -49,12 +49,13 @@ small Python server for saving/loading worlds.
 - **Editing**: pointer-raycast block pick (DDA), reach `REACH = 15`, white
   `highlight` box on the targeted block. Left click places, right click breaks.
 - **TNT**: lighting fuses (HUD fuse sprite), delayed explosions with blocks
-  destroyed/tossed and particle flashes. Breaking a TNT lights a 3s fuse;
-  re-breaking it while lit detonates it immediately. In the End, a lit TNT
-  targets the Ender Dragon: the TNT cube flies up at it, sticks onto its body
-  and detonates on contact with a big purple particle burst (each stuck blast
-  = 1/4 of its HP; blasts merely near it deal 1/4 down to a minimum 1/10 by
-  distance).
+  destroyed/tossed and particle flashes. Breaking a TNT lights a 3s fuse and
+  explosions chain-react: a blast near another TNT block lights it, and a lit
+  TNT caught in a blast (or re-broken) detonates immediately. In the End, a
+  lit TNT targets the Ender Dragon: the TNT cube flies up at it, sticks onto
+  its body and detonates on contact with a big purple particle burst (each
+  stuck blast = 1/4 of its HP; blasts merely near it deal 1/4 down to a
+  minimum 1/10 by distance).
 - **Portals / dimensions**: build a horizontal 5×5 frame in the Overworld
   (4 sides, corners optional), walk into its 3×3 interior to jump to the End;
   solid black fill marks an active portal. The End is freshly regenerated on
