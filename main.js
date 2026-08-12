@@ -617,7 +617,7 @@ function headInWater() {
 // ---------------------------------------------------------------------------
 // Raycast (DDA voxel traversal)
 // ---------------------------------------------------------------------------
-const REACH = 15;
+const REACH = Infinity;
 function pickBlock(origin, dir) {
   let x = Math.floor(origin.x), y = Math.floor(origin.y), z = Math.floor(origin.z);
   const stepX = dir.x > 0 ? 1 : -1, stepY = dir.y > 0 ? 1 : -1, stepZ = dir.z > 0 ? 1 : -1;
@@ -629,7 +629,7 @@ function pickBlock(origin, dir) {
   let tMaxZ = dir.z !== 0 ? ((stepZ > 0 ? Math.floor(origin.z) + 1 - origin.z : origin.z - Math.floor(origin.z)) / Math.abs(dir.z)) : Infinity;
   let face = [0, 0, 0];
 
-  for (let i = 0; i < 64; i++) {
+  for (let i = 0; i < 256; i++) {
     const id = getBlock(x, y, z);
     if (id !== AIR && id !== WATER) return { x, y, z, id, face };
     if (tMaxX < tMaxY && tMaxX < tMaxZ) {

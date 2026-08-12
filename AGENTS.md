@@ -46,7 +46,7 @@ small Python server for saving/loading worlds.
   block, `placeable: false` so it can't be selected or placed).
 - **Player**: AABB collision, gravity, jump, walk/sprint, fly mode, swimming,
   free-cam (spectator). Third-person-style first-person camera, yaw/pitch.
-- **Editing**: pointer-raycast block pick (DDA), reach `REACH = 15`, white
+- **Editing**: pointer-raycast block pick (DDA), infinite reach (`REACH`), white
   `highlight` box on the targeted block. Left click places, right click breaks.
 - **Grappling hook**: hold middle mouse click on the targeted block to fire a
   hook that first flies fast to the target (`GRAPPLE_THROW = 70`, you don't
