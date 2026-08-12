@@ -819,7 +819,7 @@ function tryLightPortal(px, py, pz) {
     minY = Math.min(minY, y); maxY = Math.max(maxY, y);
   }
   const W = maxA - minA + 1, H = maxY - minY + 1;
-  if (W < 4 || H < 4 || W !== H) return;
+  if (W < 5 || H < 5 || W !== H) return;
   const isFrame = (x, y, z) => getBlock(x, y, z) === PORTAL;
   for (let a = minA; a <= maxA; a++) {
     if (!isFrame(xy ? a : fixed, minY, xy ? fixed : a)) return;
@@ -1675,7 +1675,7 @@ requestAnimationFrame(loop);
 function buildPortalArt() {
   const host = document.getElementById("portalArt");
   if (!host) return;
-  const N = 4, cell = 22, size = 18, off = 6;
+  const N = 5, cell = 19, size = 15, off = 6;
   const w = off * 2 + (N - 1) * cell + size;
   const svg = document.createElementNS(SVGNS, "svg");
   svg.setAttribute("viewBox", `0 0 ${w} ${w}`);
@@ -1692,12 +1692,6 @@ function buildPortalArt() {
         rect.setAttribute("fill", "#5a2da6");
         rect.setAttribute("stroke", "#7b2ff7"); rect.setAttribute("stroke-width", "1.5");
         svg.appendChild(rect);
-        const t = document.createElementNS(SVGNS, "text");
-        t.setAttribute("x", x + size / 2); t.setAttribute("y", y + size / 2 + 4);
-        t.setAttribute("text-anchor", "middle"); t.setAttribute("font-size", "9");
-        t.setAttribute("fill", "#fff"); t.setAttribute("font-family", "monospace");
-        t.textContent = "12";
-        svg.appendChild(t);
       } else {
         rect.setAttribute("fill", "rgba(155,48,247,0.10)");
         rect.setAttribute("stroke", "rgba(155,48,247,0.35)"); rect.setAttribute("stroke-width", "1");
