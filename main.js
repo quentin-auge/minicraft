@@ -870,7 +870,7 @@ function winOk(minX, minZ, by) {
 function findPortalWindow(bx, by, bz) {
   for (let wx = -3; wx <= 1; wx++)
     for (let wz = -3; wz <= 1; wz++)
-      if (winOk(bx + wx, by, bz + wz)) return { minX: bx + wx, minZ: bz + wz, by };
+      if (winOk(bx + wx, bz + wz, by)) return { minX: bx + wx, minZ: bz + wz, by };
   return null;
 }
 
@@ -878,7 +878,7 @@ function findPortalWindowNear(bx, by, bz, R) {
   for (let dy = -2; dy <= 2; dy++)
     for (let wx = -R; wx <= R; wx++)
       for (let wz = -R; wz <= R; wz++)
-        if (winOk(bx + wx, by + dy, bz + wz)) return { minX: bx + wx, minZ: bz + wz, by: by + dy };
+        if (winOk(bx + wx, bz + wz, by + dy)) return { minX: bx + wx, minZ: bz + wz, by: by + dy };
   return null;
 }
 
