@@ -3,7 +3,7 @@ import * as THREE from "three";
 // ---------------------------------------------------------------------------
 // Block definitions
 // ---------------------------------------------------------------------------
-const AIR = 0, GRASS = 1, DIRT = 2, STONE = 3, SAND = 4, LOG = 5, LEAVES = 6, WATER = 7, PLANKS = 8, GLASS = 9, TNT = 10;
+const AIR = 0, GRASS = 1, DIRT = 2, STONE = 3, SAND = 4, LOG = 5, LEAVES = 6, WATER = 7, PLANKS = 8, GLASS = 9, TNT = 10, PORTAL_FRAME = 11, PORTAL = 12, OBSIDIAN = 13;
 
 const BLOCK_INFO = {
   [GRASS]:  { name: "Grass",   solid: true,  opaque: true,  placeable: true },
@@ -16,6 +16,9 @@ const BLOCK_INFO = {
   [PLANKS]: { name: "Planks",  solid: true,  opaque: true,  placeable: true },
   [GLASS]:  { name: "Glass",   solid: true,  opaque: false, placeable: true },
   [TNT]:    { name: "TNT",     solid: true,  opaque: true,  placeable: true },
+  [PORTAL_FRAME]: { name: "Portal Frame", solid: true, opaque: true, placeable: true },
+  [PORTAL]: { name: "Portal",  solid: false, opaque: false, placeable: false },
+  [OBSIDIAN]: { name: "Obsidian", solid: true, opaque: true, placeable: true },
 };
 
 // ---------------------------------------------------------------------------
@@ -146,6 +149,27 @@ const TEX = {
     ctx.beginPath(); ctx.moveTo(8, 1); ctx.lineTo(8, 15); ctx.stroke();
     ctx.beginPath(); ctx.moveTo(1, 8); ctx.lineTo(15, 8); ctx.stroke();
   }),
+  portalFrame: canvasTex((ctx) => {
+    ctx.fillStyle = "#1a1024"; ctx.fillRect(0, 0, 16, 16);
+    pxNoise(ctx, [26, 16, 36], 18);
+    ctx.strokeStyle = "#7b2ff7"; ctx.lineWidth = 2;
+    ctx.strokeRect(1.5, 1.5, 13, 13);
+    ctx.fillStyle = "#9b30ff";
+    for (let i = 0; i < 6; i++) ctx.fillRect(2 + Math.random() * 12, 2 + Math.random() * 12, 1, 1);
+  }),
+  portal: canvasTex((ctx) => {
+    ctx.fillStyle = "#3a0d6b"; ctx.fillRect(0, 0, 16, 16);
+    ctx.fillStyle = "#9b30ff";
+    for (let y = 0; y < 16; y += 2) for (let x = ((y / 2) % 2) * 2; x < 16; x += 4) ctx.fillRect(x, y, 2, 2);
+    ctx.fillStyle = "#d9a6ff";
+    ctx.fillRect(7, 4, 2, 8);
+  }),
+  obsidian: canvasTex((ctx) => {
+    ctx.fillStyle = "#0c0a12"; ctx.fillRect(0, 0, 16, 16);
+    pxNoise(ctx, [12, 10, 18], 16);
+    ctx.fillStyle = "rgba(123,47,247,0.25)";
+    ctx.fillRect(2, 2, 4, 3); ctx.fillRect(10, 9, 4, 3);
+  }),
 };
 
 function material(map, opts = {}) {
@@ -167,6 +191,9 @@ function materialsFor(id) {
     case GLASS: return faceTex(TEX.glass, { transparent: true, opacity: 0.8, depthWrite: false });
     case WATER: return faceTex(TEX.water, { transparent: true, opacity: 0.65, depthWrite: false });
     case TNT:   return faceTex(TEX.tnt);
+    case PORTAL_FRAME: return faceTex(TEX.portalFrame);
+    case PORTAL: return faceTex(TEX.portal, { transparent: true, opacity: 0.7, depthWrite: false, side: THREE.DoubleSide });
+    case OBSIDIAN: return faceTex(TEX.obsidian);
     default: return faceTex(TEX.dirt);
   }
 }
@@ -181,10 +208,13 @@ const WORLD_RADIUS = 48;
 const WORLD_SIZE = WORLD_RADIUS * 2 + 1;
 const WATER_LEVEL = 10;
 let seed = Math.floor(Math.random() * 100000);
+let endSeed = Math.floor(Math.random() * 100000);
 
 function key(x, y, z) { return x + "," + y + "," + z; }
 
-const world = new Map();
+const worlds = { over: new Map(), end: new Map() };
+let dim = "over";
+let world = worlds.over;
 const getBlock = (x, y, z) => world.get(key(x, y, z)) || AIR;
 
 function setBlock(x, y, z, id) {
@@ -220,7 +250,8 @@ function growTree(x, y, z) {
 }
 
 function generateWorld() {
-  world.clear();
+  world = worlds.over;
+  worlds.over.clear();
   for (let x = -WORLD_RADIUS; x <= WORLD_RADIUS; x++) {
     for (let z = -WORLD_RADIUS; z <= WORLD_RADIUS; z++) {
       const h = heightAt(x, z);
@@ -235,6 +266,17 @@ function generateWorld() {
       if (getBlock(x, h, z) === GRASS && hash2(x, z, seed + 555) < 0.012) growTree(x, h + 1, z);
     }
   }
+}
+
+function generateEnd() {
+  const w = worlds.end;
+  w.clear();
+  const R = 12;
+  const top = 20;
+  for (let x = -R; x <= R; x++)
+    for (let z = -R; z <= R; z++)
+      for (let y = top - 2; y <= top; y++) w.set(key(x, y, z), OBSIDIAN);
+  for (let y = 1; y <= top - 3; y++) w.set(key(0, y, 0), OBSIDIAN);
 }
 
 // ---------------------------------------------------------------------------
@@ -583,6 +625,7 @@ function placeBlock(id) {
   if (getBlock(px, py, pz) !== AIR) return;
   if (intersectsPlayer(px, py, pz)) return;
   setBlock(px, py, pz, id);
+  if (id === PORTAL_FRAME) tryLightPortal(px, py, pz);
   rebuildMeshes();
   queueSave();
 }
@@ -655,6 +698,7 @@ function tickTNT(dt) {
 function explodeTNT(x, y, z) {
   setBlock(x, y, z, AIR);
   spawnExplosion(x + 0.5, y + 0.5, z + 0.5);
+  damageDragon(x + 0.5, y + 0.5, z + 0.5);
   const R = BLAST_RADIUS, R2 = R * R;
   const affected = [];
   for (let dx = -R; dx <= R; dx++)
@@ -751,6 +795,201 @@ function tickEffects(dt) {
 }
 
 // ---------------------------------------------------------------------------
+// Portals & The End dimension
+// ---------------------------------------------------------------------------
+let portalCd = 0;
+let returnPortalBuilt = false;
+let overPortalSpawn = { x: 0.5, y: 1.01, z: 0.5 };
+
+function rowFrame(minX, maxX, z, y) {
+  for (let x = minX; x <= maxX; x++) if (getBlock(x, y, z) !== PORTAL_FRAME) return false;
+  return true;
+}
+function colFrame(x, minZ, maxZ, y) {
+  for (let z = minZ; z <= maxZ; z++) if (getBlock(x, y, z) !== PORTAL_FRAME) return false;
+  return true;
+}
+
+function tryLightPortal(px, py, pz) {
+  const seen = new Set();
+  const stack = [[px, py, pz]];
+  const cells = [];
+  while (stack.length) {
+    const [x, y, z] = stack.pop();
+    const k = key(x, y, z);
+    if (seen.has(k)) continue;
+    seen.add(k);
+    if (getBlock(x, y, z) !== PORTAL_FRAME) continue;
+    cells.push([x, y, z]);
+    stack.push([x + 1, y, z], [x - 1, y, z], [x, y + 1, z], [x, y - 1, z], [x, y, z + 1], [x, y, z - 1]);
+  }
+  if (cells.length < 12) return;
+  const sameZ = cells.every((c) => c[2] === cells[0][2]);
+  const sameX = cells.every((c) => c[0] === cells[0][0]);
+  let xy, fixed;
+  if (sameZ) { xy = true; fixed = cells[0][2]; }
+  else if (sameX) { xy = false; fixed = cells[0][0]; }
+  else return;
+  let minA = Infinity, maxA = -Infinity, minY = Infinity, maxY = -Infinity;
+  for (const [x, y, z] of cells) {
+    const a = xy ? x : z;
+    minA = Math.min(minA, a); maxA = Math.max(maxA, a);
+    minY = Math.min(minY, y); maxY = Math.max(maxY, y);
+  }
+  const W = maxA - minA + 1, H = maxY - minY + 1;
+  if (W < 4 || H < 4 || W !== H) return;
+  const isFrame = (x, y, z) => getBlock(x, y, z) === PORTAL_FRAME;
+  for (let a = minA; a <= maxA; a++) {
+    if (!isFrame(xy ? a : fixed, minY, xy ? fixed : a)) return;
+    if (!isFrame(xy ? a : fixed, maxY, xy ? fixed : a)) return;
+  }
+  for (let y = minY; y <= maxY; y++) {
+    if (!isFrame(xy ? minA : fixed, y, xy ? fixed : minA)) return;
+    if (!isFrame(xy ? maxA : fixed, y, xy ? fixed : maxA)) return;
+  }
+  for (let a = minA + 1; a < maxA; a++)
+    for (let y = minY + 1; y < maxY; y++)
+      if (getBlock(xy ? a : fixed, y, xy ? fixed : a) !== AIR) return;
+  let lit = false;
+  for (let a = minA + 1; a < maxA; a++)
+    for (let y = minY + 1; y < maxY; y++) {
+      const x = xy ? a : fixed, z = xy ? fixed : a;
+      if (getBlock(x, y, z) === AIR) { setBlock(x, y, z, PORTAL); lit = true; }
+    }
+  if (lit) { rebuildMeshes(); queueSave(); }
+}
+
+function getPortalInfo(bx, by, bz) {
+  const xy = getBlock(bx - 1, by, bz) === PORTAL_FRAME || getBlock(bx + 1, by, bz) === PORTAL_FRAME;
+  if (xy) {
+    let minA = bx, maxA = bx;
+    while (getBlock(minA - 1, by, bz) === PORTAL_FRAME) minA--;
+    while (getBlock(maxA + 1, by, bz) === PORTAL_FRAME) maxA++;
+    let minY = by, maxY = by;
+    while (rowFrame(minA, maxA, bz, minY - 1)) minY--;
+    while (rowFrame(minA, maxA, bz, maxY + 1)) maxY++;
+    return { cx: (minA + maxA) / 2, cz: bz, top: maxY };
+  } else {
+    let minA = bz, maxA = bz;
+    while (getBlock(bx, by, minA - 1) === PORTAL_FRAME) minA--;
+    while (getBlock(bx, by, maxA + 1) === PORTAL_FRAME) maxA++;
+    let minY = by, maxY = by;
+    while (colFrame(bx, minA, maxA, minY - 1)) minY--;
+    while (colFrame(bx, minA, maxA, maxY + 1)) maxY++;
+    return { cx: bx, cz: (minA + maxA) / 2, top: maxY };
+  }
+}
+
+function setDimensionEnv() {
+  if (dim === "end") {
+    scene.background.setHex(0x07070f);
+    scene.fog.color.setHex(0x07070f);
+    scene.fog.near = 30; scene.fog.far = 150;
+    sun.intensity = 0.35; hemi.intensity = 0.45;
+  } else {
+    scene.background.setHex(0x87ceeb);
+    scene.fog.color.setHex(0x87ceeb);
+    scene.fog.near = 60; scene.fog.far = 160;
+    sun.intensity = 1.1; hemi.intensity = 0.75;
+  }
+}
+
+function buildReturnPortal() {
+  const z = 0;
+  for (let x = -2; x <= 2; x++) { setBlock(x, 21, z, PORTAL_FRAME); setBlock(x, 25, z, PORTAL_FRAME); }
+  for (let y = 21; y <= 25; y++) { setBlock(-2, y, z, PORTAL_FRAME); setBlock(2, y, z, PORTAL_FRAME); }
+  for (let x = -1; x <= 1; x++) for (let y = 22; y <= 24; y++) setBlock(x, y, z, PORTAL);
+  returnPortalBuilt = true;
+}
+
+function goToDimension(name, sx, sy, sz) {
+  dim = name;
+  world = worlds[name];
+  if (name === "end") {
+    if (worlds.end.size === 0) generateEnd();
+    if (!returnPortalBuilt) buildReturnPortal();
+    if (!dragon.alive) spawnDragon();
+    setDimensionEnv();
+  } else {
+    setDimensionEnv();
+    if (dragon.alive) { scene.remove(dragon.mesh); dragon.mesh = null; dragon.alive = false; }
+  }
+  rebuildMeshes();
+  pos.set(sx, sy, sz);
+  camPos.set(sx, sy, sz);
+  vel.set(0, 0, 0);
+  updateCamera();
+  portalCd = 1.5;
+  queueSave();
+  updateDimLabel();
+}
+
+function checkPortal() {
+  if (portalCd > 0 || freeCam) return;
+  const bx = Math.floor(pos.x), by = Math.floor(pos.y + 0.9), bz = Math.floor(pos.z);
+  if (getBlock(bx, by, bz) !== PORTAL) return;
+  const info = getPortalInfo(bx, by, bz);
+  if (dim === "over") {
+    overPortalSpawn = { x: info.cx + 0.5, y: info.top + 1.01, z: info.cz + 0.5 };
+    goToDimension("end", 0.5, 21.6, 4);
+    showMsg("You arrived in The End");
+  } else {
+    goToDimension("over", overPortalSpawn.x, overPortalSpawn.y, overPortalSpawn.z);
+    showMsg("You returned to the Overworld");
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Ender Dragon (The End boss)
+// ---------------------------------------------------------------------------
+const dragon = { mesh: null, alive: false, hp: 100, maxHp: 100, angle: 0, wingL: null, wingR: null };
+
+function spawnDragon() {
+  if (dragon.mesh) return;
+  const g = new THREE.Group();
+  const mat = new THREE.MeshStandardMaterial({ color: 0x0a0a0a, roughness: 0.6 });
+  const body = new THREE.Mesh(new THREE.BoxGeometry(2.4, 1.2, 5), mat);
+  const head = new THREE.Mesh(new THREE.BoxGeometry(1.4, 1.5, 1.8), mat); head.position.set(0, 0.5, 3.1);
+  const eyeMat = new THREE.MeshBasicMaterial({ color: 0x9b30ff });
+  const eL = new THREE.Mesh(new THREE.BoxGeometry(0.25, 0.25, 0.1), eyeMat); eL.position.set(-0.4, 0.7, 4.0);
+  const eR = eL.clone(); eR.position.x = 0.4;
+  const wingGeo = new THREE.BoxGeometry(4.5, 0.15, 2.6);
+  const wL = new THREE.Mesh(wingGeo, mat); wL.position.set(-3.3, 0.5, 0);
+  const wR = new THREE.Mesh(wingGeo, mat); wR.position.set(3.3, 0.5, 0);
+  g.add(body, head, eL, eR, wL, wR);
+  scene.add(g);
+  dragon.mesh = g; dragon.alive = true; dragon.hp = dragon.maxHp; dragon.angle = 0;
+  dragon.wingL = wL; dragon.wingR = wR;
+  updateBossBar();
+}
+
+function updateDragon(dt) {
+  if (!dragon.alive || !dragon.mesh) return;
+  dragon.angle += dt * 0.35;
+  const r = 14;
+  dragon.mesh.position.set(Math.cos(dragon.angle) * r, 18 + Math.sin(dragon.angle * 2) * 2, Math.sin(dragon.angle) * r);
+  dragon.mesh.rotation.y = -dragon.angle + Math.PI / 2;
+  const f = Math.sin(performance.now() * 0.012) * 0.6;
+  dragon.wingL.rotation.z = f; dragon.wingR.rotation.z = -f;
+}
+
+function damageDragon(cx, cy, cz) {
+  if (!dragon.alive || !dragon.mesh) return;
+  const d = Math.hypot(dragon.mesh.position.x - cx, dragon.mesh.position.y - cy, dragon.mesh.position.z - cz);
+  if (d < 9) {
+    dragon.hp -= 34;
+    updateBossBar();
+    if (dragon.hp <= 0) {
+      dragon.alive = false;
+      scene.remove(dragon.mesh);
+      dragon.mesh = null;
+      updateBossBar();
+      showMsg("The Ender Dragon is defeated!");
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Save / load
 // Normal mode (run `python3 server.py`, open http://localhost:8383): every world is a
 // .sav file in save/ on disk, named when you press New World.
@@ -811,18 +1050,22 @@ async function storageClear() {
 }
 
 function serialize() {
-  const blocks = [];
-  world.forEach((id, k) => {
-    const s = k.split(",");
-    blocks.push([+s[0], +s[1], +s[2], id]);
-  });
-  const n = blocks.length;
+  const writeBlocks = (map) => {
+    const arr = [];
+    map.forEach((id, k) => { const s = k.split(","); arr.push([+s[0], +s[1], +s[2], id]); });
+    return arr;
+  };
+  const over = writeBlocks(worlds.over);
+  const end = writeBlocks(worlds.end);
+  const n = over.length + end.length;
   const buf = new ArrayBuffer(60 + n * 4);
   const dv = new DataView(buf);
   let o = 0;
   new Uint8Array(buf, o, 9).set(SAVE_MAGIC); o += 9;
-  dv.setUint8(o++, 1); // format version
+  dv.setUint8(o++, 2); // format version
+  dv.setUint8(o++, dim === "end" ? 1 : 0);
   dv.setInt32(o, seed, true); o += 4;
+  dv.setInt32(o, endSeed, true); o += 4;
   dv.setFloat64(o, pos.x, true); o += 8;
   dv.setFloat64(o, pos.y, true); o += 8;
   dv.setFloat64(o, pos.z, true); o += 8;
@@ -830,8 +1073,18 @@ function serialize() {
   dv.setFloat64(o, pitch, true); o += 8;
   dv.setUint8(o++, flying ? 1 : 0);
   dv.setUint8(o++, selected);
-  dv.setUint32(o, n, true); o += 4;
-  for (const [x, y, z, id] of blocks) {
+  dv.setFloat64(o, overPortalSpawn.x, true); o += 8;
+  dv.setFloat64(o, overPortalSpawn.y, true); o += 8;
+  dv.setFloat64(o, overPortalSpawn.z, true); o += 8;
+  dv.setUint32(o, over.length, true); o += 4;
+  for (const [x, y, z, id] of over) {
+    dv.setUint8(o++, x + 128);
+    dv.setUint8(o++, y);
+    dv.setUint8(o++, z + 128);
+    dv.setUint8(o++, id);
+  }
+  dv.setUint32(o, end.length, true); o += 4;
+  for (const [x, y, z, id] of end) {
     dv.setUint8(o++, x + 128);
     dv.setUint8(o++, y);
     dv.setUint8(o++, z + 128);
@@ -845,8 +1098,12 @@ function deserialize(buf) {
   let o = 0;
   for (let i = 0; i < 9; i++) if (new Uint8Array(buf, o, 9)[i] !== SAVE_MAGIC[i]) throw new Error("Not a MiniCraft save");
   o += 9;
-  if (dv.getUint8(o++) !== 1) throw new Error("Unsupported save version");
+  const ver = dv.getUint8(o++);
+  if (ver !== 1 && ver !== 2) throw new Error("Unsupported save version");
+  let dimFlag = 0, endSeedVal = endSeed;
+  if (ver >= 2) { dimFlag = dv.getUint8(o++); endSeedVal = dv.getInt32(o, true); o += 4; }
   seed = dv.getInt32(o, true); o += 4;
+  if (ver >= 2) endSeed = endSeedVal;
   pos.x = dv.getFloat64(o, true); o += 8;
   pos.y = dv.getFloat64(o, true); o += 8;
   pos.z = dv.getFloat64(o, true); o += 8;
@@ -854,14 +1111,28 @@ function deserialize(buf) {
   pitch = dv.getFloat64(o, true); o += 8;
   flying = dv.getUint8(o++) === 1;
   selected = dv.getUint8(o++);
+  overPortalSpawn = { x: dv.getFloat64(o, true), y: dv.getFloat64(o, true), z: dv.getFloat64(o, true) };
+  o += 24;
   const n = dv.getUint32(o, true); o += 4;
-  world.clear();
+  worlds.over.clear();
   for (let i = 0; i < n; i++) {
     const x = dv.getUint8(o++) - 128;
     const y = dv.getUint8(o++);
     const z = dv.getUint8(o++) - 128;
-    world.set(key(x, y, z), dv.getUint8(o++));
+    worlds.over.set(key(x, y, z), dv.getUint8(o++));
   }
+  if (ver >= 2) {
+    const ne = dv.getUint32(o, true); o += 4;
+    worlds.end.clear();
+    for (let i = 0; i < ne; i++) {
+      const x = dv.getUint8(o++) - 128;
+      const y = dv.getUint8(o++);
+      const z = dv.getUint8(o++) - 128;
+      worlds.end.set(key(x, y, z), dv.getUint8(o++));
+    }
+  }
+  dim = dimFlag ? "end" : "over";
+  world = worlds[dim];
 }
 
 function canSave() {
@@ -886,6 +1157,34 @@ function updateAutosaveEl() {
 function updateCamera() {
   camera.position.set(pos.x, pos.y + EYE, pos.z);
   camera.rotation.set(pitch, yaw, 0);
+}
+
+// ---------------------------------------------------------------------------
+// HUD (dimension label, boss bar, toast)
+// ---------------------------------------------------------------------------
+const dimEl = document.getElementById("dim");
+const bossEl = document.getElementById("boss");
+const bossFill = bossEl.querySelector(".fill");
+const toastEl = document.getElementById("toast");
+let toastTimer = 0;
+
+function updateDimLabel() {
+  if (!started) { dimEl.style.display = "none"; return; }
+  dimEl.textContent = dim === "end" ? "The End" : "Overworld";
+  dimEl.style.display = "block";
+}
+function updateBossBar() {
+  if (dim === "end" && dragon.alive) {
+    bossEl.style.display = "block";
+    bossFill.style.width = Math.max(0, (dragon.hp / dragon.maxHp) * 100) + "%";
+  } else {
+    bossEl.style.display = "none";
+  }
+}
+function showMsg(text) {
+  toastEl.textContent = text;
+  toastEl.style.opacity = "1";
+  toastTimer = 2.6;
 }
 
 function downloadSave(buf) {
@@ -1100,6 +1399,10 @@ function restoreSave(buf) {
   rebuildMeshes();
   select(selected);
   updateCamera();
+  setDimensionEnv();
+  updateDimLabel();
+  updateBossBar();
+  if (dim === "end") { returnPortalBuilt = true; if (!dragon.alive) spawnDragon(); }
   lastManualSave = Date.now();
   return true;
 }
@@ -1176,8 +1479,21 @@ async function loadSave() {
   return false;
 }
 
+function resetDims() {
+  dim = "over";
+  world = worlds.over;
+  worlds.end.clear();
+  returnPortalBuilt = false;
+  overPortalSpawn = { x: 0.5, y: 1.01, z: 0.5 };
+  if (dragon.alive) { scene.remove(dragon.mesh); dragon.mesh = null; dragon.alive = false; }
+  setDimensionEnv();
+  updateDimLabel();
+  updateBossBar();
+}
+
 async function regenerate() {
   if (fileMode && !saveHandle) await pickSaveFile();
+  resetDims();
   seed = Math.floor(Math.random() * 100000);
   generateWorld();
   rebuildMeshes();
@@ -1206,7 +1522,7 @@ document.addEventListener("visibilitychange", () => { if (document.hidden && can
 // ---------------------------------------------------------------------------
 // UI / hotbar
 // ---------------------------------------------------------------------------
-const HOTBAR = [GRASS, DIRT, STONE, SAND, LOG, PLANKS, GLASS, LEAVES, WATER, TNT];
+const HOTBAR = [GRASS, DIRT, STONE, SAND, LOG, PLANKS, GLASS, LEAVES, WATER, TNT, PORTAL_FRAME, OBSIDIAN];
 let selected = 0;
 const hotbarEl = document.getElementById("hotbar");
 
@@ -1291,6 +1607,7 @@ document.getElementById("btnNew").addEventListener("click", async (e) => {
     const existing = await apiList();
     if (existing.some((w) => w.name === name) && !confirm("Overwrite existing save '" + name.replace(/\.sav$/i, "") + "'?")) return;
     saveName = name;
+    resetDims();
     seed = Math.floor(Math.random() * 100000);
     generateWorld();
     rebuildMeshes();
@@ -1302,6 +1619,7 @@ document.getElementById("btnNew").addEventListener("click", async (e) => {
     return;
   }
   if (fileMode) await pickSaveFile();
+  resetDims();
   seed = Math.floor(Math.random() * 100000);
   generateWorld();
   rebuildMeshes();
@@ -1342,6 +1660,10 @@ function loop(now) {
   updateTarget();
   tickTNT(dt);
   tickEffects(dt);
+  if (portalCd > 0) portalCd -= dt;
+  checkPortal();
+  if (dim === "end") updateDragon(dt);
+  if (toastTimer > 0) { toastTimer -= dt; if (toastTimer <= 0) toastEl.style.opacity = "0"; }
 
   // Gentle water shimmer
   if (instanced[WATER]) {

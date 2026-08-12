@@ -61,6 +61,31 @@
       text-align: center; line-height: 1.5;
     }
 
+    /* Dimension label */
+    #dim {
+      position: fixed; top: 10px; left: 10px;
+      color: #fff; font-size: 13px; font-weight: 600; text-shadow: 1px 1px 2px #000;
+      background: rgba(0,0,0,0.4); padding: 6px 12px; border-radius: 6px;
+      display: none;
+    }
+
+    /* Boss bar */
+    #boss {
+      position: fixed; top: 44px; left: 50%; transform: translateX(-50%);
+      width: 360px; max-width: 80vw; display: none;
+    }
+    #boss .label { color: #d9a6ff; font-size: 13px; font-weight: 700; text-shadow: 1px 1px 2px #000; text-align: center; margin-bottom: 3px; }
+    #boss .track { height: 12px; background: rgba(0,0,0,0.5); border: 1px solid rgba(255,255,255,0.4); border-radius: 6px; overflow: hidden; }
+    #boss .fill { height: 100%; width: 100%; background: linear-gradient(90deg, #9b30ff, #d9a6ff); transition: width .15s; }
+
+    /* Toast */
+    #toast {
+      position: fixed; top: 22%; left: 50%; transform: translateX(-50%);
+      color: #fff; font-size: 20px; font-weight: 700; text-shadow: 1px 1px 3px #000;
+      background: rgba(0,0,0,0.5); padding: 12px 22px; border-radius: 10px;
+      opacity: 0; transition: opacity .4s; pointer-events: none; text-align: center;
+    }
+
     /* Overlay / start screen */
     #overlay {
       position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
@@ -129,6 +154,9 @@
   <div id="crosshair"></div>
   <div id="hotbar"></div>
   <div id="info"><div id="autosave"></div></div>
+  <div id="dim"></div>
+  <div id="boss"><div class="label">Ender Dragon</div><div class="track"><div class="fill"></div></div></div>
+  <div id="toast"></div>
 
   <div id="overlay">
     <div class="panel">
@@ -142,6 +170,7 @@
         <div><b>Right Click</b> &nbsp; Break block</div>
         <div><b>Wheel</b> &nbsp; Select block</div>
         <div><b>F</b> &nbsp; Free camera (arrows + Shift)</div>
+        <div><b>Portal Frame</b> &nbsp; Build a square to reach The End</div>
       </div>
       <div class="menu">
         <button class="menu-btn" id="btnNew">New World</button>
