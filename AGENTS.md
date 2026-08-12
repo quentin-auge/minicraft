@@ -67,10 +67,14 @@ small Python server for saving/loading worlds.
   the whole platform. It tends to come at the player: most loops route a
   waypoint over/near them and every few seconds it does a dive that swoops
   toward and past their position. Its path stays clamped above the platform
-  surface and inside its footprint, so it never clips through the platform. Built from Three.js primitives only — black scaled
-  body, segmented neck and head with glowing purple eyes (unlit), crest plate
-  and horns, translucent purple bat-wing membranes (mirrored), and a
-  segmented forked tail; shared geometries/materials. Animated via
+  surface and inside its footprint, so it never clips through the platform. Built from Three.js primitives only — boxy, cubic
+  style: a blocky torso/belly, box horns and five head spikes, glowing purple
+  eyes (unlit), translucent purple bat-wing membranes (mirrored), and
+  segmented forked tail boxes; shared geometries/materials. It breathes a
+  long-reaching spray of fading purple cube fire from its mouth (about 3x the
+  platform reach) — mostly while diving at the player (~60% of dives), with
+  occasional level-flight breaths in between. Its flight has small random
+  speed bursts (surge) with slightly faster wing flaps. Animated via
   spline-driven yaw/pitch/bank orientation, wing flap with speed, neck/head
   sway, tail wave and body bob. Purely decorative — no HP bar or boss fight.
   Resources are disposed when leaving the End.
