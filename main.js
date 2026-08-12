@@ -3,7 +3,7 @@ import * as THREE from "three";
 // ---------------------------------------------------------------------------
 // Block definitions
 // ---------------------------------------------------------------------------
-const AIR = 0, GRASS = 1, DIRT = 2, STONE = 3, SAND = 4, LOG = 5, LEAVES = 6, WATER = 7, PLANKS = 8, GLASS = 9, TNT = 10, PORTAL_FRAME = 11, PORTAL = 12, OBSIDIAN = 13;
+const AIR = 0, GRASS = 1, DIRT = 2, STONE = 3, SAND = 4, LOG = 5, LEAVES = 6, WATER = 7, PLANKS = 8, GLASS = 9, TNT = 10, PORTAL = 12;
 
 const BLOCK_INFO = {
   [GRASS]:  { name: "Grass",   solid: true,  opaque: true,  placeable: true },
@@ -16,9 +16,7 @@ const BLOCK_INFO = {
   [PLANKS]: { name: "Planks",  solid: true,  opaque: true,  placeable: true },
   [GLASS]:  { name: "Glass",   solid: true,  opaque: false, placeable: true },
   [TNT]:    { name: "TNT",     solid: true,  opaque: true,  placeable: true },
-  [PORTAL_FRAME]: { name: "Portal Frame", solid: true, opaque: true, placeable: true },
-  [PORTAL]: { name: "Portal",  solid: false, opaque: false, placeable: false },
-  [OBSIDIAN]: { name: "Obsidian", solid: true, opaque: true, placeable: true },
+  [PORTAL]: { name: "Portal",  solid: false, opaque: false, placeable: true },
 };
 
 // ---------------------------------------------------------------------------
@@ -149,26 +147,12 @@ const TEX = {
     ctx.beginPath(); ctx.moveTo(8, 1); ctx.lineTo(8, 15); ctx.stroke();
     ctx.beginPath(); ctx.moveTo(1, 8); ctx.lineTo(15, 8); ctx.stroke();
   }),
-  portalFrame: canvasTex((ctx) => {
-    ctx.fillStyle = "#1a1024"; ctx.fillRect(0, 0, 16, 16);
-    pxNoise(ctx, [26, 16, 36], 18);
-    ctx.strokeStyle = "#7b2ff7"; ctx.lineWidth = 2;
-    ctx.strokeRect(1.5, 1.5, 13, 13);
-    ctx.fillStyle = "#9b30ff";
-    for (let i = 0; i < 6; i++) ctx.fillRect(2 + Math.random() * 12, 2 + Math.random() * 12, 1, 1);
-  }),
   portal: canvasTex((ctx) => {
     ctx.fillStyle = "#3a0d6b"; ctx.fillRect(0, 0, 16, 16);
     ctx.fillStyle = "#9b30ff";
     for (let y = 0; y < 16; y += 2) for (let x = ((y / 2) % 2) * 2; x < 16; x += 4) ctx.fillRect(x, y, 2, 2);
     ctx.fillStyle = "#d9a6ff";
     ctx.fillRect(7, 4, 2, 8);
-  }),
-  obsidian: canvasTex((ctx) => {
-    ctx.fillStyle = "#0c0a12"; ctx.fillRect(0, 0, 16, 16);
-    pxNoise(ctx, [12, 10, 18], 16);
-    ctx.fillStyle = "rgba(123,47,247,0.25)";
-    ctx.fillRect(2, 2, 4, 3); ctx.fillRect(10, 9, 4, 3);
   }),
 };
 
@@ -191,9 +175,7 @@ function materialsFor(id) {
     case GLASS: return faceTex(TEX.glass, { transparent: true, opacity: 0.8, depthWrite: false });
     case WATER: return faceTex(TEX.water, { transparent: true, opacity: 0.65, depthWrite: false });
     case TNT:   return faceTex(TEX.tnt);
-    case PORTAL_FRAME: return faceTex(TEX.portalFrame);
     case PORTAL: return faceTex(TEX.portal, { transparent: true, opacity: 0.7, depthWrite: false, side: THREE.DoubleSide });
-    case OBSIDIAN: return faceTex(TEX.obsidian);
     default: return faceTex(TEX.dirt);
   }
 }
@@ -275,8 +257,8 @@ function generateEnd() {
   const top = 20;
   for (let x = -R; x <= R; x++)
     for (let z = -R; z <= R; z++)
-      for (let y = top - 2; y <= top; y++) w.set(key(x, y, z), OBSIDIAN);
-  for (let y = 1; y <= top - 3; y++) w.set(key(0, y, 0), OBSIDIAN);
+      for (let y = top - 2; y <= top; y++) w.set(key(x, y, z), STONE);
+  for (let y = 1; y <= top - 3; y++) w.set(key(0, y, 0), STONE);
 }
 
 // ---------------------------------------------------------------------------
@@ -625,7 +607,7 @@ function placeBlock(id) {
   if (getBlock(px, py, pz) !== AIR) return;
   if (intersectsPlayer(px, py, pz)) return;
   setBlock(px, py, pz, id);
-  if (id === PORTAL_FRAME) tryLightPortal(px, py, pz);
+  if (id === PORTAL) tryLightPortal(px, py, pz);
   rebuildMeshes();
   queueSave();
 }
@@ -802,11 +784,11 @@ let returnPortalBuilt = false;
 let overPortalSpawn = { x: 0.5, y: 1.01, z: 0.5 };
 
 function rowFrame(minX, maxX, z, y) {
-  for (let x = minX; x <= maxX; x++) if (getBlock(x, y, z) !== PORTAL_FRAME) return false;
+  for (let x = minX; x <= maxX; x++) if (getBlock(x, y, z) !== PORTAL) return false;
   return true;
 }
 function colFrame(x, minZ, maxZ, y) {
-  for (let z = minZ; z <= maxZ; z++) if (getBlock(x, y, z) !== PORTAL_FRAME) return false;
+  for (let z = minZ; z <= maxZ; z++) if (getBlock(x, y, z) !== PORTAL) return false;
   return true;
 }
 
@@ -819,7 +801,7 @@ function tryLightPortal(px, py, pz) {
     const k = key(x, y, z);
     if (seen.has(k)) continue;
     seen.add(k);
-    if (getBlock(x, y, z) !== PORTAL_FRAME) continue;
+    if (getBlock(x, y, z) !== PORTAL) continue;
     cells.push([x, y, z]);
     stack.push([x + 1, y, z], [x - 1, y, z], [x, y + 1, z], [x, y - 1, z], [x, y, z + 1], [x, y, z - 1]);
   }
@@ -838,7 +820,7 @@ function tryLightPortal(px, py, pz) {
   }
   const W = maxA - minA + 1, H = maxY - minY + 1;
   if (W < 4 || H < 4 || W !== H) return;
-  const isFrame = (x, y, z) => getBlock(x, y, z) === PORTAL_FRAME;
+  const isFrame = (x, y, z) => getBlock(x, y, z) === PORTAL;
   for (let a = minA; a <= maxA; a++) {
     if (!isFrame(xy ? a : fixed, minY, xy ? fixed : a)) return;
     if (!isFrame(xy ? a : fixed, maxY, xy ? fixed : a)) return;
@@ -860,19 +842,19 @@ function tryLightPortal(px, py, pz) {
 }
 
 function getPortalInfo(bx, by, bz) {
-  const xy = getBlock(bx - 1, by, bz) === PORTAL_FRAME || getBlock(bx + 1, by, bz) === PORTAL_FRAME;
+  const xy = getBlock(bx - 1, by, bz) === PORTAL || getBlock(bx + 1, by, bz) === PORTAL;
   if (xy) {
     let minA = bx, maxA = bx;
-    while (getBlock(minA - 1, by, bz) === PORTAL_FRAME) minA--;
-    while (getBlock(maxA + 1, by, bz) === PORTAL_FRAME) maxA++;
+    while (getBlock(minA - 1, by, bz) === PORTAL) minA--;
+    while (getBlock(maxA + 1, by, bz) === PORTAL) maxA++;
     let minY = by, maxY = by;
     while (rowFrame(minA, maxA, bz, minY - 1)) minY--;
     while (rowFrame(minA, maxA, bz, maxY + 1)) maxY++;
     return { cx: (minA + maxA) / 2, cz: bz, top: maxY };
   } else {
     let minA = bz, maxA = bz;
-    while (getBlock(bx, by, minA - 1) === PORTAL_FRAME) minA--;
-    while (getBlock(bx, by, maxA + 1) === PORTAL_FRAME) maxA++;
+    while (getBlock(bx, by, minA - 1) === PORTAL) minA--;
+    while (getBlock(bx, by, maxA + 1) === PORTAL) maxA++;
     let minY = by, maxY = by;
     while (colFrame(bx, minA, maxA, minY - 1)) minY--;
     while (colFrame(bx, minA, maxA, maxY + 1)) maxY++;
@@ -896,8 +878,8 @@ function setDimensionEnv() {
 
 function buildReturnPortal() {
   const z = 0;
-  for (let x = -2; x <= 2; x++) { setBlock(x, 21, z, PORTAL_FRAME); setBlock(x, 25, z, PORTAL_FRAME); }
-  for (let y = 21; y <= 25; y++) { setBlock(-2, y, z, PORTAL_FRAME); setBlock(2, y, z, PORTAL_FRAME); }
+  for (let x = -2; x <= 2; x++) { setBlock(x, 21, z, PORTAL); setBlock(x, 25, z, PORTAL); }
+  for (let y = 21; y <= 25; y++) { setBlock(-2, y, z, PORTAL); setBlock(2, y, z, PORTAL); }
   for (let x = -1; x <= 1; x++) for (let y = 22; y <= 24; y++) setBlock(x, y, z, PORTAL);
   returnPortalBuilt = true;
 }
@@ -1522,7 +1504,7 @@ document.addEventListener("visibilitychange", () => { if (document.hidden && can
 // ---------------------------------------------------------------------------
 // UI / hotbar
 // ---------------------------------------------------------------------------
-const HOTBAR = [GRASS, DIRT, STONE, SAND, LOG, PLANKS, GLASS, LEAVES, WATER, TNT, PORTAL_FRAME, OBSIDIAN];
+const HOTBAR = [GRASS, DIRT, STONE, SAND, LOG, PLANKS, GLASS, LEAVES, WATER, TNT, PORTAL];
 let selected = 0;
 const hotbarEl = document.getElementById("hotbar");
 
@@ -1686,4 +1668,38 @@ function loop(now) {
 
 let dt = 0.016;
 buildHotbar();
+buildPortalArt();
 requestAnimationFrame(loop);
+
+const SVGNS = "http://www.w3.org/2000/svg";
+function buildPortalArt() {
+  const host = document.getElementById("portalArt");
+  if (!host) return;
+  const N = 4, cell = 22, size = 18, off = 6;
+  const w = off * 2 + (N - 1) * cell + size;
+  const svg = document.createElementNS(SVGNS, "svg");
+  svg.setAttribute("viewBox", `0 0 ${w} ${w}`);
+  svg.setAttribute("width", "150");
+  svg.setAttribute("height", "150");
+  for (let r = 0; r < N; r++)
+    for (let c = 0; c < N; c++) {
+      const frame = r === 0 || r === N - 1 || c === 0 || c === N - 1;
+      const x = off + c * cell, y = off + r * cell;
+      const rect = document.createElementNS(SVGNS, "rect");
+      rect.setAttribute("x", x); rect.setAttribute("y", y);
+      rect.setAttribute("width", size); rect.setAttribute("height", size); rect.setAttribute("rx", 3);
+      rect.setAttribute("fill", frame ? "#5a2da6" : "#9b30ff");
+      rect.setAttribute("opacity", frame ? "1" : "0.85");
+      rect.setAttribute("stroke", "#7b2ff7"); rect.setAttribute("stroke-width", "1.5");
+      svg.appendChild(rect);
+      if (frame) {
+        const t = document.createElementNS(SVGNS, "text");
+        t.setAttribute("x", x + size / 2); t.setAttribute("y", y + size / 2 + 4);
+        t.setAttribute("text-anchor", "middle"); t.setAttribute("font-size", "9");
+        t.setAttribute("fill", "#fff"); t.setAttribute("font-family", "monospace");
+        t.textContent = "12";
+        svg.appendChild(t);
+      }
+    }
+  host.appendChild(svg);
+}
