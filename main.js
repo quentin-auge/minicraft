@@ -175,7 +175,7 @@ function materialsFor(id) {
     case GLASS: return faceTex(TEX.glass, { transparent: true, opacity: 0.8, depthWrite: false });
     case WATER: return faceTex(TEX.water, { transparent: true, opacity: 0.65, depthWrite: false });
     case TNT:   return faceTex(TEX.tnt);
-    case PORTAL: return faceTex(TEX.portal, { transparent: true, opacity: 0.7, depthWrite: false, side: THREE.DoubleSide });
+    case PORTAL: return faceTex(TEX.portal, { transparent: false, opacity: 1, side: THREE.DoubleSide });
     default: return faceTex(TEX.dirt);
   }
 }
