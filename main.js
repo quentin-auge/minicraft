@@ -1515,7 +1515,6 @@ function toggleHelp() {
 helpEl.querySelector("#btnHelpClose").addEventListener("click", toggleHelp);
 
 document.addEventListener("keydown", (e) => {
-  if (e.code === "KeyH" && !keys[e.code]) { toggleHelp(); e.preventDefault(); }
   if (keys[e.code]) { e.preventDefault(); return; }
   if (helpOpen) {
     if (e.code === "Escape") { helpOpen = false; helpEl.style.display = "none"; }
