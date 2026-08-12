@@ -1515,10 +1515,15 @@ document.addEventListener("wheel", (e) => select(selected + (e.deltaY > 0 ? 1 : 
 const overlay = document.getElementById("overlay");
 const crosshair = document.getElementById("crosshair");
 const info = document.getElementById("info");
+const resumeBtn = document.getElementById("btnResume");
 
 overlay.addEventListener("click", () => {
   if (!started) return;
   renderer.domElement.requestPointerLock();
+});
+resumeBtn.addEventListener("click", (e) => {
+  e.stopPropagation();
+  if (started) renderer.domElement.requestPointerLock();
 });
 renderer.domElement.addEventListener("click", () => {
   if (started && !locked && !helpOpen) renderer.domElement.requestPointerLock();
@@ -1535,6 +1540,7 @@ document.addEventListener("pointerlockchange", () => {
   crosshair.style.display = locked ? "block" : "none";
   hotbarEl.style.display = locked ? "flex" : "none";
   info.style.display = locked ? "block" : "none";
+  resumeBtn.style.display = (!locked && started) ? "block" : "none";
 });
 
 document.addEventListener("mousemove", (e) => {
