@@ -30,8 +30,8 @@ small Python server for saving/loading worlds.
 ## Features
 
 - **World gen**: procedural over-world (fbm heightmap, terrain, water, trees)
-  and an End dimension (floating stone platform). Seeded (`seed`/`endSeed`),
-  both persisted in saves.
+  and an End dimension (grey END_STONE floating platform, black sky). Seeded
+  (`seed`/`endSeed`), both persisted in saves.
 - **Textures**: 16×16 pixel-art textures drawn procedurally on canvas
   (`TEX`, `makeTex`, `pxNoise`, `canvasTex`), NearestFilter + sRGB.
 - **Rendering**: one `InstancedMesh` per block type (`instanced` in
@@ -39,31 +39,33 @@ small Python server for saving/loading worlds.
   hemisphere/directional light.
 - **Blocks**: numeric constants + `BLOCK_INFO` (solid/opaque/placeable).
   Types incl. GRASS, DIRT, STONE, SAND, LOG, LEAVES, PLANKS, GLASS, WATER
-  (non-solid, animated opacity), TNT, PORTAL.
+  (non-solid, animated opacity), TNT, PORTAL, and ENDSTONE (grey End platform
+  block, `placeable: false` so it can't be selected or placed).
 - **Player**: AABB collision, gravity, jump, walk/sprint, fly mode, swimming,
   free-cam (spectator). Third-person-style first-person camera, yaw/pitch.
 - **Editing**: pointer-raycast block pick (DDA), reach `REACH = 15`, white
   `highlight` box on the targeted block. Left click places, right click breaks.
 - **TNT**: lighting fuses (HUD fuse sprite), delayed explosions with blocks
   destroyed/tossed and particle flashes.
-- **Portals / dimensions**: build a 5×5 frame (4 sides, corners optional),
-  walk into its 3×3 interior to jump to the End; solid black fill marks an
-  active portal. Return portal is auto-built at the End spawn with the same
-  black-fill look; returning drops you beside the Overworld portal (never on
-  it) and flying is forbidden in the End. You land ~14 blocks from the
-  return portal on the End platform (cooldown + zeroed movement prevent an
-  instant round-trip) and free-cam (F) is disabled in the End; the fill
-  follows the free-cam view and flying (free-cam) into a portal triggers it.
-- **Ender Dragon**: boss spawning at the End spawn, circling flight with
-  arms/wings animation, HP bar, and a dragon boss fight (blue `dragon`
-  boss bar in HUD).
+- **Portals / dimensions**: build a horizontal 5×5 frame in the Overworld
+  (4 sides, corners optional), walk into its 3×3 interior to jump to the End;
+  solid black fill marks an active portal. The End has a grey END_STONE
+  platform and black sky; a vertical 5×5 return portal (upright frame, same
+  black-fill core) is auto-built on the platform to get back to the
+  Overworld. Returning drops you beside the Overworld portal (never on it),
+  flying is forbidden in the End, and free-cam (F) is disabled there; you
+  land just short of the return portal (cooldown + zeroed movement prevent an
+  instant round-trip).
+- **Ender Dragon**: ambient red-and-green dragon that spawns in the End and
+  wanders randomly over the platform (target waypoints, banking turns, flapping
+  wings). Purely decorative — no HP bar or boss fight.
 - **Save/load**: binary format (`SAVE_MAGIC`, version 2) capturing world
   blocks, dim, seeds, player pos/yaw/pitch, fly state, hotbar selection.
   Backends: File System Access API (`pickSaveFile`/`saveToFile`),
   IndexedDB fallback, and the server API (`apiLoad`/`apiList`). Autosave
   via `queueSave()`, world regen resets to new seeds (`regenerate`).
 - **HUD/UI**: crosshair, hotbar with slot icons (wheel selects), dimension
-  label, boss bar, toasts, autosave indicator; pause overlay (Resume/New
+  label, toasts, autosave indicator; pause overlay (Resume/New
   World/Load Save) and H help panel (`portalArt` diagram).
 
 ## Conventions

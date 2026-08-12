@@ -3,20 +3,21 @@ import * as THREE from "three";
 // ---------------------------------------------------------------------------
 // Block definitions
 // ---------------------------------------------------------------------------
-const AIR = 0, GRASS = 1, DIRT = 2, STONE = 3, SAND = 4, LOG = 5, LEAVES = 6, WATER = 7, PLANKS = 8, GLASS = 9, TNT = 10, PORTAL = 12;
+const AIR = 0, GRASS = 1, DIRT = 2, STONE = 3, SAND = 4, LOG = 5, LEAVES = 6, WATER = 7, PLANKS = 8, GLASS = 9, TNT = 10, PORTAL = 12, ENDSTONE = 13;
 
 const BLOCK_INFO = {
-  [GRASS]:  { name: "Grass",   solid: true,  opaque: true,  placeable: true },
-  [DIRT]:   { name: "Dirt",    solid: true,  opaque: true,  placeable: true },
-  [STONE]:  { name: "Stone",   solid: true,  opaque: true,  placeable: true },
-  [SAND]:   { name: "Sand",    solid: true,  opaque: true,  placeable: true },
-  [LOG]:    { name: "Log",     solid: true,  opaque: true,  placeable: true },
-  [LEAVES]: { name: "Leaves",  solid: true,  opaque: true,  placeable: true },
-  [WATER]:  { name: "Water",   solid: false, opaque: false, placeable: true },
-  [PLANKS]: { name: "Planks",  solid: true,  opaque: true,  placeable: true },
-  [GLASS]:  { name: "Glass",   solid: true,  opaque: false, placeable: true },
-  [TNT]:    { name: "TNT",     solid: true,  opaque: true,  placeable: true },
-  [PORTAL]: { name: "Portal",  solid: true,  opaque: false, placeable: true },
+  [GRASS]:   { name: "Grass",    solid: true,  opaque: true,  placeable: true },
+  [DIRT]:    { name: "Dirt",     solid: true,  opaque: true,  placeable: true },
+  [STONE]:   { name: "Stone",    solid: true,  opaque: true,  placeable: true },
+  [SAND]:    { name: "Sand",     solid: true,  opaque: true,  placeable: true },
+  [LOG]:     { name: "Log",      solid: true,  opaque: true,  placeable: true },
+  [LEAVES]:  { name: "Leaves",   solid: true,  opaque: true,  placeable: true },
+  [WATER]:   { name: "Water",    solid: false, opaque: false, placeable: true },
+  [PLANKS]:  { name: "Planks",   solid: true,  opaque: true,  placeable: true },
+  [GLASS]:   { name: "Glass",    solid: true,  opaque: false, placeable: true },
+  [TNT]:     { name: "TNT",      solid: true,  opaque: true,  placeable: true },
+  [PORTAL]:  { name: "Portal",   solid: true,  opaque: false, placeable: true },
+  [ENDSTONE]:{ name: "End Stone",solid: true,  opaque: true,  placeable: false },
 };
 
 // ---------------------------------------------------------------------------
@@ -147,6 +148,12 @@ const TEX = {
     ctx.beginPath(); ctx.moveTo(8, 1); ctx.lineTo(8, 15); ctx.stroke();
     ctx.beginPath(); ctx.moveTo(1, 8); ctx.lineTo(15, 8); ctx.stroke();
   }),
+  endstone: canvasTex((ctx) => {
+    ctx.fillStyle = "#9a9aa2"; ctx.fillRect(0, 0, 16, 16);
+    pxNoise(ctx, [154, 154, 162], 14);
+    ctx.fillStyle = "rgba(0,0,0,0.16)";
+    for (let i = 0; i < 6; i++) ctx.fillRect(Math.random() * 14, Math.random() * 14, 2 + Math.random() * 3, 2 + Math.random() * 2);
+  }),
   portal: canvasTex((ctx) => {
     ctx.fillStyle = "#3a0d6b"; ctx.fillRect(0, 0, 16, 16);
     ctx.fillStyle = "#9b30ff";
@@ -176,6 +183,7 @@ function materialsFor(id) {
     case WATER: return faceTex(TEX.water, { transparent: true, opacity: 0.65, depthWrite: false });
     case TNT:   return faceTex(TEX.tnt);
     case PORTAL: return faceTex(TEX.portal, { transparent: false, opacity: 1, side: THREE.DoubleSide });
+    case ENDSTONE: return faceTex(TEX.endstone);
     default: return faceTex(TEX.dirt);
   }
 }
@@ -190,6 +198,8 @@ const WORLD_RADIUS = 48;
 const WORLD_SIZE = WORLD_RADIUS * 2 + 1;
 const WATER_LEVEL = 10;
 const END_PLATFORM_TOP = 20;
+const END_PLATFORM_R = 24;
+const END_RETURN_Z = 16;
 let seed = Math.floor(Math.random() * 100000);
 let endSeed = Math.floor(Math.random() * 100000);
 
@@ -254,12 +264,10 @@ function generateWorld() {
 function generateEnd() {
   const w = worlds.end;
   w.clear();
-  const R = 24;  // 2x larger platform
-  const top = END_PLATFORM_TOP;
+  const R = END_PLATFORM_R;
   for (let x = -R; x <= R; x++)
     for (let z = -R; z <= R; z++)
-      for (let y = top - 2; y <= top; y++) w.set(key(x, y, z), STONE);
-  for (let y = 1; y <= top - 3; y++) w.set(key(0, y, 0), STONE);
+      for (let y = END_PLATFORM_TOP - 2; y <= END_PLATFORM_TOP; y++) w.set(key(x, y, z), ENDSTONE);
 }
 
 // ---------------------------------------------------------------------------
@@ -682,7 +690,6 @@ function tickTNT(dt) {
 function explodeTNT(x, y, z) {
   setBlock(x, y, z, AIR);
   spawnExplosion(x + 0.5, y + 0.5, z + 0.5);
-  damageDragon(x + 0.5, y + 0.5, z + 0.5);
   const R = BLAST_RADIUS, R2 = R * R;
   const affected = [];
   for (let dx = -R; dx <= R; dx++)
@@ -782,42 +789,24 @@ function tickEffects(dt) {
 // Portals & The End dimension
 // ---------------------------------------------------------------------------
 let portalCd = 0;
-let returnPortalBuilt = false;
 let prePortalFly = false;
 let overPortalSpawn = { x: 0.5, y: 1.01, z: 0.5 };
-const END_SPAWN = { x: 0.5, y: END_PLATFORM_TOP + 1.6, z: 16 };
-let endPortalFill = null;
+const END_SPAWN = { x: 0.5, y: END_PLATFORM_TOP + 1.6, z: END_RETURN_Z - 3 };
+const END_RETURN_BASE_Y = END_PLATFORM_TOP + 1;
 
 function buildReturnPortal() {
   for (let x = -2; x <= 2; x++)
-    for (let z = -2; z <= 2; z++) {
-      const isCorner = (x === -2 && z === -2) || (x === -2 && z === 2) || (x === 2 && z === -2) || (x === 2 && z === 2);
-      const isEdge = x === -2 || x === 2 || z === -2 || z === 2;
-      if (isEdge && !isCorner) setBlock(x, END_PLATFORM_TOP + 1, z, PORTAL);
+    for (let y = 0; y <= 4; y++) {
+      const isCorner = (x === -2 && (y === 0 || y === 4)) || (x === 2 && (y === 0 || y === 4));
+      const isEdge = x === -2 || x === 2 || y === 0 || y === 4;
+      if (isEdge && !isCorner) setBlock(x, END_RETURN_BASE_Y + y, END_RETURN_Z, PORTAL);
     }
-  ensureEndPortalFill();
-  returnPortalBuilt = true;
-}
-
-function ensureEndPortalFill() {
-  if (endPortalFill) return;
-  const g = new THREE.Group();
-  const geo = new THREE.BoxGeometry(0.98, 0.98, 0.98);
-  const mat = new THREE.MeshBasicMaterial({ color: 0x000000 });
-  for (let x = -1; x <= 1; x++)
-    for (let z = -1; z <= 1; z++) {
-      const m = new THREE.Mesh(geo, mat);
-      m.position.set(x + 0.5, END_PLATFORM_TOP + 1.5, z + 0.5);
-      g.add(m);
-    }
-  scene.add(g);
-  endPortalFill = g;
 }
 
 function setDimensionEnv() {
   if (dim === "end") {
-    scene.background.setHex(0x07070f);
-    scene.fog.color.setHex(0x07070f);
+    scene.background.setHex(0x000000);
+    scene.fog.color.setHex(0x000000);
     scene.fog.near = 30; scene.fog.far = 150;
     sun.intensity = 0.35; hemi.intensity = 0.45;
   } else {
@@ -833,15 +822,15 @@ function goToDimension(name, sx, sy, sz) {
   world = worlds[name];
   if (name === "end") {
     if (worlds.end.size === 0) generateEnd();
-    if (!returnPortalBuilt) buildReturnPortal();
-    if (!dragon.alive) spawnDragon();
+    buildReturnPortal();
+    spawnDragon();
     setDimensionEnv();
     prePortalFly = flying;
     flying = false;
-    yaw = 0;
+    yaw = Math.PI;
   } else {
     setDimensionEnv();
-    if (dragon.alive) { scene.remove(dragon.mesh); dragon.mesh = null; dragon.alive = false; }
+    if (dragon.mesh) { scene.remove(dragon.mesh); dragon.mesh = null; }
     flying = prePortalFly;
   }
   if (freeCam) { freeCam = false; }
@@ -876,6 +865,27 @@ function findPortalWindow(bx, by, bz) {
   return null;
 }
 
+function findVPortalWindow(bx, by, bz) {
+  for (let wz = -8; wz <= 8; wz++)
+    for (let wx = -8; wx <= 8; wx++)
+      for (let wy = -3; wy <= 3; wy++) {
+        const minX = bx + wx, minY = by + wy, minZ = bz + wz;
+        const maxX = minX + 4, maxY = minY + 4;
+        let ok = true;
+        for (let y = minY; y <= maxY && ok; y++)
+          for (let x = minX; x <= maxX && ok; x++) {
+            const isCorner = (x === minX || x === maxX) && (y === minY || y === maxY);
+            const isEdge = x === minX || x === maxX || y === minY || y === maxY;
+            if (isCorner) continue;
+            const id = getBlock(x, y, minZ);
+            if (isEdge) { if (id !== PORTAL) ok = false; }
+            else { if (id !== AIR) ok = false; }
+          }
+        if (ok) return { minX, minY, minZ };
+      }
+  return null;
+}
+
 let portalFillGroup = null;
 let portalFillKey = null;
 
@@ -900,16 +910,40 @@ function showPortalFill(win) {
   portalFillKey = key;
 }
 
+function showVPortalFill(win) {
+  ensurePortalFillGroup();
+  const key = `${win.minX},${win.minZ},${win.minY}`;
+  let i = 0;
+  for (let y = win.minY + 1; y <= win.minY + 3; y++)
+    for (let x = win.minX + 1; x <= win.minX + 3; x++)
+      portalFillGroup.children[i++].position.set(x + 0.5, y + 0.5, win.minZ + 0.5);
+  portalFillGroup.visible = true;
+  portalFillKey = key;
+}
+
 function hidePortalFill() {
   if (portalFillGroup) portalFillGroup.visible = false;
   portalFillKey = null;
 }
 
 function updatePortalVisual() {
-  if (dim === "end") { hidePortalFill(); return; }
   const bx = Math.floor(freeCam ? camPos.x : pos.x);
   const bz = Math.floor(freeCam ? camPos.z : pos.z);
   const by = Math.floor((freeCam ? camPos.y : pos.y) + 0.9);
+  if (dim === "end") {
+    let win = null;
+    for (let wz = -8; wz <= 8 && !win; wz++)
+      for (let wx = -8; wx <= 8 && !win; wx++)
+        for (let wy = -3; wy <= 3 && !win; wy++)
+          win = findVPortalWindow(bx + wx, by + wy, bz + wz);
+    if (win) { showVPortalFill(win); return; }
+    if (portalFillKey) {
+      const [mx, mz, my] = portalFillKey.split(",").map(Number);
+      const w = findVPortalWindow(mx + 2, my + 2, mz);
+      if (!w || `${w.minX},${w.minZ},${w.minY}` !== portalFillKey) hidePortalFill();
+    }
+    return;
+  }
   let win = null;
   for (let dy = -2; dy <= 2 && !win; dy++)
     for (let wx = -8; wx <= 8 && !win; wx++)
@@ -960,11 +994,11 @@ function checkPortal() {
   if (portalCd > 0) return;
   const bx = Math.floor(freeCam ? camPos.x : pos.x);
   const bz = Math.floor(freeCam ? camPos.z : pos.z);
-  const by = Math.floor((freeCam ? camPos.y : pos.y) + 0.9);
-  const win = findPortalWindow(bx, by, bz);
-  if (!win) return;
-  if (bx < win.minX + 1 || bx > win.minX + 3 || bz < win.minZ + 1 || bz > win.minZ + 3) return;
   if (dim === "over") {
+    const by = Math.floor((freeCam ? camPos.y : pos.y) + 0.9);
+    const win = findPortalWindow(bx, by, bz);
+    if (!win) return;
+    if (bx < win.minX + 1 || bx > win.minX + 3 || bz < win.minZ + 1 || bz > win.minZ + 3) return;
     const forward = new THREE.Vector3(-Math.sin(yaw), 0, -Math.cos(yaw));
     const right = new THREE.Vector3(Math.cos(yaw), 0, -Math.sin(yaw));
     let ddx = 0, ddz = 0;
@@ -977,60 +1011,71 @@ function checkPortal() {
     goToDimension("end", END_SPAWN.x, END_SPAWN.y, END_SPAWN.z);
     showMsg("You arrived in The End");
   } else {
+    const by = Math.floor(pos.y + EYE);
+    const win = findVPortalWindow(bx, by, bz);
+    if (!win) return;
+    if (bx < win.minX + 1 || bx > win.minX + 3) return;
+    if (by < win.minY + 1 || by > win.minY + 3) return;
+    if (bz !== win.minZ) return;
     goToDimension("over", overPortalSpawn.x, overPortalSpawn.y, overPortalSpawn.z);
     showMsg("You returned to the Overworld");
   }
 }
 
 // ---------------------------------------------------------------------------
-// Ender Dragon (The End boss)
+// Ender Dragon (ambient)
 // ---------------------------------------------------------------------------
-const dragon = { mesh: null, alive: false, hp: 100, maxHp: 100, angle: 0, wingL: null, wingR: null };
+const dragon = { mesh: null, target: null, wingL: null, wingR: null };
 
 function spawnDragon() {
   if (dragon.mesh) return;
   const g = new THREE.Group();
-  const bodyMat = new THREE.MeshStandardMaterial({ color: 0xff0000, roughness: 0.6 });
-  const accentMat = new THREE.MeshStandardMaterial({ color: 0x00ff00, roughness: 0.6 });
+  const bodyMat = new THREE.MeshStandardMaterial({ color: 0xff2020, roughness: 0.6 });
+  const accentMat = new THREE.MeshStandardMaterial({ color: 0x2eff2e, roughness: 0.6 });
   const eyeMat = new THREE.MeshBasicMaterial({ color: 0xffd700 });
   const body = new THREE.Mesh(new THREE.BoxGeometry(2.4, 1.2, 5), bodyMat);
   const head = new THREE.Mesh(new THREE.BoxGeometry(1.4, 1.5, 1.8), accentMat); head.position.set(0, 0.5, 3.1);
   const eL = new THREE.Mesh(new THREE.BoxGeometry(0.25, 0.25, 0.1), eyeMat); eL.position.set(-0.4, 0.7, 4.0);
   const eR = eL.clone(); eR.position.x = 0.4;
   const wingGeo = new THREE.BoxGeometry(4.5, 0.15, 2.6);
-  const wL = new THREE.Mesh(accentMat, accentMat); wL.position.set(-3.3, 0.5, 0);
-  const wR = new THREE.Mesh(accentMat, accentMat); wR.position.set(3.3, 0.5, 0);
+  const wL = new THREE.Mesh(wingGeo, accentMat); wL.position.set(-3.3, 0.5, 0);
+  const wR = new THREE.Mesh(wingGeo, accentMat); wR.position.set(3.3, 0.5, 0);
   g.add(body, head, eL, eR, wL, wR);
   scene.add(g);
-  dragon.mesh = g; dragon.alive = true; dragon.hp = dragon.maxHp; dragon.angle = 0;
+  dragon.mesh = g;
   dragon.wingL = wL; dragon.wingR = wR;
-  updateBossBar();
+  dragon.mesh.position.set(0, END_PLATFORM_TOP + 3, 0);
+  dragon.target = pickDragonTarget();
+}
+
+function pickDragonTarget() {
+  const a = Math.random() * Math.PI * 2;
+  const r = 3 + Math.random() * (END_PLATFORM_R - 4);
+  const p = new THREE.Vector3(Math.cos(a) * r, END_PLATFORM_TOP + 3 + Math.random() * 4, Math.sin(a) * r);
+  if (dragon.mesh && dragon.target && p.distanceToSquared(dragon.target) < 25) return pickDragonTarget();
+  return p;
 }
 
 function updateDragon(dt) {
-  if (!dragon.alive || !dragon.mesh) return;
-  dragon.angle += dt * 0.35;
-  const r = 14;
-  dragon.mesh.position.set(Math.cos(dragon.angle) * r, 18 + Math.sin(dragon.angle * 2) * 2, Math.sin(dragon.angle) * r);
-  dragon.mesh.rotation.y = -dragon.angle + Math.PI / 2;
+  if (!dragon.mesh) return;
+  const M = dragon.mesh;
+  if (!dragon.target || M.position.distanceTo(dragon.target) < 0.6) {
+    dragon.target = pickDragonTarget();
+    return;
+  }
+  M.position.lerp(dragon.target, Math.min(1, dt * 0.35));
+  const dir = new THREE.Vector3().subVectors(dragon.target, M.position).setY(0);
+  if (dir.lengthSq() > 0.0001) {
+    const heading = Math.atan2(-dir.x, -dir.z);
+    let d = heading - M.rotation.y;
+    while (d > Math.PI) d -= Math.PI * 2;
+    while (d < -Math.PI) d += Math.PI * 2;
+    M.rotation.y += d * Math.min(1, dt * 2);
+    M.rotation.z = -Math.sin(heading) * 0.08;
+  }
+  M.rotation.x = Math.sin(performance.now() * 0.0015) * 0.05;
   const f = Math.sin(performance.now() * 0.012) * 0.6;
   dragon.wingL.rotation.z = f; dragon.wingR.rotation.z = -f;
-}
-
-function damageDragon(cx, cy, cz) {
-  if (!dragon.alive || !dragon.mesh) return;
-  const d = Math.hypot(dragon.mesh.position.x - cx, dragon.mesh.position.y - cy, dragon.mesh.position.z - cz);
-  if (d < 9) {
-    dragon.hp -= 34;
-    updateBossBar();
-    if (dragon.hp <= 0) {
-      dragon.alive = false;
-      scene.remove(dragon.mesh);
-      dragon.mesh = null;
-      updateBossBar();
-      showMsg("The Ender Dragon is defeated!");
-    }
-  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1204,11 +1249,9 @@ function updateCamera() {
 }
 
 // ---------------------------------------------------------------------------
-// HUD (dimension label, boss bar, toast)
+// HUD (dimension label, toast)
 // ---------------------------------------------------------------------------
 const dimEl = document.getElementById("dim");
-const bossEl = document.getElementById("boss");
-const bossFill = bossEl.querySelector(".fill");
 const toastEl = document.getElementById("toast");
 let toastTimer = 0;
 
@@ -1216,14 +1259,6 @@ function updateDimLabel() {
   if (!started) { dimEl.style.display = "none"; return; }
   dimEl.textContent = dim === "end" ? "The End" : "Overworld";
   dimEl.style.display = "block";
-}
-function updateBossBar() {
-  if (dim === "end" && dragon.alive) {
-    bossEl.style.display = "block";
-    bossFill.style.width = Math.max(0, (dragon.hp / dragon.maxHp) * 100) + "%";
-  } else {
-    bossEl.style.display = "none";
-  }
 }
 function showMsg(text) {
   toastEl.textContent = text;
@@ -1445,8 +1480,7 @@ function restoreSave(buf) {
   updateCamera();
   setDimensionEnv();
   updateDimLabel();
-  updateBossBar();
-  if (dim === "end") { returnPortalBuilt = true; ensureEndPortalFill(); if (!dragon.alive) spawnDragon(); }
+  if (dim === "end") { buildReturnPortal(); rebuildMeshes(); spawnDragon(); }
   lastManualSave = Date.now();
   return true;
 }
@@ -1527,13 +1561,10 @@ function resetDims() {
   dim = "over";
   world = worlds.over;
   worlds.end.clear();
-  returnPortalBuilt = false;
   overPortalSpawn = { x: 0.5, y: 1.01, z: 0.5 };
-  if (endPortalFill) { scene.remove(endPortalFill); endPortalFill = null; }
-  if (dragon.alive) { scene.remove(dragon.mesh); dragon.mesh = null; dragon.alive = false; }
+  if (dragon.mesh) { scene.remove(dragon.mesh); dragon.mesh = null; }
   setDimensionEnv();
   updateDimLabel();
-  updateBossBar();
 }
 
 async function regenerate() {

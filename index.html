@@ -69,15 +69,6 @@
       display: none;
     }
 
-    /* Boss bar */
-    #boss {
-      position: fixed; top: 44px; left: 50%; transform: translateX(-50%);
-      width: 360px; max-width: 80vw; display: none;
-    }
-    #boss .label { color: #d9a6ff; font-size: 13px; font-weight: 700; text-shadow: 1px 1px 2px #000; text-align: center; margin-bottom: 3px; }
-    #boss .track { height: 12px; background: rgba(0,0,0,0.5); border: 1px solid rgba(255,255,255,0.4); border-radius: 6px; overflow: hidden; }
-    #boss .fill { height: 100%; width: 100%; background: linear-gradient(90deg, #9b30ff, #d9a6ff); transition: width .15s; }
-
     /* Toast */
     #toast {
       position: fixed; top: 22%; left: 50%; transform: translateX(-50%);
@@ -189,7 +180,6 @@
   <div id="hotbar"></div>
   <div id="info"><div id="autosave"></div></div>
   <div id="dim"></div>
-  <div id="boss"><div class="label">Ender Dragon</div><div class="track"><div class="fill"></div></div></div>
   <div id="toast"></div>
   <div id="help">
     <div class="panel">
@@ -210,6 +200,7 @@
       <div class="portal-diagram">
         <div id="portalArt"></div>
       </div>
+      <p class="note">A vertical return portal (same purple frame, black core) is auto-built on the End platform to get back to the Overworld.</p>
       <button class="closebtn" id="btnHelpClose">Close</button>
     </div>
   </div>
