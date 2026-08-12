@@ -86,6 +86,28 @@
       opacity: 0; transition: opacity .4s; pointer-events: none; text-align: center;
     }
 
+    /* Help menu */
+    #help {
+      position: fixed; inset: 0; z-index: 30; display: none;
+      align-items: center; justify-content: center;
+      background: rgba(0,0,0,0.6);
+    }
+    #help .panel {
+      background: #1c2030; color: #e8edf5; padding: 26px 32px; border-radius: 14px;
+      border: 2px solid rgba(255,255,255,0.18); max-width: 560px; line-height: 1.6;
+      font-size: 14px; box-shadow: 0 12px 40px rgba(0,0,0,0.6);
+    }
+    #help h2 { margin-bottom: 12px; font-size: 22px; color: #fff; }
+    #help h3 { margin: 16px 0 6px; font-size: 15px; color: #9bd; }
+    #help table { width: 100%; border-collapse: collapse; margin-top: 4px; }
+    #help td { padding: 3px 8px; border-top: 1px solid rgba(255,255,255,0.1); vertical-align: top; }
+    #help td:first-child { color: #fff; font-weight: 600; white-space: nowrap; width: 42%; }
+    #help .hint { margin-top: 16px; font-size: 12px; color: #aab8c4; text-align: center; }
+    #help .closebtn {
+      margin-top: 14px; display: block; width: 100%; font: inherit; font-size: 15px; font-weight: 600;
+      color: #fff; background: #3a8; border: 2px solid #4c9; border-radius: 8px; padding: 10px; cursor: pointer;
+    }
+
     /* Overlay / start screen */
     #overlay {
       position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
@@ -157,6 +179,32 @@
   <div id="dim"></div>
   <div id="boss"><div class="label">Ender Dragon</div><div class="track"><div class="fill"></div></div></div>
   <div id="toast"></div>
+  <div id="help">
+    <div class="panel">
+      <h2>Help</h2>
+      <h3>Controls</h3>
+      <table>
+        <tr><td>Arrows</td><td>Move</td></tr>
+        <tr><td>Space</td><td>Jump</td></tr>
+        <tr><td>Shift</td><td>Sprint / (free cam) accelerate</td></tr>
+        <tr><td>Mouse</td><td>Look around</td></tr>
+        <tr><td>Left Click</td><td>Place block</td></tr>
+        <tr><td>Right Click</td><td>Break block</td></tr>
+        <tr><td>Wheel / 1-9, 0</td><td>Select block</td></tr>
+        <tr><td>F</td><td>Free camera (arrows + Shift)</td></tr>
+        <tr><td>H</td><td>This help menu</td></tr>
+      </table>
+      <h3>Blocks</h3>
+      <table>
+        <tr><td>11 — Portal Frame</td><td>Placeable block used to build a portal frame (obsidian-like, purple).</td></tr>
+        <tr><td>12 — Portal</td><td>The lit portal interior. Not placeable — it appears automatically inside a completed frame and teleports you.</td></tr>
+      </table>
+      <h3>Portal to The End</h3>
+      <p>Build a <b>square frame</b> out of Portal Frame blocks (id 11). The frame must be a square: equal width and height, each at least <b>4 blocks</b> (so a 4×4 outer frame with a 2×2 hollow center, or larger). Once the square is complete, the hollow interior fills with Portal (id 12) and lights up. Walk into it to travel to <b>The End</b>. A return portal is created automatically there to bring you back.</p>
+      <button class="closebtn" id="btnHelpClose">Close (H)</button>
+      <div class="hint">Press H to close</div>
+    </div>
+  </div>
 
   <div id="overlay">
     <div class="panel">

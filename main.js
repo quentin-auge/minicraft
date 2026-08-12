@@ -1583,13 +1583,23 @@ document.addEventListener("mousemove", (e) => {
 });
 
 document.addEventListener("mousedown", (e) => {
-  if (!locked) return;
+  if (!locked || helpOpen) return;
   if (e.button === 0) placeBlock(HOTBAR[selected]);
   if (e.button === 2) breakBlock();
 });
 
+const helpEl = document.getElementById("help");
+let helpOpen = false;
+function toggleHelp() {
+  helpOpen = !helpOpen;
+  helpEl.style.display = helpOpen ? "flex" : "none";
+}
+helpEl.querySelector("#btnHelpClose").addEventListener("click", toggleHelp);
+
 document.addEventListener("keydown", (e) => {
+  if (e.code === "KeyH" && !keys[e.code]) { toggleHelp(); e.preventDefault(); }
   if (keys[e.code]) { e.preventDefault(); return; }
+  if (helpOpen) return;
   keys[e.code] = true;
   if (e.code === "KeyF") { freeCam = !freeCam; if (freeCam) camPos.copy(camera.position); else exitFreeCam(); }
   if (e.code === "Escape") { if (saveName) saveToFile(); }
