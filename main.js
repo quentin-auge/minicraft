@@ -829,18 +829,25 @@ function checkPortal() {
   if (portalCd > 0 || freeCam) return;
   const bx = Math.floor(pos.x), bz = Math.floor(pos.z);
   const by = Math.floor(pos.y + 0.9);
-  let py = by;
-  if (getBlock(bx, by, bz) !== PORTAL) {
-    py = by - 1;
-    if (getBlock(bx, py, bz) !== PORTAL) return;
+  const minX = bx - 2, maxX = bx + 2;
+  const minZ = bz - 2, maxZ = bz + 2;
+  let perimeterOk = true;
+  let interiorOk = true;
+  for (let x = minX; x <= maxX && (perimeterOk || interiorOk); x++) {
+    for (let z = minZ; z <= maxZ && (perimeterOk || interiorOk); z++) {
+      const isPerim = x === minX || x === maxX || z === minZ || z === maxZ;
+      const id = getBlock(x, by, z);
+      if (isPerim) {
+        if (id !== PORTAL) perimeterOk = false;
+      } else {
+        if (id !== AIR) interiorOk = false;
+      }
+    }
   }
-  let count = 0;
-  for (let dx = -1; dx <= 1; dx++)
-    for (let dz = -1; dz <= 1; dz++)
-      if (getBlock(bx + dx, py, bz + dz) === PORTAL) count++;
-  if (count < 9) return;
+  if (!perimeterOk || !interiorOk) return;
+  const cx = minX + 1, cz = minZ + 1;
   if (dim === "over") {
-    overPortalSpawn = { x: bx + 0.5, y: py + 1.01, z: bz + 0.5 };
+    overPortalSpawn = { x: cx + 0.5, y: by + 1.01, z: cz + 0.5 };
     goToDimension("end", 0.5, 21.6, 4);
     showMsg("You arrived in The End");
   } else {
@@ -1614,14 +1621,19 @@ function buildPortalArt() {
     for (let c = 0; c < N; c++) {
       const isCorner = (r === 0 && c === 0) || (r === 0 && c === N - 1) || (r === N - 1 && c === 0) || (r === N - 1 && c === N - 1);
       const isEdge = r === 0 || r === N - 1 || c === 0 || c === N - 1;
-      const frame = isEdge && !isCorner;
       const x = off + c * cell, y = off + r * cell;
-      if (!frame) continue;
       const rect = document.createElementNS(SVGNS, "rect");
       rect.setAttribute("x", x); rect.setAttribute("y", y);
       rect.setAttribute("width", size); rect.setAttribute("height", size); rect.setAttribute("rx", 3);
-      rect.setAttribute("fill", "#5a2da6");
-      rect.setAttribute("stroke", "#7b2ff7"); rect.setAttribute("stroke-width", "1.5");
+      if (isCorner) continue; // skip corners
+      if (isEdge) {
+        rect.setAttribute("fill", "#5a2da6");
+        rect.setAttribute("stroke", "#7b2ff7"); rect.setAttribute("stroke-width", "1.5");
+      } else {
+        // Inner 3x3 area: vert foncé pour montrer qu'il s'allume en vert
+        rect.setAttribute("fill", "rgba(0,180,0,0.3)");
+        rect.setAttribute("stroke", "rgba(0,180,0,0.5)"); rect.setAttribute("stroke-width", "1");
+      }
       svg.appendChild(rect);
     }
   host.appendChild(svg);
