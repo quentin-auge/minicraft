@@ -835,8 +835,10 @@ function checkPortal() {
   let interiorOk = true;
   for (let x = minX; x <= maxX && (perimeterOk || interiorOk); x++) {
     for (let z = minZ; z <= maxZ && (perimeterOk || interiorOk); z++) {
+      const isCorner = (x === minX && z === minZ) || (x === minX && z === maxZ) || (x === maxX && z === minZ) || (x === maxX && z === maxZ);
       const isPerim = x === minX || x === maxX || z === minZ || z === maxZ;
       const id = getBlock(x, by, z);
+      if (isCorner) continue;
       if (isPerim) {
         if (id !== PORTAL) perimeterOk = false;
       } else {
@@ -1622,19 +1624,13 @@ function buildPortalArt() {
     for (let c = 0; c < N; c++) {
       const isCorner = (r === 0 && c === 0) || (r === 0 && c === N - 1) || (r === N - 1 && c === 0) || (r === N - 1 && c === N - 1);
       const isEdge = r === 0 || r === N - 1 || c === 0 || c === N - 1;
+      if (!isEdge || isCorner) continue;
       const x = off + c * cell, y = off + r * cell;
       const rect = document.createElementNS(SVGNS, "rect");
       rect.setAttribute("x", x); rect.setAttribute("y", y);
       rect.setAttribute("width", size); rect.setAttribute("height", size); rect.setAttribute("rx", 3);
-      if (isCorner) continue; // skip corners
-      if (isEdge) {
-        rect.setAttribute("fill", "#5a2da6");
-        rect.setAttribute("stroke", "#7b2ff7"); rect.setAttribute("stroke-width", "1.5");
-      } else {
-        // Inner 3x3 area: vert foncé pour montrer qu'il s'allume en vert
-        rect.setAttribute("fill", "rgba(0,180,0,0.3)");
-        rect.setAttribute("stroke", "rgba(0,180,0,0.5)"); rect.setAttribute("stroke-width", "1");
-      }
+      rect.setAttribute("fill", "#5a2da6");
+      rect.setAttribute("stroke", "#7b2ff7"); rect.setAttribute("stroke-width", "1.5");
       svg.appendChild(rect);
     }
   host.appendChild(svg);
