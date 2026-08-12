@@ -828,7 +828,8 @@ function goToDimension(name, sx, sy, sz) {
     setDimensionEnv();
     prePortalFly = flying;
     flying = false;
-    yaw = Math.PI;
+    yaw = 0;
+    pitch = 0;
   } else {
     setDimensionEnv();
     if (dragon.mesh) { scene.remove(dragon.mesh); dragon.mesh = null; }
@@ -975,7 +976,7 @@ function nearPortalSpawn(win, dir) {
   };
   const n = Math.hypot(dir.x, dir.z) || 1;
   const dx = dir.x / n, dz = dir.z / n;
-  for (let d = 3; d <= 6; d++) {
+  for (let d = 6; d <= 9; d++) {
     const cands = [
       { x: cx + Math.round(dx * d), z: cz + Math.round(dz * d) },
       { x: cx - Math.round(dx * d), z: cz - Math.round(dz * d) },
@@ -987,7 +988,7 @@ function nearPortalSpawn(win, dir) {
       if (s) return s;
     }
   }
-  for (let r = 3; r <= 12; r++)
+  for (let r = 6; r <= 12; r++)
     for (let ox = -r; ox <= r; ox++)
       for (let oz = -r; oz <= r; oz++) {
         if (Math.max(Math.abs(ox), Math.abs(oz)) !== r) continue;
