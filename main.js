@@ -1666,12 +1666,12 @@ function loop(now) {
   renderer.render(scene, camera);
 }
 
+const SVGNS = "http://www.w3.org/2000/svg";
 let dt = 0.016;
 buildHotbar();
 buildPortalArt();
 requestAnimationFrame(loop);
 
-const SVGNS = "http://www.w3.org/2000/svg";
 function buildPortalArt() {
   const host = document.getElementById("portalArt");
   if (!host) return;
