@@ -570,7 +570,7 @@ function pickBlock(origin, dir) {
 // ---------------------------------------------------------------------------
 const highlight = new THREE.LineSegments(
   new THREE.EdgesGeometry(new THREE.BoxGeometry(1.002, 1.002, 1.002)),
-  new THREE.LineBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.6 })
+  new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 1 })
 );
 highlight.visible = false;
 scene.add(highlight);
