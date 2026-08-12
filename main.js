@@ -1052,7 +1052,7 @@ function checkPortal() {
 // ---------------------------------------------------------------------------
 const dragon = {
   mesh: null, wingL: null, wingR: null, neck: null, neckBaseX: 0, head: null, tail: null,
-  path: null, s: 0, seg: 0, yaw: 0, pitch: 0, bank: 0, prevYaw: 0, t: 0,
+  path: null, s: 0, seg: 0, yaw: 0, pitch: 0, bank: 0, prevYaw: 0, t: 0, nextRun: 0,
 };
 const dragonMat = (color, opts = {}) =>
   new THREE.MeshStandardMaterial(Object.assign({ color, roughness: 0.5, metalness: 0.08 }, opts));
@@ -1187,6 +1187,7 @@ function spawnDragon() {
   dragon.path = null; dragon.yaw = 0; dragon.pitch = 0; dragon.bank = 0; dragon.prevYaw = 0; dragon.t = 0;
   dragon.mesh.position.set(0, END_PLATFORM_TOP + 3, 0);
   dragon.s = 0;
+  dragon.nextRun = 2 + Math.random() * 3;
   buildDragonPath();
 }
 
@@ -1212,7 +1213,19 @@ function dragonCatmull(p0, p1, p2, p3, u, out) {
   );
 }
 
-function buildDragonPath() {
+function dragonPlayerFocus() {
+  if (dim !== "end") return null;
+  const m = END_PLATFORM_R - 1;
+  if (Math.abs(pos.x) > m || Math.abs(pos.z) > m) return null;
+  const low = Math.random() < 0.5;
+  return new THREE.Vector3(
+    THREE.MathUtils.clamp(pos.x, -m, m),
+    THREE.MathUtils.clamp(pos.y + (low ? 1.5 : 4.5) + Math.random() * 1.5, DRAGON_SKIM_Y, DRAGON_SOAR_Y + 3),
+    THREE.MathUtils.clamp(pos.z, -m, m)
+  );
+}
+
+function buildDragonPath(aim) {
   const N = 6 + (Math.random() * 3 | 0);
   const base = Math.random() * Math.PI * 2;
   const lowBias = Math.random() < 0.35 ? 0.72 : 0.42;
@@ -1227,6 +1240,18 @@ function buildDragonPath() {
     ));
   }
   pts[0].copy(dragon.mesh.position);
+  const focus = dragonPlayerFocus();
+  if (focus) {
+    if (aim) {
+      const dx = focus.x - pts[0].x, dz = focus.z - pts[0].z;
+      const h = Math.hypot(dx, dz) || 1;
+      const ahead = 7 + Math.random() * 3;
+      pts[1].set(pts[0].x + (dx / h) * ahead, focus.y, pts[0].z + (dz / h) * ahead);
+      pts[2] = focus;
+    } else if (Math.random() < 0.6) {
+      pts[2 + Math.floor(Math.random() * (N - 3))] = focus;
+    }
+  }
   const n = 180, pos = new Array(n), tmp = new THREE.Vector3();
   const RMAX2 = (END_PLATFORM_R - 1) ** 2;
   for (let k = 0; k < n; k++) {
@@ -1270,7 +1295,12 @@ function updateDragon(dt) {
   const P = dragon.path;
 
   dragon.s += DRAGON_SPEED * (0.85 + Math.sin(t * 0.4) * 0.15) * dt;
-  if (dragon.s >= P.len) buildDragonPath();
+  dragon.nextRun -= dt;
+  if (dragon.s >= P.len || dragon.nextRun <= 0) {
+    const dive = dragon.nextRun <= 0;
+    if (dive) dragon.nextRun = 4 + Math.random() * 5;
+    buildDragonPath(dive);
+  }
 
   dragonPathPoint(dragon.s, dragonA);
   dragonPathPoint(dragon.s + 0.9, dragonB);
