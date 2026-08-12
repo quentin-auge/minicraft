@@ -76,15 +76,59 @@
     #overlay h1 span { color: #7bc043; }
     #overlay .controls { margin-top: 22px; font-size: 14px; color: #cfd8e0; line-height: 1.8; text-align: left; display: inline-block; }
     #overlay .controls b { color: #fff; }
-    #overlay .start { margin-top: 24px; font-size: 18px; color: #ffe97a; animation: pulse 1.6s infinite; }
-    @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
+    #overlay .menu { margin-top: 26px; display: flex; gap: 12px; justify-content: center; }
+    #overlay .menu-btn {
+      font: inherit; font-size: 17px; font-weight: 600; color: #fff;
+      background: rgba(255,255,255,0.12); border: 2px solid rgba(255,255,255,0.35);
+      padding: 12px 22px; border-radius: 8px; cursor: pointer;
+      transition: background .15s, transform .15s;
+    }
+    #overlay .menu-btn:hover { background: rgba(255,255,255,0.22); transform: translateY(-2px); }
+    #overlay .hint { margin-top: 14px; font-size: 12px; color: #aab8c4; }
+    #autosave { opacity: 0.75; font-size: 11px; }
+
+    /* Dialogs (name a world / load saves) */
+    .dlg {
+      position: fixed; inset: 0; z-index: 20;
+      background: rgba(0,0,0,0.55);
+      display: flex; align-items: center; justify-content: center;
+    }
+    .dlg-box {
+      background: #223; color: #fff; padding: 24px 28px; border-radius: 12px;
+      border: 2px solid rgba(255,255,255,0.25); min-width: 320px; max-width: 460px;
+      text-align: center;
+      font-family: "Segoe UI", system-ui, sans-serif;
+      box-shadow: 0 12px 40px rgba(0,0,0,0.5);
+    }
+    .dlg-box h2 { margin-bottom: 14px; font-size: 20px; }
+    .dlg-input {
+      width: 100%; padding: 8px 10px; font-size: 15px; border-radius: 6px;
+      border: 1px solid rgba(255,255,255,0.3); background: rgba(0,0,0,0.4); color: #fff;
+      box-sizing: border-box;
+    }
+    .dlg-input:focus { outline: none; border-color: #fff; }
+    .dlg-actions { margin-top: 16px; display: flex; gap: 10px; justify-content: center; }
+    .dlg-actions button {
+      font: inherit; font-size: 14px; font-weight: 600; color: #fff;
+      padding: 8px 16px; border-radius: 6px; cursor: pointer;
+      background: rgba(255,255,255,0.12); border: 2px solid rgba(255,255,255,0.35);
+    }
+    .dlg-ok { background: #3a8 !important; border-color: #4c9 !important; }
+    .dlg-path { font-size: 11px; color: #89a; margin-bottom: 10px; font-family: ui-monospace, "SF Mono", Menlo, monospace; }
+    .dlg-list { list-style: none; margin: 0; padding: 0; max-height: 300px; overflow: auto; text-align: left; }
+    .dlg-list li {
+      padding: 10px 12px; border-radius: 6px; margin-bottom: 6px;
+      background: rgba(255,255,255,0.08); cursor: pointer;
+    }
+    .dlg-list li:hover { background: rgba(255,255,255,0.16); }
+    .dlg-empty { color: #abb; font-size: 14px; padding: 8px 0; }
   </style>
 </head>
 <body>
   <div id="game"></div>
   <div id="crosshair"></div>
   <div id="hotbar"></div>
-  <div id="info"></div>
+  <div id="info"><div id="autosave"></div></div>
 
   <div id="overlay">
     <div class="panel">
@@ -99,9 +143,15 @@
         <div><b>1-9 / Wheel / E Q</b> &nbsp; Select block</div>
         <div><b>F</b> &nbsp; Toggle fly</div>
         <div><b>P</b> &nbsp; Respawn at spawn point</div>
-        <div><b>R</b> &nbsp; Generate a new world</div>
+        <div><b>R</b> &nbsp; New world (also saved)</div>
+        <div><b>J</b> &nbsp; Save now</div>
+        <div><b>X</b> &nbsp; Delete current save</div>
       </div>
-      <div class="start">Click to Play</div>
+      <div class="menu">
+        <button class="menu-btn" id="btnNew">New World</button>
+        <button class="menu-btn" id="btnLoad">Load Save…</button>
+      </div>
+      </div>
     </div>
   </div>
 

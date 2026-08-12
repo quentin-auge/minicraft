@@ -514,6 +514,7 @@ function breakBlock() {
   if (getBlock(x, y, z) === STONE && y === 0) return;
   setBlock(x, y, z, AIR);
   rebuildMeshes();
+  queueSave();
 }
 function placeBlock(id) {
   if (!currentBlock) return;
@@ -523,6 +524,7 @@ function placeBlock(id) {
   if (intersectsPlayer(px, py, pz)) return;
   setBlock(px, py, pz, id);
   rebuildMeshes();
+  queueSave();
 }
 function intersectsPlayer(bx, by, bz) {
   return (
@@ -531,6 +533,462 @@ function intersectsPlayer(bx, by, bz) {
     bz + 1 > pos.z - PLAYER_HW && bz < pos.z + PLAYER_HW
   );
 }
+
+// ---------------------------------------------------------------------------
+// Save / load
+// Normal mode (run `python3 server.py`, open http://localhost:8383): every world is a
+// .sav file in save/ on disk, named when you press New World.
+// Fallback when opened straight from disk or a plain static server:
+// Chromium saves to a user-picked file; Firefox/Safari keep it in IndexedDB,
+// J exports it as .sav, Load imports one. Same binary format either way.
+// ---------------------------------------------------------------------------
+const SAVE_MAGIC = [0x4d, 0x49, 0x4e, 0x49, 0x43, 0x52, 0x41, 0x46, 0x54]; // "MINICRAFT"
+const fileMode = "showSaveFilePicker" in window && "showOpenFilePicker" in window;
+const fileDirOK = typeof window.showDirectoryPicker === "function";
+const hasIDB = typeof indexedDB !== "undefined";
+const apiOkPromise = fetch("api/worlds").then((r) => r.ok).catch(() => false);
+let apiOk = false;
+apiOkPromise.then((v) => { apiOk = v; });
+let saveHandle = null;
+let saveName = "";
+let started = false;
+let lastManualSave = 0;
+const autosaveEl = document.getElementById("autosave");
+
+function dbOpen() {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open("minicraft", 1);
+    req.onupgradeneeded = () => req.result.createObjectStore("saves");
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+async function storageSave(buf) {
+  const db = await dbOpen();
+  await new Promise((resolve, reject) => {
+    const tx = db.transaction("saves", "readwrite");
+    tx.objectStore("saves").put(buf, "autosave");
+    tx.oncomplete = resolve;
+    tx.onerror = () => reject(tx.error);
+  });
+  db.close();
+}
+async function storageLoad() {
+  const db = await dbOpen();
+  const buf = await new Promise((resolve, reject) => {
+    const req = db.transaction("saves", "readonly").objectStore("saves").get("autosave");
+    req.onsuccess = () => resolve(req.result || null);
+    req.onerror = () => reject(req.error);
+  });
+  db.close();
+  return buf;
+}
+async function storageClear() {
+  const db = await dbOpen();
+  await new Promise((resolve, reject) => {
+    const tx = db.transaction("saves", "readwrite");
+    tx.objectStore("saves").delete("autosave");
+    tx.oncomplete = resolve;
+    tx.onerror = () => reject(tx.error);
+  });
+  db.close();
+}
+
+function serialize() {
+  const blocks = [];
+  world.forEach((id, k) => {
+    const s = k.split(",");
+    blocks.push([+s[0], +s[1], +s[2], id]);
+  });
+  const n = blocks.length;
+  const buf = new ArrayBuffer(60 + n * 4);
+  const dv = new DataView(buf);
+  let o = 0;
+  new Uint8Array(buf, o, 9).set(SAVE_MAGIC); o += 9;
+  dv.setUint8(o++, 1); // format version
+  dv.setInt32(o, seed, true); o += 4;
+  dv.setFloat64(o, pos.x, true); o += 8;
+  dv.setFloat64(o, pos.y, true); o += 8;
+  dv.setFloat64(o, pos.z, true); o += 8;
+  dv.setFloat64(o, yaw, true); o += 8;
+  dv.setFloat64(o, pitch, true); o += 8;
+  dv.setUint8(o++, flying ? 1 : 0);
+  dv.setUint8(o++, selected);
+  dv.setUint32(o, n, true); o += 4;
+  for (const [x, y, z, id] of blocks) {
+    dv.setUint8(o++, x + 128);
+    dv.setUint8(o++, y);
+    dv.setUint8(o++, z + 128);
+    dv.setUint8(o++, id);
+  }
+  return buf;
+}
+
+function deserialize(buf) {
+  const dv = new DataView(buf);
+  let o = 0;
+  for (let i = 0; i < 9; i++) if (new Uint8Array(buf, o, 9)[i] !== SAVE_MAGIC[i]) throw new Error("Not a MiniCraft save");
+  o += 9;
+  if (dv.getUint8(o++) !== 1) throw new Error("Unsupported save version");
+  seed = dv.getInt32(o, true); o += 4;
+  pos.x = dv.getFloat64(o, true); o += 8;
+  pos.y = dv.getFloat64(o, true); o += 8;
+  pos.z = dv.getFloat64(o, true); o += 8;
+  yaw = dv.getFloat64(o, true); o += 8;
+  pitch = dv.getFloat64(o, true); o += 8;
+  flying = dv.getUint8(o++) === 1;
+  selected = dv.getUint8(o++);
+  const n = dv.getUint32(o, true); o += 4;
+  world.clear();
+  for (let i = 0; i < n; i++) {
+    const x = dv.getUint8(o++) - 128;
+    const y = dv.getUint8(o++);
+    const z = dv.getUint8(o++) - 128;
+    world.set(key(x, y, z), dv.getUint8(o++));
+  }
+}
+
+function canSave() {
+  if (apiOk && saveName) return true;
+  return fileMode ? !!saveHandle : hasIDB;
+}
+
+function updateAutosaveEl() {
+  if (!autosaveEl) return;
+  if (apiOk) {
+    autosaveEl.textContent = saveName
+      ? "World: " + saveName + (lastManualSave ? " · saved " + new Date(lastManualSave).toLocaleTimeString() : "")
+      : "Start a world with New World";
+    return;
+  }
+  if (!fileMode && !hasIDB) autosaveEl.textContent = "Autosave: not supported in this browser";
+  else if (!canSave()) autosaveEl.textContent = started ? "No save file (press J)" : fileMode ? "Pick a save file when you start" : "Autosave: kept in your browser";
+  else if (lastManualSave) autosaveEl.textContent = "Saved " + new Date(lastManualSave).toLocaleTimeString();
+  else autosaveEl.textContent = fileMode ? "Save file: " + saveHandle.name : "Autosave: on (in browser)";
+}
+
+function updateCamera() {
+  camera.position.set(pos.x, pos.y + EYE, pos.z);
+  camera.rotation.set(pitch, yaw, 0);
+}
+
+function downloadSave(buf) {
+  const blob = new Blob([buf], { type: "application/octet-stream" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = "minicraft.sav";
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+async function apiList() {
+  const res = await fetch("api/worlds");
+  return res.ok ? await res.json() : [];
+}
+async function apiLoad(name) {
+  const res = await fetch("api/worlds/" + encodeURIComponent(name));
+  if (!res.ok) throw new Error("Save not found");
+  return await res.arrayBuffer();
+}
+async function apiDelete(name) {
+  await fetch("api/worlds/" + encodeURIComponent(name), { method: "DELETE" });
+}
+function normalizeWorldName(raw) {
+  let n = (raw || "").trim().replace(/[\\/]/g, "_");
+  n = n.replace(/\.\.+/g, "_").replace(/^\.+/, "").trim();
+  if (!n) return null;
+  if (!n.toLowerCase().endsWith(".sav")) n += ".sav";
+  return n;
+}
+function dialogEl() {
+  const dlg = document.createElement("div");
+  dlg.className = "dlg";
+  const box = document.createElement("div");
+  box.className = "dlg-box";
+  dlg.appendChild(box);
+  document.body.appendChild(dlg);
+  return { dlg, box };
+}
+function askName(title, initial) {
+  return new Promise((resolve) => {
+    const { dlg, box } = dialogEl();
+    box.innerHTML = "<h2>" + title + "</h2>" +
+      '<input class="dlg-input" type="text" value="" spellcheck="false" placeholder="world name"/>' +
+      '<div class="dlg-actions"><button class="dlg-cancel">Cancel</button><button class="dlg-ok">Create</button></div>';
+    const input = box.querySelector(".dlg-input");
+    const finish = (v) => { dlg.remove(); resolve(v); };
+    const ok = () => { const n = normalizeWorldName(input.value); if (n) finish(n); };
+    box.querySelector(".dlg-ok").onclick = ok;
+    box.querySelector(".dlg-cancel").onclick = () => finish(null);
+    input.onkeydown = (e) => { if (e.key === "Enter") ok(); if (e.key === "Escape") finish(null); };
+    dlg.onmousedown = (e) => { if (e.target === dlg) finish(null); };
+    box.onmousedown = (e) => e.stopPropagation();
+    input.value = initial;
+    input.focus();
+    input.select();
+  });
+}
+
+// Firefox/Safari have no File System Access API, so the OS picker can't be
+// dropped into save/. Show the folder contents instead; click a row to load.
+function pickWorld(entries) {
+  return new Promise((resolve) => {
+    const names = entries.map((e) => (typeof e === "string" ? e : e.name));
+    const { dlg, box } = dialogEl();
+    let html = "<h2>Load save</h2>" +
+      '<div class="dlg-path">~/projects/tech/minicraft/save/</div>';
+    if (!names.length) {
+      html += '<div class="dlg-empty">No saves in save/ yet. Create one with New World.</div>' +
+        '<div class="dlg-actions"><button class="dlg-cancel">Close</button></div>';
+    } else {
+      html += '<ul class="dlg-list">' + names.map((n) =>
+        '<li data-name="' + n + '"><span class="w">' + n.replace(/\.sav$/i, "") +
+        '</span></li>').join("") +
+        '</ul><div class="dlg-actions"><button class="dlg-cancel">Cancel</button></div>';
+    }
+    box.innerHTML = html;
+    const finish = (v) => { dlg.remove(); resolve(v); };
+    dlg.onmousedown = (e) => { if (e.target === dlg) finish(null); };
+    box.onmousedown = (e) => e.stopPropagation();
+    box.querySelector(".dlg-cancel").onclick = () => finish(null);
+    box.querySelectorAll("li").forEach((li) => {
+      li.onclick = () => finish(li.dataset.name);
+    });
+  });
+}
+
+// Saving the whole save/ directory handle (Chrome/Edge File System Access)
+// so loaders start straight inside save/ instead of asking every time.
+function idbPut(key, val) {
+  return new Promise((resolve, reject) => {
+    dbOpen().then((db) => {
+      const tx = db.transaction("saves", "readwrite");
+      tx.objectStore("saves").put(val, key);
+      tx.oncomplete = () => { db.close(); resolve(); };
+      tx.onerror = () => reject(tx.error);
+    });
+  });
+}
+function idbGet(key) {
+  return new Promise((resolve, reject) => {
+    dbOpen().then((db) => {
+      const req = db.transaction("saves", "readonly").objectStore("saves").get(key);
+      req.onsuccess = () => { db.close(); resolve(req.result || null); };
+      req.onerror = () => reject(req.error);
+    });
+  });
+}
+let saveDirPromise = null;
+function getSaveDir() {
+  if (!fileDirOK) return Promise.resolve(null);
+  if (!saveDirPromise) {
+    saveDirPromise = (async () => {
+      let h = await idbGet("savedir").catch(() => null);
+      if (h) {
+        try {
+          if (await h.queryPermission({ mode: "read" }) !== "granted") {
+            await h.requestPermission({ mode: "read" });
+          }
+        } catch { h = null; }
+      }
+      if (!h) {
+        try {
+          h = await window.showDirectoryPicker({ id: "minicraft-save-dir", mode: "read" });
+          await idbPut("savedir", h).catch(() => {});
+        } catch { return null; }
+      }
+      return h;
+    })();
+    saveDirPromise.then((h) => { if (!h) saveDirPromise = null; });
+  }
+  return saveDirPromise;
+}
+
+async function pickSaveFile() {
+  apiOk = await apiOkPromise;
+  if (apiOk) {
+    if (saveName) await saveToFile();
+    return;
+  }
+  if (fileMode) {
+    try {
+      const handle = await window.showSaveFilePicker({
+        suggestedName: "minicraft.sav",
+        types: [{ description: "MiniCraft save", accept: { "application/octet-stream": [".sav"] } }],
+      });
+      try { await handle.requestPermission({ mode: "readwrite" }); } catch {}
+      saveHandle = handle;
+      await saveToFile();
+      updateAutosaveEl();
+    } catch {}
+  } else if (hasIDB) {
+    try { await storageSave(serialize()); } catch {}
+    downloadSave(serialize());
+    lastManualSave = Date.now();
+    updateAutosaveEl();
+  }
+}
+
+async function saveToFile(opts = {}) {
+  if (apiOk && saveName) {
+    try {
+      const res = await fetch("api/worlds/" + encodeURIComponent(saveName), {
+        method: "PUT", body: serialize(), keepalive: !!opts.keepalive,
+      });
+      if (res.ok) { lastManualSave = Date.now(); updateAutosaveEl(); }
+      else throw new Error("save failed");
+    } catch {
+      if (autosaveEl) autosaveEl.textContent = "Save failed — run `python3 server.py` and open http://localhost:8383";
+    }
+    return;
+  }
+  if (!canSave()) return;
+  const buf = serialize();
+  try {
+    if (fileMode) {
+      const writable = await saveHandle.createWritable();
+      await writable.write(buf);
+      await writable.close();
+    } else {
+      await storageSave(buf);
+    }
+    lastManualSave = Date.now();
+    updateAutosaveEl();
+  } catch (e) {
+    if (autosaveEl) autosaveEl.textContent = fileMode
+      ? "Autosave failed (file deleted or permission revoked) — press J to pick a new file"
+      : "Autosave failed (storage unavailable)";
+  }
+}
+
+function importSaveFile() {
+  return new Promise((resolve) => {
+    const input = document.createElement("input");
+    input.type = "file";
+    input.accept = ".sav,application/octet-stream";
+    input.style.display = "none";
+    let done = false;
+    const finish = (v) => { if (done) return; done = true; removeEventListener("focus", onFocus); resolve(v); };
+    const onFocus = () => setTimeout(() => finish(null), 400);
+    input.onchange = async () => {
+      const file = input.files && input.files[0];
+      finish(file ? { name: file.name, buf: await file.arrayBuffer() } : null);
+    };
+    document.body.appendChild(input);
+    input.click();
+    input.remove();
+    addEventListener("focus", onFocus);
+  });
+}
+
+function restoreSave(buf) {
+  deserialize(buf);
+  rebuildMeshes();
+  select(selected);
+  updateCamera();
+  lastManualSave = Date.now();
+  return true;
+}
+
+async function loadSave() {
+  apiOk = await apiOkPromise;
+  if (apiOk) {
+    if (fileDirOK) {
+      const dir = await getSaveDir();
+      if (!dir) return false;
+      const opts = {
+        startIn: dir,
+        types: [{ description: "MiniCraft save", accept: { "application/octet-stream": [".sav"] } }],
+        multiple: false,
+      };
+      try {
+        const [handle] = await window.showOpenFilePicker(opts);
+        const file = await handle.getFile();
+        saveName = normalizeWorldName(file.name) || file.name;
+        restoreSave(await file.arrayBuffer());
+        await saveToFile();
+        updateAutosaveEl();
+        return true;
+      } catch { return false; }
+    }
+    const list = await apiList();
+    const name = await pickWorld(list);
+    if (!name) return false;
+    try {
+      saveName = name;
+      restoreSave(await apiLoad(name));
+      await saveToFile();
+      updateAutosaveEl();
+      return true;
+    } catch {
+      if (autosaveEl) autosaveEl.textContent = "That file isn't a valid MiniCraft save.";
+      return false;
+    }
+  }
+  if (fileMode) {
+    try {
+      const [handle] = await window.showOpenFilePicker({
+        types: [{ description: "MiniCraft save", accept: { "application/octet-stream": [".sav"] } }],
+      });
+      saveHandle = handle;
+      const file = await handle.getFile();
+      restoreSave(await file.arrayBuffer());
+      await saveToFile();
+      updateAutosaveEl();
+      return true;
+    } catch { return false; }
+  }
+  const picked = await importSaveFile();
+  if (picked) {
+    try {
+      restoreSave(picked.buf);
+      await saveToFile();
+      updateAutosaveEl();
+      return true;
+    } catch {
+      if (autosaveEl) autosaveEl.textContent = "That file isn't a valid MiniCraft save.";
+      return false;
+    }
+  }
+  const cached = await storageLoad();
+  if (cached) {
+    try {
+      restoreSave(cached);
+      updateAutosaveEl();
+      return true;
+    } catch { return false; }
+  }
+  if (autosaveEl) autosaveEl.textContent = "No save found.";
+  return false;
+}
+
+async function regenerate() {
+  if (fileMode && !saveHandle) await pickSaveFile();
+  seed = Math.floor(Math.random() * 100000);
+  generateWorld();
+  rebuildMeshes();
+  spawnPlayer();
+  select(0);
+  updateCamera();
+  queueSave();
+}
+
+function queueSave() {
+  if (!canSave()) return;
+  const now = Date.now();
+  if (now - lastManualSave > 3000) { lastManualSave = now; saveToFile(); }
+}
+
+function enterGame() {
+  started = true;
+  updateAutosaveEl();
+  renderer.domElement.requestPointerLock();
+}
+
+setInterval(() => { if (canSave() && started) saveToFile(); }, 10000);
+addEventListener("pagehide", () => { if (canSave()) saveToFile({ keepalive: true }); });
+document.addEventListener("visibilitychange", () => { if (document.hidden && canSave()) saveToFile({ keepalive: true }); });
 
 // ---------------------------------------------------------------------------
 // UI / hotbar
@@ -574,11 +1032,14 @@ const crosshair = document.getElementById("crosshair");
 const info = document.getElementById("info");
 
 overlay.addEventListener("click", () => {
+  if (!started) return;
   renderer.domElement.requestPointerLock();
 });
 
 document.addEventListener("pointerlockchange", () => {
+  const wasLocked = locked;
   locked = document.pointerLockElement === renderer.domElement;
+  if (wasLocked && !locked && started) saveToFile();
   overlay.style.display = locked ? "none" : "flex";
   crosshair.style.display = locked ? "block" : "none";
   hotbarEl.style.display = locked ? "flex" : "none";
@@ -602,8 +1063,19 @@ document.addEventListener("keydown", (e) => {
   if (keys[e.code]) { e.preventDefault(); return; }
   keys[e.code] = true;
   if (e.code === "KeyF") flying = !flying;
-  if (e.code === "KeyR") { seed = Math.floor(Math.random() * 100000); generateWorld(); rebuildMeshes(); spawnPlayer(); }
+  if (e.code === "KeyR") regenerate();
+  if (e.code === "KeyJ") { if (started) pickSaveFile(); }
+  if (e.code === "KeyX") {
+    if (apiOk && saveName && confirm("Delete save/" + saveName + "?")) {
+      apiDelete(saveName);
+      saveName = "";
+      updateAutosaveEl();
+    } else if (!fileMode && hasIDB && confirm("Delete the stored autosave in this browser?")) {
+      storageClear();
+    }
+  }
   if (e.code === "KeyP") { vel.set(0, 0, 0); spawnPlayer(); }
+  if (e.code === "Escape") { if (saveName) saveToFile(); }
   if (e.code === "KeyE") { select((selected + 1) % HOTBAR.length); }
   if (e.code === "KeyQ") { select((selected - 1 + HOTBAR.length) % HOTBAR.length); }
   const n = parseInt(e.key, 10);
@@ -613,6 +1085,39 @@ document.addEventListener("keydown", (e) => {
 });
 document.addEventListener("keyup", (e) => { keys[e.code] = false; });
 document.addEventListener("contextmenu", (e) => e.preventDefault());
+
+document.getElementById("btnNew").addEventListener("click", async (e) => {
+  e.stopPropagation();
+  apiOk = await apiOkPromise;
+  if (apiOk) {
+    const name = await askName("New World", "world");
+    if (!name) return;
+    const existing = await apiList();
+    if (existing.some((w) => w.name === name) && !confirm("Overwrite existing save '" + name.replace(/\.sav$/i, "") + "'?")) return;
+    saveName = name;
+    seed = Math.floor(Math.random() * 100000);
+    generateWorld();
+    rebuildMeshes();
+    spawnPlayer();
+    select(0);
+    updateCamera();
+    enterGame();
+    await saveToFile();
+    return;
+  }
+  if (fileMode) await pickSaveFile();
+  seed = Math.floor(Math.random() * 100000);
+  generateWorld();
+  rebuildMeshes();
+  spawnPlayer();
+  select(0);
+  updateCamera();
+  enterGame();
+});
+document.getElementById("btnLoad").addEventListener("click", async (e) => {
+  e.stopPropagation();
+  if (await loadSave()) enterGame();
+});
 
 addEventListener("resize", () => {
   camera.aspect = innerWidth / innerHeight;
@@ -646,8 +1151,5 @@ function loop(now) {
 }
 
 let dt = 0.016;
-generateWorld();
-rebuildMeshes();
-spawnPlayer();
 buildHotbar();
 requestAnimationFrame(loop);

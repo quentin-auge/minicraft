@@ -1,0 +1,8 @@
+{
+  "name": "minicraft",
+  "private": true,
+  "type": "commonjs",
+  "scripts": {
+    "start": "python3 server.py"
+  }
+}
