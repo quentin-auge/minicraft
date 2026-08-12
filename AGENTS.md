@@ -59,14 +59,18 @@ small Python server for saving/loading worlds.
   flying is forbidden in the End, and free-cam (F) is disabled there; you
   land just short of the return portal (cooldown + zeroed movement prevent an
   instant round-trip).
-- **Ender Dragon**: ambient dragon that spawns in the End and wanders randomly
-  over the platform (target waypoints, banking turns). Built from Three.js
-  primitives only — black scaled body, segmented neck and head with glowing
-  purple eyes (unlit), crest plate and horns, translucent purple bat-wing
-  membranes (mirrored), and a segmented forked tail; shared geometries/
-  materials. Animated via body bob, neck/head sway, tail wave and wing flap.
-  Purely decorative — no HP bar or boss fight. Resources are disposed when
-  leaving the End.
+- **Ender Dragon**: ambient dragon that spawns in the End and flies along a
+  random closed aerial path (arc-length-sampled Catmull-Rom spline through
+  random waypoints, low "skim the floor" runs and high soars, banking turns
+  and dives), re-picking a fresh trajectory each lap. Its path stays clamped
+  above the platform surface and inside its footprint, so it never clips
+  through the platform. Built from Three.js primitives only — black scaled
+  body, segmented neck and head with glowing purple eyes (unlit), crest plate
+  and horns, translucent purple bat-wing membranes (mirrored), and a
+  segmented forked tail; shared geometries/materials. Animated via
+  spline-driven yaw/pitch/bank orientation, wing flap with speed, neck/head
+  sway, tail wave and body bob. Purely decorative — no HP bar or boss fight.
+  Resources are disposed when leaving the End.
 - **Save/load**: binary format (`SAVE_MAGIC`, version 2) capturing world
   blocks, dim, seeds, player pos/yaw/pitch, fly state, hotbar selection.
   Backends: File System Access API (`pickSaveFile`/`saveToFile`),

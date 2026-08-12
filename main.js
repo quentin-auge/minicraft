@@ -1050,12 +1050,20 @@ function checkPortal() {
 // ---------------------------------------------------------------------------
 // Ender Dragon (ambient)
 // ---------------------------------------------------------------------------
-const dragon = { mesh: null, target: null, wingL: null, wingR: null, neck: null, head: null, tail: null };
+const dragon = {
+  mesh: null, wingL: null, wingR: null, neck: null, neckBaseX: 0, head: null, tail: null,
+  path: null, s: 0, seg: 0, yaw: 0, pitch: 0, bank: 0, prevYaw: 0, t: 0,
+};
 const dragonMat = (color, opts = {}) =>
   new THREE.MeshStandardMaterial(Object.assign({ color, roughness: 0.5, metalness: 0.08 }, opts));
 let dragonUnitGeo = null;
 let dragonMemGeo = null;
 const dragonVec = new THREE.Vector3();
+const dragonA = new THREE.Vector3();
+const dragonB = new THREE.Vector3();
+const DRAGON_SPEED = 8;
+const DRAGON_SKIM_Y = END_PLATFORM_TOP + 2.2;
+const DRAGON_SOAR_Y = END_PLATFORM_TOP + 5;
 
 function dragonBox(parent, mat, sx, sy, sz, px, py, pz, rx = 0, ry = 0, rz = 0) {
   const m = new THREE.Mesh(dragonUnitGeo, mat);
@@ -1086,6 +1094,7 @@ function makeDragonMembraneGeo() {
 function spawnDragon() {
   if (dragon.mesh) return;
   const g = new THREE.Group();
+  g.rotation.order = "YXZ";
   dragonUnitGeo = new THREE.BoxGeometry(1, 1, 1);
   dragonMemGeo = makeDragonMembraneGeo();
   const bodyMat = dragonMat(0x17171f);
@@ -1174,9 +1183,11 @@ function spawnDragon() {
   scene.add(g);
   dragon.mesh = g;
   dragon.wingL = wL; dragon.wingR = wR;
-  dragon.neck = neck; dragon.head = head; dragon.tail = tailSegs;
+  dragon.neck = neck; dragon.neckBaseX = neck.rotation.x; dragon.head = head; dragon.tail = tailSegs;
+  dragon.path = null; dragon.yaw = 0; dragon.pitch = 0; dragon.bank = 0; dragon.prevYaw = 0; dragon.t = 0;
   dragon.mesh.position.set(0, END_PLATFORM_TOP + 3, 0);
-  dragon.target = pickDragonTarget();
+  dragon.s = 0;
+  buildDragonPath();
 }
 
 function removeDragon() {
@@ -1189,48 +1200,120 @@ function removeDragon() {
   dragon.mesh = null;
   dragon.wingL = null; dragon.wingR = null;
   dragon.neck = null; dragon.head = null; dragon.tail = null;
+  dragon.path = null;
 }
 
-function pickDragonTarget() {
-  const a = Math.random() * Math.PI * 2;
-  const r = 3 + Math.random() * (END_PLATFORM_R - 4);
-  const p = new THREE.Vector3(Math.cos(a) * r, END_PLATFORM_TOP + 3 + Math.random() * 4, Math.sin(a) * r);
-  if (dragon.mesh && dragon.target && p.distanceToSquared(dragon.target) < 25) return pickDragonTarget();
-  return p;
+function dragonCatmull(p0, p1, p2, p3, u, out) {
+  const u2 = u * u, u3 = u2 * u;
+  out.set(
+    0.5 * (2 * p1.x + (-p0.x + p2.x) * u + (2 * p0.x - 5 * p1.x + 4 * p2.x - p3.x) * u2 + (-p0.x + 3 * p1.x - 3 * p2.x + p3.x) * u3),
+    0.5 * (2 * p1.y + (-p0.y + p2.y) * u + (2 * p0.y - 5 * p1.y + 4 * p2.y - p3.y) * u2 + (-p0.y + 3 * p1.y - 3 * p2.y + p3.y) * u3),
+    0.5 * (2 * p1.z + (-p0.z + p2.z) * u + (2 * p0.z - 5 * p1.z + 4 * p2.z - p3.z) * u2 + (-p0.z + 3 * p1.z - 3 * p2.z + p3.z) * u3)
+  );
+}
+
+function buildDragonPath() {
+  const N = 6 + (Math.random() * 3 | 0);
+  const base = Math.random() * Math.PI * 2;
+  const lowBias = Math.random() < 0.35 ? 0.72 : 0.42;
+  const pts = [];
+  for (let i = 0; i < N; i++) {
+    const a = base + (i / N) * Math.PI * 2 + (Math.random() - 0.5) * 0.8;
+    const r = 5 + Math.random() * (END_PLATFORM_R - 10);
+    pts.push(new THREE.Vector3(
+      Math.cos(a) * r,
+      Math.random() < lowBias ? DRAGON_SKIM_Y + Math.random() * 1.2 : DRAGON_SOAR_Y + Math.random() * 3.2,
+      Math.sin(a) * r
+    ));
+  }
+  pts[0].copy(dragon.mesh.position);
+  const n = 180, pos = new Array(n), tmp = new THREE.Vector3();
+  const RMAX2 = (END_PLATFORM_R - 1) ** 2;
+  for (let k = 0; k < n; k++) {
+    const u = (k / n) * N, i = Math.floor(u), t = u - i;
+    dragonCatmull(pts[(i - 1 + N) % N], pts[i % N], pts[(i + 1) % N], pts[(i + 2) % N], t, tmp);
+    tmp.y = Math.max(tmp.y, DRAGON_SKIM_Y);
+    const r2 = tmp.x * tmp.x + tmp.z * tmp.z;
+    if (r2 > RMAX2) { const sc = Math.sqrt(RMAX2 / r2); tmp.x *= sc; tmp.z *= sc; }
+    pos[k] = tmp.clone();
+  }
+  const dist = new Array(n);
+  dist[0] = 0;
+  let len = 0;
+  for (let k = 1; k < n; k++) { len += pos[k].distanceTo(pos[k - 1]); dist[k] = len; }
+  len += pos[0].distanceTo(pos[n - 1]);
+  dragon.path = { pos, dist, len };
+  dragon.s = 0;
+  dragon.seg = 0;
+}
+
+function dragonPathPoint(d, out) {
+  const P = dragon.path, n = P.pos.length;
+  d = ((d % P.len) + P.len) % P.len;
+  let i = dragon.seg;
+  while (i > 0 && d < P.dist[i]) i--;
+  while (i < n - 1 && d > P.dist[i + 1]) i++;
+  dragon.seg = i;
+  const i1 = i + 1 < n ? i + 1 : 0;
+  const span = i1 > i ? P.dist[i1] - P.dist[i] : P.len - P.dist[i];
+  const t = span > 1e-6 ? (d - P.dist[i]) / span : 0;
+  out.lerpVectors(P.pos[i], P.pos[i1], t);
 }
 
 function updateDragon(dt) {
   if (!dragon.mesh) return;
   const M = dragon.mesh;
-  if (!dragon.target || M.position.distanceTo(dragon.target) < 0.6) {
-    dragon.target = pickDragonTarget();
-    return;
-  }
-  M.position.lerp(dragon.target, Math.min(1, dt * 0.35));
-  const dir = dragonVec.subVectors(dragon.target, M.position).setY(0);
-  if (dir.lengthSq() > 0.0001) {
-    const heading = Math.atan2(-dir.x, -dir.z);
-    let d = heading - M.rotation.y;
-    while (d > Math.PI) d -= Math.PI * 2;
-    while (d < -Math.PI) d += Math.PI * 2;
-    M.rotation.y += d * Math.min(1, dt * 2);
-    M.rotation.z = -Math.sin(heading) * 0.08;
-  }
-  const t = performance.now() * 0.001;
-  M.position.y += Math.sin(t * 1.6) * 0.12;
-  M.rotation.x = Math.sin(t * 1.6) * 0.05;
-  const f = Math.sin(t * 2.4) * 0.65;
-  dragon.wingL.rotation.z = f; dragon.wingR.rotation.z = -f;
+  dt = Math.min(0.05, dt);
+  const t = (dragon.t += dt);
+
+  if (!dragon.path) buildDragonPath();
+  const P = dragon.path;
+
+  dragon.s += DRAGON_SPEED * (0.85 + Math.sin(t * 0.4) * 0.15) * dt;
+  if (dragon.s >= P.len) buildDragonPath();
+
+  dragonPathPoint(dragon.s, dragonA);
+  dragonPathPoint(dragon.s + 0.9, dragonB);
+  const fwd = dragonVec.subVectors(dragonB, dragonA).normalize();
+
+  const targetYaw = Math.atan2(fwd.x, fwd.z);
+  let d = targetYaw - dragon.yaw;
+  while (d > Math.PI) d -= Math.PI * 2;
+  while (d < -Math.PI) d += Math.PI * 2;
+  dragon.yaw += d * Math.min(1, dt * 5);
+  dragon.pitch += (-Math.asin(THREE.MathUtils.clamp(fwd.y, -1, 1)) * 0.8 - dragon.pitch) * Math.min(1, dt * 6);
+  let turn = dragon.yaw - dragon.prevYaw;
+  while (turn > Math.PI) turn -= Math.PI * 2;
+  while (turn < -Math.PI) turn += Math.PI * 2;
+  dragon.prevYaw = dragon.yaw;
+  dragon.bank += (THREE.MathUtils.clamp(-turn / Math.max(dt, 1e-4) * 0.35, -0.65, 0.65) - dragon.bank) * Math.min(1, dt * 3.5);
+
+  M.position.copy(dragonA);
+  M.position.y += Math.sin(t * 1.9) * 0.1;
+  if (M.position.y < DRAGON_SKIM_Y) M.position.y = DRAGON_SKIM_Y;
+  M.rotation.y = dragon.yaw;
+  M.rotation.x = dragon.pitch;
+  M.rotation.z = dragon.bank;
+
+  const flapRate = 2.4 + Math.sin(t * 0.35) * 0.8;
+  const amp = Math.max(0.2, 0.8 - Math.abs(fwd.y) * 0.9);
+  const f = Math.sin(t * flapRate) * (0.5 + amp * 0.5);
+  dragon.wingL.rotation.z = f;
+  dragon.wingR.rotation.z = -f;
+  dragon.wingL.rotation.y = 0.12 + f * 0.1;
+  dragon.wingR.rotation.y = -0.12 - f * 0.1;
+
   if (dragon.neck) {
-    dragon.neck.rotation.z = Math.sin(t * 0.8) * 0.06;
+    dragon.neck.rotation.z = Math.sin(t * 0.8) * 0.05;
+    dragon.neck.rotation.x = dragon.neckBaseX + fwd.y * 0.35;
     dragon.head.rotation.y = Math.sin(t * 0.55) * 0.12;
-    dragon.head.rotation.x = Math.cos(t * 0.7) * 0.04;
+    dragon.head.rotation.x = Math.cos(t * 0.7) * 0.05;
   }
   if (dragon.tail)
     for (let i = 0; i < dragon.tail.length; i++) {
       const seg = dragon.tail[i];
       const k = (i + 1) / dragon.tail.length;
-      seg.rotation.y = Math.sin(t * 3 - i * 0.7) * 0.28 * k;
+      seg.rotation.y = Math.sin(t * 3 - i * 0.7) * 0.25 * k;
       seg.rotation.x = Math.sin(t * 2.2 + i * 0.9) * 0.12 * k;
     }
 }
