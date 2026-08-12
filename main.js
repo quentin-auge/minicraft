@@ -1508,16 +1508,15 @@ document.addEventListener("mousedown", (e) => {
 
 const helpEl = document.getElementById("help");
 let helpOpen = false;
-function toggleHelp() {
-  helpOpen = !helpOpen;
-  helpEl.style.display = helpOpen ? "flex" : "none";
-}
-helpEl.querySelector("#btnHelpClose").addEventListener("click", toggleHelp);
+function openHelp() { helpOpen = true; helpEl.style.display = "flex"; }
+function closeHelp() { helpOpen = false; helpEl.style.display = "none"; }
+helpEl.querySelector("#btnHelpClose").addEventListener("click", closeHelp);
 
 document.addEventListener("keydown", (e) => {
+  if (e.code === "KeyH" && !helpOpen && !keys[e.code]) { openHelp(); e.preventDefault(); }
   if (keys[e.code]) { e.preventDefault(); return; }
   if (helpOpen) {
-    if (e.code === "Escape") { helpOpen = false; helpEl.style.display = "none"; }
+    if (e.code === "Escape") { closeHelp(); }
     return;
   }
   keys[e.code] = true;
