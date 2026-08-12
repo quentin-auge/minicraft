@@ -189,6 +189,7 @@ function faceTex(map, opts = {}) {
 const WORLD_RADIUS = 48;
 const WORLD_SIZE = WORLD_RADIUS * 2 + 1;
 const WATER_LEVEL = 10;
+const END_PLATFORM_TOP = 20;
 let seed = Math.floor(Math.random() * 100000);
 let endSeed = Math.floor(Math.random() * 100000);
 
@@ -254,7 +255,7 @@ function generateEnd() {
   const w = worlds.end;
   w.clear();
   const R = 24;  // 2x larger platform
-  const top = 20;
+  const top = END_PLATFORM_TOP;
   for (let x = -R; x <= R; x++)
     for (let z = -R; z <= R; z++)
       for (let y = top - 2; y <= top; y++) w.set(key(x, y, z), STONE);
@@ -441,6 +442,7 @@ function collide() {
 }
 
 function updatePlayer(dt) {
+  if (dim === "end") flying = false;
   const fwd = new THREE.Vector3(-Math.sin(yaw), 0, -Math.cos(yaw));
   const right = new THREE.Vector3(Math.cos(yaw), 0, -Math.sin(yaw));
   const move = new THREE.Vector3();
@@ -781,7 +783,36 @@ function tickEffects(dt) {
 // ---------------------------------------------------------------------------
 let portalCd = 0;
 let returnPortalBuilt = false;
+let prePortalFly = false;
 let overPortalSpawn = { x: 0.5, y: 1.01, z: 0.5 };
+const END_SPAWN = { x: 0.5, y: END_PLATFORM_TOP + 1.6, z: 8 };
+let endPortalFill = null;
+
+function buildReturnPortal() {
+  for (let x = -2; x <= 2; x++)
+    for (let z = -2; z <= 2; z++) {
+      const isCorner = (x === -2 && z === -2) || (x === -2 && z === 2) || (x === 2 && z === -2) || (x === 2 && z === 2);
+      const isEdge = x === -2 || x === 2 || z === -2 || z === 2;
+      if (isEdge && !isCorner) setBlock(x, END_PLATFORM_TOP + 1, z, PORTAL);
+    }
+  ensureEndPortalFill();
+  returnPortalBuilt = true;
+}
+
+function ensureEndPortalFill() {
+  if (endPortalFill) return;
+  const g = new THREE.Group();
+  const geo = new THREE.BoxGeometry(0.98, 0.98, 0.98);
+  const mat = new THREE.MeshBasicMaterial({ color: 0x000000 });
+  for (let x = -1; x <= 1; x++)
+    for (let z = -1; z <= 1; z++) {
+      const m = new THREE.Mesh(geo, mat);
+      m.position.set(x + 0.5, END_PLATFORM_TOP + 1.5, z + 0.5);
+      g.add(m);
+    }
+  scene.add(g);
+  endPortalFill = g;
+}
 
 function setDimensionEnv() {
   if (dim === "end") {
@@ -797,16 +828,6 @@ function setDimensionEnv() {
   }
 }
 
-function buildReturnPortal() {
-  for (let x = -2; x <= 2; x++)
-    for (let z = -2; z <= 2; z++) {
-      const isCorner = (x === -2 && z === -2) || (x === -2 && z === 2) || (x === 2 && z === -2) || (x === 2 && z === 2);
-      const isEdge = x === -2 || x === 2 || z === -2 || z === 2;
-      if (isEdge && !isCorner) setBlock(x, 21, z, PORTAL);
-    }
-  returnPortalBuilt = true;
-}
-
 function goToDimension(name, sx, sy, sz) {
   dim = name;
   world = worlds[name];
@@ -815,9 +836,12 @@ function goToDimension(name, sx, sy, sz) {
     if (!returnPortalBuilt) buildReturnPortal();
     if (!dragon.alive) spawnDragon();
     setDimensionEnv();
+    prePortalFly = flying;
+    flying = false;
   } else {
     setDimensionEnv();
     if (dragon.alive) { scene.remove(dragon.mesh); dragon.mesh = null; dragon.alive = false; }
+    flying = prePortalFly;
   }
   rebuildMeshes();
   pos.set(sx, sy, sz);
@@ -879,7 +903,7 @@ function hidePortalFill() {
 }
 
 function updatePortalVisual() {
-  if (freeCam) { hidePortalFill(); return; }
+  if (freeCam || dim === "end") { hidePortalFill(); return; }
   const bx = Math.floor(pos.x), bz = Math.floor(pos.z);
   const by = Math.floor(pos.y + 0.9);
   let win = null;
@@ -895,6 +919,39 @@ function updatePortalVisual() {
   }
 }
 
+function nearPortalSpawn(win, dir) {
+  const cx = win.minX + 2, cz = win.minZ + 2;
+  const inInterior = (sx, sz) => sx >= win.minX + 1 && sx <= win.minX + 3 && sz >= win.minZ + 1 && sz <= win.minZ + 3;
+  const spot = (sx, sz) => {
+    if (inInterior(sx, sz)) return null;
+    if (isSolid(sx, win.by, sz) || isSolid(sx, win.by + 1, sz)) return null;
+    if (!isSolid(sx, win.by - 1, sz)) return null;
+    return { x: sx + 0.5, y: win.by, z: sz + 0.5 };
+  };
+  const n = Math.hypot(dir.x, dir.z) || 1;
+  const dx = dir.x / n, dz = dir.z / n;
+  for (let d = 3; d <= 6; d++) {
+    const cands = [
+      { x: cx + Math.round(dx * d), z: cz + Math.round(dz * d) },
+      { x: cx - Math.round(dx * d), z: cz - Math.round(dz * d) },
+      { x: cx - Math.round(dz * d), z: cz + Math.round(dx * d) },
+      { x: cx + Math.round(dz * d), z: cz - Math.round(dx * d) },
+    ];
+    for (const c of cands) {
+      const s = spot(c.x, c.z);
+      if (s) return s;
+    }
+  }
+  for (let r = 3; r <= 12; r++)
+    for (let ox = -r; ox <= r; ox++)
+      for (let oz = -r; oz <= r; oz++) {
+        if (Math.max(Math.abs(ox), Math.abs(oz)) !== r) continue;
+        const s = spot(cx + ox, cz + oz);
+        if (s) return s;
+      }
+  return { x: win.minX + 0.5, y: win.by, z: win.minZ - 0.5 };
+}
+
 function checkPortal() {
   if (portalCd > 0 || freeCam) return;
   const bx = Math.floor(pos.x), bz = Math.floor(pos.z);
@@ -903,8 +960,16 @@ function checkPortal() {
   if (!win) return;
   if (bx < win.minX + 1 || bx > win.minX + 3 || bz < win.minZ + 1 || bz > win.minZ + 3) return;
   if (dim === "over") {
-    overPortalSpawn = { x: win.minX + 1.5, y: win.by + 1.01, z: win.minZ + 1.5 };
-    goToDimension("end", 0.5, 21.6, 4);
+    const forward = new THREE.Vector3(-Math.sin(yaw), 0, -Math.cos(yaw));
+    const right = new THREE.Vector3(Math.cos(yaw), 0, -Math.sin(yaw));
+    let ddx = 0, ddz = 0;
+    if (keys["ArrowUp"]) { ddx += forward.x; ddz += forward.z; }
+    if (keys["ArrowDown"]) { ddx -= forward.x; ddz -= forward.z; }
+    if (keys["ArrowRight"]) { ddx += right.x; ddz += right.z; }
+    if (keys["ArrowLeft"]) { ddx -= right.x; ddz -= right.z; }
+    if (ddx === 0 && ddz === 0) { ddx = forward.x; ddz = forward.z; }
+    overPortalSpawn = nearPortalSpawn(win, { x: ddx, z: ddz });
+    goToDimension("end", END_SPAWN.x, END_SPAWN.y, END_SPAWN.z);
     showMsg("You arrived in The End");
   } else {
     goToDimension("over", overPortalSpawn.x, overPortalSpawn.y, overPortalSpawn.z);
@@ -1376,7 +1441,7 @@ function restoreSave(buf) {
   setDimensionEnv();
   updateDimLabel();
   updateBossBar();
-  if (dim === "end") { returnPortalBuilt = true; if (!dragon.alive) spawnDragon(); }
+  if (dim === "end") { returnPortalBuilt = true; ensureEndPortalFill(); if (!dragon.alive) spawnDragon(); }
   lastManualSave = Date.now();
   return true;
 }
@@ -1459,6 +1524,7 @@ function resetDims() {
   worlds.end.clear();
   returnPortalBuilt = false;
   overPortalSpawn = { x: 0.5, y: 1.01, z: 0.5 };
+  if (endPortalFill) { scene.remove(endPortalFill); endPortalFill = null; }
   if (dragon.alive) { scene.remove(dragon.mesh); dragon.mesh = null; dragon.alive = false; }
   setDimensionEnv();
   updateDimLabel();

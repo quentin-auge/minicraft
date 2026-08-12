@@ -48,7 +48,9 @@ small Python server for saving/loading worlds.
   destroyed/tossed and particle flashes.
 - **Portals / dimensions**: build a 5×5 frame (4 sides, corners optional),
   walk into its 3×3 interior to jump to the End; solid black fill marks an
-  active portal. Return portal is auto-built at the End spawn.
+  active portal. Return portal is auto-built at the End spawn with the same
+  black-fill look; returning drops you beside the Overworld portal (never on
+  it) and flying is forbidden in the End.
 - **Ender Dragon**: boss spawning at the End spawn, circling flight with
   arms/wings animation, HP bar, and a dragon boss fight (blue `dragon`
   boss bar in HUD).
