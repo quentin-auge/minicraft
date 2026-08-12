@@ -791,6 +791,7 @@ function tickEffects(dt) {
 let portalCd = 0;
 let prePortalFly = false;
 let overPortalSpawn = { x: 0.5, y: 1.01, z: 0.5 };
+let overPortalFace = null;
 const END_SPAWN = { x: 0.5, y: END_PLATFORM_TOP + 1.6, z: END_RETURN_Z - 3 };
 const END_RETURN_BASE_Y = END_PLATFORM_TOP + 1;
 
@@ -832,6 +833,12 @@ function goToDimension(name, sx, sy, sz) {
     setDimensionEnv();
     if (dragon.mesh) { scene.remove(dragon.mesh); dragon.mesh = null; }
     flying = prePortalFly;
+    if (overPortalFace == null) {
+      const w = findPortalWindow(Math.floor(overPortalSpawn.x), Math.floor(overPortalSpawn.y + 0.25), Math.floor(overPortalSpawn.z));
+      if (w) yaw = Math.atan2(-(w.minX + 2.5 - overPortalSpawn.x), -(w.minZ + 2.5 - overPortalSpawn.z));
+    } else {
+      yaw = overPortalFace;
+    }
   }
   if (freeCam) { freeCam = false; }
   Object.keys(keys).forEach((k) => { keys[k] = false; });
@@ -1008,6 +1015,7 @@ function checkPortal() {
     if (keys["ArrowLeft"]) { ddx -= right.x; ddz -= right.z; }
     if (ddx === 0 && ddz === 0) { ddx = forward.x; ddz = forward.z; }
     overPortalSpawn = nearPortalSpawn(win, { x: ddx, z: ddz });
+    overPortalFace = Math.atan2(-(win.minX + 2.5 - overPortalSpawn.x), -(win.minZ + 2.5 - overPortalSpawn.z));
     goToDimension("end", END_SPAWN.x, END_SPAWN.y, END_SPAWN.z);
     showMsg("You arrived in The End");
   } else {
@@ -1562,6 +1570,7 @@ function resetDims() {
   world = worlds.over;
   worlds.end.clear();
   overPortalSpawn = { x: 0.5, y: 1.01, z: 0.5 };
+  overPortalFace = null;
   if (dragon.mesh) { scene.remove(dragon.mesh); dragon.mesh = null; }
   setDimensionEnv();
   updateDimLabel();
