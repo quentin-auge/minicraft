@@ -16,7 +16,7 @@ const BLOCK_INFO = {
   [PLANKS]: { name: "Planks",  solid: true,  opaque: true,  placeable: true },
   [GLASS]:  { name: "Glass",   solid: true,  opaque: false, placeable: true },
   [TNT]:    { name: "TNT",     solid: true,  opaque: true,  placeable: true },
-  [PORTAL]: { name: "Portal",  solid: false, opaque: false, placeable: true },
+  [PORTAL]: { name: "Portal",  solid: true,  opaque: false, placeable: true },
 };
 
 // ---------------------------------------------------------------------------
@@ -797,9 +797,12 @@ function setDimensionEnv() {
 }
 
 function buildReturnPortal() {
-  for (let x = -1; x <= 1; x++)
-    for (let z = -1; z <= 1; z++)
-      setBlock(x, 21, z, PORTAL);
+  for (let x = -2; x <= 2; x++)
+    for (let z = -2; z <= 2; z++) {
+      const isCorner = (x === -2 && z === -2) || (x === -2 && z === 2) || (x === 2 && z === -2) || (x === 2 && z === 2);
+      const isEdge = x === -2 || x === 2 || z === -2 || z === 2;
+      if (isEdge && !isCorner) setBlock(x, 21, z, PORTAL);
+    }
   returnPortalBuilt = true;
 }
 
@@ -825,31 +828,68 @@ function goToDimension(name, sx, sy, sz) {
   updateDimLabel();
 }
 
+function findPortalWindow(bx, by, bz) {
+  for (let wx = -1; wx <= 1; wx++)
+    for (let wz = -1; wz <= 1; wz++) {
+      const minX = bx + wx, minZ = bz + wz;
+      const maxX = minX + 4, maxZ = minZ + 4;
+      let ok = true;
+      for (let x = minX; x <= maxX && ok; x++)
+        for (let z = minZ; z <= maxZ && ok; z++) {
+          const isCorner = (x === minX && z === minZ) || (x === minX && z === maxZ) || (x === maxX && z === minZ) || (x === maxX && z === maxZ);
+          const isEdge = x === minX || x === maxX || z === minZ || z === maxZ;
+          if (isCorner) continue;
+          const id = getBlock(x, by, z);
+          if (isEdge) { if (id !== PORTAL) ok = false; }
+          else { if (id !== AIR) ok = false; }
+        }
+      if (ok) return { minX, minZ, by };
+    }
+  return null;
+}
+
+let portalGlow = null;
+
+function syncPortalGlow(win) {
+  if (!win) { clearPortalGlow(); return; }
+  const key = `${win.minX},${win.minZ},${win.by}`;
+  if (portalGlow && portalGlow.userData.key === key) return;
+  clearPortalGlow();
+  const geo = new THREE.PlaneGeometry(3, 3);
+  const mat = new THREE.MeshBasicMaterial({ color: 0x00ff00, transparent: true, opacity: 0.25, side: THREE.DoubleSide, depthWrite: false, blending: THREE.AdditiveBlending });
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.rotation.x = -Math.PI / 2;
+  mesh.position.set(win.minX + 2, win.by + 0.55, win.minZ + 2);
+  mesh.userData.key = key;
+  scene.add(mesh);
+  portalGlow = mesh;
+}
+
+function clearPortalGlow() {
+  if (portalGlow) {
+    scene.remove(portalGlow);
+    portalGlow.geometry.dispose();
+    portalGlow.material.dispose();
+    portalGlow = null;
+  }
+}
+
+function updatePortalVisual() {
+  if (dim !== "over" || freeCam) { clearPortalGlow(); return; }
+  const bx = Math.floor(pos.x), bz = Math.floor(pos.z);
+  const by = Math.floor(pos.y + 0.9);
+  syncPortalGlow(findPortalWindow(bx, by, bz));
+}
+
 function checkPortal() {
   if (portalCd > 0 || freeCam) return;
   const bx = Math.floor(pos.x), bz = Math.floor(pos.z);
   const by = Math.floor(pos.y + 0.9);
-  const minX = bx - 2, maxX = bx + 2;
-  const minZ = bz - 2, maxZ = bz + 2;
-  let perimeterOk = true;
-  let interiorOk = true;
-  for (let x = minX; x <= maxX && (perimeterOk || interiorOk); x++) {
-    for (let z = minZ; z <= maxZ && (perimeterOk || interiorOk); z++) {
-      const isCorner = (x === minX && z === minZ) || (x === minX && z === maxZ) || (x === maxX && z === minZ) || (x === maxX && z === maxZ);
-      const isPerim = x === minX || x === maxX || z === minZ || z === maxZ;
-      const id = getBlock(x, by, z);
-      if (isCorner) continue;
-      if (isPerim) {
-        if (id !== PORTAL) perimeterOk = false;
-      } else {
-        if (id !== AIR) interiorOk = false;
-      }
-    }
-  }
-  if (!perimeterOk || !interiorOk) return;
-  const cx = minX + 1, cz = minZ + 1;
+  const win = findPortalWindow(bx, by, bz);
+  if (!win) return;
+  if (bx < win.minX + 1 || bx > win.minX + 3 || bz < win.minZ + 1 || bz > win.minZ + 3) return;
   if (dim === "over") {
-    overPortalSpawn = { x: cx + 0.5, y: by + 1.01, z: cz + 0.5 };
+    overPortalSpawn = { x: win.minX + 1.5, y: win.by + 1.01, z: win.minZ + 1.5 };
     goToDimension("end", 0.5, 21.6, 4);
     showMsg("You arrived in The End");
   } else {
@@ -1592,6 +1632,7 @@ function loop(now) {
   tickTNT(dt);
   tickEffects(dt);
   if (portalCd > 0) portalCd -= dt;
+  updatePortalVisual();
   checkPortal();
   if (dim === "end") updateDragon(dt);
   if (toastTimer > 0) { toastTimer -= dt; if (toastTimer <= 0) toastEl.style.opacity = "0"; }
@@ -1601,6 +1642,7 @@ function loop(now) {
     const o = 0.55 + 0.1 * Math.sin(now * 0.002);
     for (const m of instanced[WATER].material) m.opacity = o;
   }
+  if (portalGlow) portalGlow.material.opacity = 0.2 + 0.1 * Math.sin(now * 0.004);
 
   renderer.render(scene, camera);
 }
