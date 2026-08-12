@@ -11,6 +11,9 @@ small Python server for saving/loading worlds.
 - Run the game: `python3 server.py` (or `npm start`) → http://localhost:8383
 - The server serves static files and exposes `GET/PUT/DELETE /api/worlds/<name>.sav`.
 - No build step, no lint/test/typecheck scripts are configured.
+- There is no Node runtime installed on this machine — you cannot run JS with
+  `node`. For quick syntax checks use Python scripts or `osascript -l JavaScript`
+  (macOS JavaScriptCore, ES2017-flavored); verify game logic in the browser.
 
 ## Project Structure
 
