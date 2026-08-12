@@ -1499,10 +1499,6 @@ function buildHotbar() {
     const img = document.createElement("img");
     img.src = iconSrc(id);
     slot.appendChild(img);
-    const keyEl = document.createElement("div");
-    keyEl.className = "key";
-    keyEl.textContent = i === 8 ? "0" : i + 1;
-    slot.appendChild(keyEl);
     slot.addEventListener("click", () => select(i));
     hotbarEl.appendChild(slot);
   });
