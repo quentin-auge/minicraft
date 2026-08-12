@@ -802,6 +802,7 @@ function buildReturnPortal() {
       const isEdge = x === -2 || x === 2 || y === 0 || y === 4;
       if (isEdge && !isCorner) setBlock(x, END_RETURN_BASE_Y + y, END_RETURN_Z, PORTAL);
     }
+  endReturnWin = { minX: -2, minY: END_RETURN_BASE_Y, minZ: END_RETURN_Z };
 }
 
 function setDimensionEnv() {
@@ -832,7 +833,7 @@ function goToDimension(name, sx, sy, sz) {
     pitch = 0;
   } else {
     setDimensionEnv();
-    if (dragon.mesh) { scene.remove(dragon.mesh); dragon.mesh = null; }
+    if (dragon.mesh) removeDragon();
     flying = prePortalFly;
     if (overPortalFace == null) {
       const w = findPortalWindow(Math.floor(overPortalSpawn.x), Math.floor(overPortalSpawn.y + 0.25), Math.floor(overPortalSpawn.z));
@@ -853,44 +854,52 @@ function goToDimension(name, sx, sy, sz) {
   updateDimLabel();
 }
 
+function winOk(minX, minZ, by) {
+  for (let x = minX; x <= minX + 4; x++)
+    for (let z = minZ; z <= minZ + 4; z++) {
+      const isCorner = (x === minX || x === minX + 4) && (z === minZ || z === minZ + 4);
+      const isEdge = x === minX || x === minX + 4 || z === minZ || z === minZ + 4;
+      if (isCorner) continue;
+      const id = getBlock(x, by, z);
+      if (isEdge) { if (id !== PORTAL) return false; }
+      else { if (id !== AIR) return false; }
+    }
+  return true;
+}
+
 function findPortalWindow(bx, by, bz) {
   for (let wx = -3; wx <= 1; wx++)
-    for (let wz = -3; wz <= 1; wz++) {
-      const minX = bx + wx, minZ = bz + wz;
-      const maxX = minX + 4, maxZ = minZ + 4;
-      let ok = true;
-      for (let x = minX; x <= maxX && ok; x++)
-        for (let z = minZ; z <= maxZ && ok; z++) {
-          const isCorner = (x === minX && z === minZ) || (x === minX && z === maxZ) || (x === maxX && z === minZ) || (x === maxX && z === maxZ);
-          const isEdge = x === minX || x === maxX || z === minZ || z === maxZ;
-          if (isCorner) continue;
-          const id = getBlock(x, by, z);
-          if (isEdge) { if (id !== PORTAL) ok = false; }
-          else { if (id !== AIR) ok = false; }
-        }
-      if (ok) return { minX, minZ, by };
-    }
+    for (let wz = -3; wz <= 1; wz++)
+      if (winOk(bx + wx, by, bz + wz)) return { minX: bx + wx, minZ: bz + wz, by };
   return null;
 }
 
-function findVPortalWindow(bx, by, bz) {
-  for (let wz = -8; wz <= 8; wz++)
-    for (let wx = -8; wx <= 8; wx++)
-      for (let wy = -3; wy <= 3; wy++) {
-        const minX = bx + wx, minY = by + wy, minZ = bz + wz;
-        const maxX = minX + 4, maxY = minY + 4;
-        let ok = true;
-        for (let y = minY; y <= maxY && ok; y++)
-          for (let x = minX; x <= maxX && ok; x++) {
-            const isCorner = (x === minX || x === maxX) && (y === minY || y === maxY);
-            const isEdge = x === minX || x === maxX || y === minY || y === maxY;
-            if (isCorner) continue;
-            const id = getBlock(x, y, minZ);
-            if (isEdge) { if (id !== PORTAL) ok = false; }
-            else { if (id !== AIR) ok = false; }
-          }
-        if (ok) return { minX, minY, minZ };
-      }
+function findPortalWindowNear(bx, by, bz, R) {
+  for (let dy = -2; dy <= 2; dy++)
+    for (let wx = -R; wx <= R; wx++)
+      for (let wz = -R; wz <= R; wz++)
+        if (winOk(bx + wx, by + dy, bz + wz)) return { minX: bx + wx, minZ: bz + wz, by: by + dy };
+  return null;
+}
+
+function vWinOk(minX, minY, minZ) {
+  for (let y = minY; y <= minY + 4; y++)
+    for (let x = minX; x <= minX + 4; x++) {
+      const isCorner = (x === minX || x === minX + 4) && (y === minY || y === minY + 4);
+      const isEdge = x === minX || x === minX + 4 || y === minY || y === minY + 4;
+      if (isCorner) continue;
+      const id = getBlock(x, y, minZ);
+      if (isEdge) { if (id !== PORTAL) return false; }
+      else { if (id !== AIR) return false; }
+    }
+  return true;
+}
+
+function findVPortalWindowNear(bx, by, bz, R) {
+  for (let wz = -R; wz <= R; wz++)
+    for (let wx = -R; wx <= R; wx++)
+      for (let wy = -R; wy <= R; wy++)
+        if (vWinOk(bx + wx, by + wy, bz + wz)) return { minX: bx + wx, minY: by + wy, minZ: bz + wz };
   return null;
 }
 
@@ -934,35 +943,42 @@ function hidePortalFill() {
   portalFillKey = null;
 }
 
+let endReturnWin = null;
+const portalMemo = { dim: "", bx: 0, by: 0, bz: 0, win: null };
+let portalScanT = 0;
+
+function scanEndPortal(bx, by, bz) {
+  if (endReturnWin && vWinOk(endReturnWin.minX, endReturnWin.minY, endReturnWin.minZ)) return endReturnWin;
+  if (portalMemo.dim === "end" && portalMemo.bx === bx && portalMemo.by === by && portalMemo.bz === bz) return portalMemo.win;
+  portalMemo.dim = "end"; portalMemo.bx = bx; portalMemo.by = by; portalMemo.bz = bz;
+  const w = findVPortalWindowNear(bx, by, bz, 5);
+  portalMemo.win = w;
+  if (w) endReturnWin = w;
+  return w;
+}
+
+function scanOverPortal(bx, by, bz) {
+  if (portalMemo.dim === "over" && portalMemo.bx === bx && portalMemo.by === by && portalMemo.bz === bz) return portalMemo.win;
+  portalMemo.dim = "over"; portalMemo.bx = bx; portalMemo.by = by; portalMemo.bz = bz;
+  portalMemo.win = findPortalWindowNear(bx, by, bz, 8);
+  return portalMemo.win;
+}
+
 function updatePortalVisual() {
+  portalScanT -= dt;
+  if (portalScanT <= 0) { portalScanT = 0.5; portalMemo.dim = ""; }
   const bx = Math.floor(freeCam ? camPos.x : pos.x);
   const bz = Math.floor(freeCam ? camPos.z : pos.z);
   const by = Math.floor((freeCam ? camPos.y : pos.y) + 0.9);
   if (dim === "end") {
-    let win = null;
-    for (let wz = -8; wz <= 8 && !win; wz++)
-      for (let wx = -8; wx <= 8 && !win; wx++)
-        for (let wy = -3; wy <= 3 && !win; wy++)
-          win = findVPortalWindow(bx + wx, by + wy, bz + wz);
+    const win = scanEndPortal(bx, by, bz);
     if (win) { showVPortalFill(win); return; }
-    if (portalFillKey) {
-      const [mx, mz, my] = portalFillKey.split(",").map(Number);
-      const w = findVPortalWindow(mx + 2, my + 2, mz);
-      if (!w || `${w.minX},${w.minZ},${w.minY}` !== portalFillKey) hidePortalFill();
-    }
+    if (portalFillKey) hidePortalFill();
     return;
   }
-  let win = null;
-  for (let dy = -2; dy <= 2 && !win; dy++)
-    for (let wx = -8; wx <= 8 && !win; wx++)
-      for (let wz = -8; wz <= 8 && !win; wz++)
-        win = findPortalWindow(bx + wx, by + dy, bz + wz);
+  const win = scanOverPortal(bx, by, bz);
   if (win) { showPortalFill(win); return; }
-  if (portalFillKey) {
-    const [mx, mz, my] = portalFillKey.split(",").map(Number);
-    const w = findPortalWindow(mx + 2, my, mz + 2);
-    if (!w || `${w.minX},${w.minZ},${w.by}` !== portalFillKey) hidePortalFill();
-  }
+  if (portalFillKey) hidePortalFill();
 }
 
 function nearPortalSpawn(win, dir) {
@@ -1004,7 +1020,7 @@ function checkPortal() {
   const bz = Math.floor(freeCam ? camPos.z : pos.z);
   if (dim === "over") {
     const by = Math.floor((freeCam ? camPos.y : pos.y) + 0.9);
-    const win = findPortalWindow(bx, by, bz);
+    const win = scanOverPortal(bx, by, bz);
     if (!win) return;
     if (bx < win.minX + 1 || bx > win.minX + 3 || bz < win.minZ + 1 || bz > win.minZ + 3) return;
     const forward = new THREE.Vector3(-Math.sin(yaw), 0, -Math.cos(yaw));
@@ -1021,7 +1037,7 @@ function checkPortal() {
     showMsg("You arrived in The End");
   } else {
     const by = Math.floor(pos.y + EYE);
-    const win = findVPortalWindow(bx, by, bz);
+    const win = scanEndPortal(bx, by, bz);
     if (!win) return;
     if (bx < win.minX + 1 || bx > win.minX + 3) return;
     if (by < win.minY + 1 || by > win.minY + 3) return;
@@ -1034,27 +1050,145 @@ function checkPortal() {
 // ---------------------------------------------------------------------------
 // Ender Dragon (ambient)
 // ---------------------------------------------------------------------------
-const dragon = { mesh: null, target: null, wingL: null, wingR: null };
+const dragon = { mesh: null, target: null, wingL: null, wingR: null, neck: null, head: null, tail: null };
+const dragonMat = (color, opts = {}) =>
+  new THREE.MeshStandardMaterial(Object.assign({ color, roughness: 0.5, metalness: 0.08 }, opts));
+let dragonUnitGeo = null;
+let dragonMemGeo = null;
+const dragonVec = new THREE.Vector3();
+
+function dragonBox(parent, mat, sx, sy, sz, px, py, pz, rx = 0, ry = 0, rz = 0) {
+  const m = new THREE.Mesh(dragonUnitGeo, mat);
+  m.scale.set(sx, sy, sz);
+  m.position.set(px, py, pz);
+  if (rx !== 0) m.rotation.x = rx;
+  if (ry !== 0) m.rotation.y = ry;
+  if (rz !== 0) m.rotation.z = rz;
+  parent.add(m);
+  return m;
+}
+
+function makeDragonMembraneGeo() {
+  const s = new THREE.Shape();
+  const pts = [
+    [0, 0], [0.1, 0.4], [0.25, 0.9], [0.45, 1.4], [0.62, 2.0],
+    [0.75, 2.6], [0.8, 3.1], [0.72, 3.6], [0.55, 3.95], [0.3, 4.1],
+    [0.12, 4.12], [0.15, 3.85], [0.35, 3.7], [0.28, 3.3], [0.5, 3.0],
+    [0.38, 2.6], [0.55, 2.2], [0.42, 1.8], [0.5, 1.35], [0.35, 1.0],
+    [0.18, 0.6], [0.12, 0.25],
+  ];
+  s.moveTo(pts[0][0], pts[0][1]);
+  for (let i = 1; i < pts.length; i++) s.lineTo(pts[i][0], pts[i][1]);
+  s.closePath();
+  return new THREE.ShapeGeometry(s);
+}
 
 function spawnDragon() {
   if (dragon.mesh) return;
   const g = new THREE.Group();
-  const bodyMat = new THREE.MeshStandardMaterial({ color: 0xff2020, roughness: 0.6 });
-  const accentMat = new THREE.MeshStandardMaterial({ color: 0x2eff2e, roughness: 0.6 });
-  const eyeMat = new THREE.MeshBasicMaterial({ color: 0xffd700 });
-  const body = new THREE.Mesh(new THREE.BoxGeometry(2.4, 1.2, 5), bodyMat);
-  const head = new THREE.Mesh(new THREE.BoxGeometry(1.4, 1.5, 1.8), accentMat); head.position.set(0, 0.5, 3.1);
-  const eL = new THREE.Mesh(new THREE.BoxGeometry(0.25, 0.25, 0.1), eyeMat); eL.position.set(-0.4, 0.7, 4.0);
-  const eR = eL.clone(); eR.position.x = 0.4;
-  const wingGeo = new THREE.BoxGeometry(4.5, 0.15, 2.6);
-  const wL = new THREE.Mesh(wingGeo, accentMat); wL.position.set(-3.3, 0.5, 0);
-  const wR = new THREE.Mesh(wingGeo, accentMat); wR.position.set(3.3, 0.5, 0);
-  g.add(body, head, eL, eR, wL, wR);
+  dragonUnitGeo = new THREE.BoxGeometry(1, 1, 1);
+  dragonMemGeo = makeDragonMembraneGeo();
+  const bodyMat = dragonMat(0x17171f);
+  const bellyMat = dragonMat(0x1f1f2c);
+  const plateMat = dragonMat(0x34344a);
+  const boneMat = dragonMat(0x24242f);
+  const memMat = new THREE.MeshStandardMaterial({
+    color: 0x2a2050, roughness: 0.9, metalness: 0.02,
+    transparent: true, opacity: 0.92, side: THREE.DoubleSide, depthWrite: false,
+  });
+  const eyeMat = new THREE.MeshBasicMaterial({ color: 0xc86bff });
+  const hornGeo = new THREE.ConeGeometry(0.13, 0.55, 6);
+
+  const body = new THREE.Mesh(new THREE.CapsuleGeometry(0.95, 3.4, 12, 16), bodyMat);
+  body.rotation.x = Math.PI / 2;
+  g.add(body);
+
+  const belly = new THREE.Mesh(new THREE.SphereGeometry(0.85, 12, 10), bellyMat);
+  belly.scale.set(1, 0.5, 1.9);
+  belly.position.set(0, -0.5, 0.1);
+  g.add(belly);
+
+  for (const [px, pz, rx, rz] of [
+    [-0.55, 1.15, 0.25, -0.15], [0.55, 1.15, 0.25, 0.15],
+    [-0.55, -1.45, -0.3, -0.1], [0.55, -1.45, -0.3, 0.1],
+  ]) dragonBox(g, bodyMat, 0.28, 0.72, 0.3, px, -0.95, pz, rx, 0, rz);
+
+  const neck = new THREE.Group();
+  neck.position.set(0, 0.38, 1.75);
+  neck.rotation.x = -0.62;
+  g.add(neck);
+  for (let k = 0; k < 5; k++)
+    dragonBox(neck, k % 2 ? plateMat : bodyMat, 0.5 - k * 0.035, 0.62 - k * 0.09, 0.8 - k * 0.03, 0, 0.08 * k + 0.2, 0.5 + k * 0.4);
+
+  const head = new THREE.Group();
+  head.position.set(0, 0.52, 2.75);
+  neck.add(head);
+  dragonBox(head, bodyMat, 1.05, 0.85, 1.4, 0, 0.05, 0);
+  dragonBox(head, bodyMat, 0.72, 0.4, 0.95, 0, 0.12, 1.0);
+  dragonBox(head, bodyMat, 0.55, 0.3, 0.9, 0, -0.28, 0.95);
+  dragonBox(head, plateMat, 0.95, 0.16, 0.75, 0, 0.52, -0.25);
+  for (const hsx of [1, -1]) {
+    const horn = new THREE.Mesh(hornGeo, boneMat);
+    horn.position.set(hsx * 0.55, 0.28, -0.45);
+    horn.rotation.z = -hsx * 0.85;
+    head.add(horn);
+  }
+  for (const esx of [1, -1]) {
+    dragonBox(head, eyeMat, 0.2, 0.2, 0.1, esx * 0.4, 0.18, 0.95, 0, esx * 0.25, 0);
+  }
+  dragonBox(head, eyeMat, 0.5, 0.12, 0.12, 0, -0.12, 1.35);
+
+  const tail = new THREE.Group();
+  tail.position.set(0, 0.1, -3.0);
+  tail.rotation.x = 0.35;
+  g.add(tail);
+  const tailSegs = [];
+  for (let k = 0; k < 6; k++) {
+    const seg = new THREE.Group();
+    seg.position.set(0, 0.05 * k, -0.35 * k);
+    tail.add(seg);
+    dragonBox(seg, k % 2 ? bodyMat : plateMat, 0.46 - k * 0.055, 0.42 - k * 0.05, 0.7 - k * 0.06, 0, 0, -0.35);
+    tailSegs.push(seg);
+  }
+  for (const tsx of [1, -1]) dragonBox(tail, boneMat, 0.14, 0.12, 0.5, tsx * 0.12, 0.28, -2.35);
+
+  function makeWing(side) {
+    const wing = new THREE.Group();
+    wing.position.set(side * 1.2, 0.55, 0.5);
+    g.add(wing);
+    dragonBox(wing, boneMat, 0.34, 0.42, 0.62, 0, 0, 0);
+    for (const [ox, oz] of [[1.7, -0.5], [1.95, 0], [1.7, 0.5]])
+      dragonBox(wing, boneMat, 0.85, 0.09, 0.11, side * ox, 0, oz, 0, side * 0.15 * oz, 0);
+    const align = new THREE.Group();
+    align.rotation.y = -side * Math.PI / 2;
+    wing.add(align);
+    const mem = new THREE.Mesh(dragonMemGeo, memMat);
+    mem.rotation.x = -Math.PI / 2;
+    if (side === 1) mem.geometry = dragonMemGeo.clone().scale(-1, 1, 1);
+    align.add(mem);
+    return wing;
+  }
+  const wL = makeWing(-1);
+  const wR = makeWing(1);
+
   scene.add(g);
   dragon.mesh = g;
   dragon.wingL = wL; dragon.wingR = wR;
+  dragon.neck = neck; dragon.head = head; dragon.tail = tailSegs;
   dragon.mesh.position.set(0, END_PLATFORM_TOP + 3, 0);
   dragon.target = pickDragonTarget();
+}
+
+function removeDragon() {
+  if (!dragon.mesh) return;
+  scene.remove(dragon.mesh);
+  dragon.mesh.traverse((o) => {
+    if (o.geometry) o.geometry.dispose();
+    if (o.material) o.material.dispose();
+  });
+  dragon.mesh = null;
+  dragon.wingL = null; dragon.wingR = null;
+  dragon.neck = null; dragon.head = null; dragon.tail = null;
 }
 
 function pickDragonTarget() {
@@ -1073,7 +1207,7 @@ function updateDragon(dt) {
     return;
   }
   M.position.lerp(dragon.target, Math.min(1, dt * 0.35));
-  const dir = new THREE.Vector3().subVectors(dragon.target, M.position).setY(0);
+  const dir = dragonVec.subVectors(dragon.target, M.position).setY(0);
   if (dir.lengthSq() > 0.0001) {
     const heading = Math.atan2(-dir.x, -dir.z);
     let d = heading - M.rotation.y;
@@ -1082,9 +1216,23 @@ function updateDragon(dt) {
     M.rotation.y += d * Math.min(1, dt * 2);
     M.rotation.z = -Math.sin(heading) * 0.08;
   }
-  M.rotation.x = Math.sin(performance.now() * 0.0015) * 0.05;
-  const f = Math.sin(performance.now() * 0.012) * 0.6;
+  const t = performance.now() * 0.001;
+  M.position.y += Math.sin(t * 1.6) * 0.12;
+  M.rotation.x = Math.sin(t * 1.6) * 0.05;
+  const f = Math.sin(t * 2.4) * 0.65;
   dragon.wingL.rotation.z = f; dragon.wingR.rotation.z = -f;
+  if (dragon.neck) {
+    dragon.neck.rotation.z = Math.sin(t * 0.8) * 0.06;
+    dragon.head.rotation.y = Math.sin(t * 0.55) * 0.12;
+    dragon.head.rotation.x = Math.cos(t * 0.7) * 0.04;
+  }
+  if (dragon.tail)
+    for (let i = 0; i < dragon.tail.length; i++) {
+      const seg = dragon.tail[i];
+      const k = (i + 1) / dragon.tail.length;
+      seg.rotation.y = Math.sin(t * 3 - i * 0.7) * 0.28 * k;
+      seg.rotation.x = Math.sin(t * 2.2 + i * 0.9) * 0.12 * k;
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1572,7 +1720,7 @@ function resetDims() {
   worlds.end.clear();
   overPortalSpawn = { x: 0.5, y: 1.01, z: 0.5 };
   overPortalFace = null;
-  if (dragon.mesh) { scene.remove(dragon.mesh); dragon.mesh = null; }
+  if (dragon.mesh) removeDragon();
   setDimensionEnv();
   updateDimLabel();
 }

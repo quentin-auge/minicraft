@@ -56,9 +56,14 @@ small Python server for saving/loading worlds.
   flying is forbidden in the End, and free-cam (F) is disabled there; you
   land just short of the return portal (cooldown + zeroed movement prevent an
   instant round-trip).
-- **Ender Dragon**: ambient red-and-green dragon that spawns in the End and
-  wanders randomly over the platform (target waypoints, banking turns, flapping
-  wings). Purely decorative — no HP bar or boss fight.
+- **Ender Dragon**: ambient dragon that spawns in the End and wanders randomly
+  over the platform (target waypoints, banking turns). Built from Three.js
+  primitives only — black scaled body, segmented neck and head with glowing
+  purple eyes (unlit), crest plate and horns, translucent purple bat-wing
+  membranes (mirrored), and a segmented forked tail; shared geometries/
+  materials. Animated via body bob, neck/head sway, tail wave and wing flap.
+  Purely decorative — no HP bar or boss fight. Resources are disposed when
+  leaving the End.
 - **Save/load**: binary format (`SAVE_MAGIC`, version 2) capturing world
   blocks, dim, seeds, player pos/yaw/pitch, fly state, hotbar selection.
   Backends: File System Access API (`pickSaveFile`/`saveToFile`),
