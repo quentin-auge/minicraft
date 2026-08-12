@@ -253,7 +253,7 @@ function generateWorld() {
 function generateEnd() {
   const w = worlds.end;
   w.clear();
-  const R = 12;
+  const R = 24;  // 2x larger platform
   const top = 20;
   for (let x = -R; x <= R; x++)
     for (let z = -R; z <= R; z++)
@@ -857,15 +857,16 @@ const dragon = { mesh: null, alive: false, hp: 100, maxHp: 100, angle: 0, wingL:
 function spawnDragon() {
   if (dragon.mesh) return;
   const g = new THREE.Group();
-  const mat = new THREE.MeshStandardMaterial({ color: 0x0a0a0a, roughness: 0.6 });
-  const body = new THREE.Mesh(new THREE.BoxGeometry(2.4, 1.2, 5), mat);
-  const head = new THREE.Mesh(new THREE.BoxGeometry(1.4, 1.5, 1.8), mat); head.position.set(0, 0.5, 3.1);
-  const eyeMat = new THREE.MeshBasicMaterial({ color: 0x9b30ff });
+  const bodyMat = new THREE.MeshStandardMaterial({ color: 0xff0000, roughness: 0.6 });
+  const accentMat = new THREE.MeshStandardMaterial({ color: 0x00ff00, roughness: 0.6 });
+  const eyeMat = new THREE.MeshBasicMaterial({ color: 0xffd700 });
+  const body = new THREE.Mesh(new THREE.BoxGeometry(2.4, 1.2, 5), bodyMat);
+  const head = new THREE.Mesh(new THREE.BoxGeometry(1.4, 1.5, 1.8), accentMat); head.position.set(0, 0.5, 3.1);
   const eL = new THREE.Mesh(new THREE.BoxGeometry(0.25, 0.25, 0.1), eyeMat); eL.position.set(-0.4, 0.7, 4.0);
   const eR = eL.clone(); eR.position.x = 0.4;
   const wingGeo = new THREE.BoxGeometry(4.5, 0.15, 2.6);
-  const wL = new THREE.Mesh(wingGeo, mat); wL.position.set(-3.3, 0.5, 0);
-  const wR = new THREE.Mesh(wingGeo, mat); wR.position.set(3.3, 0.5, 0);
+  const wL = new THREE.Mesh(accentMat, accentMat); wL.position.set(-3.3, 0.5, 0);
+  const wR = new THREE.Mesh(accentMat, accentMat); wR.position.set(3.3, 0.5, 0);
   g.add(body, head, eL, eR, wL, wR);
   scene.add(g);
   dragon.mesh = g; dragon.alive = true; dragon.hp = dragon.maxHp; dragon.angle = 0;
