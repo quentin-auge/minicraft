@@ -1604,7 +1604,7 @@ requestAnimationFrame(loop);
 function buildPortalArt() {
   const host = document.getElementById("portalArt");
   if (!host) return;
-  const N = 3, cell = 30, size = 26, off = 12;
+  const N = 5, cell = 19, size = 15, off = 6;
   const w = off * 2 + (N - 1) * cell + size;
   const svg = document.createElementNS(SVGNS, "svg");
   svg.setAttribute("viewBox", `0 0 ${w} ${w}`);
@@ -1612,7 +1612,9 @@ function buildPortalArt() {
   svg.setAttribute("height", "150");
   for (let r = 0; r < N; r++)
     for (let c = 0; c < N; c++) {
+      const frame = r === 0 || r === N - 1 || c === 0 || c === N - 1;
       const x = off + c * cell, y = off + r * cell;
+      if (!frame) continue;
       const rect = document.createElementNS(SVGNS, "rect");
       rect.setAttribute("x", x); rect.setAttribute("y", y);
       rect.setAttribute("width", size); rect.setAttribute("height", size); rect.setAttribute("rx", 3);
