@@ -1688,17 +1688,21 @@ function buildPortalArt() {
       const rect = document.createElementNS(SVGNS, "rect");
       rect.setAttribute("x", x); rect.setAttribute("y", y);
       rect.setAttribute("width", size); rect.setAttribute("height", size); rect.setAttribute("rx", 3);
-      rect.setAttribute("fill", frame ? "#5a2da6" : "#9b30ff");
-      rect.setAttribute("opacity", frame ? "1" : "0.85");
-      rect.setAttribute("stroke", "#7b2ff7"); rect.setAttribute("stroke-width", "1.5");
-      svg.appendChild(rect);
       if (frame) {
+        rect.setAttribute("fill", "#5a2da6");
+        rect.setAttribute("stroke", "#7b2ff7"); rect.setAttribute("stroke-width", "1.5");
+        svg.appendChild(rect);
         const t = document.createElementNS(SVGNS, "text");
         t.setAttribute("x", x + size / 2); t.setAttribute("y", y + size / 2 + 4);
         t.setAttribute("text-anchor", "middle"); t.setAttribute("font-size", "9");
         t.setAttribute("fill", "#fff"); t.setAttribute("font-family", "monospace");
         t.textContent = "12";
         svg.appendChild(t);
+      } else {
+        rect.setAttribute("fill", "rgba(155,48,247,0.10)");
+        rect.setAttribute("stroke", "rgba(155,48,247,0.35)"); rect.setAttribute("stroke-width", "1");
+        rect.setAttribute("stroke-dasharray", "2 2");
+        svg.appendChild(rect);
       }
     }
   host.appendChild(svg);
