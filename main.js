@@ -468,9 +468,8 @@ function updateFreeCam(dt) {
   if (keys["ArrowDown"]) move.sub(fwd);
   if (keys["ArrowRight"]) move.add(right);
   if (keys["ArrowLeft"]) move.sub(right);
-  if (keys["Space"]) move.y += 1;
-  if (keys["ShiftLeft"] || keys["ShiftRight"]) move.y -= 1;
-  if (move.lengthSq() > 0) move.normalize().multiplyScalar(FLY * dt);
+  const sprint = keys["ShiftLeft"] || keys["ShiftRight"];
+  if (move.lengthSq() > 0) move.normalize().multiplyScalar(FLY * (sprint ? 3 : 1) * dt);
   const r = 0.3;
   const tryAxis = (axis, v) => {
     if (v === 0) return;
