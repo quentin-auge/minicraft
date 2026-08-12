@@ -1040,7 +1040,7 @@ function serialize() {
   const over = writeBlocks(worlds.over);
   const end = writeBlocks(worlds.end);
   const n = over.length + end.length;
-  const buf = new ArrayBuffer(60 + n * 4);
+  const buf = new ArrayBuffer(93 + n * 4);
   const dv = new DataView(buf);
   let o = 0;
   new Uint8Array(buf, o, 9).set(SAVE_MAGIC); o += 9;
