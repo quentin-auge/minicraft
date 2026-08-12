@@ -785,7 +785,7 @@ let portalCd = 0;
 let returnPortalBuilt = false;
 let prePortalFly = false;
 let overPortalSpawn = { x: 0.5, y: 1.01, z: 0.5 };
-const END_SPAWN = { x: 0.5, y: END_PLATFORM_TOP + 1.6, z: 8 };
+const END_SPAWN = { x: 0.5, y: END_PLATFORM_TOP + 1.6, z: 16 };
 let endPortalFill = null;
 
 function buildReturnPortal() {
@@ -838,11 +838,14 @@ function goToDimension(name, sx, sy, sz) {
     setDimensionEnv();
     prePortalFly = flying;
     flying = false;
+    yaw = 0;
   } else {
     setDimensionEnv();
     if (dragon.alive) { scene.remove(dragon.mesh); dragon.mesh = null; dragon.alive = false; }
     flying = prePortalFly;
   }
+  if (freeCam) { freeCam = false; }
+  Object.keys(keys).forEach((k) => { keys[k] = false; });
   rebuildMeshes();
   pos.set(sx, sy, sz);
   camPos.set(sx, sy, sz);
@@ -903,9 +906,10 @@ function hidePortalFill() {
 }
 
 function updatePortalVisual() {
-  if (freeCam || dim === "end") { hidePortalFill(); return; }
-  const bx = Math.floor(pos.x), bz = Math.floor(pos.z);
-  const by = Math.floor(pos.y + 0.9);
+  if (dim === "end") { hidePortalFill(); return; }
+  const bx = Math.floor(freeCam ? camPos.x : pos.x);
+  const bz = Math.floor(freeCam ? camPos.z : pos.z);
+  const by = Math.floor((freeCam ? camPos.y : pos.y) + 0.9);
   let win = null;
   for (let dy = -2; dy <= 2 && !win; dy++)
     for (let wx = -8; wx <= 8 && !win; wx++)
@@ -953,9 +957,10 @@ function nearPortalSpawn(win, dir) {
 }
 
 function checkPortal() {
-  if (portalCd > 0 || freeCam) return;
-  const bx = Math.floor(pos.x), bz = Math.floor(pos.z);
-  const by = Math.floor(pos.y + 0.9);
+  if (portalCd > 0) return;
+  const bx = Math.floor(freeCam ? camPos.x : pos.x);
+  const bz = Math.floor(freeCam ? camPos.z : pos.z);
+  const by = Math.floor((freeCam ? camPos.y : pos.y) + 0.9);
   const win = findPortalWindow(bx, by, bz);
   if (!win) return;
   if (bx < win.minX + 1 || bx > win.minX + 3 || bz < win.minZ + 1 || bz > win.minZ + 3) return;
@@ -1674,7 +1679,7 @@ document.addEventListener("keydown", (e) => {
   if (e.code === "KeyH" && !keys[e.code]) { openHelp(); e.preventDefault(); return; }
   if (keys[e.code]) { e.preventDefault(); return; }
   keys[e.code] = true;
-  if (e.code === "KeyF") { freeCam = !freeCam; if (freeCam) camPos.copy(camera.position); else exitFreeCam(); }
+  if (e.code === "KeyF" && dim !== "end") { freeCam = !freeCam; if (freeCam) camPos.copy(camera.position); else exitFreeCam(); }
   if (e.code === "Escape") { if (saveName) saveToFile(); }
   if (["Space", "Tab", "ArrowUp", "ArrowDown"].includes(e.code)) e.preventDefault();
 });
