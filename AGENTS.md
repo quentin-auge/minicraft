@@ -61,12 +61,13 @@ small Python server for saving/loading worlds.
   instant round-trip).
 - **Ender Dragon**: ambient dragon that spawns in the End and flies along a
   random closed aerial path (arc-length-sampled Catmull-Rom spline through
-  random waypoints, low "skim the floor" runs and high soars, banking turns
-  and dives), re-picking a fresh trajectory each lap. It tends to come at the
-  player: most loops route a waypoint over/near them and every few seconds it
-  does a dive that swoops toward and past their position. Its path stays
-  clamped above the platform surface and inside its footprint, so it never
-  clips through the platform. Built from Three.js primitives only — black scaled
+  random waypoints, low "skim the floor" runs and high soars (about twice the
+  platform height), banking turns and dives), re-picking a fresh trajectory
+  each lap; its loops alternate tight inner passes and wide sweeps that span
+  the whole platform. It tends to come at the player: most loops route a
+  waypoint over/near them and every few seconds it does a dive that swoops
+  toward and past their position. Its path stays clamped above the platform
+  surface and inside its footprint, so it never clips through the platform. Built from Three.js primitives only — black scaled
   body, segmented neck and head with glowing purple eyes (unlit), crest plate
   and horns, translucent purple bat-wing membranes (mirrored), and a
   segmented forked tail; shared geometries/materials. Animated via

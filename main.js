@@ -1063,7 +1063,7 @@ const dragonA = new THREE.Vector3();
 const dragonB = new THREE.Vector3();
 const DRAGON_SPEED = 8;
 const DRAGON_SKIM_Y = END_PLATFORM_TOP + 2.2;
-const DRAGON_SOAR_Y = END_PLATFORM_TOP + 5;
+const DRAGON_SOAR_Y = END_PLATFORM_TOP + 10;
 
 function dragonBox(parent, mat, sx, sy, sz, px, py, pz, rx = 0, ry = 0, rz = 0) {
   const m = new THREE.Mesh(dragonUnitGeo, mat);
@@ -1228,14 +1228,15 @@ function dragonPlayerFocus() {
 function buildDragonPath(aim) {
   const N = 6 + (Math.random() * 3 | 0);
   const base = Math.random() * Math.PI * 2;
-  const lowBias = Math.random() < 0.35 ? 0.72 : 0.42;
+  const lowBias = Math.random() < 0.3 ? 0.5 : 0.18;
   const pts = [];
   for (let i = 0; i < N; i++) {
     const a = base + (i / N) * Math.PI * 2 + (Math.random() - 0.5) * 0.8;
-    const r = 5 + Math.random() * (END_PLATFORM_R - 10);
+    const wide = i % 2 === 0;
+    const r = wide ? 16 + Math.random() * 7 : 4 + Math.random() * 5;
     pts.push(new THREE.Vector3(
       Math.cos(a) * r,
-      Math.random() < lowBias ? DRAGON_SKIM_Y + Math.random() * 1.2 : DRAGON_SOAR_Y + Math.random() * 3.2,
+      Math.random() < lowBias ? DRAGON_SKIM_Y + Math.random() * 1.2 : DRAGON_SOAR_Y + Math.random() * 6,
       Math.sin(a) * r
     ));
   }
