@@ -1612,7 +1612,9 @@ function buildPortalArt() {
   svg.setAttribute("height", "150");
   for (let r = 0; r < N; r++)
     for (let c = 0; c < N; c++) {
-      const frame = r === 0 || r === N - 1 || c === 0 || c === N - 1;
+      const isCorner = (r === 0 && c === 0) || (r === 0 && c === N - 1) || (r === N - 1 && c === 0) || (r === N - 1 && c === N - 1);
+      const isEdge = r === 0 || r === N - 1 || c === 0 || c === N - 1;
+      const frame = isEdge && !isCorner;
       const x = off + c * cell, y = off + r * cell;
       if (!frame) continue;
       const rect = document.createElementNS(SVGNS, "rect");
