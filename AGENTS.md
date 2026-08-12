@@ -57,13 +57,14 @@ small Python server for saving/loading worlds.
   distance).
 - **Portals / dimensions**: build a horizontal 5×5 frame in the Overworld
   (4 sides, corners optional), walk into its 3×3 interior to jump to the End;
-  solid black fill marks an active portal. The End has a grey END_STONE
-  platform and black sky; the vertical 5×5 return portal (upright frame, same
-  black-fill core) is absent until the Ender Dragon is slain, then appears on
-  the platform to get back to the Overworld. Returning drops you beside the
-  Overworld portal (never on it), flying is forbidden in the End, and free-cam
-  (F) is disabled there; you land just short of the return portal (cooldown +
-  zeroed movement prevent an instant round-trip).
+  solid black fill marks an active portal. The End is freshly regenerated on
+  every entry — builds are not kept, the dragon respawns at full health and
+  the vertical 5×5 return portal (upright frame, same black-fill core) is
+  absent until the Ender Dragon is slain, then appears on the platform to get
+  back to the Overworld. Returning drops you beside the Overworld portal
+  (never on it), flying is forbidden in the End, and free-cam (F) is disabled
+  there; you land just short of the return portal (cooldown + zeroed movement
+  prevent an instant round-trip).
 - **Ender Dragon**: ambient dragon that spawns in the End and flies along a
   random closed aerial path (arc-length-sampled Catmull-Rom spline through
   random waypoints, low "skim the floor" runs and high soars (about twice the

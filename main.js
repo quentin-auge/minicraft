@@ -987,7 +987,8 @@ function goToDimension(name, sx, sy, sz) {
   dim = name;
   world = worlds[name];
   if (name === "end") {
-    if (worlds.end.size === 0) generateEnd();
+    generateEnd();
+    endReturnWin = null;
     spawnDragon();
     setDimensionEnv();
     prePortalFly = flying;
