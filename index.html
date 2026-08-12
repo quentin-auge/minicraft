@@ -103,6 +103,10 @@
     #help td { padding: 3px 8px; border-top: 1px solid rgba(255,255,255,0.1); vertical-align: top; }
     #help td:first-child { color: #fff; font-weight: 600; white-space: nowrap; width: 42%; }
     #help .hint { margin-top: 16px; font-size: 12px; color: #aab8c4; text-align: center; }
+    #help .portal-diagram { display: flex; gap: 16px; align-items: center; margin-top: 4px; }
+    #help .portal-diagram svg { flex: 0 0 auto; border-radius: 8px; box-shadow: 0 0 18px rgba(155,48,247,0.55); }
+    #help .portal-diagram p { margin: 0; }
+    #help .note { margin-top: 12px; font-size: 13px; color: #cdd6e2; }
     #help .closebtn {
       margin-top: 14px; display: block; width: 100%; font: inherit; font-size: 15px; font-weight: 600;
       color: #fff; background: #3a8; border: 2px solid #4c9; border-radius: 8px; padding: 10px; cursor: pointer;
@@ -194,13 +198,23 @@
         <tr><td>F</td><td>Free camera (arrows + Shift)</td></tr>
         <tr><td>H</td><td>This help menu</td></tr>
       </table>
+      <h3>Portal to The End</h3>
+      <div class="portal-diagram">
+        <svg viewBox="0 0 100 100" width="150" height="150" aria-hidden="true">
+          <rect x="6" y="6" width="88" height="88" rx="6" fill="#241236" stroke="#7b2ff7" stroke-width="4"/>
+          <rect x="22" y="22" width="56" height="56" rx="3" fill="#9b30ff" opacity="0.85"/>
+          <line x1="50" y1="22" x2="50" y2="78" stroke="#d9a6ff" stroke-width="2" opacity="0.5"/>
+          <line x1="22" y1="50" x2="78" y2="50" stroke="#d9a6ff" stroke-width="2" opacity="0.5"/>
+        </svg>
+        <p>Build a <b>square frame</b> of Portal Frame blocks (id 11). Each side must be at least <b>4 blocks</b> and all sides equal. When the square is complete, the hollow center fills with Portal automatically — you do <b>not</b> place the interior yourself.</p>
+      </div>
       <h3>Blocks</h3>
       <table>
-        <tr><td>11 — Portal Frame</td><td>Placeable block used to build a portal frame (obsidian-like, purple).</td></tr>
-        <tr><td>12 — Portal</td><td>The lit portal interior. Not placeable — it appears automatically inside a completed frame and teleports you.</td></tr>
+        <tr><td>11 — Portal Frame</td><td>Placeable. Use it to build the square frame.</td></tr>
+        <tr><td>12 — Portal</td><td>The lit portal interior. <b>Not placeable</b> — it appears on its own inside a finished frame and teleports you to The End.</td></tr>
+        <tr><td>13 — Obsidian</td><td>The block the End platform is made of.</td></tr>
       </table>
-      <h3>Portal to The End</h3>
-      <p>Build a <b>square frame</b> out of Portal Frame blocks (id 11). The frame must be a square: equal width and height, each at least <b>4 blocks</b> (so a 4×4 outer frame with a 2×2 hollow center, or larger). Once the square is complete, the hollow interior fills with Portal (id 12) and lights up. Walk into it to travel to <b>The End</b>. A return portal is created automatically there to bring you back.</p>
+      <p class="note">Walk into the lit portal to travel to <b>The End</b>; a return portal is created there automatically to bring you back.</p>
       <button class="closebtn" id="btnHelpClose">Close (H)</button>
       <div class="hint">Press H to close</div>
     </div>
@@ -209,17 +223,6 @@
   <div id="overlay">
     <div class="panel">
       <h1>Mini<span>Craft</span></h1>
-      <div class="controls">
-        <div><b>Arrows</b> &nbsp; Move</div>
-        <div><b>Space</b> &nbsp; Jump</div>
-        <div><b>Shift</b> &nbsp; Sprint</div>
-        <div><b>Mouse</b> &nbsp; Look around</div>
-        <div><b>Left Click</b> &nbsp; Place block</div>
-        <div><b>Right Click</b> &nbsp; Break block</div>
-        <div><b>Wheel</b> &nbsp; Select block</div>
-        <div><b>F</b> &nbsp; Free camera (arrows + Shift)</div>
-        <div><b>Portal Frame</b> &nbsp; Build a square to reach The End</div>
-      </div>
       <div class="menu">
         <button class="menu-btn" id="btnNew">New World</button>
         <button class="menu-btn" id="btnLoad">Load Save…</button>
