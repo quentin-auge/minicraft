@@ -359,8 +359,17 @@ const EYE = 1.62;
 const GRAVITY = 26;
 const JUMP = 8.2;
 const WALK = 4.4, SPRINT = 7.2, FLY = 10;
+const GRAPPLE_SPEED = 26;
+const GRAPPLE_THROW = 70;
 
 const pos = new THREE.Vector3(0, 20, 0);
+let grappleActive = false;
+let grappleHooked = false;
+let grappleFly = 0;
+let grapplingDist = 1;
+const grappleTarget = new THREE.Vector3();
+const grappleStart = new THREE.Vector3();
+let grappleBlock = null;
 const vel = new THREE.Vector3();
 const camPos = new THREE.Vector3();
 let yaw = 0, pitch = 0;
@@ -449,7 +458,67 @@ function collide() {
   moveAxisZ(vel.z * dt);
 }
 
+function fireGrapple() {
+  if (freeCam) return;
+  if (!currentBlock) return;
+  const b = currentBlock;
+  const tx = b.x + 0.5, ty = b.y + 1.001, tz = b.z + 0.5;
+  const sx = pos.x, sy = pos.y + 0.3, sz = pos.z;
+  const distEye = Math.hypot(tx - sx, ty - sy, tz - sz);
+  if (distEye < 0.3) return;
+  grappleBlock = b;
+  grappleTarget.set(tx, ty, tz);
+  grappleStart.set(sx, sy, sz);
+  grapplingDist = distEye;
+  grappleFly = 0;
+  grappleHooked = false;
+  grappleActive = true;
+}
+
+function blockedBody(px, py, pz) {
+  const y0 = Math.floor(py + 0.02);
+  const y1 = Math.floor(py + PLAYER_H - 0.02);
+  for (let bx = Math.floor(px - PLAYER_HW + 0.02); bx <= Math.floor(px + PLAYER_HW - 0.02); bx++)
+    for (let bz = Math.floor(pz - PLAYER_HW + 0.02); bz <= Math.floor(pz + PLAYER_HW - 0.02); bz++) {
+      const skip = grappleBlock && bx === grappleBlock.x && bz === grappleBlock.z;
+      for (let by = y0; by <= y1; by++) {
+        if (skip && by === grappleBlock.y) continue;
+        if (isSolid(bx, by, bz)) return true;
+      }
+    }
+  return false;
+}
+
+function updateGrapple(dt) {
+  if (!grappleHooked) {
+    grappleFly += (GRAPPLE_THROW * dt) / grapplingDist;
+    if (grappleFly >= 1) {
+      grappleFly = 1;
+      grappleHooked = true;
+    }
+    return;
+  }
+  const dx = grappleTarget.x - pos.x, dy = grappleTarget.y - pos.y, dz = grappleTarget.z - pos.z;
+  const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
+  const step = GRAPPLE_SPEED * dt;
+  if (dist <= step + 0.001) {
+    if (blockedBody(grappleTarget.x, grappleTarget.y, grappleTarget.z)) {
+      grappleActive = false;
+      vel.set(0, 0, 0);
+      return;
+    }
+    pos.copy(grappleTarget);
+    vel.set(0, 0, 0);
+    onGround = true;
+    grappleActive = false;
+    return;
+  }
+  const s = step / dist;
+  pos.set(pos.x + dx * s, pos.y + dy * s, pos.z + dz * s);
+}
+
 function updatePlayer(dt) {
+  if (grappleActive) { updateGrapple(dt); return; }
   if (dim === "end") flying = false;
   const fwd = new THREE.Vector3(-Math.sin(yaw), 0, -Math.cos(yaw));
   const right = new THREE.Vector3(Math.cos(yaw), 0, -Math.sin(yaw));
@@ -584,6 +653,19 @@ const highlight = new THREE.LineSegments(
 );
 highlight.visible = false;
 scene.add(highlight);
+
+const ropeA = new THREE.Vector3(), ropeB = new THREE.Vector3();
+const grappleCubeGeo = new THREE.BoxGeometry(0.1, 0.1, 0.1);
+const grappleCubeMat = new THREE.MeshBasicMaterial({ color: 0x8a6d3b });
+const GRAPPLE_CUBES = 1100;
+const grappleCubes = new THREE.InstancedMesh(grappleCubeGeo, grappleCubeMat, GRAPPLE_CUBES);
+grappleCubes.frustumCulled = false;
+grappleCubes.visible = false;
+scene.add(grappleCubes);
+const grappleCubeMatrix = new THREE.Matrix4();
+const grappleHead = new THREE.Mesh(new THREE.BoxGeometry(0.17, 0.17, 0.17), new THREE.MeshBasicMaterial({ color: 0x4a3a1e }));
+grappleHead.visible = false;
+scene.add(grappleHead);
 
 let currentBlock = null;
 function updateTarget() {
@@ -2240,7 +2322,15 @@ document.addEventListener("mousemove", (e) => {
 document.addEventListener("mousedown", (e) => {
   if (!locked || helpOpen) return;
   if (e.button === 0) placeBlock(HOTBAR[selected]);
+  if (e.button === 1) { e.preventDefault(); fireGrapple(); }
   if (e.button === 2) breakBlock();
+});
+document.addEventListener("mouseup", (e) => {
+  if (e.button !== 1) return;
+  if (grappleActive) {
+    grappleActive = false;
+    vel.set(0, 0, 0);
+  }
 });
 
 const helpEl = document.getElementById("help");
@@ -2348,6 +2438,37 @@ function loop(now) {
   }
   camera.rotation.set(pitch, yaw, 0);
   updateTarget();
+  if (grappleActive) {
+    grappleCubes.visible = true;
+    grappleHead.visible = true;
+    ropeA.set(pos.x, pos.y + 0.3, pos.z);
+    ropeB.copy(grappleStart).lerp(grappleTarget, grappleFly);
+    if (grappleHooked) ropeB.copy(grappleTarget);
+    const dx = ropeB.x - ropeA.x, dy = ropeB.y - ropeA.y, dz = ropeB.z - ropeA.z;
+    const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
+    const n = Math.max(4, Math.min(GRAPPLE_CUBES, Math.round(dist / 0.15)));
+    grappleCubes.count = n;
+    const ux = dx / dist, uy = dy / dist, uz = dz / dist;
+    let vx = Math.abs(uy) < 0.99 ? uz : 1, vy = Math.abs(uy) < 0.99 ? 0 : 0, vz = Math.abs(uy) < 0.99 ? -ux : 0;
+    const vl = Math.hypot(vx, vy, vz) || 1;
+    vx /= vl; vy /= vl; vz /= vl;
+    const wx = uy * vz - uz * vy, wy = uz * vx - ux * vz, wz = ux * vy - uy * vx;
+    for (let i = 0; i < n; i++) {
+      const f = (i + 0.5) / n;
+      const ax = Math.sin(f * Math.PI * 4), ay = Math.sin(f * Math.PI * 2);
+      grappleCubeMatrix.setPosition(
+        ropeA.x + dx * f + vx * ax * 0.15 + wx * ay * 0.15,
+        ropeA.y + dy * f + vy * ax * 0.15 + wy * ay * 0.15,
+        ropeA.z + dz * f + vz * ax * 0.15 + wz * ay * 0.15
+      );
+      grappleCubes.setMatrixAt(i, grappleCubeMatrix);
+    }
+    grappleCubes.instanceMatrix.needsUpdate = true;
+    grappleHead.position.copy(ropeB);
+  } else if (grappleCubes.visible) {
+    grappleCubes.visible = false;
+    grappleHead.visible = false;
+  }
   tickTNT(dt);
   tickEffects(dt);
   if (portalCd > 0) portalCd -= dt;

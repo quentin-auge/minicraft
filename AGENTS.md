@@ -48,6 +48,14 @@ small Python server for saving/loading worlds.
   free-cam (spectator). Third-person-style first-person camera, yaw/pitch.
 - **Editing**: pointer-raycast block pick (DDA), reach `REACH = 15`, white
   `highlight` box on the targeted block. Left click places, right click breaks.
+- **Grappling hook**: hold middle mouse click on the targeted block to fire a
+  hook that first flies fast to the target (`GRAPPLE_THROW = 70`, you don't
+  move yet), then hauls you in a straight line onto that block
+  (`GRAPPLE_SPEED = 26`, feet on its top, zeroed velocity); releasing mid-pull
+  drops you straight down. The pull clips through terrain and only checks the
+  landing pose, so low ledges are grabbable too; a thin pixelated rope (cube
+  chain ~1/10 block, dense over the whole path) plus a blocky hook head shows
+  the pull from the eye to the flying/stuck hook.
 - **TNT**: lighting fuses (HUD fuse sprite), delayed explosions with blocks
   destroyed/tossed and particle flashes. Breaking a TNT lights a 3s fuse and
   explosions chain-react: a blast near another TNT block lights it, and a lit
