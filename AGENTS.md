@@ -49,7 +49,8 @@ small Python server for saving/loading worlds.
 - **Editing**: pointer-raycast block pick (DDA), reach `REACH = 15`, white
   `highlight` box on the targeted block. Left click places, right click breaks.
 - **TNT**: lighting fuses (HUD fuse sprite), delayed explosions with blocks
-  destroyed/tossed and particle flashes.
+  destroyed/tossed and particle flashes. Breaking a TNT lights a 3s fuse;
+  re-breaking it while lit detonates it immediately.
 - **Portals / dimensions**: build a horizontal 5×5 frame in the Overworld
   (4 sides, corners optional), walk into its 3×3 interior to jump to the End;
   solid black fill marks an active portal. The End has a grey END_STONE

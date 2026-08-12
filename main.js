@@ -632,6 +632,7 @@ function intersectsPlayer(bx, by, bz) {
 // ---------------------------------------------------------------------------
 // TNT: breaking a TNT block lights a 3s fuse, then it explodes, destroying
 // nearby blocks (with particles) and igniting any TNT caught in the blast.
+// Re-breaking a lit TNT detonates it immediately.
 // ---------------------------------------------------------------------------
 const FUSE_TIME = 3;
 const BLAST_RADIUS = 3;
@@ -641,7 +642,15 @@ const flashes = [];
 
 function igniteTNT(x, y, z) {
   const k = key(x, y, z);
-  if (tntLit.has(k)) return;
+  if (tntLit.has(k)) {
+    const t = tntLit.get(k);
+    scene.remove(t.spr);
+    t.spr.material.map.dispose();
+    t.spr.material.dispose();
+    tntLit.delete(k);
+    explodeTNT(x, y, z);
+    return;
+  }
   const spr = makeFuseSprite();
   spr.position.set(x + 0.5, y + 1.35, z + 0.5);
   scene.add(spr);
