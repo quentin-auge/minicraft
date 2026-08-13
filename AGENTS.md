@@ -82,7 +82,7 @@ small Python server for saving/loading worlds.
   TNT caught in a blast (or re-broken) detonates immediately. In the End, a
   lit TNT targets the Ender Dragon: the TNT cube flies up at it, sticks onto
   its body and detonates on contact with a big purple particle burst (each
-  stuck blast = 1/4 of its HP). A dragon-homing blast deals dragon damage only —
+  stuck blast = 1/8 of its HP, so it takes 8 TNT to slay). A dragon-homing blast deals dragon damage only —
   it never destroys terrain, so no crater is left where the TNT launched.
 - **Portals / dimensions**: build a horizontal 5×5 frame in the Overworld
   (4 sides, corners optional), walk into its 3×3 interior to jump to the End;

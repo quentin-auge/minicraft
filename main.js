@@ -900,8 +900,8 @@ function intersectsPlayer(bx, by, bz) {
 const FUSE_TIME = 3;
 const BLAST_RADIUS = 3;
 const DRAGON_HIT_DIST = 4.5;
-const DRAGON_FULL_DMG = 0.25;
-const DRAGON_MIN_DMG = 0.10;
+const DRAGON_FULL_DMG = 0.125;
+const DRAGON_MIN_DMG = 0.05;
 const TNT_HOME_SPEED = 11;
 const DRAGON_STICK_DIST = 1.2;
 const tntBombGeo = new THREE.BoxGeometry(0.9, 0.9, 0.9);
