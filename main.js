@@ -1417,6 +1417,7 @@ function updateTarget() {
 function breakBlock() {
   if (!currentBlock) return;
   const { x, y, z } = currentBlock;
+  if (protectedBlocks.has(key(x, y, z))) return;
   if (getBlock(x, y, z) === STONE && y === 0) return;
   if (getBlock(x, y, z) === TNT) { igniteTNT(x, y, z); return; }
   setBlock(x, y, z, AIR);
@@ -1595,6 +1596,7 @@ function explodeTNT(x, y, z, pointBlank, homing = false) {
         const id = getBlock(gx, gy, gz);
         if (id === AIR || id === WATER) continue;
         if (id === STONE && gy === 0) continue;
+        if (protectedBlocks.has(key(gx, gy, gz))) continue;
         if (id === TNT) {
           const tk = key(gx, gy, gz);
           if (tntLit.has(tk)) {
@@ -1799,14 +1801,22 @@ let overPortalSpawn = { x: 0.5, y: 1.01, z: 0.5 };
 let overPortalFace = null;
 const END_SPAWN = { x: 0.5, y: END_PLATFORM_TOP + 1.6, z: END_RETURN_Z - 3 };
 const END_RETURN_BASE_Y = END_PLATFORM_TOP + 1;
+const protectedBlocks = new Set();
+let endCleared = false;
+let dormantMsgAt = 0;
 
 function buildReturnPortal() {
+  protectedBlocks.clear();
   const coords = [];
   for (let x = -2; x <= 2; x++)
     for (let y = 0; y <= 4; y++) {
       const isCorner = (x === -2 && (y === 0 || y === 4)) || (x === 2 && (y === 0 || y === 4));
       const isEdge = x === -2 || x === 2 || y === 0 || y === 4;
-      if (isEdge && !isCorner) { setBlock(x, END_RETURN_BASE_Y + y, END_RETURN_Z, PORTAL); coords.push([x, END_RETURN_BASE_Y + y, END_RETURN_Z]); }
+      if (isEdge && !isCorner) {
+        setBlock(x, END_RETURN_BASE_Y + y, END_RETURN_Z, PORTAL);
+        coords.push([x, END_RETURN_BASE_Y + y, END_RETURN_Z]);
+        protectedBlocks.add(key(x, END_RETURN_BASE_Y + y, END_RETURN_Z));
+      }
     }
   endReturnWin = { minX: -2, minY: END_RETURN_BASE_Y, minZ: END_RETURN_Z };
   refreshBlocks(coords);
@@ -1832,6 +1842,8 @@ function goToDimension(name, sx, sy, sz) {
   if (name === "end") {
     generateEnd();
     endReturnWin = null;
+    endCleared = false;
+    buildReturnPortal();
     spawnDragon();
     setDimensionEnv();
     prePortalFly = flying;
@@ -1979,7 +1991,7 @@ function updatePortalVisual() {
   const by = Math.floor((freeCam ? camPos.y : pos.y) + 0.9);
   if (dim === "end") {
     const win = scanEndPortal(bx, by, bz);
-    if (win) { showVPortalFill(win); return; }
+    if (win && endCleared) { showVPortalFill(win); return; }
     if (portalFillKey) hidePortalFill();
     return;
   }
@@ -2049,6 +2061,14 @@ function checkPortal() {
     if (bx < win.minX + 1 || bx > win.minX + 3) return;
     if (by < win.minY + 1 || by > win.minY + 3) return;
     if (bz !== win.minZ) return;
+    if (!endCleared) {
+      const now = performance.now();
+      if (now - dormantMsgAt > 3000) {
+        dormantMsgAt = now;
+        showMsg("The return portal is dormant — slay the Ender Dragon to open it");
+      }
+      return;
+    }
     goToDimension("over", overPortalSpawn.x, overPortalSpawn.y, overPortalSpawn.z);
     showMsg("You returned to the Overworld");
   }
@@ -2412,6 +2432,7 @@ function updateDragon(dt) {
     if (dragon.dying <= 0) {
       const dx = M.position.x, dy = M.position.y + 1, dz = M.position.z;
       removeDragon();
+      endCleared = true;
       buildReturnPortal();
       queueSave();
       spawnDragonDeath(dx, dy, dz);
@@ -2969,7 +2990,7 @@ async function restoreSave(buf) {
     updateCamera();
     setDimensionEnv();
     updateDimLabel();
-    if (dim === "end") { buildReturnPortal(); spawnDragon(); }
+    if (dim === "end") { endCleared = false; buildReturnPortal(); spawnDragon(); }
     lastManualSave = Date.now();
     return true;
   } finally {
@@ -3063,6 +3084,8 @@ function resetDims() {
   worlds.end.clear();
   overPortalSpawn = { x: 0.5, y: 1.01, z: 0.5 };
   overPortalFace = null;
+  endCleared = false;
+  protectedBlocks.clear();
   if (dragon.mesh) removeDragon();
   setDimensionEnv();
   updateDimLabel();
