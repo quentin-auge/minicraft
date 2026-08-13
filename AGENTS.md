@@ -33,12 +33,19 @@ small Python server for saving/loading worlds.
 ## Features
 
 - **World gen**: procedural over-world (fbm heightmap, terrain, water, trees)
-  and an End dimension (grey END_STONE floating platform, black sky). Seeded
-  (`seed`/`endSeed`), both persisted in saves.
+  at 4x size (`WORLD_RADIUS = 192`, ~385×385 footprint) and an End dimension
+  (grey END_STONE floating platform, black sky). Seeded (`seed`/`endSeed`),
+  both persisted in saves.
 - **Textures**: 16×16 pixel-art textures drawn procedurally on canvas
   (`TEX`, `makeTex`, `pxNoise`, `canvasTex`), NearestFilter + sRGB.
-- **Rendering**: one `InstancedMesh` per block type (`instanced` in
-  `rebuildMeshes()`), only exposed faces meshed. No shadow maps; fog +
+- **Rendering**: chunked streaming. The overworld is split into `CHUNK` (16)×
+  16-column chunks and only the square of chunks within `RENDER_DIST` (8) of
+  the player are meshed (added/removed as you cross chunk borders in
+  `streamChunks()`/`rebuildChunk`). Each chunk is one `InstancedMesh` per
+  block type with only exposed faces; every mesh calls `computeBoundingSphere()`
+  so Three.js frustum-culls off-screen chunks. Shared per-type materials
+  (`typeMats`). Editing rebuilds just the touched chunk(s) via
+  `refreshBlocks()`, not the whole world. No shadow maps; fog +
   hemisphere/directional light.
 - **Blocks**: numeric constants + `BLOCK_INFO` (solid/opaque/placeable).
   Types incl. GRASS, DIRT, STONE, SAND, LOG, LEAVES, PLANKS, GLASS, WATER
@@ -95,7 +102,8 @@ small Python server for saving/loading worlds.
   killed with TNT blasts (see TNT). Death triggers a huge double-layer purple
   explosion, opens the return portal and removes the dragon. Resources are
   disposed when leaving the End.
-- **Save/load**: binary format (`SAVE_MAGIC`, version 2) capturing world
+- **Save/load**: binary format (`SAVE_MAGIC`, version 3; v1/v2 saves from
+  smaller worlds still load) with int16 x/z coordinates, capturing world
   blocks, dim, seeds, player pos/yaw/pitch, fly state, hotbar selection.
   Backends: File System Access API (`pickSaveFile`/`saveToFile`),
   IndexedDB fallback, and the server API (`apiLoad`/`apiList`). Autosave
@@ -108,8 +116,10 @@ small Python server for saving/loading worlds.
 
 - Plain ES modules; Three.js is loaded from CDN via the import map in
   `index.html`. Do not add new CDN/addons dependencies unless requested.
-- Geometry is rebuilt manually — there is no world meshing framework. Changes
-  to blocks must call `rebuildMeshes()` and `queueSave()`.
+- Geometry is rebuilt manually — there is no world meshing framework. Full
+  rebuilds via `rebuildMeshes()` (dimension switch, load, new world); block
+  edits call `refreshBlocks([[x,y,z], ...])` to rebuild only affected chunks.
+  Changes to blocks must also call `queueSave()`.
 - Block types are numeric constants (AIR/GRASS/DIRT/...) defined at the top of
   `main.js`, with metadata in `BLOCK_INFO` (solid/opaque/placeable).
 - Hungarian-ish / unadorned naming: local helpers like `pxNoise`, `makeTex`

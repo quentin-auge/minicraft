@@ -194,9 +194,11 @@ function faceTex(map, opts = {}) {
 // ---------------------------------------------------------------------------
 // World
 // ---------------------------------------------------------------------------
-const WORLD_RADIUS = 48;
-const WORLD_SIZE = WORLD_RADIUS * 2 + 1;
+const WORLD_RADIUS = 192;
 const WATER_LEVEL = 10;
+const CHUNK = 16;
+const RENDER_DIST = 8;
+const MAX_Y = 60;
 const END_PLATFORM_TOP = 20;
 const END_PLATFORM_R = 24;
 const END_RETURN_Z = 16;
@@ -211,7 +213,7 @@ let world = worlds.over;
 const getBlock = (x, y, z) => world.get(key(x, y, z)) || AIR;
 
 function setBlock(x, y, z, id) {
-  if (y < 0 || y > 60) return;
+  if (y < 0 || y > MAX_Y) return;
   const k = key(x, y, z);
   if (id === AIR) world.delete(k); else world.set(k, id);
 }
@@ -293,45 +295,120 @@ const hemi = new THREE.HemisphereLight(0xbfd4ff, 0x5a6a4a, 0.75);
 scene.add(hemi);
 
 const boxGeo = new THREE.BoxGeometry(1, 1, 1);
-const matrix = new THREE.Matrix4();
-const color = new THREE.Color();
 const dummy = new THREE.Object3D();
 
-// One instanced mesh per block type, only exposed faces rendered
-const instanced = {};
-function rebuildMeshes() {
+// Chunked streaming renderer: the world (now 2x) is split into CHUNK-chunks
+// and only chunks within RENDER_DIST of the player are meshed and drawn.
+// Each chunk is one InstancedMesh per block type (only exposed faces), and
+// every mesh gets a bounding sphere so Three.js frustum-culls it — blocks
+// behind you or off-screen cost nothing, and distant chunks are unloaded.
+const chunkMeshes = new Map();   // "cx_cz" -> Map<blockType, InstancedMesh>
+const typeMats = new Map();      // blockType -> shared material[6]
+let meshCx = 0, meshCz = 0;
+
+function chunkOf(v) { return Math.floor(v / CHUNK); }
+function getTypeMats(id) {
+  if (!typeMats.has(id)) typeMats.set(id, materialsFor(id));
+  return typeMats.get(id);
+}
+function disposeChunkMeshes(meshes) {
+  for (const mesh of meshes.values()) { scene.remove(mesh); mesh.geometry.dispose(); }
+}
+
+function rebuildChunk(cx, cz) {
+  const ck = cx + "_" + cz;
+  if (chunkMeshes.has(ck)) {
+    disposeChunkMeshes(chunkMeshes.get(ck));
+    chunkMeshes.delete(ck);
+  }
+  const x0 = Math.max(cx * CHUNK, -WORLD_RADIUS);
+  const x1 = Math.min(cx * CHUNK + CHUNK - 1, WORLD_RADIUS);
+  const z0 = Math.max(cz * CHUNK, -WORLD_RADIUS);
+  const z1 = Math.min(cz * CHUNK + CHUNK - 1, WORLD_RADIUS);
   const counts = {};
   const exposed = [];
-  world.forEach((id, k) => {
-    if (!BLOCK_INFO[id]) return;
-    const [x, y, z] = k.split(",").map(Number);
-    if (!isExposed(x, y, z)) return;
-    counts[id] = (counts[id] || 0) + 1;
-    exposed.push([x, y, z, id]);
-  });
-
-  for (const id in instanced) {
-    scene.remove(instanced[id]);
-    instanced[id].geometry.dispose();
-    instanced[id].material.forEach((m) => m.dispose());
-  }
-
-  for (const idStr in counts) {
-    const id = +idStr;
-    const n = counts[id];
-    const mesh = new THREE.InstancedMesh(boxGeo, materialsFor(id), n);
-    mesh.count = n;
-    mesh.visible = n > 0;
-    let i = 0;
-    for (const [x, y, z, bid] of exposed) {
-      if (bid !== id) continue;
-      dummy.position.set(x + 0.5, y + 0.5, z + 0.5);
-      dummy.updateMatrix();
-      mesh.setMatrixAt(i++, dummy.matrix);
+  for (let x = x0; x <= x1; x++)
+    for (let z = z0; z <= z1; z++) {
+      for (let y = 0; y <= MAX_Y; y++) {
+        const id = getBlock(x, y, z);
+        if (id === AIR || !BLOCK_INFO[id] || !isExposed(x, y, z)) continue;
+        counts[id] = (counts[id] || 0) + 1;
+        exposed.push([x, y, z, id]);
+      }
     }
-    mesh.instanceMatrix.needsUpdate = true;
-    scene.add(mesh);
-    instanced[id] = mesh;
+  const meshes = new Map();
+  if (exposed.length) {
+    for (const idStr in counts) {
+      const id = +idStr;
+      const n = counts[id];
+      const mesh = new THREE.InstancedMesh(boxGeo, getTypeMats(id), n);
+      mesh.count = n;
+      let i = 0;
+      for (const [x, y, z, bid] of exposed) {
+        if (bid !== id) continue;
+        dummy.position.set(x + 0.5, y + 0.5, z + 0.5);
+        dummy.updateMatrix();
+        mesh.setMatrixAt(i++, dummy.matrix);
+      }
+      mesh.instanceMatrix.needsUpdate = true;
+      mesh.computeBoundingSphere();
+      scene.add(mesh);
+      meshes.set(id, mesh);
+    }
+  }
+  chunkMeshes.set(ck, meshes);
+}
+
+// Incremental streaming: build only missing chunks inside the window, unload
+// chunks that fell outside it. Called when the player crosses a chunk border.
+function streamChunks() {
+  const cx = chunkOf(freeCam ? camPos.x : pos.x);
+  const cz = chunkOf(freeCam ? camPos.z : pos.z);
+  const R = RENDER_DIST;
+  const keep = new Set();
+  for (let dx = -R; dx <= R; dx++)
+    for (let dz = -R; dz <= R; dz++) {
+      const wx = cx + dx, wz = cz + dz;
+      if (wx * CHUNK > WORLD_RADIUS || wx * CHUNK + CHUNK - 1 < -WORLD_RADIUS) continue;
+      if (wz * CHUNK > WORLD_RADIUS || wz * CHUNK + CHUNK - 1 < -WORLD_RADIUS) continue;
+      keep.add(wx + "_" + wz);
+    }
+  for (const [ck, meshes] of [...chunkMeshes]) {
+    if (!keep.has(ck)) { disposeChunkMeshes(meshes); chunkMeshes.delete(ck); }
+  }
+  for (const ck of keep) {
+    if (!chunkMeshes.has(ck)) {
+      const [wx, wz] = ck.split("_");
+      rebuildChunk(+wx, +wz);
+    }
+  }
+  meshCx = cx; meshCz = cz;
+}
+
+function rebuildMeshes() {
+  for (const meshes of chunkMeshes.values()) disposeChunkMeshes(meshes);
+  chunkMeshes.clear();
+  streamChunks();
+}
+
+// Rebuild just the chunk(s) holding the given blocks (plus neighbours across
+// a chunk border), so editing cost stays tiny even in a 2x world.
+function refreshBlocks(coords) {
+  const keys = new Set();
+  for (const [x, , z] of coords) {
+    const cx = chunkOf(x), cz = chunkOf(z);
+    keys.add(cx + "_" + cz);
+    const rx = ((x % CHUNK) + CHUNK) % CHUNK;
+    const rz = ((z % CHUNK) + CHUNK) % CHUNK;
+    if (rx === 0) keys.add(cx - 1 + "_" + cz);
+    if (rx === CHUNK - 1) keys.add(cx + 1 + "_" + cz);
+    if (rz === 0) keys.add(cx + "_" + (cz - 1));
+    if (rz === CHUNK - 1) keys.add(cx + "_" + (cz + 1));
+  }
+  for (const ck of keys) {
+    if (!chunkMeshes.has(ck)) continue;
+    const [cx, cz] = ck.split("_");
+    rebuildChunk(+cx, +cz);
   }
 }
 
@@ -689,7 +766,7 @@ function breakBlock() {
   if (getBlock(x, y, z) === STONE && y === 0) return;
   if (getBlock(x, y, z) === TNT) { igniteTNT(x, y, z); return; }
   setBlock(x, y, z, AIR);
-  rebuildMeshes();
+  refreshBlocks([[x, y, z]]);
   queueSave();
 }
 function placeBlock(id) {
@@ -700,7 +777,7 @@ function placeBlock(id) {
   if (getBlock(px, py, pz) !== AIR) return;
   if (intersectsPlayer(px, py, pz)) return;
   setBlock(px, py, pz, id);
-  rebuildMeshes();
+  refreshBlocks([[px, py, pz]]);
   queueSave();
 }
 function intersectsPlayer(bx, by, bz) {
@@ -755,7 +832,7 @@ function igniteTNT(bx, by, bz) {
   const t = { bx, by, bz, px: bx + 0.5, py: by + 1.1, pz: bz + 0.5, fuse: FUSE_TIME, spr, mesh: null, stuck: false, ax: 0, ay: 0, az: 0 };
   if (dim === "end" && dragon.mesh) {
     setBlock(bx, by, bz, AIR);
-    rebuildMeshes();
+    refreshBlocks([[bx, by, bz]]);
     queueSave();
     const m = makeTNTBomb();
     m.position.set(bx + 0.5, by + 1.1, bz + 0.5);
@@ -865,7 +942,7 @@ function explodeTNT(x, y, z, pointBlank) {
       }
   if (affected.length) {
     for (const [axc, ayc, azc] of affected) setBlock(axc, ayc, azc, AIR);
-    rebuildMeshes();
+    refreshBlocks([[bx, by, bz], ...affected]);
     queueSave();
   }
 }
@@ -1053,13 +1130,15 @@ const END_SPAWN = { x: 0.5, y: END_PLATFORM_TOP + 1.6, z: END_RETURN_Z - 3 };
 const END_RETURN_BASE_Y = END_PLATFORM_TOP + 1;
 
 function buildReturnPortal() {
+  const coords = [];
   for (let x = -2; x <= 2; x++)
     for (let y = 0; y <= 4; y++) {
       const isCorner = (x === -2 && (y === 0 || y === 4)) || (x === 2 && (y === 0 || y === 4));
       const isEdge = x === -2 || x === 2 || y === 0 || y === 4;
-      if (isEdge && !isCorner) setBlock(x, END_RETURN_BASE_Y + y, END_RETURN_Z, PORTAL);
+      if (isEdge && !isCorner) { setBlock(x, END_RETURN_BASE_Y + y, END_RETURN_Z, PORTAL); coords.push([x, END_RETURN_BASE_Y + y, END_RETURN_Z]); }
     }
   endReturnWin = { minX: -2, minY: END_RETURN_BASE_Y, minZ: END_RETURN_Z };
+  refreshBlocks(coords);
 }
 
 function setDimensionEnv() {
@@ -1101,10 +1180,10 @@ function goToDimension(name, sx, sy, sz) {
   }
   if (freeCam) { freeCam = false; }
   Object.keys(keys).forEach((k) => { keys[k] = false; });
-  rebuildMeshes();
   pos.set(sx, sy, sz);
   camPos.set(sx, sy, sz);
   vel.set(0, 0, 0);
+  rebuildMeshes();
   updateCamera();
   portalCd = 1.5;
   queueSave();
@@ -1767,20 +1846,19 @@ async function storageClear() {
   db.close();
 }
 
+// Block encoding: v1/v2 use byte coords (+128 offset, worlds up to 127);
+// v3 uses int16 x/z so worlds can be much larger. 6 bytes per block.
+const BLOCK_BYTES_V3 = 6;
+const BLOCK_BYTES_V2 = 4;
+
 function serialize() {
-  const writeBlocks = (map) => {
-    const arr = [];
-    map.forEach((id, k) => { const s = k.split(","); arr.push([+s[0], +s[1], +s[2], id]); });
-    return arr;
-  };
-  const over = writeBlocks(worlds.over);
-  const end = writeBlocks(worlds.end);
-  const n = over.length + end.length;
-  const buf = new ArrayBuffer(93 + n * 4);
+  const n = worlds.over.size + worlds.end.size;
+  const B = BLOCK_BYTES_V3;
+  const buf = new ArrayBuffer(93 + n * B);
   const dv = new DataView(buf);
   let o = 0;
   new Uint8Array(buf, o, 9).set(SAVE_MAGIC); o += 9;
-  dv.setUint8(o++, 2); // format version
+  dv.setUint8(o++, 3); // format version
   dv.setUint8(o++, dim === "end" ? 1 : 0);
   dv.setInt32(o, seed, true); o += 4;
   dv.setInt32(o, endSeed, true); o += 4;
@@ -1794,20 +1872,22 @@ function serialize() {
   dv.setFloat64(o, overPortalSpawn.x, true); o += 8;
   dv.setFloat64(o, overPortalSpawn.y, true); o += 8;
   dv.setFloat64(o, overPortalSpawn.z, true); o += 8;
-  dv.setUint32(o, over.length, true); o += 4;
-  for (const [x, y, z, id] of over) {
-    dv.setUint8(o++, x + 128);
-    dv.setUint8(o++, y);
-    dv.setUint8(o++, z + 128);
+  dv.setUint32(o, worlds.over.size, true); o += 4;
+  worlds.over.forEach((id, k) => {
+    const s = k.split(",");
+    dv.setInt16(o, +s[0], true); o += 2;
+    dv.setUint8(o++, +s[1]);
+    dv.setInt16(o, +s[2], true); o += 2;
     dv.setUint8(o++, id);
-  }
-  dv.setUint32(o, end.length, true); o += 4;
-  for (const [x, y, z, id] of end) {
-    dv.setUint8(o++, x + 128);
-    dv.setUint8(o++, y);
-    dv.setUint8(o++, z + 128);
+  });
+  dv.setUint32(o, worlds.end.size, true); o += 4;
+  worlds.end.forEach((id, k) => {
+    const s = k.split(",");
+    dv.setInt16(o, +s[0], true); o += 2;
+    dv.setUint8(o++, +s[1]);
+    dv.setInt16(o, +s[2], true); o += 2;
     dv.setUint8(o++, id);
-  }
+  });
   return buf;
 }
 
@@ -1817,7 +1897,7 @@ function deserialize(buf) {
   for (let i = 0; i < 9; i++) if (new Uint8Array(buf, o, 9)[i] !== SAVE_MAGIC[i]) throw new Error("Not a MiniCraft save");
   o += 9;
   const ver = dv.getUint8(o++);
-  if (ver !== 1 && ver !== 2) throw new Error("Unsupported save version");
+  if (ver !== 1 && ver !== 2 && ver !== 3) throw new Error("Unsupported save version");
   let dimFlag = 0, endSeedVal = endSeed;
   if (ver >= 2) { dimFlag = dv.getUint8(o++); endSeedVal = dv.getInt32(o, true); o += 4; }
   seed = dv.getInt32(o, true); o += 4;
@@ -1831,22 +1911,29 @@ function deserialize(buf) {
   selected = dv.getUint8(o++);
   overPortalSpawn = { x: dv.getFloat64(o, true), y: dv.getFloat64(o, true), z: dv.getFloat64(o, true) };
   o += 24;
+  const v3 = ver >= 3;
+  const readBlocks = () => {
+    if (v3) {
+      const x = dv.getInt16(o, true), y = dv.getUint8(o + 2), z = dv.getInt16(o + 3, true), id = dv.getUint8(o + 5);
+      o += BLOCK_BYTES_V3;
+      return [x, y, z, id];
+    }
+    const x = dv.getUint8(o) - 128, y = dv.getUint8(o + 1), z = dv.getUint8(o + 2) - 128, id = dv.getUint8(o + 3);
+    o += BLOCK_BYTES_V2;
+    return [x, y, z, id];
+  };
   const n = dv.getUint32(o, true); o += 4;
   worlds.over.clear();
   for (let i = 0; i < n; i++) {
-    const x = dv.getUint8(o++) - 128;
-    const y = dv.getUint8(o++);
-    const z = dv.getUint8(o++) - 128;
-    worlds.over.set(key(x, y, z), dv.getUint8(o++));
+    const [x, y, z, id] = readBlocks();
+    worlds.over.set(key(x, y, z), id);
   }
   if (ver >= 2) {
     const ne = dv.getUint32(o, true); o += 4;
     worlds.end.clear();
     for (let i = 0; i < ne; i++) {
-      const x = dv.getUint8(o++) - 128;
-      const y = dv.getUint8(o++);
-      const z = dv.getUint8(o++) - 128;
-      worlds.end.set(key(x, y, z), dv.getUint8(o++));
+      const [x, y, z, id] = readBlocks();
+      worlds.end.set(key(x, y, z), id);
     }
   }
   dim = dimFlag ? "end" : "over";
@@ -1900,7 +1987,6 @@ function damageDragon(amount) {
     const dx = dragon.mesh.position.x, dy = dragon.mesh.position.y + 1, dz = dragon.mesh.position.z;
     removeDragon();
     buildReturnPortal();
-    rebuildMeshes();
     queueSave();
     spawnDragonDeath(dx, dy, dz);
     showMsg("Ender Dragon is defeated");
@@ -2132,7 +2218,7 @@ function restoreSave(buf) {
   updateCamera();
   setDimensionEnv();
   updateDimLabel();
-  if (dim === "end") { buildReturnPortal(); rebuildMeshes(); spawnDragon(); }
+  if (dim === "end") { buildReturnPortal(); spawnDragon(); }
   lastManualSave = Date.now();
   return true;
 }
@@ -2225,8 +2311,8 @@ async function regenerate() {
   resetDims();
   seed = Math.floor(Math.random() * 100000);
   generateWorld();
-  rebuildMeshes();
   spawnPlayer();
+  rebuildMeshes();
   select(0);
   updateCamera();
   queueSave();
@@ -2390,8 +2476,8 @@ document.getElementById("btnNew").addEventListener("click", async (e) => {
     resetDims();
     seed = Math.floor(Math.random() * 100000);
     generateWorld();
-    rebuildMeshes();
     spawnPlayer();
+    rebuildMeshes();
     select(0);
     updateCamera();
     enterGame();
@@ -2402,8 +2488,8 @@ document.getElementById("btnNew").addEventListener("click", async (e) => {
   resetDims();
   seed = Math.floor(Math.random() * 100000);
   generateWorld();
-  rebuildMeshes();
   spawnPlayer();
+  rebuildMeshes();
   select(0);
   updateCamera();
   enterGame();
@@ -2478,10 +2564,14 @@ function loop(now) {
   if (toastTimer > 0) { toastTimer -= dt; if (toastTimer <= 0) toastEl.style.opacity = "0"; }
 
   // Gentle water shimmer
-  if (instanced[WATER]) {
+  if (typeMats.has(WATER)) {
     const o = 0.55 + 0.1 * Math.sin(now * 0.002);
-    for (const m of instanced[WATER].material) m.opacity = o;
+    for (const m of typeMats.get(WATER)) m.opacity = o;
   }
+
+  const pcx = chunkOf(freeCam ? camPos.x : pos.x);
+  const pcz = chunkOf(freeCam ? camPos.z : pos.z);
+  if (pcx !== meshCx || pcz !== meshCz) streamChunks();
 
   renderer.render(scene, camera);
 }
