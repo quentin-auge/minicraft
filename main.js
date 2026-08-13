@@ -3,7 +3,7 @@ import * as THREE from "three";
 // ---------------------------------------------------------------------------
 // Block definitions
 // ---------------------------------------------------------------------------
-const AIR = 0, GRASS = 1, DIRT = 2, STONE = 3, SAND = 4, LOG = 5, LEAVES = 6, WATER = 7, PLANKS = 8, GLASS = 9, TNT = 10, FLOWER = 11, PORTAL = 12, ENDSTONE = 13;
+const AIR = 0, GRASS = 1, DIRT = 2, STONE = 3, SAND = 4, LOG = 5, LEAVES = 6, WATER = 7, PLANKS = 8, GLASS = 9, TNT = 10, FLOWER = 11, PORTAL = 12, ENDSTONE = 13, CLOUD = 14;
 
 const BLOCK_INFO = {
   [GRASS]:   { name: "Grass",    solid: true,  opaque: true,  placeable: true },
@@ -19,6 +19,7 @@ const BLOCK_INFO = {
   [FLOWER]:  { name: "Flower",   solid: false, opaque: false, placeable: true },
 [PORTAL]:  { name: "Portal",    solid: true,  opaque: false, placeable: true },
   [ENDSTONE]:{ name: "End Stone",solid: true,  opaque: true,  placeable: false },
+  [CLOUD]:   { name: "Cloud",    solid: true,  opaque: true,  placeable: false },
 };
 
 // ---------------------------------------------------------------------------
@@ -159,6 +160,12 @@ const TEX = {
     ctx.fillStyle = "rgba(0,0,0,0.16)";
     for (let i = 0; i < 6; i++) ctx.fillRect(Math.random() * 14, Math.random() * 14, 2 + Math.random() * 3, 2 + Math.random() * 2);
   }),
+  cloud: canvasTex((ctx) => {
+    ctx.fillStyle = "#ffffff"; ctx.fillRect(0, 0, 16, 16);
+    pxNoise(ctx, [255, 255, 255], 12);
+    ctx.fillStyle = "rgba(150,150,160,0.28)";
+    for (let i = 0; i < 5; i++) ctx.fillRect(Math.random() * 13, Math.random() * 13, 2 + Math.random() * 2, 1 + Math.random() * 2);
+  }),
   flower: canvasTex((ctx) => {
     const petals = ["rgb(232,30,52)", "rgb(56,106,252)", "rgb(248,188,16)", "rgb(16,204,186)", "rgb(244,132,34)", "rgb(160,80,224)", "rgb(232,30,52)", "rgb(56,106,252)"];
     ctx.clearRect(0, 0, 16, 16);
@@ -204,6 +211,7 @@ function materialsFor(id) {
     case TNT:   return [material(TEX.tnt_side), material(TEX.tnt_side), material(TEX.tnt_top), material(TEX.tnt_top), material(TEX.tnt_side), material(TEX.tnt_side)];
     case PORTAL: return faceTex(TEX.portal, { transparent: false, opacity: 1, side: THREE.DoubleSide });
     case ENDSTONE: return faceTex(TEX.endstone);
+    case CLOUD: return faceTex(TEX.cloud);
     case PORTAL: return faceTex(TEX.portal);
     default: return faceTex(TEX.dirt);
   }
@@ -220,6 +228,9 @@ const WATER_LEVEL = 10;
 const CHUNK = 16;
 const RENDER_DIST = 8;
 const MAX_Y = 254;
+const MAX_TREE_H = 50;
+const CLOUD_BASE = 2 * MAX_TREE_H;
+const CLOUD_LAYER = 3 * MAX_TREE_H;
 const LAND_RAISE = 20.0;
 const BASIN_SHORE = 1.5;
 const BASIN_DEPTH = 2.2;
@@ -291,7 +302,7 @@ function heightAt(x, z) {
 }
 
 function growTree(x, y, z) {
-  let trunkH = 1 + Math.floor(hash2(x, z, seed + 999) * 100);
+  let trunkH = 1 + Math.floor(hash2(x, z, seed + 999) * MAX_TREE_H);
   const topMax = MAX_Y - y - 1;
   if (trunkH > topMax) trunkH = Math.max(1, topMax);
   for (let i = 0; i < trunkH; i++) setBlock(x, y + i, z, LOG);
@@ -620,6 +631,43 @@ function generateWorld() {
   carveTunnels();
   carveRooms();
   stairEntrances();
+  generateClouds();
+}
+
+// Scatter solid white clouds you can climb on, made of a few overlapping 3D
+// ellipsoid puffs so they look like real fluffy cloud clusters. Each cloud
+// picks a height on its own; some (~30%) are scaled up to 2x. The band starts
+// at 2x max tree height and extends 3x max tree height beyond it.
+function generateClouds() {
+  const n = Math.round(((WORLD_RADIUS * 2) * (WORLD_RADIUS * 2)) / 1100);
+  for (let i = 0; i < n; i++) {
+    const cx = Math.round((hash2(i, 1, seed + 4242) * 2 - 1) * (WORLD_RADIUS - 8));
+    const cz = Math.round((hash2(i, 2, seed + 4242) * 2 - 1) * (WORLD_RADIUS - 8));
+    const scale = hash2(i, 8, seed + 4242) < 0.3 ? 2 : 1;
+    const yBase = CLOUD_BASE + Math.floor(hash2(i, 5, seed + 4242) * (CLOUD_LAYER - 8));
+    const puffs = 3 + Math.floor(hash2(i, 7, seed + 4242) * 3);
+    const spread = (1.5 + hash2(i, 3, seed + 4242) * 4) * scale;
+    for (let p = 0; p < puffs; p++) {
+      const ox = (hash2(i, p, 111) * 2 - 1) * spread;
+      const oz = (hash2(i, p, 222) * 2 - 1) * spread;
+      const oy = (hash2(i, p, 333) - 0.5) * spread * 0.5;
+      const Px = cx + Math.round(ox);
+      const Pz = cz + Math.round(oz);
+      const Py = yBase + Math.round(oy);
+      const ra = 1 + Math.round((1.5 + hash2(i, p, 444) * 3) * scale);
+      const rb = 1 + Math.round((1.5 + hash2(i, p, 555) * 2.5) * scale);
+      const rh = 1 + Math.round((hash2(i, p, 666) * 2.5) * scale);
+      const mx = Math.ceil(ra), mz = Math.ceil(rb), my = Math.ceil(rh);
+      for (let dx = -mx; dx <= mx; dx++)
+        for (let dz = -mz; dz <= mz; dz++)
+          for (let dy = -my; dy <= my; dy++) {
+            if (dx * dx / (ra * ra) + dz * dz / (rb * rb) + dy * dy / (rh * rh) > 1) continue;
+            const yy = Py + dy;
+            if (yy < 0 || yy > MAX_Y) continue;
+            setBlock(Px + dx, yy, Pz + dz, CLOUD);
+          }
+    }
+  }
 }
 
 function generateEnd() {
