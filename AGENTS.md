@@ -48,8 +48,8 @@ small Python server for saving/loading worlds.
   towering pines (trunk 1–100, roughly half as many of them, clamped to the
   world ceiling `MAX_Y = 120`, via `hash2` in `growTree`). Trees clump into
   forests: a quantile forest noise (`forestThresh`) splits the map ~50/50, with
-  1.5x tree density in forests and 0.5x in the sparse rest. Red flowers
-  (cross-billboard plants, non-solid) are scattered on ~1.5% of grass columns.
+  1.5x tree density in forests and 0.5x in the sparse rest. Blocky flowers
+  (non-solid) are scattered on ~1.5% of grass columns.
 - **Textures**: 16×16 pixel-art textures drawn procedurally on canvas
   (`TEX`, `makeTex`, `pxNoise`, `canvasTex`), NearestFilter + sRGB.
 - **Rendering**: chunked streaming. The overworld is split into `CHUNK` (16)×
@@ -63,9 +63,21 @@ small Python server for saving/loading worlds.
   hemisphere/directional light.
 - **Blocks**: numeric constants + `BLOCK_INFO` (solid/opaque/placeable).
   Types incl. GRASS, DIRT, STONE, SAND, LOG, LEAVES, PLANKS, GLASS, WATER
-  (non-solid, animated opacity), TNT, FLOWER (decorative non-solid
-  cross-billboard plant, alpha-tested DoubleSide material, `crossGeo` instead
-  of `boxGeo`, `placeable: false` and absent from the hotbar so it's never
+  (non-solid, animated opacity), TNT, FLOWER (decorative non-solid, built from
+  1/30-size cubes in a 30×30×30 grid filling exactly one block cell, geometry
+  centered on the cell so it sits on the ground — a thin green stem with two
+  leaves hugging it (raised mid-stem, overlapping the stem cells and merged into
+  it) holding a flat round 2D bloom: a vertical disc of petals with eight
+  scalloped tips standing out past the rim, around a darker center, like a real
+  flower face-on; base touches the grass
+  and all cubes stay inside the cell even when rotated; seven color variants
+  (red, blue, yellow, turquoise, orange, violet and a rainbow multicolor —
+  eight radial petal slices around the bloom, weighted twice as common as the
+  solid colors via `FLOWER_WEIGHTS`) derived from position
+  via `flowerVariant`, each rendered as a per-chunk `InstancedMesh` sharing a
+  baked-vertex-color geometry (`FLOWER_GEOS`) and one `FLOWER_MAT`
+  `MeshLambertMaterial` with `vertexColors`; random Y-rotation via
+  `flowerAngle`; `placeable: false` and absent from the hotbar so it's never
   picked up or placed), PORTAL, and ENDSTONE (grey End platform block,
   `placeable: false` so it can't be selected or placed).
 - **Player**: AABB collision, gravity, jump, walk/sprint, fly mode, swimming,

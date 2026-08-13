@@ -142,23 +142,6 @@ const TEX = {
     ctx.fillStyle = "#5d2b22";
     ctx.fillRect(8, 0, 2, 2);
   }),
-  flower: canvasTex((ctx) => {
-    ctx.clearRect(0, 0, 16, 16);
-    ctx.fillStyle = "#4a9c36";
-    ctx.fillRect(7, 10, 2, 6);
-    ctx.fillRect(4, 12, 3, 2); ctx.fillRect(9, 13, 3, 2);
-    ctx.fillStyle = "#e0554a";
-    ctx.fillRect(5, 3, 6, 2);
-    ctx.fillRect(4, 5, 8, 2);
-    ctx.fillRect(3, 7, 10, 2);
-    ctx.fillRect(4, 9, 8, 2);
-    ctx.fillRect(6, 11, 4, 2);
-    ctx.fillStyle = "#ff8a80";
-    ctx.fillRect(4, 5, 2, 2); ctx.fillRect(10, 5, 2, 2);
-    ctx.fillRect(3, 7, 2, 2); ctx.fillRect(11, 7, 2, 2);
-    ctx.fillStyle = "#7a1f18";
-    ctx.fillRect(7, 7, 2, 2);
-  }),
   glass: canvasTex((ctx) => {
     ctx.fillStyle = "rgba(190,230,255,0.55)"; ctx.fillRect(0, 0, 16, 16);
     ctx.strokeStyle = "rgba(255,255,255,0.9)"; ctx.lineWidth = 1.5;
@@ -200,10 +183,6 @@ function materialsFor(id) {
     case GLASS: return faceTex(TEX.glass, { transparent: true, opacity: 0.8, depthWrite: false });
     case WATER: return faceTex(TEX.water, { transparent: true, opacity: 0.65, depthWrite: false });
     case TNT:   return faceTex(TEX.tnt);
-    case FLOWER: {
-      const m = new THREE.MeshBasicMaterial({ map: TEX.flower, side: THREE.DoubleSide, alphaTest: 0.5 });
-      return [m, m, m, m, m, m];
-    }
     case PORTAL: return faceTex(TEX.portal, { transparent: false, opacity: 1, side: THREE.DoubleSide });
     case ENDSTONE: return faceTex(TEX.endstone);
     default: return faceTex(TEX.dirt);
@@ -427,28 +406,151 @@ scene.add(hemi);
 const boxGeo = new THREE.BoxGeometry(1, 1, 1);
 const dummy = new THREE.Object3D();
 
-// Cross-shaped billboard for plants: two planes crossing at right angles,
-// sized to sit inside their block cell (0.05..0.95 tall) on top of the grass.
-// Needs a uv attribute so the texture map actually samples per-fragment
-// (without it every fragment samples texel (0,0)).
-const crossGeo = (() => {
-  const hw = 0.45, hh = 0.45;
-  const v = [];
-  const u = [];
-  const quad = (ax, ay, az, bx, by, bz, cx, cy, cz, dx, dy, dz) => {
-    v.push(ax, ay, az, bx, by, bz, cx, cy, cz);
-    v.push(ax, ay, az, cx, cy, cz, dx, dy, dz);
-    u.push(0, 0, 1, 0, 1, 1);
-    u.push(0, 0, 1, 1, 0, 1);
+// Blocky flowers: each FLOWER block is a cluster of 1/30-size cubes in a
+// 30x30x30 grid filling exactly one block cell, geometry centered on the cell
+// so it sits on the ground (base flush with the grass top). A thin green stem
+// with two leaves hugging it holds a flat round 2D bloom — a vertical disc of
+// petals (eight scalloped tips standing out past the rim) around a darker
+// center, like a real flower face-on. Five color variants (red, green, blue,
+// yellow, and multicolor quadrants) share
+// per-variant geometries with baked vertex colors.
+const FLOWER_STEM = [20, 66, 30];
+const FLOWER_LEAF = [36, 94, 42];
+const FLOWER_PETALS = [
+  [232, 30, 52],
+  [56, 106, 252],
+  [248, 188, 16],
+  [16, 204, 186],
+  [252, 112, 10],
+  [176, 66, 250],
+];
+const FLOWER_MULTI = [
+  [232, 30, 52],
+  [252, 112, 10],
+  [248, 188, 16],
+  [78, 210, 64],
+  [16, 204, 186],
+  [56, 106, 252],
+  [176, 80, 250],
+  [252, 90, 196],
+];
+const FLOWER_CENTERS = [
+  [156, 16, 32],
+  [30, 62, 180],
+  [176, 124, 6],
+  [8, 120, 112],
+  [186, 66, 4],
+  [110, 32, 176],
+  [120, 84, 34],
+];
+const FLOWER_VARIANT_COUNT = 7;
+const FLOWER_WEIGHTS = [1, 1, 1, 1, 1, 1, 2];
+const FLOWER_WEIGHT_SUM = FLOWER_WEIGHTS.reduce((a, b) => a + b, 0);
+const FLOWER_GRID = 30;
+const FLOWER_CUBES = [];
+const usedCells = new Set();
+const FCELL = (cx, cy, cz, role) => {
+  const k = cx + "," + cy + "," + cz;
+  if (usedCells.has(k)) return;
+  usedCells.add(k);
+  FLOWER_CUBES.push([cx, cy, cz, role]);
+};
+const fc = (FLOWER_GRID - 1) / 2;
+for (let cy = 0; cy < 14; cy++)
+  for (let dx = 0; dx < 2; dx++) for (let dz = 0; dz < 2; dz++)
+    FCELL(14 + dx, cy, 14 + dz, "stem");
+for (let cx = 0; cx < FLOWER_GRID; cx++)
+  for (let cz = 0; cz < FLOWER_GRID; cz++) {
+    if (cx <= 15) {
+      const d = Math.pow((cx - 8) / 6.5, 2) + Math.pow((cz - fc) / 3, 2);
+      if (d <= 1) FCELL(cx, 11, cz, "leaf");
+    }
+    if (cx >= 14) {
+      const d = Math.pow((cx - 21) / 6.5, 2) + Math.pow((cz - fc) / 3, 2);
+      if (d <= 1) FCELL(cx, 11, cz, "leaf");
+    }
+  }
+const FLOWER_BLOOM_R = 7;
+const FLOWER_BLOOM_CY = 20.5;
+const FLOWER_CORE_R = 3.4;
+const FLOWER_TIP_R = 8.6;
+const FLOWER_PETAL_COUNT = 8;
+const FLOWER_TIP_WEDGE = 0.07;
+for (let cx = 0; cx < FLOWER_GRID; cx++)
+  for (let cy = 0; cy < FLOWER_GRID; cy++)
+    for (const cz of [14, 15]) {
+      const d = Math.hypot(cx - fc, cy - FLOWER_BLOOM_CY);
+      if (d > FLOWER_TIP_R) continue;
+      if (d > FLOWER_BLOOM_R) {
+        const step = Math.PI / FLOWER_PETAL_COUNT;
+        let w = Math.atan2(cy - FLOWER_BLOOM_CY, cx - fc) % step;
+        if (w < 0) w += step;
+        if (Math.min(w, step - w) > FLOWER_TIP_WEDGE) continue;
+      }
+      FCELL(cx, cy, cz, d <= FLOWER_CORE_R ? "center" : "petal");
+    }
+function flowerColorOf(variant) {
+  if (variant === FLOWER_VARIANT_COUNT - 1) {
+    return (role, cx, cy) => {
+      if (role === "stem") return FLOWER_STEM;
+      if (role === "leaf") return FLOWER_LEAF;
+      if (role === "center") return FLOWER_CENTERS[FLOWER_VARIANT_COUNT - 1];
+      const a = Math.atan2(cy - FLOWER_BLOOM_CY, cx - fc) + Math.PI;
+      return FLOWER_MULTI[Math.floor(a / Math.PI * (FLOWER_MULTI.length / 2)) % FLOWER_MULTI.length];
+    };
+  }
+  return (role) => {
+    if (role === "stem") return FLOWER_STEM;
+    if (role === "leaf") return FLOWER_LEAF;
+    if (role === "center") return FLOWER_CENTERS[variant];
+    return FLOWER_PETALS[variant];
   };
-  quad(-hw, -hh, 0, hw, -hh, 0, hw, hh, 0, -hw, hh, 0);
-  quad(0, -hh, -hw, 0, -hh, hw, 0, hh, hw, 0, hh, -hw);
+}
+function buildFlowerGeometry(colorOf) {
+  const h = 1 / 60;
+  const faces = [
+    { n: [1, 0, 0], c: [[h, -h, -h], [h, -h, h], [h, h, h], [h, h, -h]] },
+    { n: [-1, 0, 0], c: [[-h, -h, h], [-h, -h, -h], [-h, h, -h], [-h, h, h]] },
+    { n: [0, 1, 0], c: [[-h, h, -h], [-h, h, h], [h, h, h], [h, h, -h]] },
+    { n: [0, -1, 0], c: [[-h, -h, h], [-h, -h, -h], [h, -h, -h], [h, -h, h]] },
+    { n: [0, 0, 1], c: [[-h, -h, h], [h, -h, h], [h, h, h], [-h, h, h]] },
+    { n: [0, 0, -1], c: [[h, -h, -h], [-h, -h, -h], [-h, h, -h], [h, h, -h]] },
+  ];
+  const positions = [], normals = [], colors = [], indices = [];
+  for (const [cx, cy, cz, role] of FLOWER_CUBES) {
+    const [r, g, b] = colorOf(role, cx, cy, cz);
+    const ox = (cx + 0.5) / 30 - 0.5, oy = (cy + 0.5) / 30 - 0.5, oz = (cz + 0.5) / 30 - 0.5;
+    for (const f of faces) {
+      for (const [x, y, z] of f.c) {
+        positions.push(x + ox, y + oy, z + oz);
+        normals.push(f.n[0], f.n[1], f.n[2]);
+        colors.push(r / 255, g / 255, b / 255);
+      }
+      const b0 = positions.length / 3 - 4;
+      indices.push(b0, b0 + 1, b0 + 2, b0, b0 + 2, b0 + 3);
+    }
+  }
   const geo = new THREE.BufferGeometry();
-  geo.setAttribute("position", new THREE.Float32BufferAttribute(v, 3));
-  geo.setAttribute("uv", new THREE.Float32BufferAttribute(u, 2));
-  geo.computeVertexNormals();
+  geo.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+  geo.setAttribute("normal", new THREE.Float32BufferAttribute(normals, 3));
+  geo.setAttribute("color", new THREE.Float32BufferAttribute(colors, 3));
+  geo.setIndex(indices);
   return geo;
-})();
+}
+const FLOWER_GEOS = [];
+for (let v = 0; v < FLOWER_VARIANT_COUNT; v++) FLOWER_GEOS.push(buildFlowerGeometry(flowerColorOf(v)));
+const FLOWER_MAT = new THREE.MeshLambertMaterial({ vertexColors: true });
+function flowerVariant(x, z) {
+  let r = hash2(x, z, seed + 99999) * FLOWER_WEIGHT_SUM;
+  for (let v = 0; v < FLOWER_VARIANT_COUNT; v++) {
+    if (r < FLOWER_WEIGHTS[v]) return v;
+    r -= FLOWER_WEIGHTS[v];
+  }
+  return FLOWER_VARIANT_COUNT - 1;
+}
+function flowerAngle(x, z) {
+  return hash2(x, z, seed + 77777) * Math.PI * 2;
+}
 
 // Chunked streaming renderer: the world (now 2x) is split into CHUNK-chunks
 // and only chunks within RENDER_DIST of the player are meshed and drawn.
@@ -480,11 +582,14 @@ function rebuildChunk(cx, cz) {
   const z1 = Math.min(cz * CHUNK + CHUNK - 1, WORLD_RADIUS);
   const counts = {};
   const exposed = [];
+  const flowers = [];
   for (let x = x0; x <= x1; x++)
     for (let z = z0; z <= z1; z++) {
       for (let y = 0; y <= MAX_Y; y++) {
         const id = getBlock(x, y, z);
-        if (id === AIR || !BLOCK_INFO[id] || !isExposed(x, y, z)) continue;
+        if (id === AIR || !BLOCK_INFO[id]) continue;
+        if (id === FLOWER) { flowers.push([x, y, z]); continue; }
+        if (!isExposed(x, y, z)) continue;
         counts[id] = (counts[id] || 0) + 1;
         exposed.push([x, y, z, id]);
       }
@@ -494,12 +599,14 @@ function rebuildChunk(cx, cz) {
     for (const idStr in counts) {
       const id = +idStr;
       const n = counts[id];
-      const mesh = new THREE.InstancedMesh(id === FLOWER ? crossGeo : boxGeo, getTypeMats(id), n);
+      const mesh = new THREE.InstancedMesh(boxGeo, getTypeMats(id), n);
       mesh.count = n;
       let i = 0;
       for (const [x, y, z, bid] of exposed) {
         if (bid !== id) continue;
         dummy.position.set(x + 0.5, y + 0.5, z + 0.5);
+        dummy.rotation.set(0, 0, 0);
+        dummy.scale.set(1, 1, 1);
         dummy.updateMatrix();
         mesh.setMatrixAt(i++, dummy.matrix);
       }
@@ -507,6 +614,28 @@ function rebuildChunk(cx, cz) {
       mesh.computeBoundingSphere();
       scene.add(mesh);
       meshes.set(id, mesh);
+    }
+  }
+  if (flowers.length) {
+    const perVariant = [];
+    for (let v = 0; v < FLOWER_VARIANT_COUNT; v++) perVariant.push([]);
+    for (const [fx, fy, fz] of flowers) perVariant[flowerVariant(fx, fz)].push([fx, fy, fz]);
+    for (let v = 0; v < FLOWER_VARIANT_COUNT; v++) {
+      const list = perVariant[v];
+      if (!list.length) continue;
+      const mesh = new THREE.InstancedMesh(FLOWER_GEOS[v], FLOWER_MAT, list.length);
+      for (let i = 0; i < list.length; i++) {
+        const [fx, fy, fz] = list[i];
+        dummy.position.set(fx + 0.5, fy + 0.5, fz + 0.5);
+        dummy.rotation.set(0, flowerAngle(fx, fz), 0);
+        dummy.scale.set(1, 1, 1);
+        dummy.updateMatrix();
+        mesh.setMatrixAt(i, dummy.matrix);
+      }
+      mesh.instanceMatrix.needsUpdate = true;
+      mesh.computeBoundingSphere();
+      scene.add(mesh);
+      meshes.set("flower_" + v, mesh);
     }
   }
   chunkMeshes.set(ck, meshes);
