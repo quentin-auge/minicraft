@@ -194,16 +194,30 @@ function faceTex(map, opts = {}) {
 // ---------------------------------------------------------------------------
 // World
 // ---------------------------------------------------------------------------
-const WORLD_RADIUS = 192;
+const WORLD_RADIUS = 96;
 const WATER_LEVEL = 10;
 const CHUNK = 16;
 const RENDER_DIST = 8;
-const MAX_Y = 60;
+const MAX_Y = 120;
+const LAND_RAISE = 20.0;
+const BASIN_SHORE = 1.5;
+const BASIN_DEPTH = 2.2;
+const RIVER_COUNT = 3;
+const RIVER_STEP = 36;
+const RIVER_W = 6.0;
+const RIVER_BED = 8;
 const END_PLATFORM_TOP = 20;
 const END_PLATFORM_R = 24;
 const END_RETURN_Z = 16;
 let seed = Math.floor(Math.random() * 100000);
 let endSeed = Math.floor(Math.random() * 100000);
+let waterScale = 1;
+let waterDepth = 1;
+let basinFreq = 0.007;
+let basinThresh = 0;
+let basinMax = 1;
+let riverPaths = [];
+let forestThresh = 0.5;
 
 function key(x, y, z) { return x + "," + y + "," + z; }
 
@@ -221,14 +235,31 @@ function setBlock(x, y, z, id) {
 function heightAt(x, z) {
   const base = fbm(x * 0.02, z * 0.02, seed) * 2 - 1;
   const hills = fbm(x * 0.008 + 100, z * 0.008 + 100, seed + 7) * 2 - 1;
-  const rough = fbm(x * 0.06, z * 0.06, seed + 13) * 0.6;
-  let h = 8 + base * 6 + hills * 9 + rough;
-  h = Math.max(3, Math.min(30, h));
+  const rough = fbm(x * 0.06, z * 0.06, seed + 13) * 1.4;
+  let h = 8 + LAND_RAISE + base * 8 + hills * 33 + rough;
+  const plat = fbm(x * 0.006 + 400, z * 0.006 + 400, seed + 99);
+  if (Math.abs(plat - 0.5) < 0.16) {
+    const lvl = Math.round(plat * 7) / 7;
+    h = 8 + lvl * 44 + (fbm(x * 0.06, z * 0.06, seed + 123) * 2 - 1) * 0.6;
+  }
+  h = Math.max(WATER_LEVEL + 1, Math.min(70, h));
+  const basin = fbm(x * basinFreq + 200, z * basinFreq + 200, seed + 21) * 2 - 1;
+  if (basin > basinThresh) {
+    const s = (basin - basinThresh) / (basinMax - basinThresh);
+    h = Math.max(1, WATER_LEVEL - BASIN_SHORE - s * (BASIN_DEPTH * waterDepth));
+  }
+  const rv = nearestRiver(x, z);
+  if (rv && rv.d <= rv.w) {
+    const t = rv.d / rv.w;
+    h = Math.min(h, RIVER_BED + Math.floor(t * 6));
+  }
   return Math.floor(h);
 }
 
 function growTree(x, y, z) {
-  const trunkH = 4 + Math.floor(hash2(x, z, seed + 999) * 3);
+  let trunkH = 1 + Math.floor(hash2(x, z, seed + 999) * 100);
+  const topMax = MAX_Y - y - 1;
+  if (trunkH > topMax) trunkH = Math.max(1, topMax);
   for (let i = 0; i < trunkH; i++) setBlock(x, y + i, z, LOG);
   const topY = y + trunkH;
   for (let dy = -2; dy <= 1; dy++) {
@@ -244,9 +275,81 @@ function growTree(x, y, z) {
   setBlock(x, topY + 1, z, LEAVES);
 }
 
+function distToSegment(px, pz, ax, az, bx, bz) {
+  const dx = bx - ax, dz = bz - az;
+  const len2 = dx * dx + dz * dz;
+  let t = len2 ? ((px - ax) * dx + (pz - az) * dz) / len2 : 0;
+  t = Math.max(0, Math.min(1, t));
+  const ex = px - (ax + dx * t), ez = pz - (az + dz * t);
+  return Math.sqrt(ex * ex + ez * ez);
+}
+
+function nearestRiver(x, z) {
+  let best = null;
+  for (let i = 0; i < riverPaths.length; i++) {
+    const pts = riverPaths[i];
+    const n = pts.length - 1;
+    for (let k = 0; k < n; k++) {
+      const d = distToSegment(x, z, pts[k][0], pts[k][1], pts[k + 1][0], pts[k + 1][1]);
+      const w = RIVER_W * (0.7 + 0.6 * (k / n));
+      if (!best || d - w < best.d - best.w) best = { d, w };
+    }
+  }
+  return best;
+}
+
+function generateRivers() {
+  riverPaths = [];
+  const S = WORLD_RADIUS;
+  for (let i = 0; i < RIVER_COUNT; i++) {
+    const rs = seed + 777 + i * 101;
+    const edge = Math.floor(hash2(0, 0, rs + 1) * 4);
+    const along = (hash2(0, 0, rs + 2) * 2 - 1) * S * 0.6;
+    let x, z, head;
+    if (edge === 0) { x = -S; z = along; head = 0; }
+    else if (edge === 1) { x = S; z = along; head = Math.PI; }
+    else if (edge === 2) { x = along; z = -S; head = Math.PI / 2; }
+    else { x = along; z = S; head = -Math.PI / 2; }
+const wobA = 0.4 + hash2(0, 0, rs + 3) * 0.3;
+  const wobF = 0.12 + hash2(0, 0, rs + 4) * 0.08;
+  const phase = hash2(0, 0, rs + 5) * Math.PI * 2;
+  const kink = (hash2(0, 0, rs + 6) * 2 - 1) * 0.3;
+  const pts = [[x, z]];
+  for (let n = 1; n < 60; n++) {
+    head += wobA * Math.sin(n * wobF + phase) + kink * Math.sin(n * 0.19 + phase * 1.3);
+    if (x > S * 0.6) head -= 0.12;
+    if (x < -S * 0.6) head += 0.12;
+    if (z > S * 0.6) head -= 0.12;
+    if (z < -S * 0.6) head += 0.12;
+    x += Math.cos(head) * RIVER_STEP;
+    z += Math.sin(head) * RIVER_STEP;
+    pts.push([x, z]);
+    if (pts.length >= 10 || x > S + 40 || x < -S - 40 || z > S + 40 || z < -S - 40) break;
+  }
+    if (pts.length > 4) riverPaths.push(pts);
+  }
+}
+
 function generateWorld() {
   world = worlds.over;
   worlds.over.clear();
+  waterScale = 1 + (hash2(0, 0, seed + 333) * 4 | 0);
+  waterDepth = 1 + (hash2(0, 0, seed + 444) * 4 | 0);
+  basinFreq = 0.007 / Math.sqrt(waterScale);
+  const vals = [];
+  for (let x = -WORLD_RADIUS; x <= WORLD_RADIUS; x += 2)
+    for (let z = -WORLD_RADIUS; z <= WORLD_RADIUS; z += 2)
+      vals.push(fbm(x * basinFreq + 200, z * basinFreq + 200, seed + 21) * 2 - 1);
+  vals.sort((a, b) => a - b);
+  basinThresh = vals[(vals.length * 0.85) | 0];
+  basinMax = vals[vals.length - 1];
+  generateRivers();
+  const fvals = [];
+  for (let x = -WORLD_RADIUS; x <= WORLD_RADIUS; x += 2)
+    for (let z = -WORLD_RADIUS; z <= WORLD_RADIUS; z += 2)
+      fvals.push(fbm(x * 0.01 + 500, z * 0.01 + 500, seed + 888));
+  fvals.sort((a, b) => a - b);
+  forestThresh = fvals[(fvals.length * 0.5) | 0];
   for (let x = -WORLD_RADIUS; x <= WORLD_RADIUS; x++) {
     for (let z = -WORLD_RADIUS; z <= WORLD_RADIUS; z++) {
       const h = heightAt(x, z);
@@ -258,7 +361,8 @@ function generateWorld() {
         setBlock(x, y, z, id);
       }
       if (h < WATER_LEVEL) for (let y = h + 1; y <= WATER_LEVEL; y++) setBlock(x, y, z, WATER);
-      if (getBlock(x, h, z) === GRASS && hash2(x, z, seed + 555) < 0.012) growTree(x, h + 1, z);
+      const forest = fbm(x * 0.01 + 500, z * 0.01 + 500, seed + 888);
+      if (getBlock(x, h, z) === GRASS && hash2(x, z, seed + 555) < (forest > forestThresh ? 0.006 : 0.002)) growTree(x, h + 1, z);
     }
   }
 }
@@ -1846,19 +1950,20 @@ async function storageClear() {
   db.close();
 }
 
-// Block encoding: v1/v2 use byte coords (+128 offset, worlds up to 127);
-// v3 uses int16 x/z so worlds can be much larger. 6 bytes per block.
-const BLOCK_BYTES_V3 = 6;
-const BLOCK_BYTES_V2 = 4;
-
 function serialize() {
-  const n = worlds.over.size + worlds.end.size;
-  const B = BLOCK_BYTES_V3;
-  const buf = new ArrayBuffer(93 + n * B);
+  const writeBlocks = (map) => {
+    const arr = [];
+    map.forEach((id, k) => { const s = k.split(","); arr.push([+s[0], +s[1], +s[2], id]); });
+    return arr;
+  };
+  const over = writeBlocks(worlds.over);
+  const end = writeBlocks(worlds.end);
+  const n = over.length + end.length;
+  const buf = new ArrayBuffer(93 + n * 4);
   const dv = new DataView(buf);
   let o = 0;
   new Uint8Array(buf, o, 9).set(SAVE_MAGIC); o += 9;
-  dv.setUint8(o++, 3); // format version
+  dv.setUint8(o++, 2); // format version
   dv.setUint8(o++, dim === "end" ? 1 : 0);
   dv.setInt32(o, seed, true); o += 4;
   dv.setInt32(o, endSeed, true); o += 4;
@@ -1872,22 +1977,20 @@ function serialize() {
   dv.setFloat64(o, overPortalSpawn.x, true); o += 8;
   dv.setFloat64(o, overPortalSpawn.y, true); o += 8;
   dv.setFloat64(o, overPortalSpawn.z, true); o += 8;
-  dv.setUint32(o, worlds.over.size, true); o += 4;
-  worlds.over.forEach((id, k) => {
-    const s = k.split(",");
-    dv.setInt16(o, +s[0], true); o += 2;
-    dv.setUint8(o++, +s[1]);
-    dv.setInt16(o, +s[2], true); o += 2;
+  dv.setUint32(o, over.length, true); o += 4;
+  for (const [x, y, z, id] of over) {
+    dv.setUint8(o++, x + 128);
+    dv.setUint8(o++, y);
+    dv.setUint8(o++, z + 128);
     dv.setUint8(o++, id);
-  });
-  dv.setUint32(o, worlds.end.size, true); o += 4;
-  worlds.end.forEach((id, k) => {
-    const s = k.split(",");
-    dv.setInt16(o, +s[0], true); o += 2;
-    dv.setUint8(o++, +s[1]);
-    dv.setInt16(o, +s[2], true); o += 2;
+  }
+  dv.setUint32(o, end.length, true); o += 4;
+  for (const [x, y, z, id] of end) {
+    dv.setUint8(o++, x + 128);
+    dv.setUint8(o++, y);
+    dv.setUint8(o++, z + 128);
     dv.setUint8(o++, id);
-  });
+  }
   return buf;
 }
 
@@ -1897,7 +2000,7 @@ function deserialize(buf) {
   for (let i = 0; i < 9; i++) if (new Uint8Array(buf, o, 9)[i] !== SAVE_MAGIC[i]) throw new Error("Not a MiniCraft save");
   o += 9;
   const ver = dv.getUint8(o++);
-  if (ver !== 1 && ver !== 2 && ver !== 3) throw new Error("Unsupported save version");
+  if (ver !== 1 && ver !== 2) throw new Error("Unsupported save version");
   let dimFlag = 0, endSeedVal = endSeed;
   if (ver >= 2) { dimFlag = dv.getUint8(o++); endSeedVal = dv.getInt32(o, true); o += 4; }
   seed = dv.getInt32(o, true); o += 4;
@@ -1911,29 +2014,22 @@ function deserialize(buf) {
   selected = dv.getUint8(o++);
   overPortalSpawn = { x: dv.getFloat64(o, true), y: dv.getFloat64(o, true), z: dv.getFloat64(o, true) };
   o += 24;
-  const v3 = ver >= 3;
-  const readBlocks = () => {
-    if (v3) {
-      const x = dv.getInt16(o, true), y = dv.getUint8(o + 2), z = dv.getInt16(o + 3, true), id = dv.getUint8(o + 5);
-      o += BLOCK_BYTES_V3;
-      return [x, y, z, id];
-    }
-    const x = dv.getUint8(o) - 128, y = dv.getUint8(o + 1), z = dv.getUint8(o + 2) - 128, id = dv.getUint8(o + 3);
-    o += BLOCK_BYTES_V2;
-    return [x, y, z, id];
-  };
   const n = dv.getUint32(o, true); o += 4;
   worlds.over.clear();
   for (let i = 0; i < n; i++) {
-    const [x, y, z, id] = readBlocks();
-    worlds.over.set(key(x, y, z), id);
+    const x = dv.getUint8(o++) - 128;
+    const y = dv.getUint8(o++);
+    const z = dv.getUint8(o++) - 128;
+    worlds.over.set(key(x, y, z), dv.getUint8(o++));
   }
   if (ver >= 2) {
     const ne = dv.getUint32(o, true); o += 4;
     worlds.end.clear();
     for (let i = 0; i < ne; i++) {
-      const [x, y, z, id] = readBlocks();
-      worlds.end.set(key(x, y, z), id);
+      const x = dv.getUint8(o++) - 128;
+      const y = dv.getUint8(o++);
+      const z = dv.getUint8(o++) - 128;
+      worlds.end.set(key(x, y, z), dv.getUint8(o++));
     }
   }
   dim = dimFlag ? "end" : "over";

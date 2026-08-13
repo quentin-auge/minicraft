@@ -33,9 +33,22 @@ small Python server for saving/loading worlds.
 ## Features
 
 - **World gen**: procedural over-world (fbm heightmap, terrain, water, trees)
-  at 4x size (`WORLD_RADIUS = 192`, ~385×385 footprint) and an End dimension
+  at 2x size (`WORLD_RADIUS = 96`, ~193×193 footprint) and an End dimension
   (grey END_STONE floating platform, black sky). Seeded (`seed`/`endSeed`),
-  both persisted in saves.
+  both persisted in saves. Land is ~79%; the ~15% water is carved as low-freq
+  basins (`basinFreq`/`basinThresh`, per-world quantile) whose ocean-floor
+  depth scales with `waterDepth` (`BASIN_SHORE`+`BASIN_DEPTH`). Each new world
+  randomly picks water size 1–4 (basin frequency ∝ 1/√scale) and depth 1–4
+  (from `seed` via `hash2`, recomputed in `generateWorld`). A few meandering
+  rivers (`generateRivers`, seeded winding paths) cut 8–14 wide channels down to `RIVER_BED = 8` through the land. Terrain is dramatic
+  (`LAND_RAISE = 20`, strong low-freq hills + per-column rough, tops clamped
+  at 70, height stdev ~10) with scattered flat-topped mesas: where a low-freq
+  `plat` noise sits near its midline the column height snaps to one of ~7
+  discrete levels (`8 + lvl*44`, in `heightAt`). Trees range from stumps to
+  towering pines (trunk 1–100, roughly half as many of them, clamped to the
+  world ceiling `MAX_Y = 120`, via `hash2` in `growTree`). Trees clump into
+  forests: a quantile forest noise (`forestThresh`) splits the map ~50/50, with
+  1.5x tree density in forests and 0.5x in the sparse rest.
 - **Textures**: 16×16 pixel-art textures drawn procedurally on canvas
   (`TEX`, `makeTex`, `pxNoise`, `canvasTex`), NearestFilter + sRGB.
 - **Rendering**: chunked streaming. The overworld is split into `CHUNK` (16)×
@@ -102,8 +115,7 @@ small Python server for saving/loading worlds.
   killed with TNT blasts (see TNT). Death triggers a huge double-layer purple
   explosion, opens the return portal and removes the dragon. Resources are
   disposed when leaving the End.
-- **Save/load**: binary format (`SAVE_MAGIC`, version 3; v1/v2 saves from
-  smaller worlds still load) with int16 x/z coordinates, capturing world
+- **Save/load**: binary format (`SAVE_MAGIC`, version 2) capturing world
   blocks, dim, seeds, player pos/yaw/pitch, fly state, hotbar selection.
   Backends: File System Access API (`pickSaveFile`/`saveToFile`),
   IndexedDB fallback, and the server API (`apiLoad`/`apiList`). Autosave
