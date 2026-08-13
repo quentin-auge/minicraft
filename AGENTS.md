@@ -133,7 +133,14 @@ small Python server for saving/loading worlds.
   via `queueSave()`, world regen resets to new seeds (`regenerate`).
 - **HUD/UI**: crosshair, hotbar with slot icons (wheel selects), dimension
   label, toasts, autosave indicator; pause overlay (Resume/New
-  World/Load Save) and H help panel (`portalArt` diagram).
+  World/Load Save) and H help panel (`portalArt` diagram). Loading a world
+  or generating a new one shows a spinner below the menu (`#loading`,
+  `setLoading`) and freezes all controls (input handlers and the game-logic
+  half of the main loop bail out while `loading` is true);
+  `restoreSave`/`buildWorld` are async and yield a frame so the spinner
+  paints before the heavy `rebuildMeshes`/`generateWorld` runs. `menuBusy`
+  guards the New World / Load buttons against re-entry so double-clicks can't
+  stack dialogs.
 
 ## Conventions
 

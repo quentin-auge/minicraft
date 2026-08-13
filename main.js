@@ -1988,6 +1988,13 @@ let saveHandle = null;
 let saveName = "";
 let started = false;
 let lastManualSave = 0;
+let loading = false;
+let menuBusy = false;
+const loadingEl = document.getElementById("loading");
+function setLoading(on) {
+  loading = on;
+  if (loadingEl) loadingEl.style.display = on ? "flex" : "none";
+}
 const autosaveEl = document.getElementById("autosave");
 
 function dbOpen() {
@@ -2257,7 +2264,7 @@ function pickWorld(entries) {
     box.onmousedown = (e) => e.stopPropagation();
     box.querySelector(".dlg-cancel").onclick = () => finish(null);
     box.querySelectorAll("li").forEach((li) => {
-      li.onclick = () => finish(li.dataset.name);
+      li.onclick = () => { requestLock(); finish(li.dataset.name); };
     });
   });
 }
@@ -2377,6 +2384,7 @@ function importSaveFile() {
     const onFocus = () => setTimeout(() => finish(null), 400);
     input.onchange = async () => {
       const file = input.files && input.files[0];
+      if (file) requestLock();
       finish(file ? { name: file.name, buf: await file.arrayBuffer() } : null);
     };
     document.body.appendChild(input);
@@ -2386,16 +2394,23 @@ function importSaveFile() {
   });
 }
 
-function restoreSave(buf) {
-  deserialize(buf);
-  rebuildMeshes();
-  select(selected);
-  updateCamera();
-  setDimensionEnv();
-  updateDimLabel();
-  if (dim === "end") { buildReturnPortal(); spawnDragon(); }
-  lastManualSave = Date.now();
-  return true;
+async function restoreSave(buf) {
+  setLoading(true);
+  requestLock();
+  await new Promise((r) => setTimeout(r, 30));
+  try {
+    deserialize(buf);
+    rebuildMeshes();
+    select(selected);
+    updateCamera();
+    setDimensionEnv();
+    updateDimLabel();
+    if (dim === "end") { buildReturnPortal(); spawnDragon(); }
+    lastManualSave = Date.now();
+    return true;
+  } finally {
+    setLoading(false);
+  }
 }
 
 async function loadSave() {
@@ -2411,24 +2426,28 @@ async function loadSave() {
       };
       try {
         const [handle] = await window.showOpenFilePicker(opts);
+        requestLock();
+        setLoading(true);
         const file = await handle.getFile();
         saveName = normalizeWorldName(file.name) || file.name;
-        restoreSave(await file.arrayBuffer());
+        await restoreSave(await file.arrayBuffer());
         await saveToFile();
         updateAutosaveEl();
         return true;
-      } catch { return false; }
+      } catch { setLoading(false); return false; }
     }
     const list = await apiList();
     const name = await pickWorld(list);
     if (!name) return false;
     try {
       saveName = name;
-      restoreSave(await apiLoad(name));
+      setLoading(true);
+      await restoreSave(await apiLoad(name));
       await saveToFile();
       updateAutosaveEl();
       return true;
     } catch {
+      setLoading(false);
       if (autosaveEl) autosaveEl.textContent = "That file isn't a valid MiniCraft save.";
       return false;
     }
@@ -2439,21 +2458,25 @@ async function loadSave() {
         types: [{ description: "MiniCraft save", accept: { "application/octet-stream": [".sav"] } }],
       });
       saveHandle = handle;
+      requestLock();
+      setLoading(true);
       const file = await handle.getFile();
-      restoreSave(await file.arrayBuffer());
+      await restoreSave(await file.arrayBuffer());
       await saveToFile();
       updateAutosaveEl();
       return true;
-    } catch { return false; }
+    } catch { setLoading(false); return false; }
   }
   const picked = await importSaveFile();
   if (picked) {
     try {
-      restoreSave(picked.buf);
+      setLoading(true);
+      await restoreSave(picked.buf);
       await saveToFile();
       updateAutosaveEl();
       return true;
     } catch {
+      setLoading(false);
       if (autosaveEl) autosaveEl.textContent = "That file isn't a valid MiniCraft save.";
       return false;
     }
@@ -2461,7 +2484,7 @@ async function loadSave() {
   const cached = await storageLoad();
   if (cached) {
     try {
-      restoreSave(cached);
+      await restoreSave(cached);
       updateAutosaveEl();
       return true;
     } catch { return false; }
@@ -2481,15 +2504,26 @@ function resetDims() {
   updateDimLabel();
 }
 
+async function buildWorld() {
+  setLoading(true);
+  requestLock();
+  await new Promise((r) => setTimeout(r, 30));
+  try {
+    resetDims();
+    seed = Math.floor(Math.random() * 100000);
+    generateWorld();
+    spawnPlayer();
+    rebuildMeshes();
+    select(0);
+    updateCamera();
+  } finally {
+    setLoading(false);
+  }
+}
+
 async function regenerate() {
   if (fileMode && !saveHandle) await pickSaveFile();
-  resetDims();
-  seed = Math.floor(Math.random() * 100000);
-  generateWorld();
-  spawnPlayer();
-  rebuildMeshes();
-  select(0);
-  updateCamera();
+  await buildWorld();
   queueSave();
 }
 
@@ -2502,7 +2536,32 @@ function queueSave() {
 function enterGame() {
   started = true;
   updateAutosaveEl();
-  renderer.domElement.requestPointerLock();
+  overlay.style.display = "none";
+  crosshair.style.display = "block";
+  hotbarEl.style.display = "flex";
+  info.style.display = "block";
+  resumeBtn.style.display = "none";
+  requestLock();
+  startLockPoll();
+}
+
+let lockPoll = null;
+function startLockPoll() {
+  if (lockPoll) clearInterval(lockPoll);
+  let tries = 0;
+  lockPoll = setInterval(() => {
+    if (locked || loading || ++tries > 12) {
+      clearInterval(lockPoll);
+      lockPoll = null;
+      return;
+    }
+    if (!document.pointerLockElement) requestLock();
+  }, 400);
+}
+
+function requestLock() {
+  const p = renderer.domElement.requestPointerLock();
+  if (p && p.catch) p.catch(() => {});
 }
 
 setInterval(() => { if (canSave() && started) saveToFile(); }, 10000);
@@ -2537,7 +2596,7 @@ function select(i) {
   selected = ((i % HOTBAR.length) + HOTBAR.length) % HOTBAR.length;
   [...hotbarEl.children].forEach((c, j) => c.classList.toggle("selected", j === selected));
 }
-document.addEventListener("wheel", (e) => select(selected + (e.deltaY > 0 ? -1 : 1)), { passive: true });
+document.addEventListener("wheel", (e) => { if (!loading) select(selected + (e.deltaY > 0 ? -1 : 1)); }, { passive: true });
 
 // ---------------------------------------------------------------------------
 // Input / pointer lock
@@ -2548,24 +2607,26 @@ const info = document.getElementById("info");
 const resumeBtn = document.getElementById("btnResume");
 
 overlay.addEventListener("click", () => {
-  if (!started) return;
-  renderer.domElement.requestPointerLock();
+  if (!started || loading) return;
+  requestLock();
 });
 resumeBtn.addEventListener("click", (e) => {
   e.stopPropagation();
-  if (started) renderer.domElement.requestPointerLock();
+  if (started && !loading) requestLock();
 });
 renderer.domElement.addEventListener("click", () => {
-  if (started && !locked && !helpOpen) renderer.domElement.requestPointerLock();
+  if (started && !locked && !helpOpen && !loading) requestLock();
 });
 
 document.addEventListener("pointerlockchange", () => {
   const wasLocked = locked;
   locked = document.pointerLockElement === renderer.domElement;
+  if (wasLocked && !locked && lockPoll) { clearInterval(lockPoll); lockPoll = null; }
   if (suppressMenu) { suppressMenu = false; return; }
   if (helpOpen) return;
   if (!locked && Date.now() - helpCloseTime < 2000) return;
   if (wasLocked && !locked && started) saveToFile();
+  if (loading) return;
   overlay.style.display = locked ? "none" : "flex";
   crosshair.style.display = locked ? "block" : "none";
   hotbarEl.style.display = locked ? "flex" : "none";
@@ -2574,20 +2635,20 @@ document.addEventListener("pointerlockchange", () => {
 });
 
 document.addEventListener("mousemove", (e) => {
-  if (!locked) return;
+  if (!locked || loading) return;
   yaw -= e.movementX * 0.0022;
   pitch -= e.movementY * 0.0022;
   pitch = Math.max(-Math.PI / 2 + 0.01, Math.min(Math.PI / 2 - 0.01, pitch));
 });
 
 document.addEventListener("mousedown", (e) => {
-  if (!locked || helpOpen) return;
+  if (!locked || helpOpen || loading) return;
   if (e.button === 0) placeBlock(HOTBAR[selected]);
   if (e.button === 1) { e.preventDefault(); fireGrapple(); }
   if (e.button === 2) breakBlock();
 });
 document.addEventListener("mouseup", (e) => {
-  if (e.button !== 1) return;
+  if (e.button !== 1 || loading) return;
   if (grappleActive) {
     if (grappleHooked) {
       const dx = grappleTarget.x - grappleStart.x, dy = grappleTarget.y - grappleStart.y, dz = grappleTarget.z - grappleStart.z;
@@ -2630,6 +2691,7 @@ helpEl.addEventListener("click", (e) => { if (e.target === helpEl) closeHelpAndR
 helpEl.querySelector("#btnHelpClose").addEventListener("click", closeHelpAndResume);
 
 document.addEventListener("keydown", (e) => {
+  if (loading) return;
   if (helpOpen) {
     if (e.code === "Escape") { closeHelpAndResume(); e.preventDefault(); }
     return;
@@ -2646,37 +2708,37 @@ document.addEventListener("contextmenu", (e) => e.preventDefault());
 
 document.getElementById("btnNew").addEventListener("click", async (e) => {
   e.stopPropagation();
-  apiOk = await apiOkPromise;
-  if (apiOk) {
-    const name = await askName("New World", "world");
-    if (!name) return;
-    const existing = await apiList();
-    if (existing.some((w) => w.name === name) && !confirm("Overwrite existing save '" + name.replace(/\.sav$/i, "") + "'?")) return;
-    saveName = name;
-    resetDims();
-    seed = Math.floor(Math.random() * 100000);
-    generateWorld();
-    spawnPlayer();
-    rebuildMeshes();
-    select(0);
-    updateCamera();
+  if (menuBusy || loading) return;
+  menuBusy = true;
+  try {
+    apiOk = await apiOkPromise;
+    if (apiOk) {
+      const name = await askName("New World", "world");
+      if (!name) return;
+      const existing = await apiList();
+      if (existing.some((w) => w.name === name) && !confirm("Overwrite existing save '" + name.replace(/\.sav$/i, "") + "'?")) return;
+      saveName = name;
+      await buildWorld();
+      enterGame();
+      await saveToFile();
+      return;
+    }
+    if (fileMode) await pickSaveFile();
+    await buildWorld();
     enterGame();
-    await saveToFile();
-    return;
+  } finally {
+    menuBusy = false;
   }
-  if (fileMode) await pickSaveFile();
-  resetDims();
-  seed = Math.floor(Math.random() * 100000);
-  generateWorld();
-  spawnPlayer();
-  rebuildMeshes();
-  select(0);
-  updateCamera();
-  enterGame();
 });
 document.getElementById("btnLoad").addEventListener("click", async (e) => {
   e.stopPropagation();
-  if (await loadSave()) enterGame();
+  if (menuBusy || loading) return;
+  menuBusy = true;
+  try {
+    if (await loadSave()) enterGame();
+  } finally {
+    menuBusy = false;
+  }
 });
 
 addEventListener("resize", () => {
@@ -2694,64 +2756,66 @@ function loop(now) {
   dt = Math.min(0.05, (now - last) / 1000);
   last = now;
 
-  if (freeCam) {
-    updateFreeCam(dt);
-    camera.position.copy(camPos);
-  } else {
-    updatePlayer(dt);
-    camera.position.set(pos.x, pos.y + EYE, pos.z);
-    if (pos.y < -20) { vel.set(0, 0, 0); spawnPlayer(); }
-  }
-  camera.rotation.set(pitch, yaw, 0);
-  updateTarget();
-  if (grappleActive) {
-    grappleCubes.visible = true;
-    grappleHead.visible = true;
-    ropeA.set(pos.x, pos.y + 0.3, pos.z);
-    ropeB.copy(grappleStart).lerp(grappleTarget, grappleFly);
-    if (grappleHooked) ropeB.copy(grappleTarget);
-    const dx = ropeB.x - ropeA.x, dy = ropeB.y - ropeA.y, dz = ropeB.z - ropeA.z;
-    const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
-    const n = Math.max(4, Math.min(GRAPPLE_CUBES, Math.round(dist / 0.15)));
-    grappleCubes.count = n;
-    const ux = dx / dist, uy = dy / dist, uz = dz / dist;
-    let vx = Math.abs(uy) < 0.99 ? uz : 1, vy = Math.abs(uy) < 0.99 ? 0 : 0, vz = Math.abs(uy) < 0.99 ? -ux : 0;
-    const vl = Math.hypot(vx, vy, vz) || 1;
-    vx /= vl; vy /= vl; vz /= vl;
-    const wx = uy * vz - uz * vy, wy = uz * vx - ux * vz, wz = ux * vy - uy * vx;
-    for (let i = 0; i < n; i++) {
-      const f = (i + 0.5) / n;
-      const ax = Math.sin(f * Math.PI * 4), ay = Math.sin(f * Math.PI * 2);
-      grappleCubeMatrix.setPosition(
-        ropeA.x + dx * f + vx * ax * 0.15 + wx * ay * 0.15,
-        ropeA.y + dy * f + vy * ax * 0.15 + wy * ay * 0.15,
-        ropeA.z + dz * f + vz * ax * 0.15 + wz * ay * 0.15
-      );
-      grappleCubes.setMatrixAt(i, grappleCubeMatrix);
+  if (!loading) {
+    if (freeCam) {
+      updateFreeCam(dt);
+      camera.position.copy(camPos);
+    } else {
+      updatePlayer(dt);
+      camera.position.set(pos.x, pos.y + EYE, pos.z);
+      if (pos.y < -20) { vel.set(0, 0, 0); spawnPlayer(); }
     }
-    grappleCubes.instanceMatrix.needsUpdate = true;
-    grappleHead.position.copy(ropeB);
-  } else if (grappleCubes.visible) {
-    grappleCubes.visible = false;
-    grappleHead.visible = false;
-  }
-  tickTNT(dt);
-  tickEffects(dt);
-  if (portalCd > 0) portalCd -= dt;
-  updatePortalVisual();
-  checkPortal();
-  if (dim === "end") updateDragon(dt);
-  if (toastTimer > 0) { toastTimer -= dt; if (toastTimer <= 0) toastEl.style.opacity = "0"; }
+    camera.rotation.set(pitch, yaw, 0);
+    updateTarget();
+    if (grappleActive) {
+      grappleCubes.visible = true;
+      grappleHead.visible = true;
+      ropeA.set(pos.x, pos.y + 0.3, pos.z);
+      ropeB.copy(grappleStart).lerp(grappleTarget, grappleFly);
+      if (grappleHooked) ropeB.copy(grappleTarget);
+      const dx = ropeB.x - ropeA.x, dy = ropeB.y - ropeA.y, dz = ropeB.z - ropeA.z;
+      const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
+      const n = Math.max(4, Math.min(GRAPPLE_CUBES, Math.round(dist / 0.15)));
+      grappleCubes.count = n;
+      const ux = dx / dist, uy = dy / dist, uz = dz / dist;
+      let vx = Math.abs(uy) < 0.99 ? uz : 1, vy = Math.abs(uy) < 0.99 ? 0 : 0, vz = Math.abs(uy) < 0.99 ? -ux : 0;
+      const vl = Math.hypot(vx, vy, vz) || 1;
+      vx /= vl; vy /= vl; vz /= vl;
+      const wx = uy * vz - uz * vy, wy = uz * vx - ux * vz, wz = ux * vy - uy * vx;
+      for (let i = 0; i < n; i++) {
+        const f = (i + 0.5) / n;
+        const ax = Math.sin(f * Math.PI * 4), ay = Math.sin(f * Math.PI * 2);
+        grappleCubeMatrix.setPosition(
+          ropeA.x + dx * f + vx * ax * 0.15 + wx * ay * 0.15,
+          ropeA.y + dy * f + vy * ax * 0.15 + wy * ay * 0.15,
+          ropeA.z + dz * f + vz * ax * 0.15 + wz * ay * 0.15
+        );
+        grappleCubes.setMatrixAt(i, grappleCubeMatrix);
+      }
+      grappleCubes.instanceMatrix.needsUpdate = true;
+      grappleHead.position.copy(ropeB);
+    } else if (grappleCubes.visible) {
+      grappleCubes.visible = false;
+      grappleHead.visible = false;
+    }
+    tickTNT(dt);
+    tickEffects(dt);
+    if (portalCd > 0) portalCd -= dt;
+    updatePortalVisual();
+    checkPortal();
+    if (dim === "end") updateDragon(dt);
+    if (toastTimer > 0) { toastTimer -= dt; if (toastTimer <= 0) toastEl.style.opacity = "0"; }
 
-  // Gentle water shimmer
-  if (typeMats.has(WATER)) {
-    const o = 0.55 + 0.1 * Math.sin(now * 0.002);
-    for (const m of typeMats.get(WATER)) m.opacity = o;
-  }
+    // Gentle water shimmer
+    if (typeMats.has(WATER)) {
+      const o = 0.55 + 0.1 * Math.sin(now * 0.002);
+      for (const m of typeMats.get(WATER)) m.opacity = o;
+    }
 
-  const pcx = chunkOf(freeCam ? camPos.x : pos.x);
-  const pcz = chunkOf(freeCam ? camPos.z : pos.z);
-  if (pcx !== meshCx || pcz !== meshCz) streamChunks();
+    const pcx = chunkOf(freeCam ? camPos.x : pos.x);
+    const pcz = chunkOf(freeCam ? camPos.z : pos.z);
+    if (pcx !== meshCx || pcz !== meshCz) streamChunks();
+  }
 
   renderer.render(scene, camera);
 }
