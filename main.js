@@ -962,6 +962,10 @@ let grapplingDist = 1;
 const grappleTarget = new THREE.Vector3();
 const grappleStart = new THREE.Vector3();
 let grappleBlock = null;
+let grappleArrived = false;
+let grapplePulling = false;
+let grapplePass = true;
+let grappleTopY = 0;
 let flingActive = false;
 const vel = new THREE.Vector3();
 const camPos = new THREE.Vector3();
@@ -1066,6 +1070,9 @@ function fireGrapple() {
   grapplingDist = distEye;
   grappleFly = 0;
   grappleHooked = false;
+  grappleArrived = false;
+  grapplePulling = false;
+  grapplePass = true;
   grappleActive = true;
 }
 
@@ -1083,34 +1090,115 @@ function blockedBody(px, py, pz) {
   return false;
 }
 
+function isGrappleBlock(bx, by, bz) {
+  return grapplePass && !!grappleBlock && bx === grappleBlock.x && bz === grappleBlock.z &&
+    by >= grappleBlock.y && by <= grappleTopY;
+}
+
+function grappleMoveX(dx) {
+  pos.x += dx;
+  if (dx === 0) return false;
+  const dir = dx > 0 ? 1 : -1;
+  const edge = dir > 0 ? pos.x + PLAYER_HW : pos.x - PLAYER_HW;
+  const cellX = Math.floor(edge);
+  for (let by = Math.floor(pos.y); by <= Math.floor(pos.y + PLAYER_H); by++)
+    for (let bz = Math.floor(pos.z - PLAYER_HW); bz <= Math.floor(pos.z + PLAYER_HW); bz++) {
+      if (!isSolid(cellX, by, bz) || isGrappleBlock(cellX, by, bz)) continue;
+      if (dir > 0 && edge > cellX) { pos.x = cellX - PLAYER_HW - 0.001; return true; }
+      if (dir < 0 && edge < cellX + 0.999) { pos.x = cellX + 1 + PLAYER_HW + 0.001; return true; }
+    }
+  return false;
+}
+
+function grappleMoveZ(dz) {
+  pos.z += dz;
+  if (dz === 0) return false;
+  const dir = dz > 0 ? 1 : -1;
+  const edge = dir > 0 ? pos.z + PLAYER_HW : pos.z - PLAYER_HW;
+  const cellZ = Math.floor(edge);
+  for (let by = Math.floor(pos.y); by <= Math.floor(pos.y + PLAYER_H); by++)
+    for (let bx = Math.floor(pos.x - PLAYER_HW); bx <= Math.floor(pos.x + PLAYER_HW); bx++) {
+      if (!isSolid(bx, by, cellZ) || isGrappleBlock(bx, by, cellZ)) continue;
+      if (dir > 0 && edge > cellZ) { pos.z = cellZ - PLAYER_HW - 0.001; return true; }
+      if (dir < 0 && edge < cellZ + 0.999) { pos.z = cellZ + 1 + PLAYER_HW + 0.001; return true; }
+    }
+  return false;
+}
+
+function grappleMoveY(dy) {
+  pos.y += dy;
+  if (dy === 0) return false;
+  const top = pos.y + PLAYER_H, feet = pos.y;
+  for (let bx = Math.floor(pos.x - PLAYER_HW); bx <= Math.floor(pos.x + PLAYER_HW); bx++)
+    for (let bz = Math.floor(pos.z - PLAYER_HW); bz <= Math.floor(pos.z + PLAYER_HW); bz++) {
+      if (dy > 0) {
+        const by = Math.floor(top);
+        if (isSolid(bx, by, bz) && !isGrappleBlock(bx, by, bz) && top > by) { pos.y = by - PLAYER_H - 0.001; return true; }
+      } else {
+        const by = Math.floor(feet);
+        if (isSolid(bx, by, bz) && !isGrappleBlock(bx, by, bz)) { pos.y = by + 1 + 0.001; return true; }
+      }
+    }
+  return false;
+}
+
 function updateGrapple(dt) {
+  if (grappleArrived) { grapplePulling = false; return false; }
   if (!grappleHooked) {
     grappleFly += (GRAPPLE_THROW * dt) / grapplingDist;
     if (grappleFly >= 1) {
       grappleFly = 1;
       grappleHooked = true;
     }
+    grapplePulling = false;
     return false;
+  }
+  if (grappleBlock) {
+    let h = 0;
+    while (isSolid(grappleBlock.x, grappleBlock.y + h + 1, grappleBlock.z)) h++;
+    if (h <= 1) {
+      grappleTopY = grappleBlock.y + h;
+      grappleTarget.y = grappleTopY + 1.001;
+    } else {
+      grappleTopY = grappleBlock.y;
+    }
   }
   const dx = grappleTarget.x - pos.x, dy = grappleTarget.y - pos.y, dz = grappleTarget.z - pos.z;
   const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
   const step = GRAPPLE_SPEED * dt;
+  grapplePass = !blockedBody(grappleTarget.x, grappleTarget.y, grappleTarget.z);
   if (dist <= step + 0.001) {
-    if (blockedBody(grappleTarget.x, grappleTarget.y, grappleTarget.z)) {
-      grappleActive = false;
-      vel.set(0, 0, 0);
-      flingActive = false;
-      return true;
+    if (!grapplePass) {
+      grapplePulling = false;
+      return false;
     }
     pos.copy(grappleTarget);
     vel.set(0, 0, 0);
     flingActive = false;
     onGround = true;
-    grappleActive = false;
-    return true;
+    grappleArrived = true;
+    grapplePulling = false;
+    return false;
   }
-  const s = step / dist;
-  pos.set(pos.x + dx * s, pos.y + dy * s, pos.z + dz * s);
+  let remaining = step;
+  let blocked = false;
+  while (remaining > 1e-4) {
+    const cdx = grappleTarget.x - pos.x, cdy = grappleTarget.y - pos.y, cdz = grappleTarget.z - pos.z;
+    const cdist = Math.sqrt(cdx * cdx + cdy * cdy + cdz * cdz);
+    if (cdist <= 1e-4) break;
+    const move = Math.min(remaining, 0.4, cdist);
+    const s = move / cdist;
+    if (grappleMoveY(cdy * s)) blocked = true;
+    if (grappleMoveX(cdx * s)) blocked = true;
+    if (grappleMoveZ(cdz * s)) blocked = true;
+    remaining -= move;
+  }
+  if (blocked) {
+    vel.set(0, 0, 0);
+    grapplePulling = false;
+    return false;
+  }
+  grapplePulling = true;
   return true;
 }
 
@@ -3010,15 +3098,15 @@ document.addEventListener("mousedown", (e) => {
 });
 document.addEventListener("mouseup", (e) => {
   if (e.button !== 1 || loading) return;
-  if (grappleActive) {
-    if (grappleHooked) {
-      const dx = grappleTarget.x - grappleStart.x, dy = grappleTarget.y - grappleStart.y, dz = grappleTarget.z - grappleStart.z;
-      const dist = Math.hypot(dx, dy, dz) || 1;
-      vel.set((dx / dist) * GRAPPLE_FLING, (dy / dist) * GRAPPLE_FLING, (dz / dist) * GRAPPLE_FLING);
-    }
+  if (!grappleActive) return;
+  if (grapplePulling) {
+    const dx = grappleTarget.x - grappleStart.x, dy = grappleTarget.y - grappleStart.y, dz = grappleTarget.z - grappleStart.z;
+    const dist = Math.hypot(dx, dy, dz) || 1;
+    vel.set((dx / dist) * GRAPPLE_FLING, (dy / dist) * GRAPPLE_FLING, (dz / dist) * GRAPPLE_FLING);
     flingActive = true;
-    grappleActive = false;
   }
+  grappleActive = false;
+  grappleArrived = false;
 });
 
 const helpEl = document.getElementById("help");

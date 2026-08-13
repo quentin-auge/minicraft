@@ -117,10 +117,26 @@ small Python server for saving/loading worlds.
   angle and gravity takes over from there; the fling keeps you moving in that
   direction (up, down or sideways) with mild friction — pressing movement keys
   steers the momentum rather than replacing it — until you touch the ground
-  (which cancels it) or it runs out. The pull clips through terrain and only checks the
-  landing pose, so low ledges are grabbable too; a thin pixelated rope (cube
-  chain ~1/10 block, dense over the whole path) plus a blocky hook head shows
-  the pull from the eye to the flying/stuck hook.
+  (which cancels it) or it runs out. The pull resolves collisions per axis
+  (`grappleMoveX/Z/Y` with sub-steps capped at 0.4, so it never embeds you in
+  terrain): when the landing spot on top of the target's column is clear
+  (`grapplePass`, recomputed each frame via `blockedBody`), that column is
+  skipped in the collision check so you can land on top from any direction —
+  but only when the grabbed block is the column's top block or the one directly
+  below it (a free pillar up to 2 tall; `grappleTopY`); a block buried deeper
+  in a taller column is treated as a solid and stops you flush against it
+  instead of letting you climb to the top. Any other obstacle in the path stops
+  you flush against it and you slide along it (clamped against the blocking
+  cell) while the pull is held — once you're blocked (or landed), you keep full
+  control and can move/turn freely while hooked. Arriving on a clear solo block
+  or 2-block column plants your feet on its top (`grappleArrived`), keeping you
+  hooked with the rope attached until you release the button, releasing only
+  stays a launch while you're still actively mid-pull (`grapplePulling`) —
+  releasing at rest (landed on the block, pressed against an obstacle, or while
+  the hook flies) just drops you straight down with no fling or inertia. A thin
+  pixelated rope (cube chain ~1/10 block, dense over the whole
+  path) plus a blocky hook head shows the pull from the eye to the flying/stuck
+  hook.
 - **TNT**: lighting fuses (HUD fuse sprite), delayed explosions with blocks
   destroyed/tossed and particle flashes. Breaking a TNT lights a 3s fuse and
   explosions chain-react: a blast near another TNT block lights it, and a lit
