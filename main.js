@@ -16,7 +16,7 @@ const BLOCK_INFO = {
   [PLANKS]:  { name: "Planks",   solid: true,  opaque: true,  placeable: true },
   [GLASS]:   { name: "Glass",    solid: true,  opaque: false, placeable: true },
   [TNT]:     { name: "TNT",      solid: true,  opaque: true,  placeable: true },
-  [FLOWER]:  { name: "Flower",   solid: false, opaque: false, placeable: false },
+  [FLOWER]:  { name: "Flower",   solid: false, opaque: false, placeable: true },
 [PORTAL]:  { name: "Portal",    solid: true,  opaque: false, placeable: true },
   [ENDSTONE]:{ name: "End Stone",solid: true,  opaque: true,  placeable: false },
 };
@@ -159,6 +159,20 @@ const TEX = {
     ctx.fillStyle = "rgba(0,0,0,0.16)";
     for (let i = 0; i < 6; i++) ctx.fillRect(Math.random() * 14, Math.random() * 14, 2 + Math.random() * 3, 2 + Math.random() * 2);
   }),
+  flower: canvasTex((ctx) => {
+    const petals = ["rgb(232,30,52)", "rgb(56,106,252)", "rgb(248,188,16)", "rgb(16,204,186)", "rgb(244,132,34)", "rgb(160,80,224)", "rgb(232,30,52)", "rgb(56,106,252)"];
+    ctx.clearRect(0, 0, 16, 16);
+    ctx.fillStyle = "#4a9c3a"; ctx.fillRect(7, 9, 2, 6);
+    ctx.fillStyle = "#4a9c3a"; ctx.fillRect(3, 12, 2, 1); ctx.fillRect(11, 13, 2, 1);
+    for (let i = 0; i < 8; i++) {
+      const a = (i / 8) * Math.PI * 2;
+      const px = 8 + Math.round(Math.cos(a) * 3);
+      const py = 4 + Math.round(Math.sin(a) * 3);
+      ctx.fillStyle = petals[i];
+      ctx.fillRect(px - 1, py - 1, 2, 2);
+    }
+    ctx.fillStyle = "#ffd23f"; ctx.fillRect(7, 3, 2, 2);
+  }),
   portal: canvasTex((ctx) => {
     ctx.fillStyle = "#3a0d6b"; ctx.fillRect(0, 0, 16, 16);
     ctx.fillStyle = "#9b30ff";
@@ -186,6 +200,7 @@ function materialsFor(id) {
     case PLANKS:return faceTex(TEX.planks);
     case GLASS: return faceTex(TEX.glass, { transparent: true, opacity: 0.8, depthWrite: false });
     case WATER: return faceTex(TEX.water, { transparent: true, opacity: 0.65, depthWrite: false });
+    case FLOWER: return faceTex(TEX.flower, { transparent: true });
     case TNT:   return [material(TEX.tnt_side), material(TEX.tnt_side), material(TEX.tnt_top), material(TEX.tnt_top), material(TEX.tnt_side), material(TEX.tnt_side)];
     case PORTAL: return faceTex(TEX.portal, { transparent: false, opacity: 1, side: THREE.DoubleSide });
     case ENDSTONE: return faceTex(TEX.endstone);
@@ -242,10 +257,13 @@ let dim = "over";
 let world = worlds.over;
 const getBlock = (x, y, z) => world.get(key(x, y, z)) || AIR;
 
+const placedFlowers = new Map();
+
 function setBlock(x, y, z, id) {
   if (y < 0 || y > MAX_Y) return;
   const k = key(x, y, z);
   if (id === AIR) world.delete(k); else world.set(k, id);
+  if (id !== FLOWER) placedFlowers.delete(k);
 }
 
 function heightAt(x, z) {
@@ -783,6 +801,22 @@ function flowerVariant(x, z) {
 function flowerAngle(x, z) {
   return hash2(x, z, seed + 77777) * Math.PI * 2;
 }
+function randomFlowerVariant() {
+  let r = Math.random() * FLOWER_WEIGHT_SUM;
+  for (let v = 0; v < FLOWER_VARIANT_COUNT; v++) {
+    if (r < FLOWER_WEIGHTS[v]) return v;
+    r -= FLOWER_WEIGHTS[v];
+  }
+  return FLOWER_VARIANT_COUNT - 1;
+}
+function flowerVariantAt(x, y, z) {
+  const p = placedFlowers.get(key(x, y, z));
+  return p ? p.v : flowerVariant(x, z);
+}
+function flowerAngleAt(x, y, z) {
+  const p = placedFlowers.get(key(x, y, z));
+  return p ? p.a : flowerAngle(x, z);
+}
 
 // Chunked streaming renderer: the world (now 2x) is split into CHUNK-chunks
 // and only chunks within RENDER_DIST of the player are meshed and drawn.
@@ -851,7 +885,7 @@ function rebuildChunk(cx, cz) {
   if (flowers.length) {
     const perVariant = [];
     for (let v = 0; v < FLOWER_VARIANT_COUNT; v++) perVariant.push([]);
-    for (const [fx, fy, fz] of flowers) perVariant[flowerVariant(fx, fz)].push([fx, fy, fz]);
+    for (const [fx, fy, fz] of flowers) perVariant[flowerVariantAt(fx, fy, fz)].push([fx, fy, fz]);
     for (let v = 0; v < FLOWER_VARIANT_COUNT; v++) {
       const list = perVariant[v];
       if (!list.length) continue;
@@ -859,7 +893,7 @@ function rebuildChunk(cx, cz) {
       for (let i = 0; i < list.length; i++) {
         const [fx, fy, fz] = list[i];
         dummy.position.set(fx + 0.5, fy + 0.5, fz + 0.5);
-        dummy.rotation.set(0, flowerAngle(fx, fz), 0);
+        dummy.rotation.set(0, flowerAngleAt(fx, fy, fz), 0);
         dummy.scale.set(1, 1, 1);
         dummy.updateMatrix();
         mesh.setMatrixAt(i, dummy.matrix);
@@ -1397,6 +1431,7 @@ function placeBlock(id) {
   if (getBlock(px, py, pz) !== AIR) return;
   if (intersectsPlayer(px, py, pz)) return;
   setBlock(px, py, pz, id);
+  if (id === FLOWER) placedFlowers.set(key(px, py, pz), { v: randomFlowerVariant(), a: Math.random() * Math.PI * 2 });
   refreshBlocks([[px, py, pz]]);
   queueSave();
 }
@@ -2494,11 +2529,14 @@ function serialize() {
   const over = writeBlocks(worlds.over);
   const end = writeBlocks(worlds.end);
   const n = over.length + end.length;
-  const buf = new ArrayBuffer(93 + n * 4);
+  const placed = [];
+  placedFlowers.forEach((p, k) => { const s = k.split(","); placed.push([+s[0], +s[1], +s[2], p.v, p.a]); });
+  const m = placed.length;
+  const buf = new ArrayBuffer(93 + n * 4 + 4 + m * 5);
   const dv = new DataView(buf);
   let o = 0;
   new Uint8Array(buf, o, 9).set(SAVE_MAGIC); o += 9;
-  dv.setUint8(o++, 2); // format version
+  dv.setUint8(o++, 3); // format version
   dv.setUint8(o++, dim === "end" ? 1 : 0);
   dv.setInt32(o, seed, true); o += 4;
   dv.setInt32(o, endSeed, true); o += 4;
@@ -2526,6 +2564,14 @@ function serialize() {
     dv.setUint8(o++, z + 128);
     dv.setUint8(o++, id);
   }
+  dv.setUint32(o, m, true); o += 4;
+  for (const [fx, fy, fz, fv, fa] of placed) {
+    dv.setUint8(o++, fx + 128);
+    dv.setUint8(o++, fy);
+    dv.setUint8(o++, fz + 128);
+    dv.setUint8(o++, fv);
+    dv.setUint8(o++, Math.round(fa / (Math.PI * 2) * 255));
+  }
   return buf;
 }
 
@@ -2535,7 +2581,8 @@ function deserialize(buf) {
   for (let i = 0; i < 9; i++) if (new Uint8Array(buf, o, 9)[i] !== SAVE_MAGIC[i]) throw new Error("Not a MiniCraft save");
   o += 9;
   const ver = dv.getUint8(o++);
-  if (ver !== 1 && ver !== 2) throw new Error("Unsupported save version");
+  if (ver !== 1 && ver !== 2 && ver !== 3) throw new Error("Unsupported save version");
+  placedFlowers.clear();
   let dimFlag = 0, endSeedVal = endSeed;
   if (ver >= 2) { dimFlag = dv.getUint8(o++); endSeedVal = dv.getInt32(o, true); o += 4; }
   seed = dv.getInt32(o, true); o += 4;
@@ -2565,6 +2612,17 @@ function deserialize(buf) {
       const y = dv.getUint8(o++);
       const z = dv.getUint8(o++) - 128;
       worlds.end.set(key(x, y, z), dv.getUint8(o++));
+    }
+  }
+  if (ver >= 3) {
+    const m = dv.getUint32(o, true); o += 4;
+    for (let i = 0; i < m; i++) {
+      const x = dv.getUint8(o++) - 128;
+      const y = dv.getUint8(o++);
+      const z = dv.getUint8(o++) - 128;
+      const v = dv.getUint8(o++);
+      const a = dv.getUint8(o++) / 255 * Math.PI * 2;
+      placedFlowers.set(key(x, y, z), { v, a });
     }
   }
   dim = dimFlag ? "end" : "over";
@@ -2960,6 +3018,7 @@ async function buildWorld() {
   try {
     resetDims();
     seed = Math.floor(Math.random() * 100000);
+    placedFlowers.clear();
     generateWorld();
     spawnPlayer();
     rebuildMeshes();
@@ -3020,7 +3079,7 @@ document.addEventListener("visibilitychange", () => { if (document.hidden && can
 // ---------------------------------------------------------------------------
 // UI / hotbar
 // ---------------------------------------------------------------------------
-const HOTBAR = [GRASS, DIRT, STONE, SAND, LOG, PLANKS, GLASS, LEAVES, WATER, TNT, PORTAL];
+const HOTBAR = [GRASS, DIRT, STONE, SAND, LOG, PLANKS, GLASS, LEAVES, WATER, FLOWER, TNT, PORTAL];
 let selected = 0;
 const hotbarEl = document.getElementById("hotbar");
 

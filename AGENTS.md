@@ -99,8 +99,11 @@ small Python server for saving/loading worlds.
   via `flowerVariant`, each rendered as a per-chunk `InstancedMesh` sharing a
   baked-vertex-color geometry (`FLOWER_GEOS`) and one `FLOWER_MAT`
   `MeshLambertMaterial` with `vertexColors`; random Y-rotation via
-  `flowerAngle`; `placeable: false` and absent from the hotbar so it's never
-  picked up or placed), PORTAL, ENDSTONE (grey End platform block,
+  `flowerAngle`; placeable at random each time (placing rolls a fresh weighted
+  variant via `randomFlowerVariant` and a random Y-rotation, stored per flower
+  in `placedFlowers` and persisted in save format v3, so break/replace yields a
+  new color — multicolor included) and present in the hotbar between Water and
+  TNT with a `TEX.flower` icon), PORTAL, ENDSTONE (grey End platform block,
   `placeable: false` so it can't be selected or placed).
 - **Player**: AABB collision, gravity, jump, walk/sprint, fly mode, swimming,
   free-cam (spectator). Third-person-style first-person camera, yaw/pitch.
@@ -176,8 +179,10 @@ small Python server for saving/loading worlds.
   killed with TNT blasts (see TNT). Death triggers a huge double-layer purple
   explosion, opens the return portal and removes the dragon. Resources are
   disposed when leaving the End.
-- **Save/load**: binary format (`SAVE_MAGIC`, version 2) capturing world
-  blocks, dim, seeds, player pos/yaw/pitch, fly state, hotbar selection.
+- **Save/load**: binary format (`SAVE_MAGIC`, version 3) capturing world
+  blocks, dim, seeds, player pos/yaw/pitch, fly state, hotbar selection, and
+  placed-flowers' stored color/rotation (`placedFlowers`; extra per-entry byte
+  pair in v3, older v1/v2 saves still load).
   Backends: File System Access API (`pickSaveFile`/`saveToFile`),
   IndexedDB fallback, and the server API (`apiLoad`/`apiList`). Autosave
   via `queueSave()`, world regen resets to new seeds (`regenerate`).
