@@ -542,6 +542,7 @@ const JUMP = 8.2;
 const WALK = 4.4, SPRINT = 7.2, FLY = 10;
 const GRAPPLE_SPEED = 26;
 const GRAPPLE_THROW = 70;
+const GRAPPLE_FLING = 34;
 
 const pos = new THREE.Vector3(0, 20, 0);
 let grappleActive = false;
@@ -551,6 +552,7 @@ let grapplingDist = 1;
 const grappleTarget = new THREE.Vector3();
 const grappleStart = new THREE.Vector3();
 let grappleBlock = null;
+let flingActive = false;
 const vel = new THREE.Vector3();
 const camPos = new THREE.Vector3();
 let yaw = 0, pitch = 0;
@@ -565,6 +567,7 @@ function spawnPlayer() {
     }
   }
   vel.set(0, 0, 0);
+  flingActive = false;
 }
 
 function isSolid(x, y, z) {
@@ -630,7 +633,7 @@ function moveAxisY(dy) {
   for (let bx = Math.floor(pos.x - PLAYER_HW); bx <= Math.floor(pos.x + PLAYER_HW); bx++)
     for (let bz = Math.floor(pos.z - PLAYER_HW); bz <= Math.floor(pos.z + PLAYER_HW); bz++) {
       if (vel.y > 0 && isSolid(bx, Math.floor(top), bz) && top > Math.floor(top)) { pos.y = Math.floor(top) - PLAYER_H - 0.001; vel.y = 0; return; }
-      if (vel.y <= 0 && isSolid(bx, Math.floor(feet), bz)) { pos.y = Math.floor(feet) + 1 + 0.001; vel.y = 0; onGround = true; return; }
+      if (vel.y <= 0 && isSolid(bx, Math.floor(feet), bz)) { pos.y = Math.floor(feet) + 1 + 0.001; vel.y = 0; onGround = true; flingActive = false; return; }
     }
 }
 function collide() {
@@ -686,10 +689,12 @@ function updateGrapple(dt) {
     if (blockedBody(grappleTarget.x, grappleTarget.y, grappleTarget.z)) {
       grappleActive = false;
       vel.set(0, 0, 0);
+      flingActive = false;
       return true;
     }
     pos.copy(grappleTarget);
     vel.set(0, 0, 0);
+    flingActive = false;
     onGround = true;
     grappleActive = false;
     return true;
@@ -723,6 +728,7 @@ function updatePlayer(dt) {
     if (move.lengthSq() > 0) move.normalize().multiplyScalar(speed);
     vel.x = move.x; vel.z = move.z;
     vel.y = (keys["Space"] ? speed : 0) - (sprintKey ? speed : 0);
+    flingActive = false;
   } else if (inWater) {
     // Buoyancy: automatically float toward the surface, hold Space to swim up.
     const speed = 4.2;
@@ -735,7 +741,17 @@ function updatePlayer(dt) {
     const sprint = sprintKey && move.lengthSq() > 0;
     const speed = sprint ? SPRINT : WALK;
     if (move.lengthSq() > 0) move.normalize().multiplyScalar(speed);
-    vel.x = move.x; vel.z = move.z;
+    if (flingActive) {
+      vel.x += move.x * 4.0 * dt;
+      vel.z += move.z * 4.0 * dt;
+      const damp = Math.max(0, 1 - 0.6 * dt);
+      vel.x *= damp; vel.z *= damp;
+      const sp = Math.hypot(vel.x, vel.z);
+      if (sp > GRAPPLE_FLING) { vel.x *= GRAPPLE_FLING / sp; vel.z *= GRAPPLE_FLING / sp; }
+      if (sp < 1) flingActive = false;
+    } else {
+      vel.x = move.x; vel.z = move.z;
+    }
     vel.y -= GRAVITY * dt;
     if (keys["Space"] && onGround) { vel.y = JUMP; onGround = false; }
     if (vel.y < -40) vel.y = -40;
@@ -779,6 +795,7 @@ function freeCamBlocked(x, y, z, r) {
 function exitFreeCam() {
   pos.set(camPos.x, Math.max(0, camPos.y), camPos.z);
   vel.set(0, 0, 0);
+  flingActive = false;
   const outOfLevel =
     Math.abs(pos.x) > WORLD_RADIUS || Math.abs(pos.z) > WORLD_RADIUS ||
     pos.y < 0 || pos.y > 60;
@@ -2523,8 +2540,13 @@ document.addEventListener("mousedown", (e) => {
 document.addEventListener("mouseup", (e) => {
   if (e.button !== 1) return;
   if (grappleActive) {
+    if (grappleHooked) {
+      const dx = grappleTarget.x - grappleStart.x, dy = grappleTarget.y - grappleStart.y, dz = grappleTarget.z - grappleStart.z;
+      const dist = Math.hypot(dx, dy, dz) || 1;
+      vel.set((dx / dist) * GRAPPLE_FLING, (dy / dist) * GRAPPLE_FLING, (dz / dist) * GRAPPLE_FLING);
+    }
+    flingActive = true;
     grappleActive = false;
-    vel.set(0, 0, 0);
   }
 });
 

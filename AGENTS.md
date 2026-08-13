@@ -73,7 +73,13 @@ small Python server for saving/loading worlds.
   flies you keep full control — you keep falling and moving, the rope follows
   you), then hauls you in a straight line onto that block
   (`GRAPPLE_SPEED = 26`, feet on its top, zeroed velocity); releasing mid-pull
-  drops you straight down. The pull clips through terrain and only checks the
+  keeps your pull momentum — you're flung along the hook's launch-line
+  direction (start→target) at `GRAPPLE_FLING` (~1.3x grapple speed), with the
+  same boost applied to every axis so the launch follows the grapple's natural
+  angle and gravity takes over from there; the fling keeps you moving in that
+  direction (up, down or sideways) with mild friction — pressing movement keys
+  steers the momentum rather than replacing it — until you touch the ground
+  (which cancels it) or it runs out. The pull clips through terrain and only checks the
   landing pose, so low ledges are grabbable too; a thin pixelated rope (cube
   chain ~1/10 block, dense over the whole path) plus a blocky hook head shows
   the pull from the eye to the flying/stuck hook.
