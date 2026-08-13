@@ -2470,7 +2470,7 @@ function select(i) {
   selected = ((i % HOTBAR.length) + HOTBAR.length) % HOTBAR.length;
   [...hotbarEl.children].forEach((c, j) => c.classList.toggle("selected", j === selected));
 }
-document.addEventListener("wheel", (e) => select(selected + (e.deltaY > 0 ? 1 : -1)), { passive: true });
+document.addEventListener("wheel", (e) => select(selected + (e.deltaY > 0 ? -1 : 1)), { passive: true });
 
 // ---------------------------------------------------------------------------
 // Input / pointer lock
