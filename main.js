@@ -3,7 +3,7 @@ import * as THREE from "three";
 // ---------------------------------------------------------------------------
 // Block definitions
 // ---------------------------------------------------------------------------
-const AIR = 0, GRASS = 1, DIRT = 2, STONE = 3, SAND = 4, LOG = 5, LEAVES = 6, WATER = 7, PLANKS = 8, GLASS = 9, TNT = 10, PORTAL = 12, ENDSTONE = 13;
+const AIR = 0, GRASS = 1, DIRT = 2, STONE = 3, SAND = 4, LOG = 5, LEAVES = 6, WATER = 7, PLANKS = 8, GLASS = 9, TNT = 10, FLOWER = 11, PORTAL = 12, ENDSTONE = 13;
 
 const BLOCK_INFO = {
   [GRASS]:   { name: "Grass",    solid: true,  opaque: true,  placeable: true },
@@ -16,6 +16,7 @@ const BLOCK_INFO = {
   [PLANKS]:  { name: "Planks",   solid: true,  opaque: true,  placeable: true },
   [GLASS]:   { name: "Glass",    solid: true,  opaque: false, placeable: true },
   [TNT]:     { name: "TNT",      solid: true,  opaque: true,  placeable: true },
+  [FLOWER]:  { name: "Flower",   solid: false, opaque: false, placeable: false },
   [PORTAL]:  { name: "Portal",   solid: true,  opaque: false, placeable: true },
   [ENDSTONE]:{ name: "End Stone",solid: true,  opaque: true,  placeable: false },
 };
@@ -141,6 +142,23 @@ const TEX = {
     ctx.fillStyle = "#5d2b22";
     ctx.fillRect(8, 0, 2, 2);
   }),
+  flower: canvasTex((ctx) => {
+    ctx.clearRect(0, 0, 16, 16);
+    ctx.fillStyle = "#4a9c36";
+    ctx.fillRect(7, 10, 2, 6);
+    ctx.fillRect(4, 12, 3, 2); ctx.fillRect(9, 13, 3, 2);
+    ctx.fillStyle = "#e0554a";
+    ctx.fillRect(5, 3, 6, 2);
+    ctx.fillRect(4, 5, 8, 2);
+    ctx.fillRect(3, 7, 10, 2);
+    ctx.fillRect(4, 9, 8, 2);
+    ctx.fillRect(6, 11, 4, 2);
+    ctx.fillStyle = "#ff8a80";
+    ctx.fillRect(4, 5, 2, 2); ctx.fillRect(10, 5, 2, 2);
+    ctx.fillRect(3, 7, 2, 2); ctx.fillRect(11, 7, 2, 2);
+    ctx.fillStyle = "#7a1f18";
+    ctx.fillRect(7, 7, 2, 2);
+  }),
   glass: canvasTex((ctx) => {
     ctx.fillStyle = "rgba(190,230,255,0.55)"; ctx.fillRect(0, 0, 16, 16);
     ctx.strokeStyle = "rgba(255,255,255,0.9)"; ctx.lineWidth = 1.5;
@@ -182,6 +200,10 @@ function materialsFor(id) {
     case GLASS: return faceTex(TEX.glass, { transparent: true, opacity: 0.8, depthWrite: false });
     case WATER: return faceTex(TEX.water, { transparent: true, opacity: 0.65, depthWrite: false });
     case TNT:   return faceTex(TEX.tnt);
+    case FLOWER: {
+      const m = new THREE.MeshBasicMaterial({ map: TEX.flower, side: THREE.DoubleSide, alphaTest: 0.5 });
+      return [m, m, m, m, m, m];
+    }
     case PORTAL: return faceTex(TEX.portal, { transparent: false, opacity: 1, side: THREE.DoubleSide });
     case ENDSTONE: return faceTex(TEX.endstone);
     default: return faceTex(TEX.dirt);
@@ -362,7 +384,11 @@ function generateWorld() {
       }
       if (h < WATER_LEVEL) for (let y = h + 1; y <= WATER_LEVEL; y++) setBlock(x, y, z, WATER);
       const forest = fbm(x * 0.01 + 500, z * 0.01 + 500, seed + 888);
-      if (getBlock(x, h, z) === GRASS && hash2(x, z, seed + 555) < (forest > forestThresh ? 0.006 : 0.002)) growTree(x, h + 1, z);
+      if (getBlock(x, h, z) === GRASS && hash2(x, z, seed + 555) < (forest > forestThresh ? 0.006 : 0.002)) {
+        growTree(x, h + 1, z);
+      } else if (getBlock(x, h, z) === GRASS && getBlock(x, h + 1, z) === AIR && hash2(x, z, seed + 7777) < 0.015) {
+        setBlock(x, h + 1, z, FLOWER);
+      }
     }
   }
 }
@@ -400,6 +426,29 @@ scene.add(hemi);
 
 const boxGeo = new THREE.BoxGeometry(1, 1, 1);
 const dummy = new THREE.Object3D();
+
+// Cross-shaped billboard for plants: two planes crossing at right angles,
+// sized to sit inside their block cell (0.05..0.95 tall) on top of the grass.
+// Needs a uv attribute so the texture map actually samples per-fragment
+// (without it every fragment samples texel (0,0)).
+const crossGeo = (() => {
+  const hw = 0.45, hh = 0.45;
+  const v = [];
+  const u = [];
+  const quad = (ax, ay, az, bx, by, bz, cx, cy, cz, dx, dy, dz) => {
+    v.push(ax, ay, az, bx, by, bz, cx, cy, cz);
+    v.push(ax, ay, az, cx, cy, cz, dx, dy, dz);
+    u.push(0, 0, 1, 0, 1, 1);
+    u.push(0, 0, 1, 1, 0, 1);
+  };
+  quad(-hw, -hh, 0, hw, -hh, 0, hw, hh, 0, -hw, hh, 0);
+  quad(0, -hh, -hw, 0, -hh, hw, 0, hh, hw, 0, hh, -hw);
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute("position", new THREE.Float32BufferAttribute(v, 3));
+  geo.setAttribute("uv", new THREE.Float32BufferAttribute(u, 2));
+  geo.computeVertexNormals();
+  return geo;
+})();
 
 // Chunked streaming renderer: the world (now 2x) is split into CHUNK-chunks
 // and only chunks within RENDER_DIST of the player are meshed and drawn.
@@ -445,7 +494,7 @@ function rebuildChunk(cx, cz) {
     for (const idStr in counts) {
       const id = +idStr;
       const n = counts[id];
-      const mesh = new THREE.InstancedMesh(boxGeo, getTypeMats(id), n);
+      const mesh = new THREE.InstancedMesh(id === FLOWER ? crossGeo : boxGeo, getTypeMats(id), n);
       mesh.count = n;
       let i = 0;
       for (const [x, y, z, bid] of exposed) {

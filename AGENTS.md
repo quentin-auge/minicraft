@@ -48,7 +48,8 @@ small Python server for saving/loading worlds.
   towering pines (trunk 1–100, roughly half as many of them, clamped to the
   world ceiling `MAX_Y = 120`, via `hash2` in `growTree`). Trees clump into
   forests: a quantile forest noise (`forestThresh`) splits the map ~50/50, with
-  1.5x tree density in forests and 0.5x in the sparse rest.
+  1.5x tree density in forests and 0.5x in the sparse rest. Red flowers
+  (cross-billboard plants, non-solid) are scattered on ~1.5% of grass columns.
 - **Textures**: 16×16 pixel-art textures drawn procedurally on canvas
   (`TEX`, `makeTex`, `pxNoise`, `canvasTex`), NearestFilter + sRGB.
 - **Rendering**: chunked streaming. The overworld is split into `CHUNK` (16)×
@@ -62,8 +63,11 @@ small Python server for saving/loading worlds.
   hemisphere/directional light.
 - **Blocks**: numeric constants + `BLOCK_INFO` (solid/opaque/placeable).
   Types incl. GRASS, DIRT, STONE, SAND, LOG, LEAVES, PLANKS, GLASS, WATER
-  (non-solid, animated opacity), TNT, PORTAL, and ENDSTONE (grey End platform
-  block, `placeable: false` so it can't be selected or placed).
+  (non-solid, animated opacity), TNT, FLOWER (decorative non-solid
+  cross-billboard plant, alpha-tested DoubleSide material, `crossGeo` instead
+  of `boxGeo`, `placeable: false` and absent from the hotbar so it's never
+  picked up or placed), PORTAL, and ENDSTONE (grey End platform block,
+  `placeable: false` so it can't be selected or placed).
 - **Player**: AABB collision, gravity, jump, walk/sprint, fly mode, swimming,
   free-cam (spectator). Third-person-style first-person camera, yaw/pitch.
 - **Editing**: pointer-raycast block pick (DDA), infinite reach (`REACH`), white
