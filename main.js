@@ -990,14 +990,25 @@ function updateTNTTarget(t, dt) {
 
 function tickTNT(dt) {
   for (const [k, t] of [...tntLit]) {
-    t.fuse -= dt;
     updateTNTTarget(t, dt);
     t.spr.position.set(t.px, t.py + 0.85, t.pz);
-    if (t.mesh) t.mesh.position.set(t.px, t.py, t.pz);
+    if (t.mesh) {
+      t.mesh.position.set(t.px, t.py, t.pz);
+      if (t.stuck) {
+        clearTNTVisual(t);
+        tntLit.delete(k);
+        explodeTNT(t.px, t.py, t.pz, true, true);
+      } else if (!dragon.mesh) {
+        clearTNTVisual(t);
+        tntLit.delete(k);
+      }
+      continue;
+    }
+    t.fuse -= dt;
     if (t.fuse <= 0) {
       clearTNTVisual(t);
       tntLit.delete(k);
-      explodeTNT(t.mesh ? t.px : t.bx, t.mesh ? t.py : t.by, t.mesh ? t.pz : t.bz, t.stuck);
+      explodeTNT(t.bx, t.by, t.bz, t.stuck);
     } else {
       drawFuseSprite(t.spr, t.fuse);
     }
@@ -1009,15 +1020,16 @@ function dragonBlastDamage(dist, pointBlank) {
   return DRAGON_FULL_DMG - (DRAGON_FULL_DMG - DRAGON_MIN_DMG) * Math.min(1, dist / DRAGON_HIT_DIST);
 }
 
-function explodeTNT(x, y, z, pointBlank) {
+function explodeTNT(x, y, z, pointBlank, homing = false) {
   const bx = Math.floor(x), by = Math.floor(y), bz = Math.floor(z);
-  setBlock(bx, by, bz, AIR);
   if (pointBlank) spawnDragonBurst(x + 0.5, y + 0.5, z + 0.5);
   else spawnExplosion(x + 0.5, y + 0.5, z + 0.5);
   if (dim === "end" && dragon.mesh) {
     const cd = Math.hypot(dragon.mesh.position.x - (x + 0.5), dragon.mesh.position.y - (y + 0.5), dragon.mesh.position.z - (z + 0.5));
     damageDragon(dragonBlastDamage(cd, pointBlank));
   }
+  if (homing) return;
+  setBlock(bx, by, bz, AIR);
   const R = BLAST_RADIUS, R2 = R * R;
   const affected = [];
   for (let dx = -R; dx <= R; dx++)
