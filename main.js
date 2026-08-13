@@ -1845,6 +1845,7 @@ function goToDimension(name, sx, sy, sz) {
     endCleared = false;
     buildReturnPortal();
     spawnDragon();
+    spawnEndermen();
     setDimensionEnv();
     prePortalFly = flying;
     flying = false;
@@ -1853,6 +1854,7 @@ function goToDimension(name, sx, sy, sz) {
   } else {
     setDimensionEnv();
     if (dragon.mesh) removeDragon();
+    if (endermen.length) removeEndermen();
     flying = prePortalFly;
     if (overPortalFace == null) {
       const w = findPortalWindow(Math.floor(overPortalSpawn.x), Math.floor(overPortalSpawn.y + 0.25), Math.floor(overPortalSpawn.z));
@@ -2533,6 +2535,225 @@ function updateDragon(dt) {
 }
 
 // ---------------------------------------------------------------------------
+// Endermen (ambient teleporters)
+// ---------------------------------------------------------------------------
+const ENDERMEN_COUNT = 10;
+const endermen = [];
+let endermanGeo = null;
+let endermanBodyMat = null;
+const ENDERMAN_RANGE = 55;
+const ENDERMAN_ANGRY_TIME = 4;
+
+function endermanBox(parent, mat, sx, sy, sz, px, py, pz) {
+  const m = new THREE.Mesh(endermanGeo, mat);
+  m.scale.set(sx, sy, sz);
+  m.position.set(px, py, pz);
+  parent.add(m);
+  return m;
+}
+
+function makeEndermanMesh() {
+  const g = new THREE.Group();
+  const eyeMat = new THREE.MeshBasicMaterial({ color: 0xb44cff });
+  const legL = new THREE.Group();
+  legL.position.set(-0.16, 0.6, 0);
+  g.add(legL);
+  endermanBox(legL, endermanBodyMat, 0.24, 1.2, 0.24, 0, 0, 0);
+  const legR = new THREE.Group();
+  legR.position.set(0.16, 0.6, 0);
+  g.add(legR);
+  endermanBox(legR, endermanBodyMat, 0.24, 1.2, 0.24, 0, 0, 0);
+  endermanBox(g, endermanBodyMat, 0.62, 1.0, 0.4, 0, 1.7, 0);
+  const head = new THREE.Group();
+  head.position.set(0, 2.45, 0);
+  g.add(head);
+  endermanBox(head, endermanBodyMat, 0.52, 0.5, 0.5, 0, 0, 0);
+  for (const sx of [1, -1]) endermanBox(head, eyeMat, 0.09, 0.16, 0.05, sx * 0.16, 0.03, 0.26);
+  const armL = new THREE.Group();
+  armL.position.set(-0.42, 1.95, 0);
+  g.add(armL);
+  endermanBox(armL, endermanBodyMat, 0.16, 1.75, 0.16, 0, -0.9, 0);
+  const armR = new THREE.Group();
+  armR.position.set(0.42, 1.95, 0);
+  g.add(armR);
+  endermanBox(armR, endermanBodyMat, 0.16, 1.75, 0.16, 0, -0.9, 0);
+  return { g, eyeMat, armL, armR, head, t: 0, angry: 0, teleportT: 0, lookT: 0 };
+}
+
+function spawnEndermen() {
+  if (endermen.length) return;
+  endermanGeo = new THREE.BoxGeometry(1, 1, 1);
+  endermanBodyMat = new THREE.MeshStandardMaterial({ color: 0x0c0a12, roughness: 0.85, metalness: 0.05 });
+  for (let i = 0; i < ENDERMEN_COUNT; i++) {
+    const e = makeEndermanMesh();
+    const spot = endermanPickSpot(0, 0, 6, endermen);
+    e.g.position.set(spot.x, END_PLATFORM_TOP + 1, spot.z);
+    e.g.rotation.y = Math.random() * Math.PI * 2;
+    e.teleportT = 3 + Math.random() * 7;
+    scene.add(e.g);
+    endermen.push(e);
+  }
+}
+
+function removeEndermen() {
+  if (!endermen.length) return;
+  for (const e of endermen) {
+    scene.remove(e.g);
+    e.eyeMat.dispose();
+  }
+  endermen.length = 0;
+  if (endermanGeo) { endermanGeo.dispose(); endermanGeo = null; }
+  if (endermanBodyMat) { endermanBodyMat.dispose(); endermanBodyMat = null; }
+}
+
+function spawnEndermanBurst(cx, cy, cz) {
+  const N = 26;
+  const posA = new Float32Array(N * 3);
+  const colA = new Float32Array(N * 3);
+  const vel = new Float32Array(N * 3);
+  for (let i = 0; i < N; i++) {
+    posA[i * 3] = cx; posA[i * 3 + 1] = cy; posA[i * 3 + 2] = cz;
+    colA[i * 3] = 0.5 + Math.random() * 0.3;
+    colA[i * 3 + 1] = 0.2 + Math.random() * 0.2;
+    colA[i * 3 + 2] = 0.75 + Math.random() * 0.25;
+    const th = Math.random() * Math.PI * 2;
+    const ph = Math.acos(2 * Math.random() - 1);
+    const s = 2.5 + Math.random() * 3.5;
+    vel[i * 3] = s * Math.sin(ph) * Math.cos(th);
+    vel[i * 3 + 1] = s * Math.cos(ph) + 1.5;
+    vel[i * 3 + 2] = s * Math.sin(ph) * Math.sin(th);
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute("position", new THREE.BufferAttribute(posA, 3));
+  geo.setAttribute("color", new THREE.BufferAttribute(colA, 3));
+  const mat = new THREE.PointsMaterial({
+    size: 0.3, vertexColors: true, transparent: true, opacity: 1,
+    depthWrite: false, blending: THREE.AdditiveBlending,
+  });
+  const pts = new THREE.Points(geo, mat);
+  scene.add(pts);
+  bursts.push({ pts, geo, mat, vel, life: 0.7, max: 0.7 });
+}
+
+function endermanPickSpot(cx, cz, minDist, others = []) {
+  const R = END_PLATFORM_R - 4;
+  for (let tries = 0; tries < 24; tries++) {
+    const a = Math.random() * Math.PI * 2;
+    const r = Math.sqrt(Math.random()) * R;
+    const x = Math.round(cx + Math.cos(a) * r);
+    const z = Math.round(cz + Math.sin(a) * r);
+    if (Math.abs(x) > R || Math.abs(z) > R) continue;
+    if ((x - cx) * (x - cx) + (z - cz) * (z - cz) < minDist * minDist) continue;
+    if (Math.abs(x) <= 3 && Math.abs(z - END_RETURN_Z) <= 3) continue;
+    if (isSolid(x, END_PLATFORM_TOP + 1, z) || isSolid(x, END_PLATFORM_TOP + 2, z)) continue;
+    let far = true;
+    for (const o of others) {
+      const ox = o.g ? o.g.position.x : o.x;
+      const oz = o.g ? o.g.position.z : o.z;
+      if ((x - ox) * (x - ox) + (z - oz) * (z - oz) < 9) { far = false; break; }
+    }
+    if (!far) continue;
+    return { x, z };
+  }
+  for (let tries = 0; tries < 12; tries++) {
+    const a = Math.random() * Math.PI * 2;
+    const r = 2 + Math.random() * 5;
+    const x = THREE.MathUtils.clamp(Math.round(cx + Math.cos(a) * r), -R, R);
+    const z = THREE.MathUtils.clamp(Math.round(cz + Math.sin(a) * r), -R, R);
+    if ((x - cx) * (x - cx) + (z - cz) * (z - cz) >= minDist * minDist) return { x, z };
+  }
+  return { x: THREE.MathUtils.clamp(cx, -R, R), z: THREE.MathUtils.clamp(cz, -R, R) };
+}
+
+function endermanTeleport(e, x, z) {
+  const M = e.g;
+  spawnEndermanBurst(M.position.x, M.position.y + 1.35, M.position.z);
+  M.position.x = x;
+  M.position.z = z;
+  M.position.y = END_PLATFORM_TOP + 1;
+  spawnEndermanBurst(M.position.x, M.position.y + 1.35, M.position.z);
+}
+
+function endermanOthers(e) {
+  return endermen.filter((o) => o !== e);
+}
+
+const endermanFwd = new THREE.Vector3();
+
+function updateEndermen(dt) {
+  for (let i = 0; i < endermen.length; i++) updateEnderman(endermen[i], dt);
+}
+
+function updateEnderman(e, dt) {
+  const M = e.g;
+  const t = (e.t += dt);
+  M.position.y = END_PLATFORM_TOP + 1 + Math.sin(t * 1.3) * 0.02;
+
+  const dx = pos.x - M.position.x;
+  const dz = pos.z - M.position.z;
+  const distToPlayer = Math.hypot(dx, dz);
+  if (distToPlayer > 0.001) {
+    let d = Math.atan2(dx, dz) - M.rotation.y;
+    while (d > Math.PI) d -= Math.PI * 2;
+    while (d < -Math.PI) d += Math.PI * 2;
+    M.rotation.y += d * Math.min(1, dt * 6);
+  }
+
+  const shaking = e.angry > 0;
+  const amp = shaking ? 0.45 : 0.06;
+  const phase = shaking ? t * 16 : t * 1.8;
+  e.armL.rotation.x = Math.sin(phase) * amp;
+  e.armR.rotation.x = Math.sin(phase + 0.6) * amp;
+  e.eyeMat.color.setHex(shaking ? 0xff2d95 : 0xb44cff);
+
+  if (e.angry > 0) {
+    e.angry -= dt;
+    if (e.angry <= 0) {
+      const spot = endermanPickSpot(Math.floor(pos.x), Math.floor(pos.z), 8, endermanOthers(e));
+      endermanTeleport(e, spot.x, spot.z);
+    }
+    return;
+  }
+
+  e.teleportT -= dt;
+  if (e.teleportT <= 0) {
+    e.teleportT = 4 + Math.random() * 6;
+    const spot = endermanPickSpot(Math.floor(pos.x), Math.floor(pos.z), 5, endermanOthers(e));
+    endermanTeleport(e, spot.x, spot.z);
+    return;
+  }
+  if (distToPlayer < 2.5) {
+    e.teleportT = 1.5;
+    const spot = endermanPickSpot(Math.floor(pos.x), Math.floor(pos.z), 6, endermanOthers(e));
+    endermanTeleport(e, spot.x, spot.z);
+    return;
+  }
+
+  camera.getWorldDirection(endermanFwd);
+  const ex = M.position.x, ey = M.position.y + 1.35, ez = M.position.z;
+  const vx = ex - pos.x, vy = ey - (pos.y + EYE), vz = ez - pos.z;
+  const dist = Math.hypot(vx, vy, vz);
+  if (dist < ENDERMAN_RANGE) {
+    const dot = (vx * endermanFwd.x + vy * endermanFwd.y + vz * endermanFwd.z) / dist;
+    if (dot > 0.995) {
+      e.lookT += dt;
+      if (e.lookT > 0.35) {
+        e.lookT = 0;
+        e.angry = ENDERMAN_ANGRY_TIME;
+        const bx = Math.floor(pos.x), bz = Math.floor(pos.z);
+        const spot = endermanPickSpot(bx + Math.sin(yaw) * 4, bz + Math.cos(yaw) * 4, 2, endermanOthers(e));
+        endermanTeleport(e, spot.x, spot.z);
+        showMsg("An Enderman is angered — stop staring!");
+      }
+    } else {
+      e.lookT = Math.max(0, e.lookT - dt * 2);
+    }
+  } else {
+    e.lookT = 0;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Save / load
 // Normal mode (run `python3 server.py`, open http://localhost:8383): every world is a
 // .sav file in save/ on disk, named when you press New World.
@@ -2990,7 +3211,7 @@ async function restoreSave(buf) {
     updateCamera();
     setDimensionEnv();
     updateDimLabel();
-    if (dim === "end") { endCleared = false; buildReturnPortal(); spawnDragon(); }
+    if (dim === "end") { endCleared = false; buildReturnPortal(); spawnDragon(); spawnEndermen(); }
     lastManualSave = Date.now();
     return true;
   } finally {
@@ -3087,6 +3308,7 @@ function resetDims() {
   endCleared = false;
   protectedBlocks.clear();
   if (dragon.mesh) removeDragon();
+  if (endermen.length) removeEndermen();
   setDimensionEnv();
   updateDimLabel();
 }
@@ -3392,6 +3614,7 @@ function loop(now) {
     updatePortalVisual();
     checkPortal();
     if (dim === "end") updateDragon(dt);
+    if (dim === "end") updateEndermen(dt);
     if (toastTimer > 0) { toastTimer -= dt; if (toastTimer <= 0) toastEl.style.opacity = "0"; }
 
     // Gentle water shimmer

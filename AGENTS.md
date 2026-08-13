@@ -197,6 +197,27 @@ small Python server for saving/loading worlds.
   killing outright), then death triggers a huge double-layer purple
   explosion, opens the return portal and removes the dragon. Resources are
   disposed when leaving the End.
+- **Endermen**: ambient teleporters that spawn on the End platform alongside
+  the dragon — `ENDERMEN_COUNT` (10) of them, all sharing one unit box
+  geometry and body material (`spawnEndermen`/`removeEndermen`, one glowing
+  purple `MeshBasicMaterial` eye material each). Each is a tall (2.7-block)
+  slender black humanoid: two long legs, a torso, a head with two glowing
+  purple eyes and two long arms that hang
+  down past the legs (`makeEndermanMesh`). They stand still facing the player,
+  gently swaying their arms and bobbing, and teleport constantly:
+  - They wander — every `teleportT` (4–10 s) each blinks away to a random clear
+    spot on the platform (`endermanPickSpot`, keeps inside radius 20, avoids
+    the return portal region, blocks and other endermen).
+  - Back off by teleporting if the player gets within 2.5 blocks (walks into
+    one).
+  - Classic "don't stare" behaviour: holding the crosshair on one for >0.35 s
+    (look cone via `camera.getWorldDirection`) angers it — it teleports behind
+    the player (a `sin/cos(yaw)` offset) and shakes its arms with
+    hot-pink eyes for `ENDERMAN_ANGRY_TIME` (4 s), then teleports away and
+    calms. Teleports are telegraphed by a small purple particle burst at both
+    the source and destination positions (`spawnEndermanBurst`, reusing the
+    `bursts` effect system). Deleted with the dragon when leaving the End /
+    resetting dims; spawned fresh every End entry.
 - **Save/load**: binary format (`SAVE_MAGIC`, version 3) capturing world
   blocks, dim, seeds, player pos/yaw/pitch, fly state, hotbar selection, and
   placed-flowers' stored color/rotation (`placedFlowers`; extra per-entry byte
