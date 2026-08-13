@@ -147,7 +147,8 @@ small Python server for saving/loading worlds.
   lit TNT targets the Ender Dragon: the TNT cube flies up at it, sticks onto
   its body and detonates on contact with a big purple particle burst (each
   stuck blast = 1/8 of its HP, so it takes 8 TNT to slay). A dragon-homing blast deals dragon damage only —
-  it never destroys terrain, so no crater is left where the TNT launched.
+  it never destroys terrain, so no crater is left where the TNT launched; a
+  homing bomb that never sticks detonates in air after `life` (3s fuse + 2s chase).
 - **Portals / dimensions**: build a horizontal 5×5 frame in the Overworld
   (4 sides, corners optional), walk into its 3×3 interior to jump to the End;
   solid black fill marks an active portal. The End is freshly regenerated on
@@ -162,21 +163,34 @@ small Python server for saving/loading worlds.
   random closed aerial path (arc-length-sampled Catmull-Rom spline through
   random waypoints, low "skim the floor" runs and high soars (about twice the
   platform height), banking turns and dives), re-picking a fresh trajectory
-  each lap; its loops alternate tight inner passes and wide sweeps that span
-  the whole platform. It tends to come at the player: most loops route a
-  waypoint over/near them and every few seconds it does a dive that swoops
-  toward and past their position. Its path stays clamped above the platform
-  surface and inside its footprint, so it never clips through the platform. Built from Three.js primitives only — boxy, cubic
+  each lap; its loops alternate tight inner passes and wide sweeps that swing
+  past the platform edge (waypoint radii 12–30, clamped inside radius 30), so
+  you get a clear view of it when TNT sticks and blows up on it. Its path is
+  player-agnostic — it never aims at the player (it was changed to stop
+  converging on them), flying a pure ambient circuit instead. It flees homing
+  TNT: any non-stuck airborne TNT within `DRAGON_FLEE_DIST` (16) pushes the
+  dragon away (`dragonFlee` smoothed, `DRAGON_FLEE_SPEED` 11 ≈ TNT home speed)
+  until the bomb detonates or gives up. Its path stays
+  clamped above the platform surface, so it never clips through the platform. Built from Three.js primitives only — boxy, cubic
   style: a blocky torso/belly, box horns and five head spikes, glowing purple
   eyes (unlit), translucent purple bat-wing membranes (mirrored), and
-  segmented forked tail boxes; shared geometries/materials. It breathes a
+  segmented forked tail boxes; shared geometries/materials. It spawns black and
+  re-paints itself with every TNT hit (`paintDragon`, cycling the `DRAGON_PAINT`
+  palette of 8 neon shades — hot pink, green, gold, blue, orange, crimson,
+  violet, cyan — across the stored body/belly/plate/bone/membrane materials).
+  It breathes a
   long-reaching spray of fading purple cube fire from its mouth (about 3x the
   platform reach) — mostly while diving at the player (~60% of dives), with
   occasional level-flight breaths in between. Its flight has small random
   speed bursts (surge) with slightly faster wing flaps. Animated via
   spline-driven yaw/pitch/bank orientation, wing flap with speed, neck/head
   sway, tail wave and body bob. It has a boss health bar (HUD) and can be
-  killed with TNT blasts (see TNT). Death triggers a huge double-layer purple
+  killed with TNT blasts (see TNT). At 0 HP the dragon does not die instantly:
+  it freezes and rapidly stroboscopically flashes through every entry of the
+  `DRAGON_PAINT` palette (a new color every `0.08`s) while shaking in place for
+  1s (`dragon.dying`/`deathFlash`/`deathIdx`, driven inside `updateDragon` via
+  `paintDragonPalette`; `damageDragon` now only starts the countdown instead of
+  killing outright), then death triggers a huge double-layer purple
   explosion, opens the return portal and removes the dragon. Resources are
   disposed when leaving the End.
 - **Save/load**: binary format (`SAVE_MAGIC`, version 3) capturing world
