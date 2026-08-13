@@ -52,9 +52,9 @@ function fbm(x, z, seed, octaves = 4) {
 // ---------------------------------------------------------------------------
 // Procedural textures (16x16 pixel art)
 // ---------------------------------------------------------------------------
-function canvasTex(draw) {
+function canvasTex(draw, size = 16) {
   const c = document.createElement("canvas");
-  c.width = c.height = 16;
+  c.width = c.height = size;
   const ctx = c.getContext("2d");
   draw(ctx);
   const t = new THREE.CanvasTexture(c);
@@ -128,19 +128,23 @@ const TEX = {
     for (let y = 0; y < 4; y++) ctx.fillRect(0, y * 4, 16, 1);
     ctx.fillRect(4, 0, 1, 4); ctx.fillRect(11, 4, 1, 4); ctx.fillRect(6, 8, 1, 4); ctx.fillRect(13, 12, 1, 4);
   }),
-  tnt: canvasTex((ctx) => {
-    ctx.fillStyle = "#c0392b"; ctx.fillRect(0, 0, 16, 16);
-    pxNoise(ctx, [192, 57, 43], 14);
-    ctx.fillStyle = "#ece6d0"; ctx.fillRect(0, 6, 16, 4);
-    pxNoise(ctx, [236, 230, 208], 8, 0.7);
-    ctx.fillStyle = "#222";
-    ctx.fillRect(0, 7, 16, 1);
-    ctx.fillRect(0, 9, 16, 1);
+  tnt_side: canvasTex((ctx) => {
+    ctx.fillStyle = "#c0392b"; ctx.fillRect(0, 0, 64, 64);
+    ctx.fillStyle = "#ece6d0"; ctx.fillRect(0, 16, 64, 32);
+    for (let y = 0; y < 64; y++) for (let x = 0; x < 64; x++) {
+      const red = y < 16 || y > 47;
+      const base = red ? [192, 57, 43] : [236, 230, 208];
+      const d = (Math.random() - 0.5) * (red ? 14 : 8);
+      ctx.fillStyle = `rgb(${base[0] + d},${base[1] + d},${base[2] + d})`;
+      ctx.fillRect(x, y, 1, 1);
+    }
     ctx.fillStyle = "#1a1a1a";
-    ctx.font = "bold 7px monospace"; ctx.textAlign = "center"; ctx.textBaseline = "middle";
-    ctx.fillText("TNT", 8, 8);
-    ctx.fillStyle = "#5d2b22";
-    ctx.fillRect(8, 0, 2, 2);
+    ctx.font = "bold 24px sans-serif"; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+    ctx.fillText("TNT", 32, 32);
+  }, 64),
+  tnt_top: canvasTex((ctx) => {
+    ctx.fillStyle = "#c0392b"; ctx.fillRect(0, 0, 16, 16);
+    pxNoise(ctx, [192, 57, 43], 12);
   }),
   glass: canvasTex((ctx) => {
     ctx.fillStyle = "rgba(190,230,255,0.55)"; ctx.fillRect(0, 0, 16, 16);
@@ -182,7 +186,7 @@ function materialsFor(id) {
     case PLANKS:return faceTex(TEX.planks);
     case GLASS: return faceTex(TEX.glass, { transparent: true, opacity: 0.8, depthWrite: false });
     case WATER: return faceTex(TEX.water, { transparent: true, opacity: 0.65, depthWrite: false });
-    case TNT:   return faceTex(TEX.tnt);
+    case TNT:   return [material(TEX.tnt_side), material(TEX.tnt_side), material(TEX.tnt_top), material(TEX.tnt_top), material(TEX.tnt_side), material(TEX.tnt_side)];
     case PORTAL: return faceTex(TEX.portal, { transparent: false, opacity: 1, side: THREE.DoubleSide });
     case ENDSTONE: return faceTex(TEX.endstone);
     case PORTAL: return faceTex(TEX.portal);
