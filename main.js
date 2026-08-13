@@ -677,7 +677,7 @@ function updateGrapple(dt) {
       grappleFly = 1;
       grappleHooked = true;
     }
-    return;
+    return false;
   }
   const dx = grappleTarget.x - pos.x, dy = grappleTarget.y - pos.y, dz = grappleTarget.z - pos.z;
   const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
@@ -686,20 +686,21 @@ function updateGrapple(dt) {
     if (blockedBody(grappleTarget.x, grappleTarget.y, grappleTarget.z)) {
       grappleActive = false;
       vel.set(0, 0, 0);
-      return;
+      return true;
     }
     pos.copy(grappleTarget);
     vel.set(0, 0, 0);
     onGround = true;
     grappleActive = false;
-    return;
+    return true;
   }
   const s = step / dist;
   pos.set(pos.x + dx * s, pos.y + dy * s, pos.z + dz * s);
+  return true;
 }
 
 function updatePlayer(dt) {
-  if (grappleActive) { updateGrapple(dt); return; }
+  if (grappleActive && updateGrapple(dt)) return;
   if (dim === "end") flying = false;
   const fwd = new THREE.Vector3(-Math.sin(yaw), 0, -Math.cos(yaw));
   const right = new THREE.Vector3(Math.cos(yaw), 0, -Math.sin(yaw));

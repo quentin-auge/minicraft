@@ -69,8 +69,9 @@ small Python server for saving/loading worlds.
 - **Editing**: pointer-raycast block pick (DDA), infinite reach (`REACH`), white
   `highlight` box on the targeted block. Left click places, right click breaks.
 - **Grappling hook**: hold middle mouse click on the targeted block to fire a
-  hook that first flies fast to the target (`GRAPPLE_THROW = 70`, you don't
-  move yet), then hauls you in a straight line onto that block
+  hook that first flies fast to the target (`GRAPPLE_THROW = 70`, while it
+  flies you keep full control — you keep falling and moving, the rope follows
+  you), then hauls you in a straight line onto that block
   (`GRAPPLE_SPEED = 26`, feet on its top, zeroed velocity); releasing mid-pull
   drops you straight down. The pull clips through terrain and only checks the
   landing pose, so low ledges are grabbable too; a thin pixelated rope (cube
