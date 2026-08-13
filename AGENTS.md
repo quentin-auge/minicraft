@@ -40,13 +40,35 @@ small Python server for saving/loading worlds.
   depth scales with `waterDepth` (`BASIN_SHORE`+`BASIN_DEPTH`). Each new world
   randomly picks water size 1–4 (basin frequency ∝ 1/√scale) and depth 1–4
   (from `seed` via `hash2`, recomputed in `generateWorld`). A few meandering
-  rivers (`generateRivers`, seeded winding paths) cut 8–14 wide channels down to `RIVER_BED = 8` through the land. Terrain is dramatic
+  rivers (`generateRivers`, seeded winding paths) cut 8–14 wide channels down to `RIVER_BED = 8` through the land. Underground, a catacombs
+  network replaces the old caves: five long winding 3×3-square tunnels
+  (`generateTunnels`, A→B paths with perpendicular wobble through `edgePoint`,
+  each end `settleEntrance`-adjusted onto land, interior points clamped inside
+  the map) cross the map. Each tunnel ramps down from an open surface mouth
+  (`TUNNEL_RAMP` smoothstep on the arc length, so the tube descends from the
+  surface to `TUNNEL_DEPTH`±`TUNNEL_DEPTH_VAR`, rising again at the far end;
+  `carveTube` carves a 3×3×3 box per step, `tubeDepth`/`smoothstep`), and every
+  tunnel passes through `ROOMS_PER_TUNNEL` big halls (`carveRooms`, 11×11×7 air
+  with four ±3 corner columns). The whole network stays sealed by rock
+  (carvings never breach the surface), tunnel elbow depth clamps inside the
+  terrain so shallow seabeds never leave gaps, and each tunnel's land ends that
+  settle inside the map are open holes in the ground with a long wooden
+  `PLANKS` staircase (`stairEntrances`, `STAIR_STEPS` descending 1-block risers,
+  one tread per block along the tube heading down into the catacombs — the
+  floor snaps to an integer block and is coerced to never rise (descents of
+  exactly 1 where the ramp deepens, level steps where terrain swells), so the
+  flight is a clean continuous staircase; carves are collected first, then all
+  planks are laid, so crossed flights never delete each other's stairs) leading
+  down to the catacombs; stairs whose opening would sit off
+  the map edge are skipped, and entrances leaning over cliffs or water keep
+  only the framed side that stays on solid ground).
+  Terrain is dramatic
   (`LAND_RAISE = 20`, strong low-freq hills + per-column rough, tops clamped
   at 70, height stdev ~10) with scattered flat-topped mesas: where a low-freq
   `plat` noise sits near its midline the column height snaps to one of ~7
   discrete levels (`8 + lvl*44`, in `heightAt`). Trees range from stumps to
   towering pines (trunk 1–100, roughly half as many of them, clamped to the
-  world ceiling `MAX_Y = 120`, via `hash2` in `growTree`). Trees clump into
+  world ceiling `MAX_Y = 254`, via `hash2` in `growTree`). Trees clump into
   forests: a quantile forest noise (`forestThresh`) splits the map ~50/50, with
   1.5x tree density in forests and 0.5x in the sparse rest. Blocky flowers
   (non-solid) are scattered on ~1.5% of grass columns.
@@ -78,7 +100,7 @@ small Python server for saving/loading worlds.
   baked-vertex-color geometry (`FLOWER_GEOS`) and one `FLOWER_MAT`
   `MeshLambertMaterial` with `vertexColors`; random Y-rotation via
   `flowerAngle`; `placeable: false` and absent from the hotbar so it's never
-  picked up or placed), PORTAL, and ENDSTONE (grey End platform block,
+  picked up or placed), PORTAL, ENDSTONE (grey End platform block,
   `placeable: false` so it can't be selected or placed).
 - **Player**: AABB collision, gravity, jump, walk/sprint, fly mode, swimming,
   free-cam (spectator). Third-person-style first-person camera, yaw/pitch.

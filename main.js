@@ -17,7 +17,7 @@ const BLOCK_INFO = {
   [GLASS]:   { name: "Glass",    solid: true,  opaque: false, placeable: true },
   [TNT]:     { name: "TNT",      solid: true,  opaque: true,  placeable: true },
   [FLOWER]:  { name: "Flower",   solid: false, opaque: false, placeable: false },
-  [PORTAL]:  { name: "Portal",   solid: true,  opaque: false, placeable: true },
+[PORTAL]:  { name: "Portal",    solid: true,  opaque: false, placeable: true },
   [ENDSTONE]:{ name: "End Stone",solid: true,  opaque: true,  placeable: false },
 };
 
@@ -185,6 +185,7 @@ function materialsFor(id) {
     case TNT:   return faceTex(TEX.tnt);
     case PORTAL: return faceTex(TEX.portal, { transparent: false, opacity: 1, side: THREE.DoubleSide });
     case ENDSTONE: return faceTex(TEX.endstone);
+    case PORTAL: return faceTex(TEX.portal);
     default: return faceTex(TEX.dirt);
   }
 }
@@ -199,7 +200,7 @@ const WORLD_RADIUS = 96;
 const WATER_LEVEL = 10;
 const CHUNK = 16;
 const RENDER_DIST = 8;
-const MAX_Y = 120;
+const MAX_Y = 254;
 const LAND_RAISE = 20.0;
 const BASIN_SHORE = 1.5;
 const BASIN_DEPTH = 2.2;
@@ -207,6 +208,15 @@ const RIVER_COUNT = 3;
 const RIVER_STEP = 36;
 const RIVER_W = 6.0;
 const RIVER_BED = 8;
+const TUNNEL_COUNT = 5;
+const TUNNEL_STEP = 4;
+const TUNNEL_DEPTH = 18;
+const TUNNEL_DEPTH_VAR = 9;
+const TUNNEL_RAMP = 16;
+const STAIR_STEPS = 24;
+const ROOM_W = 11;
+const ROOM_H = 7;
+const ROOMS_PER_TUNNEL = 3;
 const END_PLATFORM_TOP = 20;
 const END_PLATFORM_R = 24;
 const END_RETURN_Z = 16;
@@ -218,6 +228,7 @@ let basinFreq = 0.007;
 let basinThresh = 0;
 let basinMax = 1;
 let riverPaths = [];
+let tunnelPaths = [];
 let forestThresh = 0.5;
 
 function key(x, y, z) { return x + "," + y + "," + z; }
@@ -331,6 +342,219 @@ const wobA = 0.4 + hash2(0, 0, rs + 3) * 0.3;
   }
 }
 
+function edgePoint(e, along, S) {
+  if (e === 0) return [-S, along];
+  if (e === 1) return [S, along];
+  if (e === 2) return [along, -S];
+  return [along, S];
+}
+
+function settleEntrance(a, b) {
+  const ax = a[0], az = a[1], bx = b[0], bz = b[1];
+  const len = Math.hypot(bx - ax, bz - az) || 1;
+  const sx = (bx - ax) / len, sz = (bz - az) / len;
+  let px = ax, pz = az;
+  for (let i = 0; i < len; i++) {
+    if (heightAt(Math.round(px), Math.round(pz)) > WATER_LEVEL + 1) return [px, pz];
+    px += sx; pz += sz;
+  }
+  return [ax, az];
+}
+
+function generateTunnels() {
+  tunnelPaths = [];
+  const S = WORLD_RADIUS;
+  for (let i = 0; i < TUNNEL_COUNT; i++) {
+    const ts = seed + 8899 + i * 997;
+    const e1 = Math.floor(hash2(0, 0, ts + 1) * 4);
+    const e2 = (e1 + 2 + Math.floor(hash2(0, 0, ts + 2) * 3)) % 4;
+    const rawA = edgePoint(e1, (hash2(0, 0, ts + 3) * 2 - 1) * S * 0.5, S);
+    const rawB = edgePoint(e2, (hash2(0, 0, ts + 4) * 2 - 1) * S * 0.5, S);
+    const A = settleEntrance(rawA, rawB);
+    const B = settleEntrance(rawB, rawA);
+    const amp = 14 + hash2(0, 0, ts + 5) * 22;
+    const wave = 1 + hash2(0, 0, ts + 6) * 2;
+    const phase = hash2(0, 0, ts + 7) * Math.PI * 2;
+    const dx = B[0] - A[0], dz = B[1] - A[1];
+    const len = Math.hypot(dx, dz);
+    const px = -dz / len, pz = dx / len;
+    const steps = Math.ceil(len / TUNNEL_STEP);
+    const pts = [];
+    for (let s = 0; s <= steps; s++) {
+      const t = s / steps;
+      const off = Math.sin(t * Math.PI * wave + phase) * amp + Math.sin(t * Math.PI * 2 + phase * 1.3) * amp * 0.3;
+      let pxn = A[0] + dx * t + px * off;
+      let pzn = A[1] + dz * t + pz * off;
+      if (s > 0 && s < steps) {
+        pxn = Math.max(-S + 8, Math.min(S - 8, pxn));
+        pzn = Math.max(-S + 8, Math.min(S - 8, pzn));
+      }
+      pts.push([pxn, pzn]);
+    }
+    tunnelPaths.push(pts);
+  }
+}
+
+function carveTube(cx, cy, cz, topCap) {
+  const ix = Math.round(cx), iy = Math.round(cy), iz = Math.round(cz);
+  for (let dx = -1; dx <= 1; dx++)
+    for (let dy = -1; dy <= 1; dy++)
+      for (let dz = -1; dz <= 1; dz++) {
+        const y = iy + dy;
+        if (y < 1 || y >= topCap) continue;
+        setBlock(ix + dx, y, iz + dz, AIR);
+      }
+}
+
+function smoothstep(u) {
+  return u * u * (3 - 2 * u);
+}
+
+function tubeDepth(pos, total, cx, cz) {
+  const u = pos / total;
+  const R = Math.min(0.5, TUNNEL_RAMP / total);
+  let f;
+  if (u < R) f = smoothstep(u / R);
+  else if (u > 1 - R) f = smoothstep((1 - u) / R);
+  else f = 1;
+  const full = TUNNEL_DEPTH + (fbm(cx * 0.008 + 123, cz * 0.008 + 123, seed + 4567) * 2 - 1) * TUNNEL_DEPTH_VAR;
+  return Math.max(1, f * full);
+}
+
+function carveTunnels() {
+  for (const pts of tunnelPaths) {
+    const n = pts.length - 1;
+    let totalLen = 0;
+    for (let k = 0; k < n; k++) totalLen += Math.hypot(pts[k + 1][0] - pts[k][0], pts[k + 1][1] - pts[k][1]);
+    let pos = 0;
+    for (let k = 0; k < n; k++) {
+      const ax = pts[k][0], az = pts[k][1];
+      const bx = pts[k + 1][0], bz = pts[k + 1][1];
+      const segLen = Math.hypot(bx - ax, bz - az);
+      const steps = Math.ceil(segLen / 1.6) + 1;
+      for (let s = 0; s <= steps; s++) {
+        const cx = ax + (bx - ax) * (s / steps);
+        const cz = az + (bz - az) * (s / steps);
+        const h = heightAt(Math.round(cx), Math.round(cz));
+        if (h > WATER_LEVEL + 1) {
+          const depth = tubeDepth(pos, totalLen, cx, cz);
+          const raw = h - depth;
+          const cy = depth <= 2 ? Math.max(1, raw) : Math.max(2, Math.min(h - 2, raw));
+          carveTube(cx, cy, cz, depth <= 2 ? h + 1 : h);
+        }
+        if (s < steps) pos += segLen / steps;
+      }
+    }
+  }
+}
+
+function carveRooms() {
+  const rw = (ROOM_W - 1) / 2, rh = (ROOM_H - 1) / 2;
+  for (const pts of tunnelPaths) {
+    const n = pts.length - 1;
+    let totalLen = 0;
+    for (let k = 0; k < n; k++) totalLen += Math.hypot(pts[k + 1][0] - pts[k][0], pts[k + 1][1] - pts[k][1]);
+    let placed = 0;
+    for (let c = 0; c < ROOMS_PER_TUNNEL * 4 && placed < ROOMS_PER_TUNNEL; c++) {
+      const u = 0.15 + 0.7 * ((c + 0.5) / (ROOMS_PER_TUNNEL * 4));
+      const target = u * totalLen;
+      let pos = 0, cx = 0, cz = 0;
+      for (let k = 0; k < n; k++) {
+        const ax = pts[k][0], az = pts[k][1];
+        const bx = pts[k + 1][0], bz = pts[k + 1][1];
+        const segLen = Math.hypot(bx - ax, bz - az);
+        if (pos + segLen >= target || k === n - 1) {
+          const t = Math.min(1, (target - pos) / segLen);
+          cx = ax + (bx - ax) * t;
+          cz = az + (bz - az) * t;
+          break;
+        }
+        pos += segLen;
+      }
+      const h = heightAt(Math.round(cx), Math.round(cz));
+      if (h <= WATER_LEVEL + 1) continue;
+      const cy = Math.max(rh + 1, Math.min(h - rh - 1, h - tubeDepth(target, totalLen, cx, cz)));
+      const iy = Math.round(cy);
+      const ix = Math.round(cx), iz = Math.round(cz);
+      for (let dx = -rw; dx <= rw; dx++)
+        for (let dz = -rw; dz <= rw; dz++)
+          for (let dy = -rh; dy <= rh; dy++) {
+            if (Math.abs(dx) === 3 && Math.abs(dz) === 3) continue;
+            const y = iy + dy;
+            if (y < 1 || y >= h) continue;
+            setBlock(ix + dx, y, iz + dz, AIR);
+          }
+      placed++;
+    }
+  }
+}
+
+function stairEntrances() {
+  const flights = [];
+  for (const pts of tunnelPaths) {
+    const n = pts.length - 1;
+    let totalLen = 0;
+    for (let k = 0; k < n; k++) totalLen += Math.hypot(pts[k + 1][0] - pts[k][0], pts[k + 1][1] - pts[k][1]);
+    const arcLen = (a, b) => {
+      let s = 0;
+      for (let k = a; k < b; k++) s += Math.hypot(pts[k + 1][0] - pts[k][0], pts[k + 1][1] - pts[k][1]);
+      return s;
+    };
+    for (const dir of [0, pts.length - 1]) {
+      let pi = dir, walked = 0;
+      while (pi >= 0 && pi < pts.length && walked < pts.length) {
+        if (heightAt(Math.round(pts[pi][0]), Math.round(pts[pi][1])) > WATER_LEVEL + 1) break;
+        pi += dir === 0 ? 1 : -1;
+        walked++;
+      }
+      if (pi < 0 || pi >= pts.length) continue;
+      const ax = pts[pi][0], az = pts[pi][1];
+      if (Math.abs(ax) > WORLD_RADIUS || Math.abs(az) > WORLD_RADIUS) continue;
+      const nx = Math.max(0, Math.min(pts.length - 1, dir === 0 ? pi + 1 : pi - 1));
+      const bx = pts[nx][0], bz = pts[nx][1];
+      const dLen = Math.hypot(bx - ax, bz - az);
+      if (dLen < 0.5) continue;
+      const dx = (bx - ax) / dLen, dz = (bz - az) / dLen;
+      const mx = -dz, mz = dx;
+      const pos0 = dir === 0 ? arcLen(0, pi) : totalLen - arcLen(pi, n);
+      const cells = [];
+      let prevFloor = null, prevCell = null, prevH = null;
+      const used = new Set();
+      for (let k = 0; k <= STAIR_STEPS; k++) {
+        const cx = Math.round(ax + dx * k);
+        const cz = Math.round(az + dz * k);
+        if (prevCell && cx === prevCell[0] && cz === prevCell[1]) continue;
+        prevCell = [cx, cz];
+        const h = heightAt(cx, cz);
+        if (h <= WATER_LEVEL + 1) break;
+        if (prevH !== null && h - prevH > 4) break;
+        prevH = h;
+        const pos = dir === 0 ? pos0 + k : pos0 - k;
+        const depth = tubeDepth(Math.max(0, Math.min(pos, totalLen)), totalLen, cx, cz);
+        let floor = Math.max(1, Math.round(h - depth - 1));
+        if (prevFloor !== null) {
+          floor = Math.max(floor, prevFloor - 1);
+          if (floor > prevFloor) floor = prevFloor;
+        }
+        prevFloor = floor;
+        for (let w = -1; w <= 1; w++) {
+          const wx = cx + Math.round(mx * w);
+          const wz = cz + Math.round(mz * w);
+          if (used.has(wx + "," + wz)) continue;
+          used.add(wx + "," + wz);
+          cells.push({ x: wx, z: wz, h, floor });
+        }
+      }
+      flights.push(cells);
+    }
+  }
+  for (const cells of flights)
+    for (const c of cells)
+      for (let y = c.h; y > c.floor; y--) setBlock(c.x, y, c.z, AIR);
+  for (const cells of flights)
+    for (const c of cells) setBlock(c.x, c.floor, c.z, PLANKS);
+}
+
 function generateWorld() {
   world = worlds.over;
   worlds.over.clear();
@@ -345,6 +569,7 @@ function generateWorld() {
   basinThresh = vals[(vals.length * 0.85) | 0];
   basinMax = vals[vals.length - 1];
   generateRivers();
+  generateTunnels();
   const fvals = [];
   for (let x = -WORLD_RADIUS; x <= WORLD_RADIUS; x += 2)
     for (let z = -WORLD_RADIUS; z <= WORLD_RADIUS; z += 2)
@@ -370,6 +595,9 @@ function generateWorld() {
       }
     }
   }
+  carveTunnels();
+  carveRooms();
+  stairEntrances();
 }
 
 function generateEnd() {
