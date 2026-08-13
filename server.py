@@ -116,4 +116,4 @@ class Handler(BaseHTTPRequestHandler):
 if __name__ == "__main__":
     print("MiniCraft running at http://localhost:%d/" % PORT)
     print("World saves are written to %s" % SAVE_DIR)
-    ThreadingHTTPServer(("127.0.0.1", PORT), Handler).serve_forever()
+    ThreadingHTTPServer(("0.0.0.0", PORT), Handler).serve_forever()
