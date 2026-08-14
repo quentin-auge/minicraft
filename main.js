@@ -880,12 +880,15 @@ let volcanoes = [];
 function generateVolcanoes() {
   volcanoes = [];
   const S = WORLD_RADIUS;
-  const count = 2 + Math.floor(hash2(0, 0, netherSeed + 901) * 2);
+  const count = 2;   // exactly two volcanos per Nether map
+  const dir0 = hash2(0, 0, netherSeed + 911) * Math.PI * 2;
   for (let i = 0; i < count; i++) {
     const radius = 70 + Math.floor(hash2(i, 2, netherSeed + 913) * 16);
     const minDist = radius + 6;
     const maxDist = Math.min(S - 2, Math.max(minDist + 4, S - 6));
-    const ang = hash2(i, 0, netherSeed + 911) * Math.PI * 2;
+    // Second volcano sits on the opposite side of the map so the two cones are
+    // always clearly distinct instead of drifting together and merging.
+    const ang = i === 1 ? dir0 + Math.PI : dir0;
     const rad = minDist + hash2(i, 1, netherSeed + 912) * (maxDist - minDist);
     let vx = Math.round(Math.cos(ang) * rad);
     let vz = Math.round(Math.sin(ang) * rad);
@@ -958,16 +961,16 @@ function fillVolcanoShafts() {
   }
 }
 
-// Ten straight 4x4 tunnels per volcano, one per heading spread around the
-// cone at ten different heights (interleaved so neighbouring tunnels are never
-// at the same level), each running dead-straight from a mouth on the flank in
-// to the central lava shaft. The surface is flattened into a level apron at
-// each mouth and every entrance is closed with a strict 6x6 glowstone square
-// ring around the 4x4 opening.
+// Twelve straight 4x4 tunnels per volcano, one per heading spread around the
+// cone at twelve different heights (interleaved so neighbouring tunnels are
+// never at the same level), each running dead-straight from a mouth on the
+// flank in to the central lava shaft. The surface is flattened into a level
+// apron at each mouth and every entrance is closed with a strict 6x6 glowstone
+// square ring around the 4x4 opening.
 function volcanoTunnels() {
   const w = worlds.nether;
   const S = WORLD_RADIUS;
-  const TUNNELS = 10;
+  const TUNNELS = 12;
   for (const v of volcanoes) {
     const hLo = v.baseY + 6;
     const hHi = v.rim * 0.8;

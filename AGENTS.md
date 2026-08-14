@@ -330,7 +330,9 @@ small Python server for saving/loading worlds.
   `nearestNetherRiver`) are carved down to the fire so they fill as blue-fire
   rivers, and steep cliffs that drop into the sea get vertical blue-fire
   streaks pouring down their faces. Immense fire-spewing volcanoes
-  (`generateVolcanoes`/`volcanoHeightAt`, 2–3 per world placed far from spawn
+  (`generateVolcanoes`/`volcanoHeightAt`, exactly 2 per world forced onto
+  opposite sides of the map so the cones stay clearly distinct instead of drifting
+  together, each placed far from spawn
   with a spawn clearance that scales with each cone's radius, radius 70–85 —
   bases span ~the whole 193-block world, plateau rim at `peak * 0.85` with
   peak 260–284, crater
@@ -341,9 +343,9 @@ small Python server for saving/loading worlds.
   reads as a glowing fire lake. A central BLUEFIRE shaft (`fillVolcanoShafts`)
   as wide as the crater (`craterR`) runs up the middle of each volcano from
   the ground base (`baseY`) all the way to the crater, a big swimmable lava
-  chimney. Ten straight 4×4 tunnels (`volcanoTunnels`, spaced 36° apart) are
+  chimney. Twelve straight 4×4 tunnels (`volcanoTunnels`, spaced 30° apart) are
   dug dead-straight in to the lava shaft from mouths spread across every height
-  of the cone — each tunnel gets its own level, interleaved via `(k*7) % 10`
+  of the cone — each tunnel gets its own level, interleaved via `(k*7) % 12`
   between `baseY + 6` and `rim * 0.8` so neighbouring tunnels are never at the
   same height, and every mouth bores horizontally to the fire column. Each mouth
   sits at the outermost point on its heading where the flank clears the doorway
