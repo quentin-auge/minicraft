@@ -121,8 +121,8 @@ small Python server for saving/loading worlds.
   Nether portal), BLUEFIRE (glowing blue-fire liquid, unlit `MeshBasicMaterial`
   face materials whose color shimmers in the main loop, `placeable: true` so it
   can sit in the hotbar and be placed in the Nether/End),
-  NETHERRACK (dark blue Nether rock, in the hotbar after OBSIDIAN,
-  `placeable: true`), SOULSAND (dark blue-grey Nether beach block,
+  NETHERRACK (dark grey Nether rock, in the hotbar after OBSIDIAN,
+  `placeable: true`), SOULSAND (dark grey Nether beach block,
   `placeable: false`),
   GLOWSTONE (the multicolour portal block: solid, `placeable: true`, in the
   hotbar, drawn unlit via `basicFace` so it shines at full
@@ -308,13 +308,13 @@ small Python server for saving/loading worlds.
   freezes the main thread (compositor animations survive the stall, hiding the
   hitch perfectly), then fades out (600 ms) over the freshly generated
   dimension.
-- **The Nether**: a hostile third dimension under an orange/red/blue sky — a
+- **The Nether**: a hostile third dimension under a dark grey sky — a
   big back-side sky dome (`skyDome`, follows the camera so the horizon never
-  moves, `fog: false` so it stays clear past the fog; deep blue zenith with
-  stars, red band, burning orange horizon, dark smoky below eye level) with a
-  glowing sun disc (`netherSun`, orbits slowly as the dome rotates), plus
-  `setDimensionEnv` warm-orange sun light, blue-ish hemisphere fill and dark
-  smoky purple fog. Rock mountains (`generateNether`, fbm height ~12–84) rise
+  moves, `fog: false` so it stays clear past the fog; deep grey zenith with
+  stars, lighter grey band and horizon) with a
+  pale grey sun disc (`netherSun`, orbits slowly as the dome rotates), plus
+  `setDimensionEnv` neutral grey-white sun light and hemisphere fill and dark
+  grey fog. Rock mountains (`generateNether`, fbm height ~12–84) rise
   out of a glowing blue-fire sea (`NETHER_FIRE_LEVEL`) where the old lava sea
   used to be (the block id 16 stays the same, so saves keep loading; it's just
   re-skinned and renamed Blue Fire). Winding canyons (`generateNetherRivers`/
@@ -353,12 +353,13 @@ small Python server for saving/loading worlds.
   into uneven tongues), and a constant eruption fountain
   (`updateVolcanoEmbers`/`spawnVolcanoEmber`, ~340 additive `THREE.Points`
   launched up out of the crater fire, arcing and splashing back down; torn
-  down on leaving the Nether). Everything in the Nether is dark blue: terrain
-  is NETHERRACK (dark blue rock, placeable, in the hotbar) instead of plain
-  STONE; the top block of columns just at the fire line is dark blue-grey
+  down on leaving the Nether). Everything in the Nether is dark grey: terrain
+  is NETHERRACK (dark grey rock, placeable, in the hotbar) instead of plain
+  STONE; the top block of columns just at the fire line is dark grey
   SOULSAND, giving the sea a grim black beach;
-  and `setDimensionEnv` uses cool blue-white sun light with dark blue
-  fog so the whole dimension reads blue. Rising blue embers (`updateNetherEmbers`/`ensureEmbers`, ~220 additive
+  and `setDimensionEnv` uses neutral grey-white sun light with dark grey
+  fog so the whole dimension reads grey — neutral, so glowstone
+  colours stand out untinted. Rising blue embers (`updateNetherEmbers`/`ensureEmbers`, ~220 additive
   `THREE.Points` spawned only over the fire sea, drifting upward with a sway,
   fading
   and respawning every ~2–5 s; torn down on leaving the Nether) float up off

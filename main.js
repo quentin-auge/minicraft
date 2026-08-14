@@ -215,19 +215,19 @@ const TEX = {
     for (let i = 0; i < 5; i++) ctx.fillRect(Math.random() * 15, Math.random() * 15, 1, 1);
   }),
   netherrack: canvasTex((ctx) => {
-    ctx.fillStyle = "#282c52"; ctx.fillRect(0, 0, 16, 16);
-    pxNoise(ctx, [40, 44, 82], 26);
+    ctx.fillStyle = "#33343a"; ctx.fillRect(0, 0, 16, 16);
+    pxNoise(ctx, [48, 49, 55], 26);
     ctx.fillStyle = "rgba(0,0,0,0.28)";
     for (let i = 0; i < 8; i++) ctx.fillRect(Math.random() * 14, Math.random() * 14, 2 + Math.random() * 2, 2 + Math.random() * 2);
-    ctx.fillStyle = "rgba(70,110,255,0.3)";
+    ctx.fillStyle = "rgba(120,120,130,0.3)";
     for (let i = 0; i < 6; i++) ctx.fillRect(Math.random() * 15, Math.random() * 15, 1, 1);
   }),
   soulsand: canvasTex((ctx) => {
-    ctx.fillStyle = "#454a6e"; ctx.fillRect(0, 0, 16, 16);
-    pxNoise(ctx, [69, 74, 110], 18);
+    ctx.fillStyle = "#56575e"; ctx.fillRect(0, 0, 16, 16);
+    pxNoise(ctx, [82, 83, 92], 18);
     ctx.fillStyle = "rgba(0,0,0,0.28)";
     for (let i = 0; i < 10; i++) ctx.fillRect(Math.random() * 15, Math.random() * 15, 1, 1);
-    ctx.fillStyle = "rgba(30,36,70,0.5)";
+    ctx.fillStyle = "rgba(30,30,36,0.5)";
     for (let i = 0; i < 4; i++) ctx.fillRect(Math.random() * 14, Math.random() * 14, 3, 1);
   }),
   glowstone: canvasTex((ctx) => drawGlowMesh(ctx, GLOW_PALETTES[2])),
@@ -837,7 +837,7 @@ function generateEnd() {
 }
 
 // ---------------------------------------------------------------------------
-// The Nether: a hostile blue-fire dimension under an orange/red/blue sky.
+// The Nether: a hostile blue-fire dimension under a dark grey sky.
 // Immense fire-spewing volcanoes rise out of a glowing blue-fire sea; winding
 // canyons cut down to the fire, and blue fire streaks pour down the faces of
 // cliffs that drop into the sea.
@@ -1174,8 +1174,8 @@ scene.add(sun);
 const hemi = new THREE.HemisphereLight(0xbfd4ff, 0x5a6a4a, 0.75);
 scene.add(hemi);
 
-// The Nether sky: a big back-side dome painted with an orange/red/blue
-// gradient (deep blue zenith with stars, red band, burning orange horizon)
+// The Nether sky: a big back-side dome painted with a dark grey
+// gradient (deep grey zenith with stars, lighter grey band and horizon)
 // plus a glowing sun disc, all following the camera so the horizon never
 // moves. It's only visible in the Nether; the other dimensions keep flat
 // background colours.
@@ -1187,13 +1187,13 @@ const skyDome = new THREE.Mesh(
       c.width = c.height = 512;
       const ctx = c.getContext("2d");
       const g = ctx.createLinearGradient(0, 0, 0, 512);
-      g.addColorStop(0.0, "#0a1230");
-      g.addColorStop(0.38, "#1a1c5c");
-      g.addColorStop(0.58, "#3a2a92");
-      g.addColorStop(0.72, "#5a3a80");
-      g.addColorStop(0.84, "#b04a4a");
-      g.addColorStop(0.92, "#ff7a3a");
-      g.addColorStop(1.0, "#101a38");
+      g.addColorStop(0.0, "#1b1b1f");
+      g.addColorStop(0.38, "#2c2c32");
+      g.addColorStop(0.58, "#393940");
+      g.addColorStop(0.72, "#47474f");
+      g.addColorStop(0.84, "#5c5c66");
+      g.addColorStop(0.92, "#70707a");
+      g.addColorStop(1.0, "#1b1b1f");
       ctx.fillStyle = g; ctx.fillRect(0, 0, 512, 512);
       for (let i = 0; i < 110; i++) {
         ctx.fillStyle = `rgba(255,255,255,${0.35 + Math.random() * 0.6})`;
@@ -1214,7 +1214,7 @@ skyDome.visible = false;
 scene.add(skyDome);
 const netherSun = new THREE.Mesh(
   new THREE.CircleGeometry(55, 28),
-  new THREE.MeshBasicMaterial({ color: 0xff8a2e, fog: false, depthWrite: false, transparent: true, opacity: 0.95 })
+  new THREE.MeshBasicMaterial({ color: 0xcfcfd6, fog: false, depthWrite: false, transparent: true, opacity: 0.7 })
 );
 netherSun.position.set(0, 170, 500);
 skyDome.add(netherSun);
@@ -2852,11 +2852,11 @@ function setDimensionEnv() {
     hemi.color.setHex(0xbfd4ff); hemi.intensity = 0.45;
   } else if (dim === "nether") {
     skyDome.visible = true;
-    scene.background.setHex(0x0b1228);
-    scene.fog.color.setHex(0x131c3a);
+    scene.background.setHex(0x111114);
+    scene.fog.color.setHex(0x1c1c21);
     scene.fog.near = 20; scene.fog.far = 110;
-    sun.color.setHex(0x9fb4ff); sun.intensity = 0.85;
-    hemi.color.setHex(0x4a5ab8); hemi.intensity = 0.6;
+    sun.color.setHex(0xe8e8ea); sun.intensity = 0.6;
+    hemi.color.setHex(0x85858c); hemi.intensity = 0.55;
   } else {
     skyDome.visible = false;
     scene.background.setHex(0x87ceeb);
