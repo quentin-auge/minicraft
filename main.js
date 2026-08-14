@@ -288,7 +288,7 @@ function materialsFor(id) {
     case BLUEFIRE: return basicFace(TEX.bluefire);
     case NETHERRACK: return faceTex(TEX.netherrack);
     case SOULSAND: return faceTex(TEX.soulsand);
-    case GLOWSTONE: return basicFace(TEX.glowstone);
+    case GLOWSTONE: return basicFace(TEX.glowstone, { fog: false });
     case PORTAL: return faceTex(TEX.portal);
     default: return faceTex(TEX.dirt);
   }
@@ -1545,7 +1545,7 @@ function getTypeMats(id) {
 }
 const glowMats = new Map();   // glowstone variant -> shared material[6]
 function getGlowMats(v) {
-  if (!glowMats.has(v)) glowMats.set(v, basicFace(GLOW_TEX[v]));
+  if (!glowMats.has(v)) glowMats.set(v, basicFace(GLOW_TEX[v], { fog: false }));
   return glowMats.get(v);
 }
 function disposeChunkMeshes(meshes) {
