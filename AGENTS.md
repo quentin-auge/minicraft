@@ -125,14 +125,26 @@ small Python server for saving/loading worlds.
   `placeable: true`), SOULSAND (dark blue-grey Nether beach block,
   `placeable: false`), GLOWSTONE (glowing ice-blue Nether block rendered unlit via
   `basicFace` so it shines, `placeable: false`),
-  GREENSTONE (the green portal block: solid, `placeable: true`, in the hotbar,
-  drawn unlit via `basicFace` like glowstone so it shines at full strength no
-  matter how far you stand from it, and it casts a steady pool of green light:
+  GREENSTONE (the multicolour portal block: solid, `placeable: true`, in the
+  hotbar, drawn unlit via `basicFace` like glowstone so it shines at full
+  strength no matter how far you stand from it. It comes in seven colours —
+  red, blue, green, orange, turquoise, yellow, purple (`GREEN_PALETTES`,
+  one tile texture per colour in `GREEN_TEX`); placing a stone rolls a random
+  colour, but if any existing greenstone sits within 10 blocks it inherits that
+  nearest stone's colour (`greenVariantNear`), so builds grow into single-colour
+  clusters. Each stone's colour is stored per block per dimension
+  (`greenVariants`/`worldGreenVariants`, persisted in save format v6; old saves
+  are backfilled with clustered colours on load), rendered per-chunk as one
+  `InstancedMesh` per colour (`getGreenMats`, keyed `greenstone_v`), and the
+  auto-built volcano door rings each get one random colour of their own. Each
+  cluster casts a steady pool of light in its own colour:
   greenstones are merged into stable clusters (`recomputeGreenClusters`, a whole
-  6×6 volcano door ring shares one cluster) whose centroids are recomputed only
-  when blocks change, and a fixed pool of green `PointLight`s
+  6×6 volcano door ring shares one cluster, and each cluster's colour is the
+  majority variant among its stones) whose centroids are recomputed only
+  when blocks change, and a fixed pool of `PointLight`s
   (`syncGreenLights`/`clearGreenLights`, `GREEN_LIGHT_MAX` 16, intensity 60,
-  `distance: 12`, decay 1) is assigned to the clusters nearest the player — the
+  `distance: 12`, decay 1, colour set from `GREEN_PALETTES[v].glow`) is
+  assigned to the clusters nearest the player — the
   assignment re-evaluates at most every `GREEN_LIGHT_REFRESH` (0.5 s) and only
   when the player crosses a chunk, and each light keeps its current cluster
   while that cluster stays among the nearest lit ones, so the glow never jumps
@@ -423,13 +435,15 @@ small Python server for saving/loading worlds.
     the source and destination positions (`spawnEndermanBurst`, reusing the
     `bursts` effect system). Deleted with the dragon when leaving the End /
     resetting dims; spawned fresh every End entry.
-- **Save/load**: binary format (`SAVE_MAGIC`, version 4) capturing world
+- **Save/load**: binary format (`SAVE_MAGIC`, version 6) capturing world
   blocks (over/end/nether), dim, seeds (over/end/nether), player pos/yaw/pitch,
   fly state, hotbar selection,
-  placed-flowers' stored color/rotation (`placedFlowers`; extra per-entry byte
-  pair in v3, the nether dim/seed/blocks added in v4; older v1/v2/v3 saves still
-  load, and v5 saves from the briefly-lived torch era are tolerated and read
-  past their torch entries).
+  placed-flowers' stored color/rotation (`placedFlowers`) and per-greenstone
+  colour entries (`greenVariants`, one per dimension, in v6); extra per-entry byte
+  pair for flowers in v3, the nether dim/seed/blocks added in v4; older v1/v2/v3
+  saves still load, and v5 saves from the briefly-lived torch era are tolerated
+  and read past their torch entries. Saves older than v6 have their greenstone
+  colours backfilled (clustered) on load.
   Backends: File System Access API (`pickSaveFile`/`saveToFile`),
   IndexedDB fallback, and the server API (`apiLoad`/`apiList`). Autosave
   via `queueSave()`, world regen resets to new seeds (`regenerate`).

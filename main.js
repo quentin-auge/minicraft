@@ -28,6 +28,21 @@ const BLOCK_INFO = {
   [GREENSTONE]:{ name: "Greenstone",  solid: true, opaque: true, placeable: true },
 };
 
+// Greenstone comes in seven colours (red, blue, green, orange, turquoise,
+// yellow, purple). Each palette drives both the block texture and the colour
+// of the light the stone casts. Placed stones cluster: a block placed within
+// 10 blocks of an existing one inherits its colour, otherwise it rolls random.
+const GREEN_PALETTES = [
+  { base: "#5c1020", noise: [92, 16, 32],  bright: "#ff3d5c", dark: "rgba(40,4,12,0.35)",  hi: "rgba(255,214,226,0.9)", glow: 0xff3d5c },
+  { base: "#10325c", noise: [16, 50, 92],  bright: "#3d8aff", dark: "rgba(4,12,40,0.35)",   hi: "rgba(214,232,255,0.9)", glow: 0x3d8aff },
+  { base: "#0e5c1c", noise: [14, 92, 28],  bright: "#3dff7a", dark: "rgba(3,28,9,0.35)",    hi: "rgba(210,255,220,0.9)", glow: 0x3dff7a },
+  { base: "#5c2e0e", noise: [92, 46, 14],  bright: "#ffa03d", dark: "rgba(40,16,3,0.35)",   hi: "rgba(255,233,210,0.9)", glow: 0xffa03d },
+  { base: "#0e5c4a", noise: [14, 92, 74],  bright: "#3dffe8", dark: "rgba(3,40,30,0.35)",   hi: "rgba(210,255,246,0.9)", glow: 0x3dffe8 },
+  { base: "#5c4a0e", noise: [92, 74, 14],  bright: "#ffe53d", dark: "rgba(40,30,3,0.35)",   hi: "rgba(255,251,214,0.9)", glow: 0xffe53d },
+  { base: "#3a0e5c", noise: [58, 14, 92],  bright: "#b23dff", dark: "rgba(24,3,40,0.35)",   hi: "rgba(240,214,255,0.9)", glow: 0xb23dff },
+];
+const GREEN_VARIANT_COUNT = GREEN_PALETTES.length;
+
 // ---------------------------------------------------------------------------
 // Deterministic noise
 // ---------------------------------------------------------------------------
@@ -83,6 +98,16 @@ const makeTex = (base, amount = 24) => canvasTex((ctx) => {
   ctx.fillRect(0, 0, 16, 16);
   pxNoise(ctx, base, amount);
 });
+function drawGreenMesh(ctx, p) {
+  ctx.fillStyle = p.base; ctx.fillRect(0, 0, 16, 16);
+  pxNoise(ctx, p.noise, 32);
+  ctx.fillStyle = p.bright;
+  for (let i = 0; i < 9; i++) ctx.fillRect(Math.random() * 15, Math.random() * 15, 1 + Math.random(), 1 + Math.random());
+  ctx.fillStyle = p.dark;
+  for (let i = 0; i < 5; i++) ctx.fillRect(Math.random() * 14, Math.random() * 14, 2, 2);
+  ctx.fillStyle = p.hi;
+  ctx.fillRect(6, 7, 2, 2); ctx.fillRect(11, 3, 1, 1); ctx.fillRect(4, 12, 1, 1);
+}
 
 const TEX = {
   grass_top: canvasTex((ctx) => {
@@ -216,16 +241,7 @@ const TEX = {
     ctx.fillStyle = "rgba(235,248,255,0.9)";
     ctx.fillRect(6, 7, 2, 2); ctx.fillRect(11, 3, 1, 1); ctx.fillRect(4, 12, 1, 1);
   }),
-  greenstone: canvasTex((ctx) => {
-    ctx.fillStyle = "#0e5c1c"; ctx.fillRect(0, 0, 16, 16);
-    pxNoise(ctx, [14, 92, 28], 32);
-    ctx.fillStyle = "#3dff7a";
-    for (let i = 0; i < 9; i++) ctx.fillRect(Math.random() * 15, Math.random() * 15, 1 + Math.random(), 1 + Math.random());
-    ctx.fillStyle = "rgba(3,28,9,0.35)";
-    for (let i = 0; i < 5; i++) ctx.fillRect(Math.random() * 14, Math.random() * 14, 2, 2);
-    ctx.fillStyle = "rgba(210,255,220,0.9)";
-    ctx.fillRect(6, 7, 2, 2); ctx.fillRect(11, 3, 1, 1); ctx.fillRect(4, 12, 1, 1);
-  }),
+  greenstone: canvasTex((ctx) => drawGreenMesh(ctx, GREEN_PALETTES[2])),
   flower: canvasTex((ctx) => {
     const petals = ["rgb(232,30,52)", "rgb(56,106,252)", "rgb(248,188,16)", "rgb(16,204,186)", "rgb(244,132,34)", "rgb(160,80,224)", "rgb(232,30,52)", "rgb(56,106,252)"];
     ctx.clearRect(0, 0, 16, 16);
@@ -248,6 +264,7 @@ const TEX = {
     ctx.fillRect(7, 4, 2, 8);
   }),
 };
+const GREEN_TEX = GREEN_PALETTES.map((p) => canvasTex((ctx) => drawGreenMesh(ctx, p)));
 
 function material(map, opts = {}) {
   return new THREE.MeshLambertMaterial({ map, ...opts });
@@ -353,6 +370,16 @@ const getBlock = (x, y, z) => world.get(key(x, y, z)) || AIR;
 
 const placedFlowers = new Map();
 
+// Greenstone colour per block, kept per dimension (block keys don't include the
+// dimension, and the Nether/End regenerate on every entry so their variants
+// are ephemeral anyway).
+const greenVariants = { over: new Map(), end: new Map(), nether: new Map() };
+const worldGreenVariants = new WeakMap([
+  [worlds.over, greenVariants.over],
+  [worlds.end, greenVariants.end],
+  [worlds.nether, greenVariants.nether],
+]);
+
 // Tracks every PORTAL/OBSIDIAN block so portal scans iterate only real frame
 // blocks instead of brute-forcing an 8-block-radius box cell by cell.
 const portalBlockSets = { over: new Set(), end: new Set(), nether: new Set() };
@@ -392,15 +419,18 @@ function setBlock(x, y, z, id) {
   const k = key(x, y, z);
   const pb = worldPortalSets.get(world);
   const gs = worldGreenstoneSets.get(world);
+  const gv = worldGreenVariants.get(world);
   const wasG = gs.has(k);
   if (id === AIR) {
     world.delete(k);
     pb.delete(k);
     gs.delete(k);
+    gv.delete(k);
   } else {
     world.set(k, id);
     if (id === PORTAL || id === OBSIDIAN) pb.add(k); else pb.delete(k);
     if (id === GREENSTONE) gs.add(k); else gs.delete(k);
+    if (id !== GREENSTONE) gv.delete(k);
   }
   if (id !== FLOWER) placedFlowers.delete(k);
   if (wasG !== gs.has(k)) { recomputeGreenClusters(); syncGreenLights(); }
@@ -726,6 +756,7 @@ function generateWorld() {
   worlds.over.clear();
   portalBlockSets.over.clear();
   greenstoneBlockSets.over.clear();
+  greenVariants.over.clear();
   waterScale = 1 + (hash2(0, 0, seed + 333) * 4 | 0);
   waterDepth = 1 + (hash2(0, 0, seed + 444) * 4 | 0);
   basinFreq = 0.007 / Math.sqrt(waterScale);
@@ -810,6 +841,7 @@ function generateEnd() {
   w.clear();
   portalBlockSets.end.clear();
   greenstoneBlockSets.end.clear();
+  greenVariants.end.clear();
   const R = END_PLATFORM_R;
   for (let x = -R; x <= R; x++)
     for (let z = -R; z <= R; z++)
@@ -964,14 +996,18 @@ function volcanoTunnels() {
         }
       }
       // Strict 6x6 greenstone square ring (1 thick) around the 4x4 opening.
+      // Each ring is one colour so every tunnel mouth glows a single hue.
+      const doorV = Math.floor(Math.random() * GREEN_VARIANT_COUNT);
       const pX = v.x + Math.round(dx * dOut);
       const pZ = v.z + Math.round(dz * dOut);
       const frame = (off, yy) => {
         const wx = pX + Math.round(mx * off);
         const wz = pZ + Math.round(mz * off);
         if (wx < -S || wx > S || wz < -S || wz > S) return;
-        w.set(key(wx, yy, wz), GREENSTONE);
-        greenstoneBlockSets.nether.add(key(wx, yy, wz));
+        const k = key(wx, yy, wz);
+        w.set(k, GREENSTONE);
+        greenstoneBlockSets.nether.add(k);
+        greenVariants.nether.set(k, doorV);
       };
       for (let off = -3; off <= 2; off++) { frame(off, plat); frame(off, plat + 5); }
       for (let yy = plat; yy <= plat + 5; yy++) { frame(-3, yy); frame(2, yy); }
@@ -1074,6 +1110,7 @@ function generateNether() {
   w.clear();
   portalBlockSets.nether.clear();
   greenstoneBlockSets.nether.clear();
+  greenVariants.nether.clear();
   const S = WORLD_RADIUS;
   generateNetherRivers();
   generateVolcanoes();
@@ -1361,13 +1398,14 @@ const GREEN_LIGHT_DIST = Math.ceil(RENDER_DIST * CHUNK * Math.SQRT2);
 const GREEN_LIGHT_MAX = 16;
 const GREEN_LIGHT_CLUSTER = GREEN_LIGHT_RADIUS * 0.7;
 const GREEN_LIGHT_REFRESH = 0.5;
-let greenClusters = [];      // [{x, y, z}] centroid of each greenstone cluster
+let greenClusters = [];      // [{x, y, z, v}] centroid + dominant colour of each cluster
 let greenLights = [];        // pooled PointLights, each { cur: clusterIdx|-1, light }
 let greenLightT = 0;         // countdown until the next light re-assignment
 let greenLightCx = 0, greenLightCz = 0;  // chunk the assignment was last made for
 
 function recomputeGreenClusters() {
   const set = worldGreenstoneSets.get(world);
+  const gv = worldGreenVariants.get(world);
   greenClusters = [];
   greenLightT = 0;
   greenLightCx = greenLightCz = Infinity;
@@ -1381,12 +1419,19 @@ function recomputeGreenClusters() {
       const mx = g.sx / g.n - x, my = g.sy / g.n - y, mz = g.sz / g.n - z;
       if (mx * mx + my * my + mz * mz < GREEN_LIGHT_CLUSTER * GREEN_LIGHT_CLUSTER) { gi = i; break; }
     }
-    if (gi < 0) { groups.push({ n: 0, sx: 0, sy: 0, sz: 0 }); gi = groups.length - 1; }
+    if (gi < 0) { groups.push({ n: 0, sx: 0, sy: 0, sz: 0, votes: {} }); gi = groups.length - 1; }
     const g = groups[gi];
     g.n++; g.sx += x; g.sy += y; g.sz += z;
+    const v = gv.get(k);
+    if (v !== undefined) g.votes[v] = (g.votes[v] || 0) + 1;
   }
   for (const g of groups) {
-    greenClusters.push({ x: g.sx / g.n + 0.5, y: g.sy / g.n + 0.5, z: g.sz / g.n + 0.5 });
+    let best = 2, bestN = -1;   // default to green on ties
+    for (let v = 0; v < GREEN_VARIANT_COUNT; v++) {
+      const n = g.votes[v] || 0;
+      if (n > bestN) { bestN = n; best = v; }
+    }
+    greenClusters.push({ x: g.sx / g.n + 0.5, y: g.sy / g.n + 0.5, z: g.sz / g.n + 0.5, v: best });
   }
 }
 
@@ -1418,7 +1463,11 @@ function syncGreenLights(dt = 0) {
     const L = greenLights[i];
     if (!L || L.cur < 0 || L.cur >= greenClusters.length) continue;
     for (let j = 0; j < want; j++) {
-      if (ranked[j][1] === L.cur) { active[L.cur] = 1; break; }
+      if (ranked[j][1] === L.cur) {
+        active[L.cur] = 1;
+        L.light.color.setHex(GREEN_PALETTES[greenClusters[L.cur].v].glow);
+        break;
+      }
     }
   }
   // Then hand the remaining lights to the nearest unlit clusters.
@@ -1433,6 +1482,7 @@ function syncGreenLights(dt = 0) {
     if (slot < 0) break;
     const L = greenLights[slot] || (greenLights[slot] = makeGreenLight());
     L.cur = ci;
+    L.light.color.setHex(GREEN_PALETTES[greenClusters[ci].v].glow);
     L.light.position.set(greenClusters[ci].x, greenClusters[ci].y - 0.15, greenClusters[ci].z);
     L.light.visible = true;
     active[ci] = 1;
@@ -1482,6 +1532,28 @@ function flowerAngleAt(x, y, z) {
   return p ? p.a : flowerAngle(x, z);
 }
 
+// A placed greenstone inherits the colour of the nearest greenstone within 10
+// blocks (so builds cluster by colour); otherwise it rolls a fresh random one.
+function greenVariantNear(x, y, z) {
+  const set = worldGreenstoneSets.get(world);
+  const gv = worldGreenVariants.get(world);
+  let best = -1, bestD = 100;
+  for (const k of set) {
+    const [ox, oy, oz] = keyXYZ(k);
+    const dx = ox - x, dy = oy - y, dz = oz - z;
+    const d2 = dx * dx + dy * dy + dz * dz;
+    if (d2 < bestD) {
+      const v = gv.get(k);
+      if (v !== undefined) { best = v; bestD = d2; }
+    }
+  }
+  return best >= 0 ? best : Math.floor(Math.random() * GREEN_VARIANT_COUNT);
+}
+function greenVariantAt(x, y, z) {
+  const v = worldGreenVariants.get(world).get(key(x, y, z));
+  return v === undefined ? 2 : v;   // default to green
+}
+
 // Chunked streaming renderer: the world (now 2x) is split into CHUNK-chunks
 // and only chunks within RENDER_DIST of the player are meshed and drawn.
 // Each chunk is one InstancedMesh per block type (only exposed faces), and
@@ -1495,6 +1567,11 @@ function chunkOf(v) { return Math.floor(v / CHUNK); }
 function getTypeMats(id) {
   if (!typeMats.has(id)) typeMats.set(id, materialsFor(id));
   return typeMats.get(id);
+}
+const greenMats = new Map();   // greenstone variant -> shared material[6]
+function getGreenMats(v) {
+  if (!greenMats.has(v)) greenMats.set(v, basicFace(GREEN_TEX[v]));
+  return greenMats.get(v);
 }
 function disposeChunkMeshes(meshes) {
   for (const mesh of meshes.values()) { scene.remove(mesh); mesh.geometry.dispose(); }
@@ -1513,12 +1590,17 @@ function rebuildChunk(cx, cz) {
   const counts = {};
   const exposed = [];
   const flowers = [];
+  const greens = [];
   for (let x = x0; x <= x1; x++)
     for (let z = z0; z <= z1; z++) {
       for (let y = 0; y <= MAX_Y; y++) {
         const id = getBlock(x, y, z);
         if (id === AIR || !BLOCK_INFO[id]) continue;
         if (id === FLOWER) { flowers.push([x, y, z]); continue; }
+        if (id === GREENSTONE) {
+          if (isExposed(x, y, z)) greens.push([x, y, z]);
+          continue;
+        }
         if (!isExposed(x, y, z)) continue;
         counts[id] = (counts[id] || 0) + 1;
         exposed.push([x, y, z, id]);
@@ -1566,6 +1648,28 @@ function rebuildChunk(cx, cz) {
       mesh.computeBoundingSphere();
       scene.add(mesh);
       meshes.set("flower_" + v, mesh);
+    }
+  }
+  if (greens.length) {
+    const perVariant = [];
+    for (let v = 0; v < GREEN_VARIANT_COUNT; v++) perVariant.push([]);
+    for (const [gx, gy, gz] of greens) perVariant[greenVariantAt(gx, gy, gz)].push([gx, gy, gz]);
+    for (let v = 0; v < GREEN_VARIANT_COUNT; v++) {
+      const list = perVariant[v];
+      if (!list.length) continue;
+      const mesh = new THREE.InstancedMesh(boxGeo, getGreenMats(v), list.length);
+      let i = 0;
+      for (const [gx, gy, gz] of list) {
+        dummy.position.set(gx + 0.5, gy + 0.5, gz + 0.5);
+        dummy.rotation.set(0, 0, 0);
+        dummy.scale.set(1, 1, 1);
+        dummy.updateMatrix();
+        mesh.setMatrixAt(i++, dummy.matrix);
+      }
+      mesh.instanceMatrix.needsUpdate = true;
+      mesh.computeBoundingSphere();
+      scene.add(mesh);
+      meshes.set("greenstone_" + v, mesh);
     }
   }
   chunkMeshes.set(ck, meshes);
@@ -2175,8 +2279,9 @@ function placeBlock(id) {
     const under = getBlock(px, py - 1, pz);
     if ((under === WATER || under === BLUEFIRE) && id !== under) return;
   }
-  setBlock(px, py, pz, id);
   if (id === FLOWER) placedFlowers.set(key(px, py, pz), { v: randomFlowerVariant(), a: Math.random() * Math.PI * 2 });
+  if (id === GREENSTONE) worldGreenVariants.get(world).set(key(px, py, pz), greenVariantNear(px, py, pz));
+  setBlock(px, py, pz, id);
   refreshBlocks([[px, py, pz]]);
   queueSave();
 }
@@ -4199,11 +4304,12 @@ function serialize() {
   const over = worlds.over, end = worlds.end, nether = worlds.nether;
   const on = count(over), en = count(end), nn = count(nether);
   const m = placedFlowers.size;
-  const buf = new ArrayBuffer(105 + (on + en + nn) * 4 + m * 5);
+  const gov = greenVariants.over.size, gev = greenVariants.end.size, gnv = greenVariants.nether.size;
+  const buf = new ArrayBuffer(117 + (on + en + nn) * 4 + m * 5 + (gov + gev + gnv) * 4);
   const dv = new DataView(buf);
   let o = 0;
   new Uint8Array(buf, o, 9).set(SAVE_MAGIC); o += 9;
-  dv.setUint8(o++, 4); // format version
+  dv.setUint8(o++, 6); // format version
   dv.setUint8(o++, dim === "end" ? 1 : dim === "nether" ? 2 : 0);
   dv.setInt32(o, seed, true); o += 4;
   dv.setInt32(o, endSeed, true); o += 4;
@@ -4240,6 +4346,19 @@ function serialize() {
     dv.setUint8(o++, p.v);
     dv.setUint8(o++, Math.round(p.a / (Math.PI * 2) * 255));
   });
+  const writeVariants = (map, n) => {
+    dv.setUint32(o, n, true); o += 4;
+    map.forEach((v, k) => {
+      const [x, y, z] = keyXYZ(k);
+      dv.setUint8(o++, x + 128);
+      dv.setUint8(o++, y);
+      dv.setUint8(o++, z + 128);
+      dv.setUint8(o++, v);
+    });
+  };
+  writeVariants(greenVariants.over, gov);
+  writeVariants(greenVariants.end, gev);
+  writeVariants(greenVariants.nether, gnv);
   return buf;
 }
 
@@ -4249,8 +4368,11 @@ function deserialize(buf) {
   for (let i = 0; i < 9; i++) if (new Uint8Array(buf, o, 9)[i] !== SAVE_MAGIC[i]) throw new Error("Not a MiniCraft save");
   o += 9;
   const ver = dv.getUint8(o++);
-  if (ver !== 1 && ver !== 2 && ver !== 3 && ver !== 4 && ver !== 5) throw new Error("Unsupported save version");
+  if (ver !== 1 && ver !== 2 && ver !== 3 && ver !== 4 && ver !== 5 && ver !== 6) throw new Error("Unsupported save version");
   placedFlowers.clear();
+  greenVariants.over.clear();
+  greenVariants.end.clear();
+  greenVariants.nether.clear();
   let dimFlag = 0, endSeedVal = endSeed;
   if (ver >= 2) dimFlag = dv.getUint8(o++);
   if (ver >= 4) {
@@ -4310,11 +4432,47 @@ function deserialize(buf) {
       placedFlowers.set(key(x, y, z), { v, a });
     }
   }
-  if (ver >= 5) {
+  if (ver === 5) {
     // v5 saves carried per-torch color entries; torches are gone now, so the
     // entries are skipped (the v5 stream is still parsed and tolerated).
     const t = dv.getUint32(o, true); o += 4;
     for (let i = 0; i < t; i++) { o += 5; }
+  }
+  if (ver >= 6) {
+    const readVariants = (map) => {
+      const g = dv.getUint32(o, true); o += 4;
+      for (let i = 0; i < g; i++) {
+        const x = dv.getUint8(o++) - 128;
+        const y = dv.getUint8(o++);
+        const z = dv.getUint8(o++) - 128;
+        const v = dv.getUint8(o++);
+        if (v < GREEN_VARIANT_COUNT) map.set(key(x, y, z), v);
+      }
+    };
+    readVariants(greenVariants.over);
+    readVariants(greenVariants.end);
+    readVariants(greenVariants.nether);
+  } else {
+    // Old saves have no greenstone colours: give every greenstone a clustered
+    // colour so pre-built and placed stones don't all revert to green.
+    for (const name of ["over", "end", "nether"]) {
+      const w = worlds[name];
+      const gv = greenVariants[name];
+      const assigned = new Map();
+      for (const [k, id] of w) {
+        if (id !== GREENSTONE) continue;
+        const [x, y, z] = keyXYZ(k);
+        let v = -1;
+        for (const [ok, ov] of assigned) {
+          const [ox, oy, oz] = keyXYZ(ok);
+          const dx = ox - x, dy = oy - y, dz = oz - z;
+          if (dx * dx + dy * dy + dz * dz < 100) { v = ov; break; }
+        }
+        if (v < 0) v = Math.floor(Math.random() * GREEN_VARIANT_COUNT);
+        gv.set(k, v);
+        assigned.set(k, v);
+      }
+    }
   }
   dim = dimFlag === 2 ? "nether" : dimFlag === 1 ? "end" : "over";
   world = worlds[dim];
@@ -4705,6 +4863,8 @@ function resetDims() {
   portalBlockSets.nether.clear();
   greenstoneBlockSets.end.clear();
   greenstoneBlockSets.nether.clear();
+  greenVariants.end.clear();
+  greenVariants.nether.clear();
   portalDirty = true;
   worldDirty = true;
   overPortalSpawn = { x: 0.5, y: 1.01, z: 0.5 };
