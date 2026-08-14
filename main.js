@@ -2900,6 +2900,7 @@ function goToDimension(name, sx, sy, sz) {
   portalDirty = true;
   worldDirty = true;
   clearPortalFills();
+  removeEndEntities();
   if (name === "end") {
     generateEnd();
     endReturnWin = null;
@@ -2921,8 +2922,6 @@ function goToDimension(name, sx, sy, sz) {
     pitch = 0;
   } else {
     setDimensionEnv();
-    if (dragon.mesh) removeDragon();
-    if (endermen.length) removeEndermen();
     flying = prePortalFly;
     if (overPortalFace == null) {
       const w = findPortalWindow(Math.floor(overPortalSpawn.x), Math.floor(overPortalSpawn.y + 0.25), Math.floor(overPortalSpawn.z));
@@ -4522,6 +4521,12 @@ function updateBossBar() {
   bossBarEl.style.display = "block";
 }
 
+function removeEndEntities() {
+  if (dragon.mesh) removeDragon();
+  if (endermen.length) removeEndermen();
+  bossBarEl.style.display = "none";
+}
+
 function damageDragon(amount) {
   if (!dragon.mesh || dragon.hp <= 0) return;
   dragon.hp = Math.max(0, dragon.hp - amount);
@@ -4763,6 +4768,7 @@ async function restoreSave(buf) {
     setDimensionEnv();
     updateDimLabel();
     clearPortalFills();
+    removeEndEntities();
     if (dim === "end") { endCleared = false; buildReturnPortal(); spawnDragon(); spawnEndermen(); }
     if (dim === "nether") { netReturnWin = null; buildNetherPortal(); }
     scanWorldPortals();
@@ -4872,8 +4878,7 @@ function resetDims() {
   endCleared = false;
   netReturnWin = null;
   protectedBlocks.clear();
-  if (dragon.mesh) removeDragon();
-  if (endermen.length) removeEndermen();
+  removeEndEntities();
   setDimensionEnv();
   updateDimLabel();
 }
