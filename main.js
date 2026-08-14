@@ -3,7 +3,7 @@ import * as THREE from "three";
 // ---------------------------------------------------------------------------
 // Block definitions
 // ---------------------------------------------------------------------------
-const AIR = 0, GRASS = 1, DIRT = 2, STONE = 3, SAND = 4, LOG = 5, LEAVES = 6, WATER = 7, PLANKS = 8, GLASS = 9, TNT = 10, FLOWER = 11, PORTAL = 12, ENDSTONE = 13, CLOUD = 14;
+const AIR = 0, GRASS = 1, DIRT = 2, STONE = 3, SAND = 4, LOG = 5, LEAVES = 6, WATER = 7, PLANKS = 8, GLASS = 9, TNT = 10, FLOWER = 11, PORTAL = 12, ENDSTONE = 13, CLOUD = 14, OBSIDIAN = 15, LAVA = 16, NETHERRACK = 17, SOULSAND = 18, GLOWSTONE = 19;
 
 const BLOCK_INFO = {
   [GRASS]:   { name: "Grass",    solid: true,  opaque: true,  placeable: true },
@@ -20,6 +20,11 @@ const BLOCK_INFO = {
 [PORTAL]:  { name: "Portal",    solid: true,  opaque: false, placeable: true },
   [ENDSTONE]:{ name: "End Stone",solid: true,  opaque: true,  placeable: false },
   [CLOUD]:   { name: "Cloud",    solid: true,  opaque: true,  placeable: false },
+  [OBSIDIAN]:{ name: "Obsidian", solid: true,  opaque: true,  placeable: true },
+  [LAVA]:    { name: "Lava",     solid: false, opaque: false, placeable: false },
+  [NETHERRACK]:{ name: "Netherrack", solid: true, opaque: true, placeable: true },
+  [SOULSAND]:  { name: "Soul Sand",   solid: true, opaque: true, placeable: false },
+  [GLOWSTONE]: { name: "Glowstone",   solid: true, opaque: true, placeable: false },
 };
 
 // ---------------------------------------------------------------------------
@@ -166,6 +171,50 @@ const TEX = {
     ctx.fillStyle = "rgba(150,150,160,0.28)";
     for (let i = 0; i < 5; i++) ctx.fillRect(Math.random() * 13, Math.random() * 13, 2 + Math.random() * 2, 1 + Math.random() * 2);
   }),
+  obsidian: canvasTex((ctx) => {
+    ctx.fillStyle = "#12070f"; ctx.fillRect(0, 0, 16, 16);
+    pxNoise(ctx, [24, 12, 20], 18);
+    ctx.fillStyle = "rgba(96,58,132,0.35)";
+    for (let i = 0; i < 7; i++) ctx.fillRect(Math.random() * 14, Math.random() * 14, 1 + Math.random() * 2, 1 + Math.random() * 2);
+    ctx.fillStyle = "rgba(24,10,26,0.9)";
+    ctx.fillRect(2, 7, 2, 1); ctx.fillRect(6, 12, 1, 1); ctx.fillRect(10, 3, 2, 1); ctx.fillRect(13, 9, 1, 1);
+  }),
+  lava: canvasTex((ctx) => {
+    ctx.fillStyle = "#ff7b1c"; ctx.fillRect(0, 0, 16, 16);
+    pxNoise(ctx, [255, 123, 28], 26);
+    ctx.fillStyle = "#ffd23f";
+    for (let i = 0; i < 12; i++) ctx.fillRect(Math.random() * 16, Math.random() * 16, 1, 1);
+    ctx.fillStyle = "#b33a00";
+    for (let i = 0; i < 6; i++) ctx.fillRect(Math.random() * 16, Math.random() * 16, 2, 1);
+    ctx.fillStyle = "rgba(255,214,84,0.9)";
+    for (let i = 0; i < 4; i++) ctx.fillRect(Math.random() * 15, Math.random() * 15, 1, 2);
+  }),
+  netherrack: canvasTex((ctx) => {
+    ctx.fillStyle = "#6b3340"; ctx.fillRect(0, 0, 16, 16);
+    pxNoise(ctx, [107, 51, 64], 26);
+    ctx.fillStyle = "rgba(0,0,0,0.22)";
+    for (let i = 0; i < 8; i++) ctx.fillRect(Math.random() * 14, Math.random() * 14, 2 + Math.random() * 2, 2 + Math.random() * 2);
+    ctx.fillStyle = "rgba(255,60,60,0.28)";
+    for (let i = 0; i < 6; i++) ctx.fillRect(Math.random() * 15, Math.random() * 15, 1, 1);
+  }),
+  soulsand: canvasTex((ctx) => {
+    ctx.fillStyle = "#7a6a55"; ctx.fillRect(0, 0, 16, 16);
+    pxNoise(ctx, [122, 106, 85], 18);
+    ctx.fillStyle = "rgba(0,0,0,0.25)";
+    for (let i = 0; i < 10; i++) ctx.fillRect(Math.random() * 15, Math.random() * 15, 1, 1);
+    ctx.fillStyle = "rgba(90,70,50,0.5)";
+    for (let i = 0; i < 4; i++) ctx.fillRect(Math.random() * 14, Math.random() * 14, 3, 1);
+  }),
+  glowstone: canvasTex((ctx) => {
+    ctx.fillStyle = "#f0c44a"; ctx.fillRect(0, 0, 16, 16);
+    pxNoise(ctx, [240, 196, 74], 32);
+    ctx.fillStyle = "#fff6cf";
+    for (let i = 0; i < 9; i++) ctx.fillRect(Math.random() * 15, Math.random() * 15, 1 + Math.random(), 1 + Math.random());
+    ctx.fillStyle = "rgba(150,95,10,0.35)";
+    for (let i = 0; i < 5; i++) ctx.fillRect(Math.random() * 14, Math.random() * 14, 2, 2);
+    ctx.fillStyle = "rgba(255,255,255,0.8)";
+    ctx.fillRect(6, 7, 2, 2); ctx.fillRect(11, 3, 1, 1); ctx.fillRect(4, 12, 1, 1);
+  }),
   flower: canvasTex((ctx) => {
     const petals = ["rgb(232,30,52)", "rgb(56,106,252)", "rgb(248,188,16)", "rgb(16,204,186)", "rgb(244,132,34)", "rgb(160,80,224)", "rgb(232,30,52)", "rgb(56,106,252)"];
     ctx.clearRect(0, 0, 16, 16);
@@ -192,6 +241,12 @@ const TEX = {
 function material(map, opts = {}) {
   return new THREE.MeshLambertMaterial({ map, ...opts });
 }
+function basicMat(map, opts = {}) {
+  return new THREE.MeshBasicMaterial({ map, ...opts });
+}
+function basicFace(map, opts = {}) {
+  return [basicMat(map, opts), basicMat(map, opts), basicMat(map, opts), basicMat(map, opts), basicMat(map, opts), basicMat(map, opts)];
+}
 // BoxGeometry face order: +x, -x, +y, -y, +z, -z
 function materialsFor(id) {
   const [px, nx, py, ny, pz, nz] = [
@@ -212,6 +267,11 @@ function materialsFor(id) {
     case PORTAL: return faceTex(TEX.portal, { transparent: false, opacity: 1, side: THREE.DoubleSide });
     case ENDSTONE: return faceTex(TEX.endstone);
     case CLOUD: return faceTex(TEX.cloud);
+    case OBSIDIAN: return faceTex(TEX.obsidian);
+    case LAVA: return basicFace(TEX.lava);
+    case NETHERRACK: return faceTex(TEX.netherrack);
+    case SOULSAND: return faceTex(TEX.soulsand);
+    case GLOWSTONE: return basicFace(TEX.glowstone);
     case PORTAL: return faceTex(TEX.portal);
     default: return faceTex(TEX.dirt);
   }
@@ -252,6 +312,7 @@ const END_PLATFORM_R = 24;
 const END_RETURN_Z = 16;
 let seed = Math.floor(Math.random() * 100000);
 let endSeed = Math.floor(Math.random() * 100000);
+let netherSeed = Math.floor(Math.random() * 100000);
 let waterScale = 1;
 let waterDepth = 1;
 let basinFreq = 0.007;
@@ -263,7 +324,7 @@ let forestThresh = 0.5;
 
 function key(x, y, z) { return x + "," + y + "," + z; }
 
-const worlds = { over: new Map(), end: new Map() };
+const worlds = { over: new Map(), end: new Map(), nether: new Map() };
 let dim = "over";
 let world = worlds.over;
 const getBlock = (x, y, z) => world.get(key(x, y, z)) || AIR;
@@ -276,6 +337,7 @@ function setBlock(x, y, z, id) {
   if (id === AIR) world.delete(k); else world.set(k, id);
   if (id !== FLOWER) placedFlowers.delete(k);
   portalMemo.dim = "";
+  netherMemo.dim = "";
 }
 
 function heightAt(x, z) {
@@ -678,6 +740,120 @@ function generateEnd() {
   for (let x = -R; x <= R; x++)
     for (let z = -R; z <= R; z++)
       for (let y = END_PLATFORM_TOP - 2; y <= END_PLATFORM_TOP; y++) w.set(key(x, y, z), ENDSTONE);
+}
+
+// ---------------------------------------------------------------------------
+// The Nether: a terrifying rock dimension under a black sky. Towering rock
+// mountains rise out of a glowing lava sea; winding canyons cut down to the
+// lava as rivers, and lava streaks pour down the faces of cliffs that drop
+// into the sea.
+// ---------------------------------------------------------------------------
+const NETHER_LAVA_LEVEL = 12;
+const NETHER_RIVER_COUNT = 4;
+let netherRiverPaths = [];
+
+function generateNetherRivers() {
+  netherRiverPaths = [];
+  const S = WORLD_RADIUS;
+  for (let i = 0; i < NETHER_RIVER_COUNT; i++) {
+    const rs = netherSeed + 555 + i * 101;
+    const edge = Math.floor(hash2(0, 0, rs + 1) * 4);
+    const along = (hash2(0, 0, rs + 2) * 2 - 1) * S * 0.6;
+    let x, z, head;
+    if (edge === 0) { x = -S; z = along; head = 0; }
+    else if (edge === 1) { x = S; z = along; head = Math.PI; }
+    else if (edge === 2) { x = along; z = -S; head = Math.PI / 2; }
+    else { x = along; z = S; head = -Math.PI / 2; }
+    const wobA = 0.5 + hash2(0, 0, rs + 3) * 0.4;
+    const wobF = 0.1 + hash2(0, 0, rs + 4) * 0.06;
+    const phase = hash2(0, 0, rs + 5) * Math.PI * 2;
+    const pts = [[x, z]];
+    for (let n = 1; n < 80; n++) {
+      head += wobA * Math.sin(n * wobF + phase);
+      if (x > S * 0.6) head -= 0.12;
+      if (x < -S * 0.6) head += 0.12;
+      if (z > S * 0.6) head -= 0.12;
+      if (z < -S * 0.6) head += 0.12;
+      x += Math.cos(head) * 24;
+      z += Math.sin(head) * 24;
+      pts.push([x, z]);
+      if (x > S + 40 || x < -S - 40 || z > S + 40 || z < -S - 40) break;
+    }
+    if (pts.length > 4) netherRiverPaths.push(pts);
+  }
+}
+
+function nearestNetherRiver(x, z) {
+  let best = null;
+  for (const pts of netherRiverPaths) {
+    const n = pts.length - 1;
+    for (let k = 0; k < n; k++) {
+      const d = distToSegment(x, z, pts[k][0], pts[k][1], pts[k + 1][0], pts[k + 1][1]);
+      const w = 5 * (0.7 + 0.6 * (k / n));
+      if (!best || d - w < best.d - best.w) best = { d, w };
+    }
+  }
+  return best;
+}
+
+function generateNether() {
+  const w = worlds.nether;
+  w.clear();
+  const S = WORLD_RADIUS;
+  generateNetherRivers();
+  const size = 2 * S + 1;
+  const heights = new Float32Array(size * size);
+  const idx = (x, z) => (z + S) * size + (x + S);
+  for (let x = -S; x <= S; x++) {
+    for (let z = -S; z <= S; z++) {
+      const m = fbm(x * 0.008, z * 0.008, netherSeed) * 2 - 1;
+      const r = fbm(x * 0.03, z * 0.03, netherSeed + 7);
+      const c = fbm(x * 0.014, z * 0.014, netherSeed + 17) * 2 - 1;
+      let h = Math.floor(12 + m * 44 + r * 10 + Math.max(0, c) * 18);
+      const rv = nearestNetherRiver(x, z);
+      if (rv && rv.d <= rv.w) {
+        const t = rv.d / rv.w;
+        h = Math.min(h, NETHER_LAVA_LEVEL - 2 + Math.floor(t * 4));
+      }
+      h = Math.max(1, Math.min(96, h));
+      heights[idx(x, z)] = h;
+      for (let y = 0; y <= h; y++) w.set(key(x, y, z), NETHERRACK);
+      // Soul-sand shores: the top block of columns near the lava line
+      // becomes dark soul sand, so the sea has a grim black beach.
+      if (h >= NETHER_LAVA_LEVEL && h <= NETHER_LAVA_LEVEL + 2)
+        w.set(key(x, h, z), SOULSAND);
+      if (h < NETHER_LAVA_LEVEL)
+        for (let y = h + 1; y <= NETHER_LAVA_LEVEL; y++) w.set(key(x, y, z), LAVA);
+      // Scattered glowstone: rare columns carry a glowing knot of gold
+      // blocks at their summit, a few blocks above the land.
+      if (h > NETHER_LAVA_LEVEL + 6 && hash2(x, z, netherSeed + 41) < 0.012) {
+        const gy = Math.min(96, h + 1 + Math.floor(hash2(x, z, netherSeed + 42) * 2));
+        if (getBlock(x, gy, z) === AIR) w.set(key(x, gy, z), GLOWSTONE);
+        for (let dy = 1; dy <= 2; dy++) {
+          const ny = gy - dy;
+          if (ny <= h && w.get(key(x, ny, z)) === NETHERRACK) w.set(key(x, ny, z), GLOWSTONE);
+        }
+        // Pop an extra floating glowstone above to break up the silhouette.
+        const fy = gy + 2 + Math.floor(hash2(x, z, netherSeed + 43) * 2);
+        if (getBlock(x, fy, z) === AIR) w.set(key(x, fy, z), GLOWSTONE);
+      }
+    }
+  }
+  for (let x = -S; x <= S; x++) {
+    for (let z = -S; z <= S; z++) {
+      const h = heights[idx(x, z)];
+      if (h < NETHER_LAVA_LEVEL + 5) continue;
+      for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+        const nx = x + dx, nz = z + dz;
+        if (nx < -S || nx > S || nz < -S || nz > S) continue;
+        const hn = heights[idx(nx, nz)];
+        if (hn > NETHER_LAVA_LEVEL) continue;
+        const fall = Math.min(5, Math.round((h - NETHER_LAVA_LEVEL) * 0.45));
+        for (let y = NETHER_LAVA_LEVEL + 1; y <= NETHER_LAVA_LEVEL + fall; y++)
+          w.set(key(nx, y, nz), LAVA);
+      }
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1404,7 +1580,7 @@ function headInWater() {
     const py = pos.y + (i === 0 ? 0.3 : PLAYER_H - 0.4);
     for (let bx = Math.floor(pos.x - hw); bx <= Math.floor(pos.x + hw); bx++)
       for (let bz = Math.floor(pos.z - hw); bz <= Math.floor(pos.z + hw); bz++)
-        if (getBlock(bx, Math.floor(py), bz) === WATER) return true;
+        if (getBlock(bx, Math.floor(py), bz) === WATER || getBlock(bx, Math.floor(py), bz) === LAVA) return true;
   }
   return false;
 }
@@ -1426,7 +1602,7 @@ function pickBlock(origin, dir) {
 
   for (let i = 0; i < 256; i++) {
     const id = getBlock(x, y, z);
-    if (id !== AIR && id !== WATER) return { x, y, z, id, face };
+    if (id !== AIR && id !== WATER && id !== LAVA) return { x, y, z, id, face };
     if (tMaxX < tMaxY && tMaxX < tMaxZ) {
       x += stepX; tMaxX += tDeltaX; face = [-stepX, 0, 0];
     } else if (tMaxY < tMaxZ) {
@@ -1658,7 +1834,7 @@ function explodeTNT(x, y, z, pointBlank, homing = false) {
         if (dx * dx + dy * dy + dz * dz > R2) continue;
         const gx = bx + dx, gy = by + dy, gz = bz + dz;
         const id = getBlock(gx, gy, gz);
-        if (id === AIR || id === WATER) continue;
+        if (id === AIR || id === WATER || id === LAVA) continue;
         if (id === STONE && gy === 0) continue;
         if (protectedBlocks.has(key(gx, gy, gz))) continue;
         if (id === TNT) {
@@ -1820,6 +1996,7 @@ function spawnExplosion(cx, cy, cz) {
 }
 
 function tickEffects(dt) {
+  updateNetherEmbers(dt, performance.now() / 1000);
   for (let i = bursts.length - 1; i >= 0; i--) {
     const b = bursts[i];
     b.life -= dt;
@@ -1856,6 +2033,86 @@ function tickEffects(dt) {
   }
 }
 
+const EMBER_COUNT = 220;
+let emberPts = null;
+let emberVel = null;
+let emberLife = null;
+let emberMaxLife = null;
+
+function ensureEmbers() {
+  if (emberPts) return;
+  const posA = new Float32Array(EMBER_COUNT * 3);
+  const colA = new Float32Array(EMBER_COUNT * 3);
+  emberVel = new Float32Array(EMBER_COUNT * 3);
+  emberLife = new Float32Array(EMBER_COUNT);
+  emberMaxLife = new Float32Array(EMBER_COUNT);
+  for (let i = 0; i < EMBER_COUNT; i++) {
+    posA[i * 3] = 0; posA[i * 3 + 1] = -100; posA[i * 3 + 2] = 0;
+    colA[i * 3] = 1; colA[i * 3 + 1] = 0.5 + Math.random() * 0.35; colA[i * 3 + 2] = 0.15;
+    emberLife[i] = 0; emberMaxLife[i] = 0;
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute("position", new THREE.BufferAttribute(posA, 3));
+  geo.setAttribute("color", new THREE.BufferAttribute(colA, 3));
+  const mat = new THREE.PointsMaterial({
+    size: 0.16, vertexColors: true, transparent: true, opacity: 1,
+    depthWrite: false, blending: THREE.AdditiveBlending,
+  });
+  emberPts = new THREE.Points(geo, mat);
+  scene.add(emberPts);
+}
+
+function removeEmbers() {
+  if (emberPts) {
+    scene.remove(emberPts);
+    emberPts.geometry.dispose();
+    emberPts.material.dispose();
+    emberPts = null;
+    emberVel = null; emberLife = null; emberMaxLife = null;
+  }
+}
+
+function spawnEmber(i) {
+  const S = WORLD_RADIUS;
+  for (let tries = 0; tries < 8; tries++) {
+    const px = pos.x + (Math.random() * 2 - 1) * 36;
+    const pz = pos.z + (Math.random() * 2 - 1) * 36;
+    const bx = Math.floor(px), bz = Math.floor(pz);
+    if (bx < -S || bx > S || bz < -S || bz > S) continue;
+    if (getBlock(bx, NETHER_LAVA_LEVEL, bz) === LAVA) {
+      const attr = emberPts.geometry.attributes.position;
+      attr.array[i * 3] = bx + 0.5;
+      attr.array[i * 3 + 1] = NETHER_LAVA_LEVEL + 0.6;
+      attr.array[i * 3 + 2] = bz + 0.5;
+      attr.needsUpdate = true;
+      emberVel[i * 3] = (Math.random() * 2 - 1) * 0.8;
+      emberVel[i * 3 + 1] = 2.5 + Math.random() * 3.5;
+      emberVel[i * 3 + 2] = (Math.random() * 2 - 1) * 0.8;
+      emberMaxLife[i] = 2.2 + Math.random() * 2.6;
+      emberLife[i] = emberMaxLife[i];
+      return;
+    }
+  }
+  emberLife[i] = 0;
+}
+
+function updateNetherEmbers(dt, time) {
+  if (dim !== "nether") { removeEmbers(); return; }
+  ensureEmbers();
+  const attr = emberPts.geometry.attributes.position;
+  for (let i = 0; i < EMBER_COUNT; i++) {
+    if (emberLife[i] <= 0 || attr.array[i * 3 + 1] > NETHER_LAVA_LEVEL + 24) {
+      spawnEmber(i);
+    } else {
+      emberLife[i] -= dt;
+      attr.array[i * 3] += (emberVel[i * 3] + Math.sin(time * 2 + i) * 0.4) * dt;
+      attr.array[i * 3 + 1] += emberVel[i * 3 + 1] * dt;
+      attr.array[i * 3 + 2] += (emberVel[i * 3 + 2] + Math.cos(time * 1.7 + i) * 0.4) * dt;
+    }
+  }
+  attr.needsUpdate = true;
+}
+
 // ---------------------------------------------------------------------------
 // Portals & The End dimension
 // ---------------------------------------------------------------------------
@@ -1886,6 +2143,34 @@ function buildReturnPortal() {
   refreshBlocks(coords);
 }
 
+const NETHER_RETURN_BASE_Y = 30;
+const NETHER_RETURN_Z = 0;
+let netReturnWin = null;
+const NETHER_SPAWN = { x: 0.5, y: NETHER_RETURN_BASE_Y + 1.01, z: 2.5 };
+
+function buildNetherPortal() {
+  protectedBlocks.clear();
+  const coords = [];
+  const base = NETHER_RETURN_BASE_Y;
+  for (let x = -4; x <= 3; x++)
+    for (let z = -1; z <= 4; z++)
+      for (let y = base - 2; y < base; y++) setBlock(x, y, z, NETHERRACK);
+  for (let x = -3; x <= 3; x++)
+    for (let z = -1; z <= 4; z++)
+      for (let y = base; y <= base + 4; y++)
+        if (worlds.nether.has(key(x, y, z))) worlds.nether.delete(key(x, y, z));
+  for (let x = -2; x <= 2; x++)
+    for (let y = 0; y <= 3; y++) {
+      const isEdge = x === -2 || x === 2 || y === 0 || y === 3;
+      if (!isEdge) continue;
+      setBlock(x, base + y, NETHER_RETURN_Z, OBSIDIAN);
+      coords.push([x, base + y, NETHER_RETURN_Z]);
+      protectedBlocks.add(key(x, base + y, NETHER_RETURN_Z));
+    }
+  netReturnWin = { minX: -2, minY: base, minZ: NETHER_RETURN_Z };
+  refreshBlocks(coords);
+}
+
 function setDimensionEnv() {
   if (dim === "end") {
     scene.background.setHex(0x000000);
@@ -1893,6 +2178,12 @@ function setDimensionEnv() {
     scene.fog.near = 30; scene.fog.far = 150;
     sun.color.setHex(0xfff5e0); sun.intensity = 0.35;
     hemi.color.setHex(0xbfd4ff); hemi.intensity = 0.45;
+  } else if (dim === "nether") {
+    scene.background.setHex(0x000000);
+    scene.fog.color.setHex(0x260604);
+    scene.fog.near = 15; scene.fog.far = 70;
+    sun.color.setHex(0xff3b00); sun.intensity = 0.6;
+    hemi.color.setHex(0x3d0f0f); hemi.intensity = 0.5;
   } else {
     scene.background.setHex(0x87ceeb);
     scene.fog.color.setHex(0x87ceeb);
@@ -1917,6 +2208,13 @@ function goToDimension(name, sx, sy, sz) {
     prePortalFly = flying;
     flying = false;
     yaw = 0;
+    pitch = 0;
+  } else if (name === "nether") {
+    generateNether();
+    netReturnWin = null;
+    buildNetherPortal();
+    setDimensionEnv();
+    yaw = Math.PI;
     pitch = 0;
   } else {
     setDimensionEnv();
@@ -1982,6 +2280,30 @@ function vWinOk4(minX, minY, minZ) {
   return true;
 }
 
+function nWinOk(minX, minY, minZ, w = 5, h = 4, face = "z") {
+  for (let y = minY; y < minY + h; y++)
+    for (let u = 0; u < w; u++) {
+      const isEdge = u === 0 || u === w - 1 || y === minY || y === minY + h - 1;
+      const x = face === "x" ? minX : minX + u;
+      const z = face === "x" ? minZ + u : minZ;
+      const id = getBlock(x, y, z);
+      if (isEdge) { if (id !== OBSIDIAN) return false; }
+      else { if (id !== AIR) return false; }
+    }
+  return true;
+}
+
+function nFlatWinOk(minX, minZ, by, ww, dd) {
+  for (let x = minX; x <= minX + ww - 1; x++)
+    for (let z = minZ; z <= minZ + dd - 1; z++) {
+      const isEdge = x === minX || x === minX + ww - 1 || z === minZ || z === minZ + dd - 1;
+      const id = getBlock(x, by, z);
+      if (isEdge) { if (id !== OBSIDIAN) return false; }
+      else { if (id !== AIR) return false; }
+    }
+  return true;
+}
+
 function findPortalWindow(bx, by, bz) {
   for (let wz = -3; wz <= 1; wz++)
     for (let wx = -3; wx <= 1; wx++)
@@ -1990,6 +2312,17 @@ function findPortalWindow(bx, by, bz) {
 }
 
 function windowDist(w, bx, by, bz) {
+  if (w.orient === "v" && w.face === "x") {
+    const zTop = w.dims === "4x5" || w.dims === "4x4" ? w.minZ + 3 : w.minZ + 4;
+    const dz = Math.max(w.minZ - bz, 0, bz - zTop);
+    const dx = Math.abs(w.minX - bx);
+    let top;
+    if (w.dims === "4x5") top = w.minY + 4;
+    else if (w.dims === "4x4") top = w.minY + 3;
+    else top = w.minY + 3;
+    const dy = Math.max(w.minY - by, 0, by - top);
+    return dx * dx + dy * dy + dz * dz;
+  }
   const dxTop = w.orient === "v" && w.dims === "4x5" ? w.minX + 3 : w.minX + 4;
   const dx = Math.max(w.minX - bx, 0, bx - dxTop);
   let top;
@@ -2020,6 +2353,31 @@ function findEndWinNear(bx, by, bz, R) {
   return best ? best.w : null;
 }
 
+function findNetherWinNear(bx, by, bz, R) {
+  let best = null;
+  const consider = (w) => {
+    const d = windowDist(w, bx, by, bz);
+    if (!best || d < best.d) best = { w, d };
+  };
+  for (let wz = -R; wz <= R; wz++)
+    for (let wx = -R; wx <= R; wx++)
+      for (let wy = -4; wy <= 4; wy++) {
+        if (nWinOk(bx + wx, by + wy, bz + wz, 5, 4)) consider({ orient: "v", face: "z", minX: bx + wx, minY: by + wy, minZ: bz + wz });
+        if (nWinOk(bx + wx, by + wy, bz + wz, 4, 5)) consider({ orient: "v", face: "z", dims: "4x5", minX: bx + wx, minY: by + wy, minZ: bz + wz });
+        if (nWinOk(bx + wx, by + wy, bz + wz, 4, 4)) consider({ orient: "v", face: "z", dims: "4x4", minX: bx + wx, minY: by + wy, minZ: bz + wz });
+        if (nWinOk(bx + wx, by + wy, bz + wz, 5, 4, "x")) consider({ orient: "v", face: "x", minX: bx + wx, minY: by + wy, minZ: bz + wz });
+        if (nWinOk(bx + wx, by + wy, bz + wz, 4, 5, "x")) consider({ orient: "v", face: "x", dims: "4x5", minX: bx + wx, minY: by + wy, minZ: bz + wz });
+        if (nWinOk(bx + wx, by + wy, bz + wz, 4, 4, "x")) consider({ orient: "v", face: "x", dims: "4x4", minX: bx + wx, minY: by + wy, minZ: bz + wz });
+      }
+  for (let dy = -2; dy <= 2; dy++)
+    for (let wx = -R; wx <= R; wx++)
+      for (let wz = -R; wz <= R; wz++) {
+        if (nFlatWinOk(bx + wx, bz + wz, by + dy, 5, 4)) consider({ orient: "h", minX: bx + wx, minY: by + dy, minZ: bz + wz, dims: "5x4" });
+        if (nFlatWinOk(bx + wx, bz + wz, by + dy, 4, 5)) consider({ orient: "h", minX: bx + wx, minY: by + dy, minZ: bz + wz, dims: "4x5" });
+      }
+  return best ? best.w : null;
+}
+
 function collectEndWins(bx, by, bz, R) {
   const wins = [];
   for (let wz = -R; wz <= R; wz++)
@@ -2035,12 +2393,34 @@ function collectEndWins(bx, by, bz, R) {
   return wins;
 }
 
+function collectNetherWins(bx, by, bz, R) {
+  const wins = [];
+  for (let wz = -R; wz <= R; wz++)
+    for (let wx = -R; wx <= R; wx++)
+      for (let wy = -4; wy <= 4; wy++) {
+        if (nWinOk(bx + wx, by + wy, bz + wz, 5, 4)) wins.push({ orient: "v", face: "z", minX: bx + wx, minY: by + wy, minZ: bz + wz });
+        if (nWinOk(bx + wx, by + wy, bz + wz, 4, 5)) wins.push({ orient: "v", face: "z", dims: "4x5", minX: bx + wx, minY: by + wy, minZ: bz + wz });
+        if (nWinOk(bx + wx, by + wy, bz + wz, 4, 4)) wins.push({ orient: "v", face: "z", dims: "4x4", minX: bx + wx, minY: by + wy, minZ: bz + wz });
+        if (nWinOk(bx + wx, by + wy, bz + wz, 5, 4, "x")) wins.push({ orient: "v", face: "x", minX: bx + wx, minY: by + wy, minZ: bz + wz });
+        if (nWinOk(bx + wx, by + wy, bz + wz, 4, 5, "x")) wins.push({ orient: "v", face: "x", dims: "4x5", minX: bx + wx, minY: by + wy, minZ: bz + wz });
+        if (nWinOk(bx + wx, by + wy, bz + wz, 4, 4, "x")) wins.push({ orient: "v", face: "x", dims: "4x4", minX: bx + wx, minY: by + wy, minZ: bz + wz });
+      }
+  for (let dy = -2; dy <= 2; dy++)
+    for (let wx = -R; wx <= R; wx++)
+      for (let wz = -R; wz <= R; wz++) {
+        if (nFlatWinOk(bx + wx, bz + wz, by + dy, 5, 4)) wins.push({ orient: "h", minX: bx + wx, minY: by + dy, minZ: bz + wz, dims: "5x4" });
+        if (nFlatWinOk(bx + wx, bz + wz, by + dy, 4, 5)) wins.push({ orient: "h", minX: bx + wx, minY: by + dy, minZ: bz + wz, dims: "4x5" });
+      }
+  return wins;
+}
+
 const PORTAL_FILL_DIST = Math.ceil(RENDER_DIST * CHUNK * Math.SQRT2);
 const portalFills = new Map();
 const portalFillGeo = new THREE.BoxGeometry(0.98, 0.98, 0.98);
 const portalFillMatBlack = new THREE.MeshBasicMaterial({ color: 0x000000 });
+const portalFillMatPurple = new THREE.MeshBasicMaterial({ color: 0x9b30ff });
 
-function layoutPortalFill(group, win) {
+function layoutPortalFill(group, win, nether) {
   let i = 0;
   const set = (x, y, z) => {
     const m = group.children[i++];
@@ -2048,31 +2428,62 @@ function layoutPortalFill(group, win) {
     m.position.set(x + 0.5, y + 0.5, z + 0.5);
   };
   if (win.orient === "v") {
-    const top = win.h === 4 ? win.minY + 2 : win.minY + 3;
-    for (let y = win.minY + 1; y <= top; y++)
-      for (let x = win.minX + 1; x <= win.minX + 3; x++) set(x, y, win.minZ);
+    if (nether) {
+      if (win.face === "x") {
+        const cy = { "4x5": 3, "4x4": 2 }[win.dims] || 2;
+        const cz = win.dims === "4x5" || win.dims === "4x4" ? 2 : 3;
+        for (let y = win.minY + 1; y <= win.minY + cy; y++)
+          for (let z = win.minZ + 1; z <= win.minZ + cz; z++) set(win.minX, y, z);
+      } else if (win.dims === "4x5") {
+        for (let y = win.minY + 1; y <= win.minY + 3; y++)
+          for (let x = win.minX + 1; x <= win.minX + 2; x++) set(x, y, win.minZ);
+      } else if (win.dims === "4x4") {
+        for (let y = win.minY + 1; y <= win.minY + 2; y++)
+          for (let x = win.minX + 1; x <= win.minX + 2; x++) set(x, y, win.minZ);
+      } else {
+        for (let y = win.minY + 1; y <= win.minY + 2; y++)
+          for (let x = win.minX + 1; x <= win.minX + 3; x++) set(x, y, win.minZ);
+      }
+    } else {
+      const top = win.h === 4 ? win.minY + 2 : win.minY + 3;
+      if (win.face === "x") {
+        for (let y = win.minY + 1; y <= top; y++)
+          for (let z = win.minZ + 1; z <= win.minZ + 3; z++) set(win.minX, y, z);
+      } else {
+        for (let y = win.minY + 1; y <= top; y++)
+          for (let x = win.minX + 1; x <= win.minX + 3; x++) set(x, y, win.minZ);
+      }
+    }
   } else {
-    for (let x = win.minX + 1; x <= win.minX + 3; x++)
-      for (let z = win.minZ + 1; z <= win.minZ + 3; z++) set(x, win.minY, z);
+    if (nether) {
+      const xw = win.dims === "4x5" ? 2 : 3;
+      const xt = win.dims === "4x5" ? 3 : 2;
+      for (let x = win.minX + 1; x <= win.minX + xw; x++)
+        for (let z = win.minZ + 1; z <= win.minZ + xt; z++) set(x, win.minY, z);
+    } else {
+      for (let x = win.minX + 1; x <= win.minX + 3; x++)
+        for (let z = win.minZ + 1; z <= win.minZ + 3; z++) set(x, win.minY, z);
+    }
   }
   for (; i < group.children.length; i++) group.children[i].visible = false;
 }
 
-function ensurePortalFill(win) {
-  const key = `${win.orient}:${win.minX},${win.minY},${win.minZ}${win.dims || ""}`;
+function ensurePortalFill(win, nether) {
+  const key = `${nether ? "n" : "e"}:${win.orient}:${win.face || "z"}:${win.minX},${win.minY},${win.minZ}${win.dims || ""}`;
   if (portalFills.has(key)) return;
   const group = new THREE.Group();
-  for (let i = 0; i < 9; i++) group.add(new THREE.Mesh(portalFillGeo, portalFillMatBlack));
-  layoutPortalFill(group, win);
+  for (let i = 0; i < 9; i++) group.add(new THREE.Mesh(portalFillGeo, nether ? portalFillMatPurple : portalFillMatBlack));
+  layoutPortalFill(group, win, nether);
   group.visible = false;
   scene.add(group);
   const c = winCenter(win);
-  portalFills.set(key, { dim, win, group, cx: c.x + 0.5, cy: win.minY + 2, cz: c.z + 0.5 });
+  portalFills.set(key, { dim, win, nether, group, cx: c.x + 0.5, cy: win.minY + 2, cz: c.z + 0.5 });
 }
 
 function portalFillValid(f) {
   const w = f.win;
-  if (w.orient === "v") return w.h === 4 ? vWinOk4(w.minX, w.minY, w.minZ) : vWinOk(w.minX, w.minY, w.minZ);
+  if (w.orient === "v") return f.nether ? nWinOk(w.minX, w.minY, w.minZ, w.dims === "4x5" ? 4 : (w.dims === "4x4" ? 4 : 5), w.dims === "4x5" ? 5 : (w.dims === "4x4" ? 4 : 4), w.face) : (w.h === 4 ? vWinOk4(w.minX, w.minY, w.minZ) : vWinOk(w.minX, w.minY, w.minZ));
+  if (f.nether) return nFlatWinOk(w.minX, w.minZ, w.minY, w.dims === "4x5" ? 4 : 5, w.dims === "4x5" ? 5 : 4);
   return winOk(w.minX, w.minZ, w.minY);
 }
 
@@ -2091,10 +2502,15 @@ function refreshPortalFills(bx, by, bz) {
         portalFills.delete(key);
       }
     } else {
-      for (const w of collectEndWins(bx, by, bz, R)) ensurePortalFill(w);
+      for (const w of collectEndWins(bx, by, bz, R)) ensurePortalFill(w, false);
+      for (const w of collectNetherWins(bx, by, bz, R)) ensurePortalFill(w, true);
     }
+  } else if (dim === "nether") {
+    for (const w of collectNetherWins(bx, by, bz, R)) ensurePortalFill(w, true);
+    for (const w of collectEndWins(bx, by, bz, R)) ensurePortalFill(w, false);
   } else {
-    for (const w of collectEndWins(bx, by, bz, R)) ensurePortalFill(w);
+    for (const w of collectEndWins(bx, by, bz, R)) ensurePortalFill(w, false);
+    for (const w of collectNetherWins(bx, by, bz, R)) ensurePortalFill(w, true);
   }
   for (const [key, f] of portalFills) {
     if (f.dim !== dim) continue;
@@ -2107,10 +2523,11 @@ function refreshPortalFills(bx, by, bz) {
 
 function scanWorldPortals() {
   for (const [k, id] of world) {
-    if (id !== PORTAL) continue;
+    if (id !== PORTAL && id !== OBSIDIAN) continue;
     const c = k.split(",").map(Number);
     const [x, y, z] = c;
-    for (const w of collectEndWins(x, y, z, 6)) ensurePortalFill(w);
+    for (const w of collectEndWins(x, y, z, 6)) ensurePortalFill(w, false);
+    for (const w of collectNetherWins(x, y, z, 6)) ensurePortalFill(w, true);
   }
 }
 
@@ -2135,14 +2552,24 @@ function scanOverPortal(bx, by, bz) {
   return portalMemo.win;
 }
 
+const netherMemo = { dim: "", bx: 0, by: 0, bz: 0, win: null };
+
+function scanNetherPortal(bx, by, bz) {
+  if (netherMemo.dim === dim && netherMemo.bx === bx && netherMemo.by === by && netherMemo.bz === bz) return netherMemo.win;
+  netherMemo.dim = dim; netherMemo.bx = bx; netherMemo.by = by; netherMemo.bz = bz;
+  netherMemo.win = findNetherWinNear(bx, by, bz, 8);
+  return netherMemo.win;
+}
+
 function winCenter(win) {
   if (win.orient === "h") return { x: win.minX + 2, z: win.minZ + 2 };
+  if (win.face === "x") return { x: win.minX, z: win.minZ + (win.dims === "4x5" || win.dims === "4x4" ? 1.5 : 2) };
   return { x: win.minX + (win.dims === "4x5" || win.dims === "4x4" ? 1.5 : 2), z: win.minZ };
 }
 
 function updatePortalVisual() {
   portalScanT -= dt;
-  if (portalScanT <= 0) { portalScanT = 0.5; portalMemo.dim = ""; refreshPortalFills(Math.floor(freeCam ? camPos.x : pos.x), Math.floor((freeCam ? camPos.y : pos.y) + 0.9), Math.floor(freeCam ? camPos.z : pos.z)); }
+  if (portalScanT <= 0) { portalScanT = 0.5; portalMemo.dim = ""; netherMemo.dim = ""; refreshPortalFills(Math.floor(freeCam ? camPos.x : pos.x), Math.floor((freeCam ? camPos.y : pos.y) + 0.9), Math.floor(freeCam ? camPos.z : pos.z)); }
   const px = freeCam ? camPos.x : pos.x;
   const py = freeCam ? camPos.y : pos.y;
   const pz = freeCam ? camPos.z : pos.z;
@@ -2162,15 +2589,37 @@ function insideEndInterior(win, bx, by, bz) {
   return bx >= win.minX + 1 && bx <= win.minX + 3 && bz >= win.minZ + 1 && bz <= win.minZ + 3;
 }
 
+function insideNetherInterior(win, bx, by, bz) {
+  if (win.orient === "v") {
+    if (win.face === "x") {
+      if (win.dims === "4x5") return bx === win.minX && by >= win.minY + 1 && by <= win.minY + 3 && bz >= win.minZ + 1 && bz <= win.minZ + 2;
+      if (win.dims === "4x4") return bx === win.minX && by >= win.minY + 1 && by <= win.minY + 2 && bz >= win.minZ + 1 && bz <= win.minZ + 2;
+      return bx === win.minX && by >= win.minY + 1 && by <= win.minY + 2 && bz >= win.minZ + 1 && bz <= win.minZ + 3;
+    }
+    if (win.dims === "4x5") return bx >= win.minX + 1 && bx <= win.minX + 2 && by >= win.minY + 1 && by <= win.minY + 3 && bz === win.minZ;
+    if (win.dims === "4x4") return bx >= win.minX + 1 && bx <= win.minX + 2 && by >= win.minY + 1 && by <= win.minY + 2 && bz === win.minZ;
+    return bx >= win.minX + 1 && bx <= win.minX + 3 && by >= win.minY + 1 && by <= win.minY + 2 && bz === win.minZ;
+  }
+  if (win.dims === "4x5") return bx >= win.minX + 1 && bx <= win.minX + 2 && bz >= win.minZ + 1 && bz <= win.minZ + 3;
+  return bx >= win.minX + 1 && bx <= win.minX + 3 && bz >= win.minZ + 1 && bz <= win.minZ + 2;
+}
+
 function nearPortalSpawn(win, dir) {
-  const cx = win.minX + 2, cz = winCenter(win).z;
+  const c = winCenter(win);
+  const cx = c.x, cz = c.z;
   const by = win.minY;
   const inInterior = (sx, sz) => {
-    if (sx < win.minX + 1 || sx > win.minX + 3) return false;
     if (win.orient === "h") {
+      if (sx < win.minX + 1 || sx > win.minX + 3) return false;
       if (win.dims === "4x5") return sz >= win.minZ + 1 && sz <= win.minZ + 3;
       return sz >= win.minZ + 1 && sz <= win.minZ + 2;
     }
+    if (win.face === "x") {
+      if (sx !== win.minX) return false;
+      if (win.dims === "4x5" || win.dims === "4x4") return sz >= win.minZ + 1 && sz <= win.minZ + 2;
+      return sz >= win.minZ + 1 && sz <= win.minZ + 3;
+    }
+    if (sx < win.minX + 1 || sx > win.minX + 3) return false;
     return sz === win.minZ;
   };
   const spot = (sx, sz) => {
@@ -2228,17 +2677,45 @@ function checkPortal() {
         return;
       }
     }
-  } else if (dim === "end") {
+    const winN = scanNetherPortal(bx, by, bz);
+    if (winN && insideNetherInterior(winN, bx, by, bz)) {
+      const forward = new THREE.Vector3(-Math.sin(yaw), 0, -Math.cos(yaw));
+      const right = new THREE.Vector3(Math.cos(yaw), 0, -Math.sin(yaw));
+      let ddx = 0, ddz = 0;
+      if (keys["ArrowUp"]) { ddx += forward.x; ddz += forward.z; }
+      if (keys["ArrowDown"]) { ddx -= forward.x; ddz -= forward.z; }
+      if (keys["ArrowRight"]) { ddx += right.x; ddz += right.z; }
+      if (keys["ArrowLeft"]) { ddx -= right.x; ddz -= right.z; }
+      if (ddx === 0 && ddz === 0) { ddx = forward.x; ddz = forward.z; }
+      overPortalSpawn = nearPortalSpawn(winN, { x: ddx, z: ddz });
+      const c = winCenter(winN);
+      overPortalFace = Math.atan2(-(c.x + 0.5 - overPortalSpawn.x), -(c.z + 0.5 - overPortalSpawn.z));
+      goToDimension("nether", NETHER_SPAWN.x, NETHER_SPAWN.y, NETHER_SPAWN.z);
+      showMsg("You entered The Nether");
+    }
+  } else if (dim === "end" || dim === "nether") {
     const by = Math.floor(pos.y + EYE);
-    const winE = scanEndPortal(bx, by, bz);
+    const winE = dim === "end" ? scanEndPortal(bx, by, bz) : scanOverPortal(bx, by, bz);
+    const winN = scanNetherPortal(bx, by, bz);
+    const inN = winN && insideNetherInterior(winN, bx, by, bz);
     const inE = winE && insideEndInterior(winE, bx, by, bz);
-    if (!inE) return;
-    if (!endCleared) {
+    if (!inN && !inE) return;
+    if (dim === "end" && !endCleared) {
       const now = performance.now();
       if (now - dormantMsgAt > 3000) {
         dormantMsgAt = now;
         showMsg("The End is sealed — slay the Ender Dragon to open its portals");
       }
+      return;
+    }
+    if (dim === "end" && inN) {
+      goToDimension("nether", NETHER_SPAWN.x, NETHER_SPAWN.y, NETHER_SPAWN.z);
+      showMsg("You entered The Nether");
+      return;
+    }
+    if (dim === "nether" && inE) {
+      goToDimension("end", END_SPAWN.x, END_SPAWN.y, END_SPAWN.z);
+      showMsg("You arrived in The End");
       return;
     }
     goToDimension("over", overPortalSpawn.x, overPortalSpawn.y, overPortalSpawn.z);
@@ -2998,17 +3475,19 @@ function serialize() {
   };
   const over = writeBlocks(worlds.over);
   const end = writeBlocks(worlds.end);
+  const nether = writeBlocks(worlds.nether);
   const placed = [];
   placedFlowers.forEach((p, k) => { const s = k.split(","); placed.push([+s[0], +s[1], +s[2], p.v, p.a]); });
   const m = placed.length;
-  const buf = new ArrayBuffer(93 + (over.length + end.length) * 4 + m * 5);
+  const buf = new ArrayBuffer(105 + (over.length + end.length + nether.length) * 4 + m * 5);
   const dv = new DataView(buf);
   let o = 0;
   new Uint8Array(buf, o, 9).set(SAVE_MAGIC); o += 9;
-  dv.setUint8(o++, 3); // format version
-  dv.setUint8(o++, dim === "end" ? 1 : 0);
+  dv.setUint8(o++, 4); // format version
+  dv.setUint8(o++, dim === "end" ? 1 : dim === "nether" ? 2 : 0);
   dv.setInt32(o, seed, true); o += 4;
   dv.setInt32(o, endSeed, true); o += 4;
+  dv.setInt32(o, netherSeed, true); o += 4;
   dv.setFloat64(o, pos.x, true); o += 8;
   dv.setFloat64(o, pos.y, true); o += 8;
   dv.setFloat64(o, pos.z, true); o += 8;
@@ -3033,6 +3512,13 @@ function serialize() {
     dv.setUint8(o++, z + 128);
     dv.setUint8(o++, id);
   }
+  dv.setUint32(o, nether.length, true); o += 4;
+  for (const [x, y, z, id] of nether) {
+    dv.setUint8(o++, x + 128);
+    dv.setUint8(o++, y);
+    dv.setUint8(o++, z + 128);
+    dv.setUint8(o++, id);
+  }
   dv.setUint32(o, m, true); o += 4;
   for (const [fx, fy, fz, fv, fa] of placed) {
     dv.setUint8(o++, fx + 128);
@@ -3050,13 +3536,19 @@ function deserialize(buf) {
   for (let i = 0; i < 9; i++) if (new Uint8Array(buf, o, 9)[i] !== SAVE_MAGIC[i]) throw new Error("Not a MiniCraft save");
   o += 9;
   const ver = dv.getUint8(o++);
-  if (ver !== 1 && ver !== 2 && ver !== 3) throw new Error("Unsupported save version");
+  if (ver !== 1 && ver !== 2 && ver !== 3 && ver !== 4) throw new Error("Unsupported save version");
   placedFlowers.clear();
   let dimFlag = 0, endSeedVal = endSeed;
   if (ver >= 2) dimFlag = dv.getUint8(o++);
-  seed = dv.getInt32(o, true); o += 4;
-  if (ver >= 2) { endSeedVal = dv.getInt32(o, true); o += 4; }
-  if (ver >= 2) endSeed = endSeedVal;
+  if (ver >= 4) {
+    seed = dv.getInt32(o, true); o += 4;
+    endSeed = dv.getInt32(o, true); o += 4;
+    netherSeed = dv.getInt32(o, true); o += 4;
+  } else {
+    seed = dv.getInt32(o, true); o += 4;
+    if (ver >= 2) { endSeedVal = dv.getInt32(o, true); o += 4; }
+    if (ver >= 2) endSeed = endSeedVal;
+  }
   pos.x = dv.getFloat64(o, true); o += 8;
   pos.y = dv.getFloat64(o, true); o += 8;
   pos.z = dv.getFloat64(o, true); o += 8;
@@ -3084,6 +3576,16 @@ function deserialize(buf) {
       worlds.end.set(key(x, y, z), dv.getUint8(o++));
     }
   }
+  if (ver >= 4) {
+    const nn = dv.getUint32(o, true); o += 4;
+    worlds.nether.clear();
+    for (let i = 0; i < nn; i++) {
+      const x = dv.getUint8(o++) - 128;
+      const y = dv.getUint8(o++);
+      const z = dv.getUint8(o++) - 128;
+      worlds.nether.set(key(x, y, z), dv.getUint8(o++));
+    }
+  }
   if (ver >= 3) {
     const m = dv.getUint32(o, true); o += 4;
     for (let i = 0; i < m; i++) {
@@ -3095,7 +3597,7 @@ function deserialize(buf) {
       placedFlowers.set(key(x, y, z), { v, a });
     }
   }
-  dim = dimFlag === 1 ? "end" : "over";
+  dim = dimFlag === 2 ? "nether" : dimFlag === 1 ? "end" : "over";
   world = worlds[dim];
 }
 
@@ -3153,7 +3655,7 @@ function damageDragon(amount) {
 
 function updateDimLabel() {
   if (!started) { dimEl.style.display = "none"; return; }
-  dimEl.textContent = dim === "end" ? "The End" : "Overworld";
+  dimEl.textContent = dim === "end" ? "The End" : dim === "nether" ? "The Nether" : "Overworld";
   dimEl.style.display = "block";
 }
 function showMsg(text) {
@@ -3383,6 +3885,7 @@ async function restoreSave(buf) {
     updateDimLabel();
     clearPortalFills();
     if (dim === "end") { endCleared = false; buildReturnPortal(); spawnDragon(); spawnEndermen(); }
+    if (dim === "nether") { netReturnWin = null; buildNetherPortal(); }
     scanWorldPortals();
     lastManualSave = Date.now();
     return true;
@@ -3476,9 +3979,11 @@ function resetDims() {
   world = worlds.over;
   clearPortalFills();
   worlds.end.clear();
+  worlds.nether.clear();
   overPortalSpawn = { x: 0.5, y: 1.01, z: 0.5 };
   overPortalFace = null;
   endCleared = false;
+  netReturnWin = null;
   protectedBlocks.clear();
   if (dragon.mesh) removeDragon();
   if (endermen.length) removeEndermen();
@@ -3494,6 +3999,7 @@ async function buildWorld() {
     resetDims();
     seed = Math.floor(Math.random() * 100000);
     endSeed = Math.floor(Math.random() * 100000);
+    netherSeed = Math.floor(Math.random() * 100000);
     placedFlowers.clear();
     generateWorld();
     spawnPlayer();
@@ -3556,7 +4062,7 @@ document.addEventListener("visibilitychange", () => { if (document.hidden && can
 // ---------------------------------------------------------------------------
 // UI / hotbar
 // ---------------------------------------------------------------------------
-const HOTBAR = [GRASS, DIRT, STONE, SAND, LOG, PLANKS, GLASS, LEAVES, WATER, FLOWER, TNT, PORTAL];
+const HOTBAR = [GRASS, DIRT, STONE, SAND, LOG, PLANKS, GLASS, LEAVES, WATER, FLOWER, TNT, PORTAL, OBSIDIAN, NETHERRACK];
 let selected = 0;
 const hotbarEl = document.getElementById("hotbar");
 
@@ -3798,6 +4304,12 @@ function loop(now) {
       for (const m of typeMats.get(WATER)) m.opacity = o;
     }
 
+    // Glowing lava flicker
+    if (typeMats.has(LAVA)) {
+      const k = 0.85 + 0.15 * Math.sin(now * 0.005) * Math.sin(now * 0.0013 + 1);
+      for (const m of typeMats.get(LAVA)) m.color.setScalar(k);
+    }
+
     const pcx = chunkOf(freeCam ? camPos.x : pos.x);
     const pcz = chunkOf(freeCam ? camPos.z : pos.z);
     if (pcx !== meshCx || pcz !== meshCz) streamChunks();
@@ -3810,6 +4322,7 @@ const SVGNS = "http://www.w3.org/2000/svg";
 let dt = 0.016;
 buildHotbar();
 buildPortalArt();
+buildNetherPortalArt();
 requestAnimationFrame(loop);
 
 function buildPortalArt() {
@@ -3832,6 +4345,30 @@ function buildPortalArt() {
       rect.setAttribute("width", size); rect.setAttribute("height", size); rect.setAttribute("rx", 3);
       rect.setAttribute("fill", "#5a2da6");
       rect.setAttribute("stroke", "#7b2ff7"); rect.setAttribute("stroke-width", "1.5");
+      svg.appendChild(rect);
+    }
+  host.appendChild(svg);
+}
+
+function buildNetherPortalArt() {
+  const host = document.getElementById("netherArt");
+  if (!host) return;
+  const nw = 5, nh = 4, cell = 19, size = 15, off = 6;
+  const w = off * 2 + (nw - 1) * cell + size;
+  const h = off * 2 + (nh - 1) * cell + size;
+  const svg = document.createElementNS(SVGNS, "svg");
+  svg.setAttribute("viewBox", `0 0 ${w} ${h}`);
+  svg.setAttribute("width", "150");
+  svg.setAttribute("height", String(Math.round(150 * h / w)));
+  for (let r = 0; r < nh; r++)
+    for (let c = 0; c < nw; c++) {
+      if (r !== 0 && r !== nh - 1 && c !== 0 && c !== nw - 1) continue;
+      const x = off + c * cell, y = off + r * cell;
+      const rect = document.createElementNS(SVGNS, "rect");
+      rect.setAttribute("x", x); rect.setAttribute("y", y);
+      rect.setAttribute("width", size); rect.setAttribute("height", size); rect.setAttribute("rx", 3);
+      rect.setAttribute("fill", "#0a0a0a");
+      rect.setAttribute("stroke", "#8b90a0"); rect.setAttribute("stroke-width", "1.5");
       svg.appendChild(rect);
     }
   host.appendChild(svg);
