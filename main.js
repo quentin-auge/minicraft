@@ -2300,6 +2300,8 @@ function goToDimension(name, sx, sy, sz) {
     } else {
       yaw = overPortalFace;
     }
+    const s = resolveSpawn(overPortalSpawn.x, overPortalSpawn.y, overPortalSpawn.z);
+    sx = s.x; sy = s.y; sz = s.z;
   }
   if (freeCam) { freeCam = false; }
   Object.keys(keys).forEach((k) => { keys[k] = false; });
@@ -2782,6 +2784,47 @@ function nearPortalSpawn(win, dir) {
         if (s) return s;
       }
   return { x: win.minX + 0.5, y: by, z: win.minZ - 0.5 };
+}
+
+// Find a safe landing spot near (sx, sy, sz) on live terrain: full body
+// clearance (no walls), solid ground under the feet, and not inside any
+// portal interior so you never arrive embedded in rock or standing in a
+// frame that would instantly re-teleport you.
+function resolveSpawn(sx, sy, sz) {
+  const cx = Math.floor(sx), cz = Math.floor(sz), cy = Math.floor(sy);
+  const wins = [...collectEndWins(cx, cy, cz, 16), ...collectNetherWins(cx, cy, cz, 16)];
+  const inPortalBody = (px, py, pz) => {
+    const bx = Math.floor(px), bz = Math.floor(pz);
+    for (const w of wins)
+      for (let by = Math.floor(py); by <= Math.floor(py + PLAYER_H); by++)
+        if (insideEndInterior(w, bx, by, bz) || insideNetherInterior(w, bx, by, bz)) return true;
+    return false;
+  };
+  const bodyClear = (px, py, pz) => {
+    for (let bx = Math.floor(px - PLAYER_HW + 0.02); bx <= Math.floor(px + PLAYER_HW - 0.02); bx++)
+      for (let by = Math.floor(py + 0.02); by <= Math.floor(py + PLAYER_H - 0.02); by++)
+        for (let bz = Math.floor(pz - PLAYER_HW + 0.02); bz <= Math.floor(pz + PLAYER_HW - 0.02); bz++)
+          if (isSolid(bx, by, bz)) return false;
+    return true;
+  };
+  const groundTop = (ix, iz) => {
+    for (let y = cy + 8; y > cy - 40; y--)
+      if (isSolid(ix, y, iz)) return y + 1;
+    return null;
+  };
+  for (let r = 0; r <= 14; r++) {
+    for (let ix = cx - r; ix <= cx + r; ix++)
+      for (let iz = cz - r; iz <= cz + r; iz++) {
+        if (r > 0 && ix > cx - r && ix < cx + r && iz > cz - r && iz < cz + r) continue;
+        const top = groundTop(ix, iz);
+        if (top == null) continue;
+        const px = ix + 0.5, py = top, pz = iz + 0.5;
+        if (!bodyClear(px, py, pz)) continue;
+        if (inPortalBody(px, py, pz)) continue;
+        return { x: px, y: py, z: pz };
+      }
+  }
+  return { x: sx, y: sy, z: sz };
 }
 
 function checkPortal() {

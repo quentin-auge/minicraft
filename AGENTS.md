@@ -192,7 +192,12 @@ small Python server for saving/loading worlds.
   build your own End-frame return portal in either orientation. The return
   portal's frame blocks are indestructible (`protectedBlocks`, checked by
   `breakBlock` and the TNT blast loop). Returning drops you beside the
-  Overworld portal (never on it), flying is forbidden in the End, and free-cam
+  Overworld portal (never on it) and the landing spot is re-resolved on live
+  terrain (`resolveSpawn`: a ring search from the recorded entry spot that
+  requires full body clearance, solid ground under the feet, and no portal
+  interior — so a build or blast at the old spot never leaves you stuck in a
+  wall, floating, or standing in another frame), flying is forbidden in the
+  End, and free-cam
   (F) is disabled there; you land just short of the return portal (cooldown +
   zeroed movement prevent an instant round-trip).
   Nether portals work in either orientation too. Upright frames can be 5 wide ×
