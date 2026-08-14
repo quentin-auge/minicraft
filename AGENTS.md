@@ -124,27 +124,27 @@ small Python server for saving/loading worlds.
   NETHERRACK (dark blue Nether rock, in the hotbar after OBSIDIAN,
   `placeable: true`), SOULSAND (dark blue-grey Nether beach block,
   `placeable: false`),
-  GREENSTONE (the multicolour portal block: solid, `placeable: true`, in the
+  GLOWSTONE (the multicolour portal block: solid, `placeable: true`, in the
   hotbar, drawn unlit via `basicFace` so it shines at full
   strength no matter how far you stand from it. It comes in seven colours —
-  red, blue, green, orange, turquoise, yellow, purple (`GREEN_PALETTES`,
-  one tile texture per colour in `GREEN_TEX`); placing a stone rolls a random
-  colour, but if any existing greenstone sits within 10 blocks it inherits that
-  nearest stone's colour (`greenVariantNear`), so builds grow into single-colour
+  red, blue, green, orange, turquoise, yellow, purple (`GLOW_PALETTES`,
+  one tile texture per colour in `GLOW_TEX`); placing a stone rolls a random
+  colour, but if any existing glowstone sits within 10 blocks it inherits that
+  nearest stone's colour (`glowVariantNear`), so builds grow into single-colour
   clusters. Each stone's colour is stored per block per dimension
-  (`greenVariants`/`worldGreenVariants`, persisted in save format v6; old saves
+  (`glowVariants`/`worldGlowVariants`, persisted in save format v6; old saves
   are backfilled with clustered colours on load), rendered per-chunk as one
-  `InstancedMesh` per colour (`getGreenMats`, keyed `greenstone_v`), and the
+  `InstancedMesh` per colour (`getGlowMats`, keyed `glowstone_v`), and the
   auto-built volcano door rings each get one random colour of their own. Each
   cluster casts a steady pool of light in its own colour:
-  greenstones are merged into stable clusters (`recomputeGreenClusters`, a whole
+  glowstones are merged into stable clusters (`recomputeGlowClusters`, a whole
   6×6 volcano door ring shares one cluster, and each cluster's colour is the
   majority variant among its stones) whose centroids are recomputed only
   when blocks change, and a fixed pool of `PointLight`s
-  (`syncGreenLights`/`clearGreenLights`, `GREEN_LIGHT_MAX` 16, intensity 60,
-  `distance: 12`, decay 1, colour set from `GREEN_PALETTES[v].glow`) is
+  (`syncGlowLights`/`clearGlowLights`, `GLOW_LIGHT_MAX` 16, intensity 60,
+  `distance: 12`, decay 1, colour set from `GLOW_PALETTES[v].glow`) is
   assigned to the clusters nearest the player — the
-  assignment re-evaluates at most every `GREEN_LIGHT_REFRESH` (0.5 s) and only
+  assignment re-evaluates at most every `GLOW_LIGHT_REFRESH` (0.5 s) and only
   when the player crosses a chunk, and each light keeps its current cluster
   while that cluster stays among the nearest lit ones, so the glow never jumps
   between the stones of a ring, never flickers while you walk toward a cluster,
@@ -153,7 +153,7 @@ small Python server for saving/loading worlds.
   Nether/End hotbar; volcano door frames are built from it so tunnel mouths
   also glow).
   The **hotbar is dimension-aware** (`hotbarList`/`rebuildHotbar`): in the
-  Nether and the End the Flower slot holds GREENSTONE and the Water slot holds
+  Nether and the End the Flower slot holds GLOWSTONE and the Water slot holds
   BLUEFIRE, while the Overworld keeps flowers and water; the hotbar is rebuilt
   on every dimension change, load and new world.)
 - **Player**: AABB collision, gravity, jump, walk/sprint, fly mode, swimming,
@@ -341,7 +341,7 @@ small Python server for saving/loading worlds.
   (`dOut` scan via `volcanoHeightAt`, threshold `hT + 5`) so the bore stays
   buried in rock, the volcano surface is flattened into a level apron
   (`plat + 1 .. plat + 6` carved from `dOut+1` for 8 blocks) so the entrance
-  reads square, and every opening is closed with a strict 6×6 GREENSTONE (block
+  reads square, and every opening is closed with a strict 6×6 GLOWSTONE (block
   id 20, unlit `basicFace` bright-green pixel texture so it shines) square ring
   (1 block thick, 4×4 hole) pressed against the flank. Tunnels carve
   NETHERRACK/SOULSAND/BLUEFIRE and generation runs
@@ -434,11 +434,11 @@ small Python server for saving/loading worlds.
 - **Save/load**: binary format (`SAVE_MAGIC`, version 6) capturing world
   blocks (over/end/nether), dim, seeds (over/end/nether), player pos/yaw/pitch,
   fly state, hotbar selection,
-  placed-flowers' stored color/rotation (`placedFlowers`) and per-greenstone
-  colour entries (`greenVariants`, one per dimension, in v6); extra per-entry byte
+  placed-flowers' stored color/rotation (`placedFlowers`) and per-glowstone
+  colour entries (`glowVariants`, one per dimension, in v6); extra per-entry byte
   pair for flowers in v3, the nether dim/seed/blocks added in v4; older v1/v2/v3
   saves still load, and v5 saves from the briefly-lived torch era are tolerated
-  and read past their torch entries. Saves older than v6 have their greenstone
+  and read past their torch entries. Saves older than v6 have their glowstone
   colours backfilled (clustered) on load.
   Backends: File System Access API (`pickSaveFile`/`saveToFile`),
   IndexedDB fallback, and the server API (`apiLoad`/`apiList`). Autosave

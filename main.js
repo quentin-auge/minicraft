@@ -3,7 +3,7 @@ import * as THREE from "three";
 // ---------------------------------------------------------------------------
 // Block definitions
 // ---------------------------------------------------------------------------
-const AIR = 0, GRASS = 1, DIRT = 2, STONE = 3, SAND = 4, LOG = 5, LEAVES = 6, WATER = 7, PLANKS = 8, GLASS = 9, TNT = 10, FLOWER = 11, PORTAL = 12, ENDSTONE = 13, CLOUD = 14, OBSIDIAN = 15, BLUEFIRE = 16, NETHERRACK = 17, SOULSAND = 18, GREENSTONE = 20;
+const AIR = 0, GRASS = 1, DIRT = 2, STONE = 3, SAND = 4, LOG = 5, LEAVES = 6, WATER = 7, PLANKS = 8, GLASS = 9, TNT = 10, FLOWER = 11, PORTAL = 12, ENDSTONE = 13, CLOUD = 14, OBSIDIAN = 15, BLUEFIRE = 16, NETHERRACK = 17, SOULSAND = 18, GLOWSTONE = 20;
 
 const BLOCK_INFO = {
   [GRASS]:   { name: "Grass",    solid: true,  opaque: true,  placeable: true },
@@ -24,14 +24,14 @@ const BLOCK_INFO = {
   [BLUEFIRE]:{ name: "Blue Fire", solid: false, opaque: false, placeable: true },
   [NETHERRACK]:{ name: "Netherrack", solid: true, opaque: true, placeable: true },
   [SOULSAND]:  { name: "Soul Sand",   solid: true, opaque: true, placeable: false },
-  [GREENSTONE]:{ name: "Greenstone",  solid: true, opaque: true, placeable: true },
+  [GLOWSTONE]:{ name: "Glowstone",  solid: true, opaque: true, placeable: true },
 };
 
-// Greenstone comes in seven colours (red, blue, green, orange, turquoise,
+// Glowstone comes in seven colours (red, blue, green, orange, turquoise,
 // yellow, purple). Each palette drives both the block texture and the colour
 // of the light the stone casts. Placed stones cluster: a block placed within
 // 10 blocks of an existing one inherits its colour, otherwise it rolls random.
-const GREEN_PALETTES = [
+const GLOW_PALETTES = [
   { base: "#5c1020", noise: [92, 16, 32],  bright: "#ff3d5c", dark: "rgba(40,4,12,0.35)",  hi: "rgba(255,214,226,0.9)", glow: 0xff3d5c },
   { base: "#10325c", noise: [16, 50, 92],  bright: "#3d8aff", dark: "rgba(4,12,40,0.35)",   hi: "rgba(214,232,255,0.9)", glow: 0x3d8aff },
   { base: "#0e5c1c", noise: [14, 92, 28],  bright: "#3dff7a", dark: "rgba(3,28,9,0.35)",    hi: "rgba(210,255,220,0.9)", glow: 0x3dff7a },
@@ -40,7 +40,7 @@ const GREEN_PALETTES = [
   { base: "#5c4a0e", noise: [92, 74, 14],  bright: "#ffe53d", dark: "rgba(40,30,3,0.35)",   hi: "rgba(255,251,214,0.9)", glow: 0xffe53d },
   { base: "#3a0e5c", noise: [58, 14, 92],  bright: "#b23dff", dark: "rgba(24,3,40,0.35)",   hi: "rgba(240,214,255,0.9)", glow: 0xb23dff },
 ];
-const GREEN_VARIANT_COUNT = GREEN_PALETTES.length;
+const GLOW_VARIANT_COUNT = GLOW_PALETTES.length;
 
 // ---------------------------------------------------------------------------
 // Deterministic noise
@@ -97,7 +97,7 @@ const makeTex = (base, amount = 24) => canvasTex((ctx) => {
   ctx.fillRect(0, 0, 16, 16);
   pxNoise(ctx, base, amount);
 });
-function drawGreenMesh(ctx, p) {
+function drawGlowMesh(ctx, p) {
   ctx.fillStyle = p.base; ctx.fillRect(0, 0, 16, 16);
   pxNoise(ctx, p.noise, 32);
   ctx.fillStyle = p.bright;
@@ -230,7 +230,7 @@ const TEX = {
     ctx.fillStyle = "rgba(30,36,70,0.5)";
     for (let i = 0; i < 4; i++) ctx.fillRect(Math.random() * 14, Math.random() * 14, 3, 1);
   }),
-  greenstone: canvasTex((ctx) => drawGreenMesh(ctx, GREEN_PALETTES[2])),
+  glowstone: canvasTex((ctx) => drawGlowMesh(ctx, GLOW_PALETTES[2])),
   flower: canvasTex((ctx) => {
     const petals = ["rgb(232,30,52)", "rgb(56,106,252)", "rgb(248,188,16)", "rgb(16,204,186)", "rgb(244,132,34)", "rgb(160,80,224)", "rgb(232,30,52)", "rgb(56,106,252)"];
     ctx.clearRect(0, 0, 16, 16);
@@ -253,7 +253,7 @@ const TEX = {
     ctx.fillRect(7, 4, 2, 8);
   }),
 };
-const GREEN_TEX = GREEN_PALETTES.map((p) => canvasTex((ctx) => drawGreenMesh(ctx, p)));
+const GLOW_TEX = GLOW_PALETTES.map((p) => canvasTex((ctx) => drawGlowMesh(ctx, p)));
 
 function material(map, opts = {}) {
   return new THREE.MeshLambertMaterial({ map, ...opts });
@@ -288,7 +288,7 @@ function materialsFor(id) {
     case BLUEFIRE: return basicFace(TEX.bluefire);
     case NETHERRACK: return faceTex(TEX.netherrack);
     case SOULSAND: return faceTex(TEX.soulsand);
-    case GREENSTONE: return basicFace(TEX.greenstone);
+    case GLOWSTONE: return basicFace(TEX.glowstone);
     case PORTAL: return faceTex(TEX.portal);
     default: return faceTex(TEX.dirt);
   }
@@ -358,14 +358,14 @@ const getBlock = (x, y, z) => world.get(key(x, y, z)) || AIR;
 
 const placedFlowers = new Map();
 
-// Greenstone colour per block, kept per dimension (block keys don't include the
+// Glowstone colour per block, kept per dimension (block keys don't include the
 // dimension, and the Nether/End regenerate on every entry so their variants
 // are ephemeral anyway).
-const greenVariants = { over: new Map(), end: new Map(), nether: new Map() };
-const worldGreenVariants = new WeakMap([
-  [worlds.over, greenVariants.over],
-  [worlds.end, greenVariants.end],
-  [worlds.nether, greenVariants.nether],
+const glowVariants = { over: new Map(), end: new Map(), nether: new Map() };
+const worldGlowVariants = new WeakMap([
+  [worlds.over, glowVariants.over],
+  [worlds.end, glowVariants.end],
+  [worlds.nether, glowVariants.nether],
 ]);
 
 // Tracks every PORTAL/OBSIDIAN block so portal scans iterate only real frame
@@ -377,13 +377,13 @@ const worldPortalSets = new WeakMap([
   [worlds.nether, portalBlockSets.nether],
 ]);
 
-// Same trick for GREENSTONE blocks so the greenstone light clusters are derived
-// from just the greenstone blocks instead of scanning the whole world map.
-const greenstoneBlockSets = { over: new Set(), end: new Set(), nether: new Set() };
-const worldGreenstoneSets = new WeakMap([
-  [worlds.over, greenstoneBlockSets.over],
-  [worlds.end, greenstoneBlockSets.end],
-  [worlds.nether, greenstoneBlockSets.nether],
+// Same trick for GLOWSTONE blocks so the glowstone light clusters are derived
+// from just the glowstone blocks instead of scanning the whole world map.
+const glowstoneBlockSets = { over: new Set(), end: new Set(), nether: new Set() };
+const worldGlowstoneSets = new WeakMap([
+  [worlds.over, glowstoneBlockSets.over],
+  [worlds.end, glowstoneBlockSets.end],
+  [worlds.nether, glowstoneBlockSets.nether],
 ]);
 
 let portalDirty = true;   // any block edit forces a portal rescan
@@ -392,12 +392,12 @@ let worldDirty = true;    // any block edit marks the world for autosave
 function rebuildPortalBlocks() {
   for (const name of ["over", "end", "nether"]) {
     const set = portalBlockSets[name];
-    const gs = greenstoneBlockSets[name];
+    const gs = glowstoneBlockSets[name];
     set.clear();
     gs.clear();
     for (const [k, id] of worlds[name]) {
       if (id === PORTAL || id === OBSIDIAN) set.add(k);
-      if (id === GREENSTONE) gs.add(k);
+      if (id === GLOWSTONE) gs.add(k);
     }
   }
 }
@@ -406,8 +406,8 @@ function setBlock(x, y, z, id) {
   if (y < 0 || y > MAX_Y) return;
   const k = key(x, y, z);
   const pb = worldPortalSets.get(world);
-  const gs = worldGreenstoneSets.get(world);
-  const gv = worldGreenVariants.get(world);
+  const gs = worldGlowstoneSets.get(world);
+  const gv = worldGlowVariants.get(world);
   const wasG = gs.has(k);
   if (id === AIR) {
     world.delete(k);
@@ -417,11 +417,11 @@ function setBlock(x, y, z, id) {
   } else {
     world.set(k, id);
     if (id === PORTAL || id === OBSIDIAN) pb.add(k); else pb.delete(k);
-    if (id === GREENSTONE) gs.add(k); else gs.delete(k);
-    if (id !== GREENSTONE) gv.delete(k);
+    if (id === GLOWSTONE) gs.add(k); else gs.delete(k);
+    if (id !== GLOWSTONE) gv.delete(k);
   }
   if (id !== FLOWER) placedFlowers.delete(k);
-  if (wasG !== gs.has(k)) { recomputeGreenClusters(); syncGreenLights(); }
+  if (wasG !== gs.has(k)) { recomputeGlowClusters(); syncGlowLights(); }
   endMemo.dim = "";
   netherMemo.dim = "";
   portalDirty = true;
@@ -743,8 +743,8 @@ function generateWorld() {
   world = worlds.over;
   worlds.over.clear();
   portalBlockSets.over.clear();
-  greenstoneBlockSets.over.clear();
-  greenVariants.over.clear();
+  glowstoneBlockSets.over.clear();
+  glowVariants.over.clear();
   waterScale = 1 + (hash2(0, 0, seed + 333) * 4 | 0);
   waterDepth = 1 + (hash2(0, 0, seed + 444) * 4 | 0);
   basinFreq = 0.007 / Math.sqrt(waterScale);
@@ -828,8 +828,8 @@ function generateEnd() {
   const w = worlds.end;
   w.clear();
   portalBlockSets.end.clear();
-  greenstoneBlockSets.end.clear();
-  greenVariants.end.clear();
+  glowstoneBlockSets.end.clear();
+  glowVariants.end.clear();
   const R = END_PLATFORM_R;
   for (let x = -R; x <= R; x++)
     for (let z = -R; z <= R; z++)
@@ -932,7 +932,7 @@ function fillVolcanoShafts() {
 // cone at ten different heights (interleaved so neighbouring tunnels are never
 // at the same level), each running dead-straight from a mouth on the flank in
 // to the central lava shaft. The surface is flattened into a level apron at
-// each mouth and every entrance is closed with a strict 6x6 greenstone square
+// each mouth and every entrance is closed with a strict 6x6 glowstone square
 // ring around the 4x4 opening.
 function volcanoTunnels() {
   const w = worlds.nether;
@@ -983,9 +983,9 @@ function volcanoTunnels() {
           }
         }
       }
-      // Strict 6x6 greenstone square ring (1 thick) around the 4x4 opening.
+      // Strict 6x6 glowstone square ring (1 thick) around the 4x4 opening.
       // Each ring is one colour so every tunnel mouth glows a single hue.
-      const doorV = Math.floor(Math.random() * GREEN_VARIANT_COUNT);
+      const doorV = Math.floor(Math.random() * GLOW_VARIANT_COUNT);
       const pX = v.x + Math.round(dx * dOut);
       const pZ = v.z + Math.round(dz * dOut);
       const frame = (off, yy) => {
@@ -993,9 +993,9 @@ function volcanoTunnels() {
         const wz = pZ + Math.round(mz * off);
         if (wx < -S || wx > S || wz < -S || wz > S) return;
         const k = key(wx, yy, wz);
-        w.set(k, GREENSTONE);
-        greenstoneBlockSets.nether.add(k);
-        greenVariants.nether.set(k, doorV);
+        w.set(k, GLOWSTONE);
+        glowstoneBlockSets.nether.add(k);
+        glowVariants.nether.set(k, doorV);
       };
       for (let off = -3; off <= 2; off++) { frame(off, plat); frame(off, plat + 5); }
       for (let yy = plat; yy <= plat + 5; yy++) { frame(-3, yy); frame(2, yy); }
@@ -1097,8 +1097,8 @@ function generateNether() {
   const w = worlds.nether;
   w.clear();
   portalBlockSets.nether.clear();
-  greenstoneBlockSets.nether.clear();
-  greenVariants.nether.clear();
+  glowstoneBlockSets.nether.clear();
+  glowVariants.nether.clear();
   const S = WORLD_RADIUS;
   generateNetherRivers();
   generateVolcanoes();
@@ -1357,33 +1357,33 @@ const FLOWER_GEOS = [];
 for (let v = 0; v < FLOWER_VARIANT_COUNT; v++) FLOWER_GEOS.push(buildCubeGeometry(FLOWER_GRID, FLOWER_CUBES, flowerColorOf(v)));
 const FLOWER_MAT = new THREE.MeshLambertMaterial({ vertexColors: true });
 
-// The green portal block glows by itself — it is drawn with an unlit texture
+// The glowstone block glows by itself — it is drawn with an unlit texture
 // (`basicFace`) so it shines at full strength no matter how far
-// away you stand — and it casts a steady pool of green light onto the terrain
-// around it. Greenstones are merged into stable clusters (a whole volcano-door
+// away you stand — and it casts a steady pool of light in its own colour
+// onto the terrain around it. Glowstones are merged into stable clusters (a whole volcano-door
 // ring is one cluster) whose centroids are recomputed only when blocks change
-// (`recomputeGreenClusters`), and a fixed pool of `PointLight`s is assigned to
+// (`recomputeGlowClusters`), and a fixed pool of `PointLight`s is assigned to
 // the clusters nearest the player. The assignment re-evaluates at most every
-// `GREEN_LIGHT_REFRESH` seconds and only when the player crosses a chunk, and a
+// `GLOW_LIGHT_REFRESH` seconds and only when the player crosses a chunk, and a
 // light keeps its current cluster while that cluster stays among the nearest
 // lit ones — so the glow never jumps between the stones of a ring, never
 // flickers while you walk toward a cluster, and costs nothing in between.
-const GREEN_LIGHT_RADIUS = 12;
-const GREEN_LIGHT_DIST = Math.ceil(RENDER_DIST * CHUNK * Math.SQRT2);
-const GREEN_LIGHT_MAX = 16;
-const GREEN_LIGHT_CLUSTER = GREEN_LIGHT_RADIUS * 0.7;
-const GREEN_LIGHT_REFRESH = 0.5;
-let greenClusters = [];      // [{x, y, z, v}] centroid + dominant colour of each cluster
-let greenLights = [];        // pooled PointLights, each { cur: clusterIdx|-1, light }
-let greenLightT = 0;         // countdown until the next light re-assignment
-let greenLightCx = 0, greenLightCz = 0;  // chunk the assignment was last made for
+const GLOW_LIGHT_RADIUS = 12;
+const GLOW_LIGHT_DIST = Math.ceil(RENDER_DIST * CHUNK * Math.SQRT2);
+const GLOW_LIGHT_MAX = 16;
+const GLOW_LIGHT_CLUSTER = GLOW_LIGHT_RADIUS * 0.7;
+const GLOW_LIGHT_REFRESH = 0.5;
+let glowClusters = [];      // [{x, y, z, v}] centroid + dominant colour of each cluster
+let glowLights = [];        // pooled PointLights, each { cur: clusterIdx|-1, light }
+let glowLightT = 0;         // countdown until the next light re-assignment
+let glowLightCx = 0, glowLightCz = 0;  // chunk the assignment was last made for
 
-function recomputeGreenClusters() {
-  const set = worldGreenstoneSets.get(world);
-  const gv = worldGreenVariants.get(world);
-  greenClusters = [];
-  greenLightT = 0;
-  greenLightCx = greenLightCz = Infinity;
+function recomputeGlowClusters() {
+  const set = worldGlowstoneSets.get(world);
+  const gv = worldGlowVariants.get(world);
+  glowClusters = [];
+  glowLightT = 0;
+  glowLightCx = glowLightCz = Infinity;
   if (!set || !set.size) return;
   const groups = [];
   for (const k of set) {
@@ -1392,7 +1392,7 @@ function recomputeGreenClusters() {
     for (let i = 0; i < groups.length; i++) {
       const g = groups[i];
       const mx = g.sx / g.n - x, my = g.sy / g.n - y, mz = g.sz / g.n - z;
-      if (mx * mx + my * my + mz * mz < GREEN_LIGHT_CLUSTER * GREEN_LIGHT_CLUSTER) { gi = i; break; }
+      if (mx * mx + my * my + mz * mz < GLOW_LIGHT_CLUSTER * GLOW_LIGHT_CLUSTER) { gi = i; break; }
     }
     if (gi < 0) { groups.push({ n: 0, sx: 0, sy: 0, sz: 0, votes: {} }); gi = groups.length - 1; }
     const g = groups[gi];
@@ -1402,45 +1402,45 @@ function recomputeGreenClusters() {
   }
   for (const g of groups) {
     let best = 2, bestN = -1;   // default to green on ties
-    for (let v = 0; v < GREEN_VARIANT_COUNT; v++) {
+    for (let v = 0; v < GLOW_VARIANT_COUNT; v++) {
       const n = g.votes[v] || 0;
       if (n > bestN) { bestN = n; best = v; }
     }
-    greenClusters.push({ x: g.sx / g.n + 0.5, y: g.sy / g.n + 0.5, z: g.sz / g.n + 0.5, v: best });
+    glowClusters.push({ x: g.sx / g.n + 0.5, y: g.sy / g.n + 0.5, z: g.sz / g.n + 0.5, v: best });
   }
 }
 
-function syncGreenLights(dt = 0) {
-  if (greenLightT > 0) greenLightT -= dt;
+function syncGlowLights(dt = 0) {
+  if (glowLightT > 0) glowLightT -= dt;
   const pcx = chunkOf(camera.position.x), pcz = chunkOf(camera.position.z);
-  if (greenLightT > 0 || (pcx === greenLightCx && pcz === greenLightCz)) return;
-  greenLightT = GREEN_LIGHT_REFRESH;
-  greenLightCx = pcx;
-  greenLightCz = pcz;
-  if (!greenClusters.length) {
-    for (const L of greenLights) if (L) { L.light.visible = false; L.cur = -1; }
+  if (glowLightT > 0 || (pcx === glowLightCx && pcz === glowLightCz)) return;
+  glowLightT = GLOW_LIGHT_REFRESH;
+  glowLightCx = pcx;
+  glowLightCz = pcz;
+  if (!glowClusters.length) {
+    for (const L of glowLights) if (L) { L.light.visible = false; L.cur = -1; }
     return;
   }
   const cam = camera.position;
   const ranked = [];
-  for (let i = 0; i < greenClusters.length; i++) {
-    const c = greenClusters[i];
+  for (let i = 0; i < glowClusters.length; i++) {
+    const c = glowClusters[i];
     const dx = c.x - cam.x, dy = c.y - cam.y, dz = c.z - cam.z;
     const d2 = dx * dx + dy * dy + dz * dz;
-    if (d2 <= GREEN_LIGHT_DIST * GREEN_LIGHT_DIST) ranked.push([d2, i]);
+    if (d2 <= GLOW_LIGHT_DIST * GLOW_LIGHT_DIST) ranked.push([d2, i]);
   }
   ranked.sort((a, b) => a[0] - b[0]);
-  const want = Math.min(GREEN_LIGHT_MAX, ranked.length);
-  const active = new Uint8Array(greenClusters.length);
+  const want = Math.min(GLOW_LIGHT_MAX, ranked.length);
+  const active = new Uint8Array(glowClusters.length);
   // First keep every light that already sits on a still-ranked cluster, so the
   // pool never hops between clusters while the player walks around.
-  for (let i = 0; i < greenLights.length; i++) {
-    const L = greenLights[i];
-    if (!L || L.cur < 0 || L.cur >= greenClusters.length) continue;
+  for (let i = 0; i < glowLights.length; i++) {
+    const L = glowLights[i];
+    if (!L || L.cur < 0 || L.cur >= glowClusters.length) continue;
     for (let j = 0; j < want; j++) {
       if (ranked[j][1] === L.cur) {
         active[L.cur] = 1;
-        L.light.color.setHex(GREEN_PALETTES[greenClusters[L.cur].v].glow);
+        L.light.color.setHex(GLOW_PALETTES[glowClusters[L.cur].v].glow);
         break;
       }
     }
@@ -1450,34 +1450,34 @@ function syncGreenLights(dt = 0) {
     const ci = ranked[j][1];
     if (active[ci]) continue;
     let slot = -1;
-    for (let i = 0; i < GREEN_LIGHT_MAX; i++) {
-      const L = greenLights[i];
-      if (!L || L.cur < 0 || (L.cur < greenClusters.length && !active[L.cur])) { slot = i; break; }
+    for (let i = 0; i < GLOW_LIGHT_MAX; i++) {
+      const L = glowLights[i];
+      if (!L || L.cur < 0 || (L.cur < glowClusters.length && !active[L.cur])) { slot = i; break; }
     }
     if (slot < 0) break;
-    const L = greenLights[slot] || (greenLights[slot] = makeGreenLight());
+    const L = glowLights[slot] || (glowLights[slot] = makeGlowLight());
     L.cur = ci;
-    L.light.color.setHex(GREEN_PALETTES[greenClusters[ci].v].glow);
-    L.light.position.set(greenClusters[ci].x, greenClusters[ci].y - 0.15, greenClusters[ci].z);
+    L.light.color.setHex(GLOW_PALETTES[glowClusters[ci].v].glow);
+    L.light.position.set(glowClusters[ci].x, glowClusters[ci].y - 0.15, glowClusters[ci].z);
     L.light.visible = true;
     active[ci] = 1;
   }
-  for (let i = 0; i < greenLights.length; i++) {
-    const L = greenLights[i];
-    if (L && (L.cur < 0 || L.cur >= greenClusters.length || !active[L.cur])) {
+  for (let i = 0; i < glowLights.length; i++) {
+    const L = glowLights[i];
+    if (L && (L.cur < 0 || L.cur >= glowClusters.length || !active[L.cur])) {
       L.light.visible = false;
       L.cur = -1;
     }
   }
 }
-function makeGreenLight() {
-  const light = new THREE.PointLight(0x3dff7a, 60, GREEN_LIGHT_RADIUS, 1);
+function makeGlowLight() {
+  const light = new THREE.PointLight(0x3dff7a, 60, GLOW_LIGHT_RADIUS, 1);
   scene.add(light);
   return { cur: -1, light };
 }
-function clearGreenLights() {
-  for (const L of greenLights) if (L) scene.remove(L.light);
-  greenLights = [];
+function clearGlowLights() {
+  for (const L of glowLights) if (L) scene.remove(L.light);
+  glowLights = [];
 }
 function flowerVariant(x, z) {
   let r = hash2(x, z, seed + 99999) * FLOWER_WEIGHT_SUM;
@@ -1507,11 +1507,11 @@ function flowerAngleAt(x, y, z) {
   return p ? p.a : flowerAngle(x, z);
 }
 
-// A placed greenstone inherits the colour of the nearest greenstone within 10
+// A placed glowstone inherits the colour of the nearest glowstone within 10
 // blocks (so builds cluster by colour); otherwise it rolls a fresh random one.
-function greenVariantNear(x, y, z) {
-  const set = worldGreenstoneSets.get(world);
-  const gv = worldGreenVariants.get(world);
+function glowVariantNear(x, y, z) {
+  const set = worldGlowstoneSets.get(world);
+  const gv = worldGlowVariants.get(world);
   let best = -1, bestD = 100;
   for (const k of set) {
     const [ox, oy, oz] = keyXYZ(k);
@@ -1522,10 +1522,10 @@ function greenVariantNear(x, y, z) {
       if (v !== undefined) { best = v; bestD = d2; }
     }
   }
-  return best >= 0 ? best : Math.floor(Math.random() * GREEN_VARIANT_COUNT);
+  return best >= 0 ? best : Math.floor(Math.random() * GLOW_VARIANT_COUNT);
 }
-function greenVariantAt(x, y, z) {
-  const v = worldGreenVariants.get(world).get(key(x, y, z));
+function glowVariantAt(x, y, z) {
+  const v = worldGlowVariants.get(world).get(key(x, y, z));
   return v === undefined ? 2 : v;   // default to green
 }
 
@@ -1543,10 +1543,10 @@ function getTypeMats(id) {
   if (!typeMats.has(id)) typeMats.set(id, materialsFor(id));
   return typeMats.get(id);
 }
-const greenMats = new Map();   // greenstone variant -> shared material[6]
-function getGreenMats(v) {
-  if (!greenMats.has(v)) greenMats.set(v, basicFace(GREEN_TEX[v]));
-  return greenMats.get(v);
+const glowMats = new Map();   // glowstone variant -> shared material[6]
+function getGlowMats(v) {
+  if (!glowMats.has(v)) glowMats.set(v, basicFace(GLOW_TEX[v]));
+  return glowMats.get(v);
 }
 function disposeChunkMeshes(meshes) {
   for (const mesh of meshes.values()) { scene.remove(mesh); mesh.geometry.dispose(); }
@@ -1565,15 +1565,15 @@ function rebuildChunk(cx, cz) {
   const counts = {};
   const exposed = [];
   const flowers = [];
-  const greens = [];
+  const glows = [];
   for (let x = x0; x <= x1; x++)
     for (let z = z0; z <= z1; z++) {
       for (let y = 0; y <= MAX_Y; y++) {
         const id = getBlock(x, y, z);
         if (id === AIR || !BLOCK_INFO[id]) continue;
         if (id === FLOWER) { flowers.push([x, y, z]); continue; }
-        if (id === GREENSTONE) {
-          if (isExposed(x, y, z)) greens.push([x, y, z]);
+        if (id === GLOWSTONE) {
+          if (isExposed(x, y, z)) glows.push([x, y, z]);
           continue;
         }
         if (!isExposed(x, y, z)) continue;
@@ -1625,14 +1625,14 @@ function rebuildChunk(cx, cz) {
       meshes.set("flower_" + v, mesh);
     }
   }
-  if (greens.length) {
+  if (glows.length) {
     const perVariant = [];
-    for (let v = 0; v < GREEN_VARIANT_COUNT; v++) perVariant.push([]);
-    for (const [gx, gy, gz] of greens) perVariant[greenVariantAt(gx, gy, gz)].push([gx, gy, gz]);
-    for (let v = 0; v < GREEN_VARIANT_COUNT; v++) {
+    for (let v = 0; v < GLOW_VARIANT_COUNT; v++) perVariant.push([]);
+    for (const [gx, gy, gz] of glows) perVariant[glowVariantAt(gx, gy, gz)].push([gx, gy, gz]);
+    for (let v = 0; v < GLOW_VARIANT_COUNT; v++) {
       const list = perVariant[v];
       if (!list.length) continue;
-      const mesh = new THREE.InstancedMesh(boxGeo, getGreenMats(v), list.length);
+      const mesh = new THREE.InstancedMesh(boxGeo, getGlowMats(v), list.length);
       let i = 0;
       for (const [gx, gy, gz] of list) {
         dummy.position.set(gx + 0.5, gy + 0.5, gz + 0.5);
@@ -1644,7 +1644,7 @@ function rebuildChunk(cx, cz) {
       mesh.instanceMatrix.needsUpdate = true;
       mesh.computeBoundingSphere();
       scene.add(mesh);
-      meshes.set("greenstone_" + v, mesh);
+      meshes.set("glowstone_" + v, mesh);
     }
   }
   chunkMeshes.set(ck, meshes);
@@ -2255,7 +2255,7 @@ function placeBlock(id) {
     if ((under === WATER || under === BLUEFIRE) && id !== under) return;
   }
   if (id === FLOWER) placedFlowers.set(key(px, py, pz), { v: randomFlowerVariant(), a: Math.random() * Math.PI * 2 });
-  if (id === GREENSTONE) worldGreenVariants.get(world).set(key(px, py, pz), greenVariantNear(px, py, pz));
+  if (id === GLOWSTONE) worldGlowVariants.get(world).set(key(px, py, pz), glowVariantNear(px, py, pz));
   setBlock(px, py, pz, id);
   refreshBlocks([[px, py, pz]]);
   queueSave();
@@ -2870,7 +2870,7 @@ function setDimensionEnv() {
 function goToDimension(name, sx, sy, sz) {
   dim = name;
   world = worlds[name];
-  clearGreenLights();
+  clearGlowLights();
   rebuildHotbar();
   portalDirty = true;
   worldDirty = true;
@@ -2914,8 +2914,8 @@ function goToDimension(name, sx, sy, sz) {
   vel.set(0, 0, 0);
   rebuildMeshes();
   scanWorldPortals();
-  recomputeGreenClusters();
-  syncGreenLights();
+  recomputeGlowClusters();
+  syncGlowLights();
   updateCamera();
   portalCd = 1.5;
   queueSave();
@@ -4278,7 +4278,7 @@ function serialize() {
   const over = worlds.over, end = worlds.end, nether = worlds.nether;
   const on = count(over), en = count(end), nn = count(nether);
   const m = placedFlowers.size;
-  const gov = greenVariants.over.size, gev = greenVariants.end.size, gnv = greenVariants.nether.size;
+  const gov = glowVariants.over.size, gev = glowVariants.end.size, gnv = glowVariants.nether.size;
   const buf = new ArrayBuffer(117 + (on + en + nn) * 4 + m * 5 + (gov + gev + gnv) * 4);
   const dv = new DataView(buf);
   let o = 0;
@@ -4330,9 +4330,9 @@ function serialize() {
       dv.setUint8(o++, v);
     });
   };
-  writeVariants(greenVariants.over, gov);
-  writeVariants(greenVariants.end, gev);
-  writeVariants(greenVariants.nether, gnv);
+  writeVariants(glowVariants.over, gov);
+  writeVariants(glowVariants.end, gev);
+  writeVariants(glowVariants.nether, gnv);
   return buf;
 }
 
@@ -4344,9 +4344,9 @@ function deserialize(buf) {
   const ver = dv.getUint8(o++);
   if (ver !== 1 && ver !== 2 && ver !== 3 && ver !== 4 && ver !== 5 && ver !== 6) throw new Error("Unsupported save version");
   placedFlowers.clear();
-  greenVariants.over.clear();
-  greenVariants.end.clear();
-  greenVariants.nether.clear();
+  glowVariants.over.clear();
+  glowVariants.end.clear();
+  glowVariants.nether.clear();
   let dimFlag = 0, endSeedVal = endSeed;
   if (ver >= 2) dimFlag = dv.getUint8(o++);
   if (ver >= 4) {
@@ -4420,21 +4420,21 @@ function deserialize(buf) {
         const y = dv.getUint8(o++);
         const z = dv.getUint8(o++) - 128;
         const v = dv.getUint8(o++);
-        if (v < GREEN_VARIANT_COUNT) map.set(key(x, y, z), v);
+        if (v < GLOW_VARIANT_COUNT) map.set(key(x, y, z), v);
       }
     };
-    readVariants(greenVariants.over);
-    readVariants(greenVariants.end);
-    readVariants(greenVariants.nether);
+    readVariants(glowVariants.over);
+    readVariants(glowVariants.end);
+    readVariants(glowVariants.nether);
   } else {
-    // Old saves have no greenstone colours: give every greenstone a clustered
+    // Old saves have no glowstone colours: give every glowstone a clustered
     // colour so pre-built and placed stones don't all revert to green.
     for (const name of ["over", "end", "nether"]) {
       const w = worlds[name];
-      const gv = greenVariants[name];
+      const gv = glowVariants[name];
       const assigned = new Map();
       for (const [k, id] of w) {
-        if (id !== GREENSTONE) continue;
+        if (id !== GLOWSTONE) continue;
         const [x, y, z] = keyXYZ(k);
         let v = -1;
         for (const [ok, ov] of assigned) {
@@ -4442,7 +4442,7 @@ function deserialize(buf) {
           const dx = ox - x, dy = oy - y, dz = oz - z;
           if (dx * dx + dy * dy + dz * dz < 100) { v = ov; break; }
         }
-        if (v < 0) v = Math.floor(Math.random() * GREEN_VARIANT_COUNT);
+        if (v < 0) v = Math.floor(Math.random() * GLOW_VARIANT_COUNT);
         gv.set(k, v);
         assigned.set(k, v);
       }
@@ -4453,8 +4453,8 @@ function deserialize(buf) {
   worldDirty = true;
   rebuildPortalBlocks();
   rebuildHotbar();
-  recomputeGreenClusters();
-  syncGreenLights();
+  recomputeGlowClusters();
+  syncGlowLights();
 }
 
 function canSave() {
@@ -4842,10 +4842,10 @@ function resetDims() {
   worlds.nether.clear();
   portalBlockSets.end.clear();
   portalBlockSets.nether.clear();
-  greenstoneBlockSets.end.clear();
-  greenstoneBlockSets.nether.clear();
-  greenVariants.end.clear();
-  greenVariants.nether.clear();
+  glowstoneBlockSets.end.clear();
+  glowstoneBlockSets.nether.clear();
+  glowVariants.end.clear();
+  glowVariants.nether.clear();
   portalDirty = true;
   worldDirty = true;
   overPortalSpawn = { x: 0.5, y: 1.01, z: 0.5 };
@@ -4873,8 +4873,8 @@ async function buildWorld() {
     scanWorldPortals();
     rebuildMeshes();
     rebuildHotbar();
-    recomputeGreenClusters();
-    syncGreenLights();
+    recomputeGlowClusters();
+    syncGlowLights();
     select(0);
     updateCamera();
   } finally {
@@ -4937,11 +4937,11 @@ let selected = 0;
 const hotbarEl = document.getElementById("hotbar");
 
 // The hotbar is dimension-aware: in the Nether and the End the Flower slot
-// holds GREENSTONE and the Water slot holds blue lava; the Overworld keeps
+// holds GLOWSTONE and the Water slot holds blue lava; the Overworld keeps
 // flowers and water.
 function hotbarList() {
   if (dim === "nether" || dim === "end")
-    return [GRASS, DIRT, STONE, SAND, LOG, PLANKS, GLASS, LEAVES, BLUEFIRE, GREENSTONE, TNT, PORTAL, OBSIDIAN];
+    return [GRASS, DIRT, STONE, SAND, LOG, PLANKS, GLASS, LEAVES, BLUEFIRE, GLOWSTONE, TNT, PORTAL, OBSIDIAN];
   return HOTBAR;
 }
 function rebuildHotbar() {
@@ -5182,7 +5182,7 @@ function loop(now) {
     }
     tickTNT(dt);
     tickEffects(dt);
-    syncGreenLights(dt);
+    syncGlowLights(dt);
     if (portalCd > 0) portalCd -= dt;
     updatePortalVisual();
     checkPortal();
