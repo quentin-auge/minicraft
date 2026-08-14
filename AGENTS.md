@@ -433,7 +433,7 @@ small Python server for saving/loading worlds.
   Backends: File System Access API (`pickSaveFile`/`saveToFile`),
   IndexedDB fallback, and the server API (`apiLoad`/`apiList`). Autosave
   via `queueSave()`, world regen resets to new seeds (`regenerate`).
-- **HUD/UI**: crosshair, hotbar with slot icons (wheel selects), dimension
+- **HUD/UI**: crosshair, hotbar with slot icons (wheel or K/L selects), dimension
   label, toasts, autosave indicator; pause overlay (Resume/New
   World/Load Save) and H help panel (portal diagrams: `portalArt` for the
   horizontal End frame, `netherArt` for the 5×4 obsidian Nether frame).

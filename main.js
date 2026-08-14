@@ -1948,10 +1948,10 @@ function updatePlayer(dt) {
   const fwd = new THREE.Vector3(-Math.sin(yaw), 0, -Math.cos(yaw));
   const right = new THREE.Vector3(Math.cos(yaw), 0, -Math.sin(yaw));
   const move = new THREE.Vector3();
-  const w = keys["ArrowUp"];
-  const s = keys["ArrowDown"];
-  const d = keys["ArrowRight"];
-  const a = keys["ArrowLeft"];
+  const w = keys["KeyW"] || keys["ArrowUp"];
+  const s = keys["KeyS"] || keys["ArrowDown"];
+  const d = keys["KeyD"] || keys["ArrowRight"];
+  const a = keys["KeyA"] || keys["ArrowLeft"];
   const sprintKey = keys["ShiftLeft"] || keys["ShiftRight"];
 
   if (w) move.add(fwd);
@@ -2021,10 +2021,10 @@ function updateFreeCam(dt) {
   const fwd = new THREE.Vector3(-Math.sin(yaw) * cp, Math.sin(pitch), -Math.cos(yaw) * cp);
   const right = new THREE.Vector3(Math.cos(yaw), 0, -Math.sin(yaw));
   const move = new THREE.Vector3();
-  if (keys["ArrowUp"]) move.add(fwd);
-  if (keys["ArrowDown"]) move.sub(fwd);
-  if (keys["ArrowRight"]) move.add(right);
-  if (keys["ArrowLeft"]) move.sub(right);
+  if (keys["KeyW"] || keys["ArrowUp"]) move.add(fwd);
+  if (keys["KeyS"] || keys["ArrowDown"]) move.sub(fwd);
+  if (keys["KeyD"] || keys["ArrowRight"]) move.add(right);
+  if (keys["KeyA"] || keys["ArrowLeft"]) move.sub(right);
   const sprint = keys["ShiftLeft"] || keys["ShiftRight"];
   if (move.lengthSq() > 0) move.normalize().multiplyScalar(FLY * (sprint ? 3 : 1) * dt);
   const r = 0.3;
@@ -3413,10 +3413,10 @@ function checkPortal() {
       const forward = new THREE.Vector3(-Math.sin(yaw), 0, -Math.cos(yaw));
       const right = new THREE.Vector3(Math.cos(yaw), 0, -Math.sin(yaw));
       let ddx = 0, ddz = 0;
-      if (keys["ArrowUp"]) { ddx += forward.x; ddz += forward.z; }
-      if (keys["ArrowDown"]) { ddx -= forward.x; ddz -= forward.z; }
-      if (keys["ArrowRight"]) { ddx += right.x; ddz += right.z; }
-      if (keys["ArrowLeft"]) { ddx -= right.x; ddz -= right.z; }
+      if (keys["KeyW"] || keys["ArrowUp"]) { ddx += forward.x; ddz += forward.z; }
+      if (keys["KeyS"] || keys["ArrowDown"]) { ddx -= forward.x; ddz -= forward.z; }
+      if (keys["KeyD"] || keys["ArrowRight"]) { ddx += right.x; ddz += right.z; }
+      if (keys["KeyA"] || keys["ArrowLeft"]) { ddx -= right.x; ddz -= right.z; }
       if (ddx === 0 && ddz === 0) { ddx = forward.x; ddz = forward.z; }
       overPortalSpawn = nearPortalSpawn(f.win, { x: ddx, z: ddz });
       const c = winCenter(f.win);
@@ -3432,10 +3432,10 @@ function checkPortal() {
       const forward = new THREE.Vector3(-Math.sin(yaw), 0, -Math.cos(yaw));
       const right = new THREE.Vector3(Math.cos(yaw), 0, -Math.sin(yaw));
       let ddx = 0, ddz = 0;
-      if (keys["ArrowUp"]) { ddx += forward.x; ddz += forward.z; }
-      if (keys["ArrowDown"]) { ddx -= forward.x; ddz -= forward.z; }
-      if (keys["ArrowRight"]) { ddx += right.x; ddz += right.z; }
-      if (keys["ArrowLeft"]) { ddx -= right.x; ddz -= right.z; }
+      if (keys["KeyW"] || keys["ArrowUp"]) { ddx += forward.x; ddz += forward.z; }
+      if (keys["KeyS"] || keys["ArrowDown"]) { ddx -= forward.x; ddz -= forward.z; }
+      if (keys["KeyD"] || keys["ArrowRight"]) { ddx += right.x; ddz += right.z; }
+      if (keys["KeyA"] || keys["ArrowLeft"]) { ddx -= right.x; ddz -= right.z; }
       if (ddx === 0 && ddz === 0) { ddx = forward.x; ddz = forward.z; }
       overPortalSpawn = nearPortalSpawn(f.win, { x: ddx, z: ddz });
       const c = winCenter(f.win);
@@ -4939,6 +4939,8 @@ document.addEventListener("keydown", (e) => {
   if (e.code === "KeyH" && !keys[e.code]) { openHelp(); e.preventDefault(); return; }
   if (keys[e.code]) { e.preventDefault(); return; }
   keys[e.code] = true;
+  if (e.code === "KeyK" && !loading) select(selected - 1);
+  if (e.code === "KeyL" && !loading) select(selected + 1);
   if (e.code === "KeyF" && dim !== "end") { freeCam = !freeCam; if (freeCam) camPos.copy(camera.position); else exitFreeCam(); }
   if (e.code === "Escape") { if (saveName) saveToFile(); }
   if (["Space", "Tab", "ArrowUp", "ArrowDown"].includes(e.code)) e.preventDefault();
