@@ -90,7 +90,11 @@ small Python server for saving/loading worlds.
   hemisphere/directional light.
 - **Blocks**: numeric constants + `BLOCK_INFO` (solid/opaque/placeable).
   Types incl. GRASS, DIRT, STONE, SAND, LOG, LEAVES, PLANKS, GLASS, WATER
-  (non-solid, animated opacity), TNT, FLOWER (decorative non-solid, built from
+  (non-solid, animated opacity; WATER and BLUEFIRE are placeable only
+  onto a cell already holding the same liquid — water on water, blue
+  fire on blue fire — and nothing else can be placed into a liquid cell
+  or stacked directly on a liquid surface;
+  they cannot be removed — breaking one does nothing), TNT, FLOWER (decorative non-solid, built from
   1/30-size cubes in a 30×30×30 grid filling exactly one block cell, geometry
   centered on the cell so it sits on the ground — a thin green stem with two
   leaves hugging it (raised mid-stem, overlapping the stem cells and merged into
@@ -134,7 +138,8 @@ small Python server for saving/loading worlds.
 - **Grappling hook**: hold middle mouse click on the targeted block to fire a
   hook that first flies fast to the target (`GRAPPLE_THROW = 70`, while it
   flies you keep full control — you keep falling and moving, the rope follows
-  you), then hauls you in a straight line onto that block
+  you; the hook flies straight through water and blue fire — it never grabs a
+  liquid, only the solid block behind it), then hauls you in a straight line onto that block
   (`GRAPPLE_SPEED = 26`, feet on its top, zeroed velocity); releasing mid-pull
   keeps your pull momentum — you're flung along the hook's launch-line
   direction (start→target) at `GRAPPLE_FLING` (~1.3x grapple speed), with the
@@ -329,8 +334,14 @@ small Python server for saving/loading worlds.
   and respawning every ~2–5 s; torn down on leaving the Nether) float up off
   the blue-fire sea all around you. BLUEFIRE behaves like water: you auto-float
   to the
-  surface (`headInWater` treats BLUEFIRE like WATER, buoyancy target 1.8, Space
-  swims up), the block-pick raycast skips BLUEFIRE, and TNT blasts never destroy
+  surface (`headInWater` treats BLUEFIRE like WATER, and both are non-solid so
+  you can wade in from any direction; base float speed `FLOAT_SPEED` 1.8,
+  and holding Space swims up faster the deeper you are — `SWIM_SPEED` 4.0
+  scaled +20% per 10 blocks below the surface via `waterSurfaceTop`, capped at
+  `SWIM_MAX` = 100× base, so the bonus only applies while Space is held and
+  releasing Space drops you back to float speed immediately), BLUEFIRE
+  is placeable only onto another BLUEFIRE cell or directly on the fire above one,
+  can't be removed, and TNT blasts never destroy
   BLUEFIRE. The Nether's auto-built return portal (`buildNetherPortal`, an obsidian
   frame standing on a netherrack pad at spawn, protected, or any Nether-frame
   you build in the Nether) brings you

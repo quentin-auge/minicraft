@@ -1549,6 +1549,9 @@ const AUTO_JUMP = 7.5;
 const GRAPPLE_SPEED = 26;
 const GRAPPLE_THROW = 70;
 const GRAPPLE_FLING = 34;
+const FLOAT_SPEED = 1.8;
+const SWIM_SPEED = 4.0;
+const SWIM_MAX = 100 * FLOAT_SPEED;
 
 const pos = new THREE.Vector3(0, 20, 0);
 let grappleActive = false;
@@ -1659,8 +1662,10 @@ function collide() {
 
 function fireGrapple() {
   if (freeCam) return;
-  if (!currentBlock) return;
-  const b = currentBlock;
+  const dir = new THREE.Vector3();
+  camera.getWorldDirection(dir);
+  const b = pickBlock(camera.position, dir, true);
+  if (!b) return;
   const tx = b.x + 0.5, ty = b.y + 1.001, tz = b.z + 0.5;
   const sx = pos.x, sy = pos.y + 0.3, sz = pos.z;
   const distEye = Math.hypot(tx - sx, ty - sy, tz - sz);
@@ -1833,12 +1838,23 @@ function updatePlayer(dt) {
   } else if (inWater) {
     stepDown = false;
     // Buoyancy: automatically float toward the surface, hold Space to swim up.
+    // The depth bonus applies only while Space is held: +20% speed per 10 blocks
+    // below the surface, capped at SWIM_MAX (100x base float speed). Releasing Space drops you back to float speed.
     const speed = 4.2;
     if (move.lengthSq() > 0) move.normalize().multiplyScalar(speed);
     vel.x += (move.x - vel.x) * Math.min(1, dt * 8);
     vel.z += (move.z - vel.z) * Math.min(1, dt * 8);
-    const target = keys["Space"] ? 4.0 : 1.8;
-    vel.y += (target - vel.y) * Math.min(1, dt * 4);
+    const surface = waterSurfaceTop();
+    const depth = surface === -Infinity ? 0 : Math.max(0, surface - (pos.y + 0.3));
+    const rise = Math.min(1 + 0.2 * (depth / 10), SWIM_MAX / SWIM_SPEED);
+    const target = keys["Space"] ? SWIM_SPEED * rise : FLOAT_SPEED;
+    if (keys["Space"]) {
+      vel.y += (target - vel.y) * Math.min(1, dt * 4);
+    } else if (vel.y > FLOAT_SPEED) {
+      vel.y = FLOAT_SPEED;
+    } else {
+      vel.y += (FLOAT_SPEED - vel.y) * Math.min(1, dt * 4);
+    }
   } else {
     const sprint = sprintKey && move.lengthSq() > 0;
     const speed = sprint ? SPRINT : WALK;
@@ -1920,11 +1936,25 @@ function headInWater() {
   return false;
 }
 
+function waterSurfaceTop() {
+  let top = -Infinity;
+  for (let bx = Math.floor(pos.x - PLAYER_HW); bx <= Math.floor(pos.x + PLAYER_HW); bx++)
+    for (let bz = Math.floor(pos.z - PLAYER_HW); bz <= Math.floor(pos.z + PLAYER_HW); bz++)
+      for (let y = MAX_Y; y >= 0; y--) {
+        const id = getBlock(bx, y, bz);
+        if (id === WATER || id === BLUEFIRE) {
+          if (y + 1 > top) top = y + 1;
+          break;
+        }
+      }
+  return top;
+}
+
 // ---------------------------------------------------------------------------
 // Raycast (DDA voxel traversal)
 // ---------------------------------------------------------------------------
 const REACH = Infinity;
-function pickBlock(origin, dir) {
+function pickBlock(origin, dir, skipLiquid) {
   let x = Math.floor(origin.x), y = Math.floor(origin.y), z = Math.floor(origin.z);
   const stepX = dir.x > 0 ? 1 : -1, stepY = dir.y > 0 ? 1 : -1, stepZ = dir.z > 0 ? 1 : -1;
   const tDeltaX = dir.x !== 0 ? Math.abs(1 / dir.x) : Infinity;
@@ -1937,7 +1967,7 @@ function pickBlock(origin, dir) {
 
   for (let i = 0; i < 256; i++) {
     const id = getBlock(x, y, z);
-    if (id !== AIR && id !== WATER && id !== BLUEFIRE) return { x, y, z, id, face };
+    if (id !== AIR && !(skipLiquid && (id === WATER || id === BLUEFIRE))) return { x, y, z, id, face };
     if (tMaxX < tMaxY && tMaxX < tMaxZ) {
       x += stepX; tMaxX += tDeltaX; face = [-stepX, 0, 0];
     } else if (tMaxY < tMaxZ) {
@@ -1995,6 +2025,7 @@ function breakBlock() {
   if (protectedBlocks.has(key(x, y, z))) return;
   if (getBlock(x, y, z) === STONE && y === 0) return;
   if (getBlock(x, y, z) === TNT) { igniteTNT(x, y, z); return; }
+  if (getBlock(x, y, z) === WATER || getBlock(x, y, z) === BLUEFIRE) return;
   setBlock(x, y, z, AIR);
   refreshBlocks([[x, y, z]]);
   queueSave();
@@ -2004,8 +2035,13 @@ function placeBlock(id) {
   if (!BLOCK_INFO[id] || !BLOCK_INFO[id].placeable) return;
   const [nx, ny, nz] = currentBlock.face;
   const px = currentBlock.x + nx, py = currentBlock.y + ny, pz = currentBlock.z + nz;
-  if (getBlock(px, py, pz) !== AIR) return;
-  if (intersectsPlayer(px, py, pz)) return;
+  const target = getBlock(px, py, pz);
+  if (target !== AIR && !(target === id && (id === WATER || id === BLUEFIRE))) return;
+  if (target === AIR) {
+    if (intersectsPlayer(px, py, pz)) return;
+    const under = getBlock(px, py - 1, pz);
+    if ((under === WATER || under === BLUEFIRE) && id !== under) return;
+  }
   setBlock(px, py, pz, id);
   if (id === FLOWER) placedFlowers.set(key(px, py, pz), { v: randomFlowerVariant(), a: Math.random() * Math.PI * 2 });
   refreshBlocks([[px, py, pz]]);
