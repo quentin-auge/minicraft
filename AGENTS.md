@@ -123,10 +123,9 @@ small Python server for saving/loading worlds.
   can sit in the hotbar and be placed in the Nether/End),
   NETHERRACK (dark blue Nether rock, in the hotbar after OBSIDIAN,
   `placeable: true`), SOULSAND (dark blue-grey Nether beach block,
-  `placeable: false`), GLOWSTONE (glowing ice-blue Nether block rendered unlit via
-  `basicFace` so it shines, `placeable: false`),
+  `placeable: false`),
   GREENSTONE (the multicolour portal block: solid, `placeable: true`, in the
-  hotbar, drawn unlit via `basicFace` like glowstone so it shines at full
+  hotbar, drawn unlit via `basicFace` so it shines at full
   strength no matter how far you stand from it. It comes in seven colours —
   red, blue, green, orange, turquoise, yellow, purple (`GREEN_PALETTES`,
   one tile texture per colour in `GREEN_TEX`); placing a stone rolls a random
@@ -357,11 +356,8 @@ small Python server for saving/loading worlds.
   down on leaving the Nether). Everything in the Nether is dark blue: terrain
   is NETHERRACK (dark blue rock, placeable, in the hotbar) instead of plain
   STONE; the top block of columns just at the fire line is dark blue-grey
-  SOULSAND, giving the sea a grim black beach; rare columns carry a glowing
-  knotted cluster of ice-blue GLOWSTONE at
-  their summit (plus one floating lump above; the GLOWSTONE texture is drawn
-  with cold white-blue spots and rendered unlit via `basicFace` so it shines in the
-  dark), and `setDimensionEnv` uses cool blue-white sun light with dark blue
+  SOULSAND, giving the sea a grim black beach;
+  and `setDimensionEnv` uses cool blue-white sun light with dark blue
   fog so the whole dimension reads blue. Rising blue embers (`updateNetherEmbers`/`ensureEmbers`, ~220 additive
   `THREE.Points` spawned only over the fire sea, drifting upward with a sway,
   fading

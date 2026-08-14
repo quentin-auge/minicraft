@@ -3,7 +3,7 @@ import * as THREE from "three";
 // ---------------------------------------------------------------------------
 // Block definitions
 // ---------------------------------------------------------------------------
-const AIR = 0, GRASS = 1, DIRT = 2, STONE = 3, SAND = 4, LOG = 5, LEAVES = 6, WATER = 7, PLANKS = 8, GLASS = 9, TNT = 10, FLOWER = 11, PORTAL = 12, ENDSTONE = 13, CLOUD = 14, OBSIDIAN = 15, BLUEFIRE = 16, NETHERRACK = 17, SOULSAND = 18, GLOWSTONE = 19, GREENSTONE = 20;
+const AIR = 0, GRASS = 1, DIRT = 2, STONE = 3, SAND = 4, LOG = 5, LEAVES = 6, WATER = 7, PLANKS = 8, GLASS = 9, TNT = 10, FLOWER = 11, PORTAL = 12, ENDSTONE = 13, CLOUD = 14, OBSIDIAN = 15, BLUEFIRE = 16, NETHERRACK = 17, SOULSAND = 18, GREENSTONE = 20;
 
 const BLOCK_INFO = {
   [GRASS]:   { name: "Grass",    solid: true,  opaque: true,  placeable: true },
@@ -24,7 +24,6 @@ const BLOCK_INFO = {
   [BLUEFIRE]:{ name: "Blue Fire", solid: false, opaque: false, placeable: true },
   [NETHERRACK]:{ name: "Netherrack", solid: true, opaque: true, placeable: true },
   [SOULSAND]:  { name: "Soul Sand",   solid: true, opaque: true, placeable: false },
-  [GLOWSTONE]: { name: "Glowstone",   solid: true, opaque: true, placeable: false },
   [GREENSTONE]:{ name: "Greenstone",  solid: true, opaque: true, placeable: true },
 };
 
@@ -231,16 +230,6 @@ const TEX = {
     ctx.fillStyle = "rgba(30,36,70,0.5)";
     for (let i = 0; i < 4; i++) ctx.fillRect(Math.random() * 14, Math.random() * 14, 3, 1);
   }),
-  glowstone: canvasTex((ctx) => {
-    ctx.fillStyle = "#3a6ee0"; ctx.fillRect(0, 0, 16, 16);
-    pxNoise(ctx, [58, 110, 224], 32);
-    ctx.fillStyle = "#a8d4ff";
-    for (let i = 0; i < 9; i++) ctx.fillRect(Math.random() * 15, Math.random() * 15, 1 + Math.random(), 1 + Math.random());
-    ctx.fillStyle = "rgba(10,20,70,0.35)";
-    for (let i = 0; i < 5; i++) ctx.fillRect(Math.random() * 14, Math.random() * 14, 2, 2);
-    ctx.fillStyle = "rgba(235,248,255,0.9)";
-    ctx.fillRect(6, 7, 2, 2); ctx.fillRect(11, 3, 1, 1); ctx.fillRect(4, 12, 1, 1);
-  }),
   greenstone: canvasTex((ctx) => drawGreenMesh(ctx, GREEN_PALETTES[2])),
   flower: canvasTex((ctx) => {
     const petals = ["rgb(232,30,52)", "rgb(56,106,252)", "rgb(248,188,16)", "rgb(16,204,186)", "rgb(244,132,34)", "rgb(160,80,224)", "rgb(232,30,52)", "rgb(56,106,252)"];
@@ -299,7 +288,6 @@ function materialsFor(id) {
     case BLUEFIRE: return basicFace(TEX.bluefire);
     case NETHERRACK: return faceTex(TEX.netherrack);
     case SOULSAND: return faceTex(TEX.soulsand);
-    case GLOWSTONE: return basicFace(TEX.glowstone);
     case GREENSTONE: return basicFace(TEX.greenstone);
     case PORTAL: return faceTex(TEX.portal);
     default: return faceTex(TEX.dirt);
@@ -1141,19 +1129,6 @@ function generateNether() {
         w.set(key(x, h, z), SOULSAND);
       if (h < NETHER_FIRE_LEVEL)
         for (let y = h + 1; y <= NETHER_FIRE_LEVEL; y++) w.set(key(x, y, z), BLUEFIRE);
-      // Scattered glowstone: rare columns carry a glowing knot of gold
-      // blocks at their summit, a few blocks above the land.
-      if (h > NETHER_FIRE_LEVEL + 6 && hash2(x, z, netherSeed + 41) < 0.012) {
-        const gy = Math.min(Math.max(h, 96), h + 1 + Math.floor(hash2(x, z, netherSeed + 42) * 2));
-        if (getBlock(x, gy, z) === AIR) w.set(key(x, gy, z), GLOWSTONE);
-        for (let dy = 1; dy <= 2; dy++) {
-          const ny = gy - dy;
-          if (ny <= h && w.get(key(x, ny, z)) === NETHERRACK) w.set(key(x, ny, z), GLOWSTONE);
-        }
-        // Pop an extra floating glowstone above to break up the silhouette.
-        const fy = gy + 2 + Math.floor(hash2(x, z, netherSeed + 43) * 2);
-        if (getBlock(x, fy, z) === AIR) w.set(key(x, fy, z), GLOWSTONE);
-      }
     }
   }
   for (let x = -S; x <= S; x++) {
@@ -1383,7 +1358,7 @@ for (let v = 0; v < FLOWER_VARIANT_COUNT; v++) FLOWER_GEOS.push(buildCubeGeometr
 const FLOWER_MAT = new THREE.MeshLambertMaterial({ vertexColors: true });
 
 // The green portal block glows by itself — it is drawn with an unlit texture
-// (`basicFace`, like glowstone) so it shines at full strength no matter how far
+// (`basicFace`) so it shines at full strength no matter how far
 // away you stand — and it casts a steady pool of green light onto the terrain
 // around it. Greenstones are merged into stable clusters (a whole volcano-door
 // ring is one cluster) whose centroids are recomputed only when blocks change
