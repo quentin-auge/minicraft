@@ -208,6 +208,38 @@
     }
     .dlg-list li:hover { background: rgba(255,255,255,0.16); }
     .dlg-empty { color: #abb; font-size: 14px; padding: 8px 0; }
+
+    /* Portal travel spiral (fullscreen overlay; opacity + rotate run on the
+       compositor, so the spiral keeps spinning through the world-gen freeze) */
+    #portalSpiral {
+      position: fixed; inset: 0; z-index: 50;
+      background: #050208;
+      opacity: 0; pointer-events: none; overflow: hidden;
+      transition: opacity 0.6s ease;
+      display: none;
+    }
+    #portalSpiral.show {
+      opacity: 1;
+      transition: opacity 0.45s ease;
+    }
+    #portalSpiral .swirl-wrap {
+      position: absolute; inset: 0;
+      display: flex; align-items: center; justify-content: center;
+    }
+    #portalSpiral .swirl-wrap svg {
+      width: 150vmax; height: 150vmax; flex: 0 0 auto;
+      animation: spiralSpin 2.4s linear infinite;
+      will-change: transform;
+    }
+    #portalSpiral .swirl-wrap.back svg {
+      width: 120vmax; height: 120vmax;
+      animation-duration: 4.4s; animation-direction: reverse; opacity: 0.5;
+    }
+    #portalSpiral::after {
+      content: ""; position: absolute; inset: 0;
+      background: radial-gradient(circle, transparent 45%, rgba(0,0,0,0.6) 100%);
+    }
+    @keyframes spiralSpin { to { transform: rotate(360deg); } }
   </style>
 </head>
 <body>
@@ -218,6 +250,10 @@
   <div id="dim"></div>
   <div id="bossbar"><div class="boss-label">ENDER DRAGON</div><div class="boss-track"><div id="bossfill" class="boss-fill"></div></div></div>
   <div id="toast"></div>
+  <div id="portalSpiral">
+    <div class="swirl-wrap back"><svg id="portalSpiralBack" viewBox="-100 -100 200 200"></svg></div>
+    <div class="swirl-wrap front"><svg id="portalSpiralFront" viewBox="-100 -100 200 200"></svg></div>
+  </div>
   <div id="help">
     <div class="panel">
       <h2>Help</h2>

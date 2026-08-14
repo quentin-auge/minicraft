@@ -259,7 +259,17 @@ small Python server for saving/loading worlds.
   you in front of the auto-built return portal with your back turned to it
   (`yaw = Math.PI` in the Nether, `yaw = 0` in the End, both facing out into
   the new dimension). The Nether regenerates on
-  every entry, like the End.
+  every entry, like the End. Any portal
+  teleport (`portalTrigger`, all four routes in `checkPortal`) first fades in a
+  fullscreen rotating purple spiral vortex (`#portalSpiral`, six SVG spiral
+  blades built by `buildSpiralArms` over a bright-centre `spiralGrad` plus a
+  faint counter-rotating back layer — opacity 0→1 transitions with a
+  `transform: rotate` animation, both compositor-driven), waits
+  `PORTAL_FADE_IN` (450 ms), then runs `goToDimension` — the spiral is fully
+  opaque and still spinning while the synchronous world-gen/chunk rebuild
+  freezes the main thread (compositor animations survive the stall, hiding the
+  hitch perfectly), then fades out (600 ms) over the freshly generated
+  dimension.
 - **The Nether**: a terrifying third dimension under a black sky
   (`setDimensionEnv` red-dim sun, near-black red fog). Rock mountains
   (`generateNether`, fbm height ~12–84) rise out of a glowing lava sea

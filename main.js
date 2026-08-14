@@ -2316,6 +2316,40 @@ function goToDimension(name, sx, sy, sz) {
   updateDimLabel();
 }
 
+// Fullscreen portal-travel spiral. Fades in (fade-in + buffer complete BEFORE
+// the synchronous world-gen freeze), stays fully opaque and spinning through
+// it (opacity/transform are compositor-driven, so the spiral survives the
+// main-thread stall), then fades out over the freshly generated dimension.
+const PORTAL_FADE_IN = 450;
+const PORTAL_FADE_OUT = 600;
+const portalSpiralEl = document.getElementById("portalSpiral");
+let portalBusy = false;
+let spiralGen = 0;
+
+function showPortalSpiral() {
+  spiralGen++;
+  portalSpiralEl.style.display = "flex";
+  void portalSpiralEl.offsetWidth;
+  portalSpiralEl.classList.add("show");
+}
+function hidePortalSpiral() {
+  const g = spiralGen;
+  portalSpiralEl.classList.remove("show");
+  setTimeout(() => { if (spiralGen === g) portalSpiralEl.style.display = "none"; }, PORTAL_FADE_OUT + 80);
+}
+function portalTrigger(target, sx, sy, sz, msg) {
+  if (portalBusy) return;
+  portalBusy = true;
+  portalCd = 1.5;
+  showPortalSpiral();
+  setTimeout(() => {
+    goToDimension(target, sx, sy, sz);
+    if (msg) showMsg(msg);
+    portalBusy = false;
+    hidePortalSpiral();
+  }, PORTAL_FADE_IN + 80);
+}
+
 function winOk(minX, minZ, by) {
   for (let x = minX; x <= minX + 4; x++)
     for (let z = minZ; z <= minZ + 4; z++) {
@@ -2829,6 +2863,7 @@ function resolveSpawn(sx, sy, sz) {
 
 function checkPortal() {
   if (portalCd > 0) return;
+  if (portalBusy) return;
   const bx = Math.floor(freeCam ? camPos.x : pos.x);
   const by = Math.floor((freeCam ? camPos.y : pos.y) + EYE);
   const bz = Math.floor(freeCam ? camPos.z : pos.z);
@@ -2860,11 +2895,9 @@ function checkPortal() {
       const c = winCenter(f.win);
       overPortalFace = Math.atan2(-(c.x + 0.5 - overPortalSpawn.x), -(c.z + 0.5 - overPortalSpawn.z));
       if (dim === "nether") {
-        goToDimension("over", overPortalSpawn.x, overPortalSpawn.y, overPortalSpawn.z);
-        showMsg("You returned to the Overworld");
+        portalTrigger("over", overPortalSpawn.x, overPortalSpawn.y, overPortalSpawn.z, "You returned to the Overworld");
       } else {
-        goToDimension("nether", NETHER_SPAWN.x, NETHER_SPAWN.y, NETHER_SPAWN.z);
-        showMsg("You entered The Nether");
+        portalTrigger("nether", NETHER_SPAWN.x, NETHER_SPAWN.y, NETHER_SPAWN.z, "You entered The Nether");
       }
       return;
     } else {
@@ -2881,11 +2914,9 @@ function checkPortal() {
       const c = winCenter(f.win);
       overPortalFace = Math.atan2(-(c.x + 0.5 - overPortalSpawn.x), -(c.z + 0.5 - overPortalSpawn.z));
       if (dim === "end") {
-        goToDimension("over", overPortalSpawn.x, overPortalSpawn.y, overPortalSpawn.z);
-        showMsg("You returned to the Overworld");
+        portalTrigger("over", overPortalSpawn.x, overPortalSpawn.y, overPortalSpawn.z, "You returned to the Overworld");
       } else {
-        goToDimension("end", END_SPAWN.x, END_SPAWN.y, END_SPAWN.z);
-        showMsg("You arrived in The End");
+        portalTrigger("end", END_SPAWN.x, END_SPAWN.y, END_SPAWN.z, "You arrived in The End");
       }
       return;
     }
@@ -4482,6 +4513,7 @@ let dt = 0.016;
 buildHotbar();
 buildPortalArt();
 buildNetherPortalArt();
+buildPortalSpiral();
 requestAnimationFrame(loop);
 
 function buildPortalArt() {
@@ -4507,6 +4539,58 @@ function buildPortalArt() {
       svg.appendChild(rect);
     }
   host.appendChild(svg);
+}
+
+// Builds tapered winding spiral arms on the given SVG (shared radial gradient
+// so the swirl is brightest at the centre). Each arm is a closed curved strip
+// sweeping outward while winding around the origin.
+function buildSpiralArms(svg, arms, turns, rOut, rIn, angHalf, gradId) {
+  if (!svg) return;
+  const steps = 64;
+  for (let a = 0; a < arms; a++) {
+    const base = (a / arms) * Math.PI * 2;
+    let d = "";
+    for (let i = 0; i <= steps; i++) {
+      const t = i / steps;
+      const r = rIn + (rOut - rIn) * t;
+      const th = base + t * turns * Math.PI * 2;
+      d += (i === 0 ? "M " : " L ") + (r * Math.cos(th)).toFixed(2) + " " + (r * Math.sin(th)).toFixed(2);
+    }
+    for (let i = steps; i >= 0; i--) {
+      const t = i / steps;
+      const r = rIn + (rOut - rIn) * t;
+      const th = base + t * turns * Math.PI * 2 + angHalf;
+      d += " L " + (r * Math.cos(th)).toFixed(2) + " " + (r * Math.sin(th)).toFixed(2);
+    }
+    d += " Z";
+    const path = document.createElementNS(SVGNS, "path");
+    path.setAttribute("d", d);
+    path.setAttribute("fill", gradId ? "url(#" + gradId + ")" : "#9b30ff");
+    path.setAttribute("opacity", "0.92");
+    svg.appendChild(path);
+  }
+}
+
+function buildPortalSpiral() {
+  const front = document.getElementById("portalSpiralFront");
+  const back = document.getElementById("portalSpiralBack");
+  if (front) {
+    const defs = document.createElementNS(SVGNS, "defs");
+    const grad = document.createElementNS(SVGNS, "radialGradient");
+    grad.setAttribute("id", "spiralGrad");
+    grad.setAttribute("gradientUnits", "userSpaceOnUse");
+    grad.setAttribute("cx", "0"); grad.setAttribute("cy", "0"); grad.setAttribute("r", "100");
+    const stops = [["0%", "#eab4ff"], ["55%", "#9b30ff"], ["100%", "#2b0a4d"]];
+    for (const [off, col] of stops) {
+      const s = document.createElementNS(SVGNS, "stop");
+      s.setAttribute("offset", off); s.setAttribute("stop-color", col);
+      grad.appendChild(s);
+    }
+    defs.appendChild(grad);
+    front.appendChild(defs);
+  }
+  buildSpiralArms(front, 6, 1.5, 98, 6, 16 * Math.PI / 180, "spiralGrad");
+  buildSpiralArms(back, 4, 2.2, 82, 4, 24 * Math.PI / 180, null);
 }
 
 function buildNetherPortalArt() {
