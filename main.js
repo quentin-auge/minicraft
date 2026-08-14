@@ -275,6 +275,7 @@ function setBlock(x, y, z, id) {
   const k = key(x, y, z);
   if (id === AIR) world.delete(k); else world.set(k, id);
   if (id !== FLOWER) placedFlowers.delete(k);
+  portalMemo.dim = "";
 }
 
 function heightAt(x, z) {
@@ -1866,7 +1867,7 @@ function buildReturnPortal() {
         protectedBlocks.add(key(x, END_RETURN_BASE_Y + y, END_RETURN_Z));
       }
     }
-  endReturnWin = { minX: -2, minY: END_RETURN_BASE_Y, minZ: END_RETURN_Z };
+  endReturnWin = { orient: "v", minX: -2, minY: END_RETURN_BASE_Y, minZ: END_RETURN_Z };
   refreshBlocks(coords);
 }
 
@@ -1875,18 +1876,21 @@ function setDimensionEnv() {
     scene.background.setHex(0x000000);
     scene.fog.color.setHex(0x000000);
     scene.fog.near = 30; scene.fog.far = 150;
-    sun.intensity = 0.35; hemi.intensity = 0.45;
+    sun.color.setHex(0xfff5e0); sun.intensity = 0.35;
+    hemi.color.setHex(0xbfd4ff); hemi.intensity = 0.45;
   } else {
     scene.background.setHex(0x87ceeb);
     scene.fog.color.setHex(0x87ceeb);
     scene.fog.near = 60; scene.fog.far = 160;
-    sun.intensity = 1.1; hemi.intensity = 0.75;
+    sun.color.setHex(0xfff5e0); sun.intensity = 1.1;
+    hemi.color.setHex(0xbfd4ff); hemi.intensity = 0.75;
   }
 }
 
 function goToDimension(name, sx, sy, sz) {
   dim = name;
   world = worlds[name];
+  clearPortalFills();
   if (name === "end") {
     generateEnd();
     endReturnWin = null;
@@ -1906,7 +1910,7 @@ function goToDimension(name, sx, sy, sz) {
     flying = prePortalFly;
     if (overPortalFace == null) {
       const w = findPortalWindow(Math.floor(overPortalSpawn.x), Math.floor(overPortalSpawn.y + 0.25), Math.floor(overPortalSpawn.z));
-      if (w) yaw = Math.atan2(-(w.minX + 2.5 - overPortalSpawn.x), -(w.minZ + 2.5 - overPortalSpawn.z));
+      if (w) yaw = Math.atan2(-(w.minX + 2.5 - overPortalSpawn.x), -(winCenter(w).z + 0.5 - overPortalSpawn.z));
     } else {
       yaw = overPortalFace;
     }
@@ -1917,6 +1921,7 @@ function goToDimension(name, sx, sy, sz) {
   camPos.set(sx, sy, sz);
   vel.set(0, 0, 0);
   rebuildMeshes();
+  scanWorldPortals();
   updateCamera();
   portalCd = 1.5;
   queueSave();
@@ -1936,21 +1941,6 @@ function winOk(minX, minZ, by) {
   return true;
 }
 
-function findPortalWindow(bx, by, bz) {
-  for (let wx = -3; wx <= 1; wx++)
-    for (let wz = -3; wz <= 1; wz++)
-      if (winOk(bx + wx, bz + wz, by)) return { minX: bx + wx, minZ: bz + wz, by };
-  return null;
-}
-
-function findPortalWindowNear(bx, by, bz, R) {
-  for (let dy = -2; dy <= 2; dy++)
-    for (let wx = -R; wx <= R; wx++)
-      for (let wz = -R; wz <= R; wz++)
-        if (winOk(bx + wx, bz + wz, by + dy)) return { minX: bx + wx, minZ: bz + wz, by: by + dy };
-  return null;
-}
-
 function vWinOk(minX, minY, minZ) {
   for (let y = minY; y <= minY + 4; y++)
     for (let x = minX; x <= minX + 4; x++) {
@@ -1964,52 +1954,149 @@ function vWinOk(minX, minY, minZ) {
   return true;
 }
 
-function findVPortalWindowNear(bx, by, bz, R) {
-  for (let wz = -R; wz <= R; wz++)
-    for (let wx = -R; wx <= R; wx++)
-      for (let wy = -R; wy <= R; wy++)
-        if (vWinOk(bx + wx, by + wy, bz + wz)) return { minX: bx + wx, minY: by + wy, minZ: bz + wz };
+function vWinOk4(minX, minY, minZ) {
+  for (let y = minY; y <= minY + 3; y++)
+    for (let x = minX; x <= minX + 4; x++) {
+      const isCorner = (x === minX || x === minX + 4) && (y === minY || y === minY + 3);
+      const isEdge = x === minX || x === minX + 4 || y === minY || y === minY + 3;
+      if (isCorner) continue;
+      const id = getBlock(x, y, minZ);
+      if (isEdge) { if (id !== PORTAL) return false; }
+      else { if (id !== AIR) return false; }
+    }
+  return true;
+}
+
+function findPortalWindow(bx, by, bz) {
+  for (let wz = -3; wz <= 1; wz++)
+    for (let wx = -3; wx <= 1; wx++)
+      if (winOk(bx + wx, bz + wz, by)) return { orient: "h", minX: bx + wx, minY: by, minZ: bz + wz };
   return null;
 }
 
-let portalFillGroup = null;
-let portalFillKey = null;
-
-function ensurePortalFillGroup() {
-  if (portalFillGroup) return;
-  portalFillGroup = new THREE.Group();
-  const geo = new THREE.BoxGeometry(0.98, 0.98, 0.98);
-  const mat = new THREE.MeshBasicMaterial({ color: 0x000000 });
-  for (let i = 0; i < 9; i++) portalFillGroup.add(new THREE.Mesh(geo, mat));
-  portalFillGroup.visible = false;
-  scene.add(portalFillGroup);
+function windowDist(w, bx, by, bz) {
+  const dxTop = w.orient === "v" && w.dims === "4x5" ? w.minX + 3 : w.minX + 4;
+  const dx = Math.max(w.minX - bx, 0, bx - dxTop);
+  let top;
+  if (w.orient === "v" && w.dims === "4x5") top = w.minY + 4;
+  else if (w.orient === "v" && (w.dims === "4x4" || w.h === 4)) top = w.minY + 3;
+  else top = w.minY + 4;
+  const dy = Math.max(w.minY - by, 0, by - top);
+  const dz = Math.max(w.minZ - bz, 0, bz - (w.minZ + 4));
+  return dx * dx + dy * dy + dz * dz;
 }
 
-function showPortalFill(win) {
-  ensurePortalFillGroup();
-  const key = `${win.minX},${win.minZ},${win.by}`;
-  let i = 0;
-  for (let x = win.minX + 1; x <= win.minX + 3; x++)
-    for (let z = win.minZ + 1; z <= win.minZ + 3; z++)
-      portalFillGroup.children[i++].position.set(x + 0.5, win.by + 0.5, z + 0.5);
-  portalFillGroup.visible = true;
-  portalFillKey = key;
+function findEndWinNear(bx, by, bz, R) {
+  let best = null;
+  const consider = (w) => {
+    const d = windowDist(w, bx, by, bz);
+    if (!best || d < best.d) best = { w, d };
+  };
+  for (let wz = -R; wz <= R; wz++)
+    for (let wx = -R; wx <= R; wx++)
+      for (let wy = -R; wy <= R; wy++) {
+        if (vWinOk(bx + wx, by + wy, bz + wz)) consider({ orient: "v", minX: bx + wx, minY: by + wy, minZ: bz + wz });
+        if (vWinOk4(bx + wx, by + wy, bz + wz)) consider({ orient: "v", h: 4, minX: bx + wx, minY: by + wy, minZ: bz + wz });
+      }
+  for (let dy = -2; dy <= 2; dy++)
+    for (let wx = -R; wx <= R; wx++)
+      for (let wz = -R; wz <= R; wz++)
+        if (winOk(bx + wx, bz + wz, by + dy)) consider({ orient: "h", minX: bx + wx, minY: by + dy, minZ: bz + wz });
+  return best ? best.w : null;
 }
 
-function showVPortalFill(win) {
-  ensurePortalFillGroup();
-  const key = `${win.minX},${win.minZ},${win.minY}`;
+function collectEndWins(bx, by, bz, R) {
+  const wins = [];
+  for (let wz = -R; wz <= R; wz++)
+    for (let wx = -R; wx <= R; wx++)
+      for (let wy = -R; wy <= R; wy++) {
+        if (vWinOk(bx + wx, by + wy, bz + wz)) wins.push({ orient: "v", minX: bx + wx, minY: by + wy, minZ: bz + wz });
+        if (vWinOk4(bx + wx, by + wy, bz + wz)) wins.push({ orient: "v", h: 4, minX: bx + wx, minY: by + wy, minZ: bz + wz });
+      }
+  for (let dy = -2; dy <= 2; dy++)
+    for (let wx = -R; wx <= R; wx++)
+      for (let wz = -R; wz <= R; wz++)
+        if (winOk(bx + wx, bz + wz, by + dy)) wins.push({ orient: "h", minX: bx + wx, minY: by + dy, minZ: bz + wz });
+  return wins;
+}
+
+const PORTAL_FILL_DIST = Math.ceil(RENDER_DIST * CHUNK * Math.SQRT2);
+const portalFills = new Map();
+const portalFillGeo = new THREE.BoxGeometry(0.98, 0.98, 0.98);
+const portalFillMatBlack = new THREE.MeshBasicMaterial({ color: 0x000000 });
+
+function layoutPortalFill(group, win) {
   let i = 0;
-  for (let y = win.minY + 1; y <= win.minY + 3; y++)
+  const set = (x, y, z) => {
+    const m = group.children[i++];
+    m.visible = true;
+    m.position.set(x + 0.5, y + 0.5, z + 0.5);
+  };
+  if (win.orient === "v") {
+    const top = win.h === 4 ? win.minY + 2 : win.minY + 3;
+    for (let y = win.minY + 1; y <= top; y++)
+      for (let x = win.minX + 1; x <= win.minX + 3; x++) set(x, y, win.minZ);
+  } else {
     for (let x = win.minX + 1; x <= win.minX + 3; x++)
-      portalFillGroup.children[i++].position.set(x + 0.5, y + 0.5, win.minZ + 0.5);
-  portalFillGroup.visible = true;
-  portalFillKey = key;
+      for (let z = win.minZ + 1; z <= win.minZ + 3; z++) set(x, win.minY, z);
+  }
+  for (; i < group.children.length; i++) group.children[i].visible = false;
 }
 
-function hidePortalFill() {
-  if (portalFillGroup) portalFillGroup.visible = false;
-  portalFillKey = null;
+function ensurePortalFill(win) {
+  const key = `${win.orient}:${win.minX},${win.minY},${win.minZ}${win.dims || ""}`;
+  if (portalFills.has(key)) return;
+  const group = new THREE.Group();
+  for (let i = 0; i < 9; i++) group.add(new THREE.Mesh(portalFillGeo, portalFillMatBlack));
+  layoutPortalFill(group, win);
+  group.visible = false;
+  scene.add(group);
+  const c = winCenter(win);
+  portalFills.set(key, { dim, win, group, cx: c.x + 0.5, cy: win.minY + 2, cz: c.z + 0.5 });
+}
+
+function portalFillValid(f) {
+  const w = f.win;
+  if (w.orient === "v") return w.h === 4 ? vWinOk4(w.minX, w.minY, w.minZ) : vWinOk(w.minX, w.minY, w.minZ);
+  return winOk(w.minX, w.minZ, w.minY);
+}
+
+function clearPortalFills() {
+  for (const f of portalFills.values()) scene.remove(f.group);
+  portalFills.clear();
+}
+
+function refreshPortalFills(bx, by, bz) {
+  const R = 8;
+  if (dim === "end") {
+    if (!endCleared) {
+      for (const [key, f] of portalFills) {
+        if (f.dim !== "end") continue;
+        scene.remove(f.group);
+        portalFills.delete(key);
+      }
+    } else {
+      for (const w of collectEndWins(bx, by, bz, R)) ensurePortalFill(w);
+    }
+  } else {
+    for (const w of collectEndWins(bx, by, bz, R)) ensurePortalFill(w);
+  }
+  for (const [key, f] of portalFills) {
+    if (f.dim !== dim) continue;
+    if (!portalFillValid(f)) {
+      scene.remove(f.group);
+      portalFills.delete(key);
+    }
+  }
+}
+
+function scanWorldPortals() {
+  for (const [k, id] of world) {
+    if (id !== PORTAL) continue;
+    const c = k.split(",").map(Number);
+    const [x, y, z] = c;
+    for (const w of collectEndWins(x, y, z, 6)) ensurePortalFill(w);
+  }
 }
 
 let endReturnWin = null;
@@ -2017,47 +2104,65 @@ const portalMemo = { dim: "", bx: 0, by: 0, bz: 0, win: null };
 let portalScanT = 0;
 
 function scanEndPortal(bx, by, bz) {
-  if (endReturnWin && vWinOk(endReturnWin.minX, endReturnWin.minY, endReturnWin.minZ)) return endReturnWin;
+  if (endReturnWin && vWinOk(endReturnWin.minX, endReturnWin.minY, endReturnWin.minZ) &&
+      insideEndInterior(endReturnWin, bx, by, bz)) return endReturnWin;
   if (portalMemo.dim === "end" && portalMemo.bx === bx && portalMemo.by === by && portalMemo.bz === bz) return portalMemo.win;
   portalMemo.dim = "end"; portalMemo.bx = bx; portalMemo.by = by; portalMemo.bz = bz;
-  const w = findVPortalWindowNear(bx, by, bz, 5);
+  const w = findEndWinNear(bx, by, bz, 5);
   portalMemo.win = w;
-  if (w) endReturnWin = w;
   return w;
 }
 
 function scanOverPortal(bx, by, bz) {
   if (portalMemo.dim === "over" && portalMemo.bx === bx && portalMemo.by === by && portalMemo.bz === bz) return portalMemo.win;
   portalMemo.dim = "over"; portalMemo.bx = bx; portalMemo.by = by; portalMemo.bz = bz;
-  portalMemo.win = findPortalWindowNear(bx, by, bz, 8);
+  portalMemo.win = findEndWinNear(bx, by, bz, 8);
   return portalMemo.win;
+}
+
+function winCenter(win) {
+  if (win.orient === "h") return { x: win.minX + 2, z: win.minZ + 2 };
+  return { x: win.minX + (win.dims === "4x5" || win.dims === "4x4" ? 1.5 : 2), z: win.minZ };
 }
 
 function updatePortalVisual() {
   portalScanT -= dt;
-  if (portalScanT <= 0) { portalScanT = 0.5; portalMemo.dim = ""; }
-  const bx = Math.floor(freeCam ? camPos.x : pos.x);
-  const bz = Math.floor(freeCam ? camPos.z : pos.z);
-  const by = Math.floor((freeCam ? camPos.y : pos.y) + 0.9);
-  if (dim === "end") {
-    const win = scanEndPortal(bx, by, bz);
-    if (win && endCleared) { showVPortalFill(win); return; }
-    if (portalFillKey) hidePortalFill();
-    return;
+  if (portalScanT <= 0) { portalScanT = 0.5; portalMemo.dim = ""; refreshPortalFills(Math.floor(freeCam ? camPos.x : pos.x), Math.floor((freeCam ? camPos.y : pos.y) + 0.9), Math.floor(freeCam ? camPos.z : pos.z)); }
+  const px = freeCam ? camPos.x : pos.x;
+  const py = freeCam ? camPos.y : pos.y;
+  const pz = freeCam ? camPos.z : pos.z;
+  const maxD2 = PORTAL_FILL_DIST * PORTAL_FILL_DIST;
+  for (const f of portalFills.values()) {
+    if (f.dim !== dim) { f.group.visible = false; continue; }
+    const dx = f.cx - px, dy = f.cy - py, dz = f.cz - pz;
+    f.group.visible = dx * dx + dy * dy + dz * dz <= maxD2;
   }
-  const win = scanOverPortal(bx, by, bz);
-  if (win) { showPortalFill(win); return; }
-  if (portalFillKey) hidePortalFill();
+}
+
+function insideEndInterior(win, bx, by, bz) {
+  if (win.orient === "v") {
+    const top = win.h === 4 ? win.minY + 2 : win.minY + 3;
+    return bx >= win.minX + 1 && bx <= win.minX + 3 && by >= win.minY + 1 && by <= top && bz === win.minZ;
+  }
+  return bx >= win.minX + 1 && bx <= win.minX + 3 && bz >= win.minZ + 1 && bz <= win.minZ + 3;
 }
 
 function nearPortalSpawn(win, dir) {
-  const cx = win.minX + 2, cz = win.minZ + 2;
-  const inInterior = (sx, sz) => sx >= win.minX + 1 && sx <= win.minX + 3 && sz >= win.minZ + 1 && sz <= win.minZ + 3;
+  const cx = win.minX + 2, cz = winCenter(win).z;
+  const by = win.minY;
+  const inInterior = (sx, sz) => {
+    if (sx < win.minX + 1 || sx > win.minX + 3) return false;
+    if (win.orient === "h") {
+      if (win.dims === "4x5") return sz >= win.minZ + 1 && sz <= win.minZ + 3;
+      return sz >= win.minZ + 1 && sz <= win.minZ + 2;
+    }
+    return sz === win.minZ;
+  };
   const spot = (sx, sz) => {
     if (inInterior(sx, sz)) return null;
-    if (isSolid(sx, win.by, sz) || isSolid(sx, win.by + 1, sz)) return null;
-    if (!isSolid(sx, win.by - 1, sz)) return null;
-    return { x: sx + 0.5, y: win.by, z: sz + 0.5 };
+    if (isSolid(sx, by, sz) || isSolid(sx, by + 1, sz)) return null;
+    if (!isSolid(sx, by - 1, sz)) return null;
+    return { x: sx + 0.5, y: by, z: sz + 0.5 };
   };
   const n = Math.hypot(dir.x, dir.z) || 1;
   const dx = dir.x / n, dz = dir.z / n;
@@ -2080,7 +2185,7 @@ function nearPortalSpawn(win, dir) {
         const s = spot(cx + ox, cz + oz);
         if (s) return s;
       }
-  return { x: win.minX + 0.5, y: win.by, z: win.minZ - 0.5 };
+  return { x: win.minX + 0.5, y: by, z: win.minZ - 0.5 };
 }
 
 function checkPortal() {
@@ -2088,34 +2193,36 @@ function checkPortal() {
   const bx = Math.floor(freeCam ? camPos.x : pos.x);
   const bz = Math.floor(freeCam ? camPos.z : pos.z);
   if (dim === "over") {
-    const by = Math.floor((freeCam ? camPos.y : pos.y) + 0.9);
+    const by = Math.floor((freeCam ? camPos.y : pos.y) + EYE);
     const win = scanOverPortal(bx, by, bz);
-    if (!win) return;
-    if (bx < win.minX + 1 || bx > win.minX + 3 || bz < win.minZ + 1 || bz > win.minZ + 3) return;
-    const forward = new THREE.Vector3(-Math.sin(yaw), 0, -Math.cos(yaw));
-    const right = new THREE.Vector3(Math.cos(yaw), 0, -Math.sin(yaw));
-    let ddx = 0, ddz = 0;
-    if (keys["ArrowUp"]) { ddx += forward.x; ddz += forward.z; }
-    if (keys["ArrowDown"]) { ddx -= forward.x; ddz -= forward.z; }
-    if (keys["ArrowRight"]) { ddx += right.x; ddz += right.z; }
-    if (keys["ArrowLeft"]) { ddx -= right.x; ddz -= right.z; }
-    if (ddx === 0 && ddz === 0) { ddx = forward.x; ddz = forward.z; }
-    overPortalSpawn = nearPortalSpawn(win, { x: ddx, z: ddz });
-    overPortalFace = Math.atan2(-(win.minX + 2.5 - overPortalSpawn.x), -(win.minZ + 2.5 - overPortalSpawn.z));
-    goToDimension("end", END_SPAWN.x, END_SPAWN.y, END_SPAWN.z);
-    showMsg("You arrived in The End");
-  } else {
+    if (win) {
+      if (insideEndInterior(win, bx, by, bz)) {
+        const forward = new THREE.Vector3(-Math.sin(yaw), 0, -Math.cos(yaw));
+        const right = new THREE.Vector3(Math.cos(yaw), 0, -Math.sin(yaw));
+        let ddx = 0, ddz = 0;
+        if (keys["ArrowUp"]) { ddx += forward.x; ddz += forward.z; }
+        if (keys["ArrowDown"]) { ddx -= forward.x; ddz -= forward.z; }
+        if (keys["ArrowRight"]) { ddx += right.x; ddz += right.z; }
+        if (keys["ArrowLeft"]) { ddx -= right.x; ddz -= right.z; }
+        if (ddx === 0 && ddz === 0) { ddx = forward.x; ddz = forward.z; }
+        overPortalSpawn = nearPortalSpawn(win, { x: ddx, z: ddz });
+        const c = winCenter(win);
+        overPortalFace = Math.atan2(-(c.x + 0.5 - overPortalSpawn.x), -(c.z + 0.5 - overPortalSpawn.z));
+        goToDimension("end", END_SPAWN.x, END_SPAWN.y, END_SPAWN.z);
+        showMsg("You arrived in The End");
+        return;
+      }
+    }
+  } else if (dim === "end") {
     const by = Math.floor(pos.y + EYE);
-    const win = scanEndPortal(bx, by, bz);
-    if (!win) return;
-    if (bx < win.minX + 1 || bx > win.minX + 3) return;
-    if (by < win.minY + 1 || by > win.minY + 3) return;
-    if (bz !== win.minZ) return;
+    const winE = scanEndPortal(bx, by, bz);
+    const inE = winE && insideEndInterior(winE, bx, by, bz);
+    if (!inE) return;
     if (!endCleared) {
       const now = performance.now();
       if (now - dormantMsgAt > 3000) {
         dormantMsgAt = now;
-        showMsg("The return portal is dormant — slay the Ender Dragon to open it");
+        showMsg("The End is sealed — slay the Ender Dragon to open its portals");
       }
       return;
     }
@@ -2876,11 +2983,10 @@ function serialize() {
   };
   const over = writeBlocks(worlds.over);
   const end = writeBlocks(worlds.end);
-  const n = over.length + end.length;
   const placed = [];
   placedFlowers.forEach((p, k) => { const s = k.split(","); placed.push([+s[0], +s[1], +s[2], p.v, p.a]); });
   const m = placed.length;
-  const buf = new ArrayBuffer(93 + n * 4 + 4 + m * 5);
+  const buf = new ArrayBuffer(93 + (over.length + end.length) * 4 + m * 5);
   const dv = new DataView(buf);
   let o = 0;
   new Uint8Array(buf, o, 9).set(SAVE_MAGIC); o += 9;
@@ -2932,8 +3038,9 @@ function deserialize(buf) {
   if (ver !== 1 && ver !== 2 && ver !== 3) throw new Error("Unsupported save version");
   placedFlowers.clear();
   let dimFlag = 0, endSeedVal = endSeed;
-  if (ver >= 2) { dimFlag = dv.getUint8(o++); endSeedVal = dv.getInt32(o, true); o += 4; }
+  if (ver >= 2) dimFlag = dv.getUint8(o++);
   seed = dv.getInt32(o, true); o += 4;
+  if (ver >= 2) { endSeedVal = dv.getInt32(o, true); o += 4; }
   if (ver >= 2) endSeed = endSeedVal;
   pos.x = dv.getFloat64(o, true); o += 8;
   pos.y = dv.getFloat64(o, true); o += 8;
@@ -2973,7 +3080,7 @@ function deserialize(buf) {
       placedFlowers.set(key(x, y, z), { v, a });
     }
   }
-  dim = dimFlag ? "end" : "over";
+  dim = dimFlag === 1 ? "end" : "over";
   world = worlds[dim];
 }
 
@@ -3259,7 +3366,9 @@ async function restoreSave(buf) {
     updateCamera();
     setDimensionEnv();
     updateDimLabel();
+    clearPortalFills();
     if (dim === "end") { endCleared = false; buildReturnPortal(); spawnDragon(); spawnEndermen(); }
+    scanWorldPortals();
     lastManualSave = Date.now();
     return true;
   } finally {
@@ -3350,6 +3459,7 @@ async function loadSave() {
 function resetDims() {
   dim = "over";
   world = worlds.over;
+  clearPortalFills();
   worlds.end.clear();
   overPortalSpawn = { x: 0.5, y: 1.01, z: 0.5 };
   overPortalFace = null;
@@ -3368,9 +3478,11 @@ async function buildWorld() {
   try {
     resetDims();
     seed = Math.floor(Math.random() * 100000);
+    endSeed = Math.floor(Math.random() * 100000);
     placedFlowers.clear();
     generateWorld();
     spawnPlayer();
+    scanWorldPortals();
     rebuildMeshes();
     select(0);
     updateCamera();

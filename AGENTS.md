@@ -155,20 +155,61 @@ small Python server for saving/loading worlds.
   stuck blast = 1/8 of its HP, so it takes 8 TNT to slay). A dragon-homing blast deals dragon damage only —
   it never destroys terrain, so no crater is left where the TNT launched; a
   homing bomb that never sticks detonates in air after `life` (3s fuse + 2s chase).
-- **Portals / dimensions**: build a horizontal 5×5 frame in the Overworld
-  (4 sides, corners optional), walk into its 3×3 interior to jump to the End;
-  solid black fill marks an active portal. The End is freshly regenerated on
-  every entry — builds are not kept, the dragon respawns at full health and
-  the vertical 5×5 return portal (upright frame, `buildReturnPortal`) is always
-  standing on the platform but stays dormant (empty frame, no black fill, no
-  teleport — a toast notes it needs the dragon slain) until the Ender Dragon is
-  defeated (`endCleared`, set in the death sequence); only then does its
-  black-fill core appear and allow returning to the Overworld. The return
+- **Portals / dimensions**: portal frames are detected in either orientation —
+  upright (vertical frames standing on edge) or flat (laid on the ground —
+  `winOk`/`vWinOk` for End frames,
+  `findEndWinNear` scans both and picks the nearest window).
+  End portals can be a flat 5×5 ring (4 sides, corners optional) or a vertical
+  5×5/5×4 panel, both with black air interior plus solid black fill when
+  active; walk into their 3×3 interior to jump to the End. The End is freshly
+  regenerated on every entry — builds are not kept, the dragon respawns at full
+  health and the vertical 5×5 return portal (upright frame, `buildReturnPortal`)
+  is always standing on the platform but the End is sealed until the dragon dies:
+  while the Ender Dragon is alive (`endCleared = false`, set on every End entry)
+  every portal out of the End — the return portal's black core and any user-built
+  End frame — is dormant (no black
+  fill, no teleport; a toast notes the End is sealed), so you cannot leave the
+  End to the Overworld until the dragon is defeated. Slaying the
+  dragon (`endCleared = true`, set in the death sequence) makes the End-frame
+  exits live: the return portal's fill appears and drops you back
+  beside the Overworld portal you entered. You can
+  build your own End-frame return portal in either orientation. The return
   portal's frame blocks are indestructible (`protectedBlocks`, checked by
   `breakBlock` and the TNT blast loop). Returning drops you beside the
   Overworld portal (never on it), flying is forbidden in the End, and free-cam
   (F) is disabled there; you land just short of the return portal (cooldown +
   zeroed movement prevent an instant round-trip).
+  Every valid portal frame — not just the nearest — gets its own persistent
+  fill group in a `portalFills`
+  Map (`collectEndWins` return all windows in a radius; `scanWorldPortals`
+  registers the whole world, `refreshPortalFills` re-validates frames each
+  tick and prunes broken ones; portal scans are memoized per cell
+  (`portalMemo`) and any `setBlock` edit clears those memos, so a
+  frame built while the player stands still inside its future interior is
+  recognized immediately). Fills share one `portalFillGeo`
+  and a black `MeshBasicMaterial`
+  with a per-orientation `layoutPortalFill`; the black glow marks an
+  active portal. Fills render as per-cube `Mesh`s in a `THREE.Group` and are
+  culled per-frame: hidden when you're in another dimension, when beyond
+  `PORTAL_FILL_DIST` (scales with render distance: 8 chunks × 16 × √2 ≈ 182
+  blocks, so the glow stays lit as far as the frame itself is visible, plus
+  squared-distance test from the eye), or
+  when off-view/behind the camera (three.js frustum culling on each cube).
+  Portals work both ways, so the End's auto-built return portal brings you
+  back to the Overworld's last portal entry point. Any overworld portal entry
+  records the exact frame you stepped through
+  (`overPortalSpawn` = a clear solid spot ~6–9 blocks in front of it,
+  `overPortalFace` = the yaw facing its interior), so the portal you use to
+  leave the Overworld is always the spot you land at on the way back.
+  The single exception is the End itself while the dragon is alive: `checkPortal`
+  checks `endCleared` before any exit, and `refreshPortalFills` clears the
+  End's own fills until `endCleared`, so in the End every frame
+  stays unlit and sealed until the Ender Dragon is defeated.
+  Arriving in the End spawns
+  you in front of the auto-built return portal with your back turned to it
+  (`yaw = 0`, facing out into
+  the new dimension). The End regenerates on
+  every entry.
 - **Ender Dragon**: ambient dragon that spawns in the End and flies along a
   random closed aerial path (arc-length-sampled Catmull-Rom spline through
   random waypoints, low "skim the floor" runs and high soars (about twice the
@@ -225,7 +266,8 @@ small Python server for saving/loading worlds.
     `bursts` effect system). Deleted with the dragon when leaving the End /
     resetting dims; spawned fresh every End entry.
 - **Save/load**: binary format (`SAVE_MAGIC`, version 3) capturing world
-  blocks, dim, seeds, player pos/yaw/pitch, fly state, hotbar selection, and
+  blocks (over/end), dim, seeds (over/end), player pos/yaw/pitch,
+  fly state, hotbar selection, and
   placed-flowers' stored color/rotation (`placedFlowers`; extra per-entry byte
   pair in v3, older v1/v2 saves still load).
   Backends: File System Access API (`pickSaveFile`/`saveToFile`),
@@ -233,7 +275,9 @@ small Python server for saving/loading worlds.
   via `queueSave()`, world regen resets to new seeds (`regenerate`).
 - **HUD/UI**: crosshair, hotbar with slot icons (wheel selects), dimension
   label, toasts, autosave indicator; pause overlay (Resume/New
-  World/Load Save) and H help panel (`portalArt` diagram). Loading a world
+  World/Load Save) and H help panel (portal diagram: `portalArt` for the
+  horizontal End frame).
+  Loading a world
   or generating a new one shows a spinner below the menu (`#loading`,
   `setLoading`) and freezes all controls (input handlers and the game-logic
   half of the main loop bail out while `loading` is true);
