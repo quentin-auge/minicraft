@@ -294,9 +294,20 @@ small Python server for saving/loading worlds.
   reads as a glowing fire lake. A central BLUEFIRE shaft (`fillVolcanoShafts`)
   as wide as the crater (`craterR`) runs up the middle of each volcano from
   the ground base (`baseY`) all the way to the crater, a big swimmable lava
-  chimney. Three 5-wide, 3-tall entrance tunnels (`volcanoTunnels`) are dug at
-  ground level from the outer flank straight in to the lava shaft, so the fire
-  column is easy to find and reach from outside.
+  chimney. Ten straight 4×4 tunnels (`volcanoTunnels`, spaced 36° apart) are
+  dug dead-straight in to the lava shaft from mouths spread across every height
+  of the cone — each tunnel gets its own level, interleaved via `(k*7) % 10`
+  between `baseY + 6` and `rim * 0.8` so neighbouring tunnels are never at the
+  same height, and every mouth bores horizontally to the fire column. Each mouth
+  sits at the outermost point on its heading where the flank clears the doorway
+  (`dOut` scan via `volcanoHeightAt`, threshold `hT + 5`) so the bore stays
+  buried in rock, the volcano surface is flattened into a level apron
+  (`plat + 1 .. plat + 6` carved from `dOut+1` for 8 blocks) so the entrance
+  reads square, and every opening is closed with a strict 6×6 GREENSTONE (block
+  id 20, unlit `basicFace` bright-green pixel texture so it shines) square ring
+  (1 block thick, 4×4 hole) pressed against the flank. Tunnels carve
+  NETHERRACK/SOULSAND/BLUEFIRE and generation runs
+  `volcanoCascades` before `volcanoTunnels`, so coulees never refill a tunnel.
   Each volcano spills a broad main plus a
   narrower side lava coulee over the rim that runs all the way down its
   flank to the base (`volcanoCascades`, angular courses deepest near the rim

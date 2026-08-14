@@ -3,7 +3,7 @@ import * as THREE from "three";
 // ---------------------------------------------------------------------------
 // Block definitions
 // ---------------------------------------------------------------------------
-const AIR = 0, GRASS = 1, DIRT = 2, STONE = 3, SAND = 4, LOG = 5, LEAVES = 6, WATER = 7, PLANKS = 8, GLASS = 9, TNT = 10, FLOWER = 11, PORTAL = 12, ENDSTONE = 13, CLOUD = 14, OBSIDIAN = 15, BLUEFIRE = 16, NETHERRACK = 17, SOULSAND = 18, GLOWSTONE = 19;
+const AIR = 0, GRASS = 1, DIRT = 2, STONE = 3, SAND = 4, LOG = 5, LEAVES = 6, WATER = 7, PLANKS = 8, GLASS = 9, TNT = 10, FLOWER = 11, PORTAL = 12, ENDSTONE = 13, CLOUD = 14, OBSIDIAN = 15, BLUEFIRE = 16, NETHERRACK = 17, SOULSAND = 18, GLOWSTONE = 19, GREENSTONE = 20;
 
 const BLOCK_INFO = {
   [GRASS]:   { name: "Grass",    solid: true,  opaque: true,  placeable: true },
@@ -25,6 +25,7 @@ const BLOCK_INFO = {
   [NETHERRACK]:{ name: "Netherrack", solid: true, opaque: true, placeable: true },
   [SOULSAND]:  { name: "Soul Sand",   solid: true, opaque: true, placeable: false },
   [GLOWSTONE]: { name: "Glowstone",   solid: true, opaque: true, placeable: false },
+  [GREENSTONE]:{ name: "Greenstone",  solid: true, opaque: true, placeable: false },
 };
 
 // ---------------------------------------------------------------------------
@@ -215,6 +216,16 @@ const TEX = {
     ctx.fillStyle = "rgba(235,248,255,0.9)";
     ctx.fillRect(6, 7, 2, 2); ctx.fillRect(11, 3, 1, 1); ctx.fillRect(4, 12, 1, 1);
   }),
+  greenstone: canvasTex((ctx) => {
+    ctx.fillStyle = "#0e5c1c"; ctx.fillRect(0, 0, 16, 16);
+    pxNoise(ctx, [14, 92, 28], 32);
+    ctx.fillStyle = "#3dff7a";
+    for (let i = 0; i < 9; i++) ctx.fillRect(Math.random() * 15, Math.random() * 15, 1 + Math.random(), 1 + Math.random());
+    ctx.fillStyle = "rgba(3,28,9,0.35)";
+    for (let i = 0; i < 5; i++) ctx.fillRect(Math.random() * 14, Math.random() * 14, 2, 2);
+    ctx.fillStyle = "rgba(210,255,220,0.9)";
+    ctx.fillRect(6, 7, 2, 2); ctx.fillRect(11, 3, 1, 1); ctx.fillRect(4, 12, 1, 1);
+  }),
   flower: canvasTex((ctx) => {
     const petals = ["rgb(232,30,52)", "rgb(56,106,252)", "rgb(248,188,16)", "rgb(16,204,186)", "rgb(244,132,34)", "rgb(160,80,224)", "rgb(232,30,52)", "rgb(56,106,252)"];
     ctx.clearRect(0, 0, 16, 16);
@@ -272,6 +283,7 @@ function materialsFor(id) {
     case NETHERRACK: return faceTex(TEX.netherrack);
     case SOULSAND: return faceTex(TEX.soulsand);
     case GLOWSTONE: return basicFace(TEX.glowstone);
+    case GREENSTONE: return basicFace(TEX.greenstone);
     case PORTAL: return faceTex(TEX.portal);
     default: return faceTex(TEX.dirt);
   }
@@ -875,29 +887,72 @@ function fillVolcanoShafts() {
   }
 }
 
-// Tunnels into the volcano sides: three 5-wide, 3-tall corridors dug at ground
-// level from the outer flank straight to the central lava shaft, so the fire
-// column is easy to find and reach from outside.
+// Ten straight 4x4 tunnels per volcano, one per heading spread around the
+// cone at ten different heights (interleaved so neighbouring tunnels are never
+// at the same level), each running dead-straight from a mouth on the flank in
+// to the central lava shaft. The surface is flattened into a level apron at
+// each mouth and every entrance is closed with a strict 6x6 greenstone square
+// ring around the 4x4 opening.
 function volcanoTunnels() {
   const w = worlds.nether;
   const S = WORLD_RADIUS;
+  const TUNNELS = 10;
   for (const v of volcanoes) {
-    const y0 = v.baseY + 1;
-    for (let k = 0; k < 3; k++) {
-      const dir = v.flowAng + (k * 2 * Math.PI) / 3;
-      for (let d = v.craterR + 1; d <= v.radius - 2; d++) {
-        const mx = Math.cos(dir + Math.PI / 2), mz = Math.sin(dir + Math.PI / 2);
-        const px = Math.cos(dir) * d, pz = Math.sin(dir) * d;
-        for (let off = -2; off <= 2; off++) {
+    const hLo = v.baseY + 6;
+    const hHi = v.rim * 0.8;
+    const hRange = hHi - hLo;
+    const minD = v.craterR + 1;
+    for (let k = 0; k < TUNNELS; k++) {
+      const dir = v.flowAng + (k * 2 * Math.PI) / TUNNELS;
+      const dx = Math.cos(dir), dz = Math.sin(dir);
+      const mx = Math.cos(dir + Math.PI / 2), mz = Math.sin(dir + Math.PI / 2);
+      const frac = ((k * 7) % TUNNELS) / TUNNELS;
+      const hT = hLo + hRange * frac;
+      const plat = Math.round(hT) - 4;    // apron level / frame bottom
+      // Mouth plane: outermost point on this heading whose flank clears the
+      // top of the doorway so the bore stays buried in rock.
+      let dOut = v.radius - 1;
+      for (let d = v.radius - 1; d >= minD; d--) {
+        const vh = volcanoHeightAt(v, v.x + Math.round(dx * d), v.z + Math.round(dz * d));
+        if (vh != null && vh >= hT + 5) { dOut = d; break; }
+      }
+      // 4x4 bore from the lava shaft out to the mouth plane.
+      for (let d = minD; d <= dOut; d++) {
+        const px = dx * d, pz = dz * d;
+        for (let off = -2; off <= 1; off++) {
           const wx = v.x + Math.round(px + mx * off);
           const wz = v.z + Math.round(pz + mz * off);
           if (wx < -S || wx > S || wz < -S || wz > S) continue;
-          for (let y = y0; y <= y0 + 2; y++) {
+          for (let y = plat + 1; y <= plat + 4; y++) {
             const cur = getBlock(wx, y, wz);
-            if (cur === NETHERRACK || cur === SOULSAND) w.set(key(wx, y, wz), AIR);
+            if (cur === NETHERRACK || cur === SOULSAND || cur === BLUEFIRE) w.set(key(wx, y, wz), AIR);
           }
         }
       }
+      // Flatten the volcano surface into a level apron in front of the mouth.
+      for (let d = dOut + 1; d <= dOut + 8; d++) {
+        const px = dx * d, pz = dz * d;
+        for (let off = -8; off <= 8; off++) {
+          const wx = v.x + Math.round(px + mx * off);
+          const wz = v.z + Math.round(pz + mz * off);
+          if (wx < -S || wx > S || wz < -S || wz > S) continue;
+          for (let y = plat + 1; y <= plat + 6; y++) {
+            const cur = getBlock(wx, y, wz);
+            if (cur === NETHERRACK || cur === SOULSAND || cur === BLUEFIRE) w.set(key(wx, y, wz), AIR);
+          }
+        }
+      }
+      // Strict 6x6 greenstone square ring (1 thick) around the 4x4 opening.
+      const pX = v.x + Math.round(dx * dOut);
+      const pZ = v.z + Math.round(dz * dOut);
+      const frame = (off, yy) => {
+        const wx = pX + Math.round(mx * off);
+        const wz = pZ + Math.round(mz * off);
+        if (wx < -S || wx > S || wz < -S || wz > S) return;
+        w.set(key(wx, yy, wz), GREENSTONE);
+      };
+      for (let off = -3; off <= 2; off++) { frame(off, plat); frame(off, plat + 5); }
+      for (let yy = plat; yy <= plat + 5; yy++) { frame(-3, yy); frame(2, yy); }
     }
   }
 }
@@ -1058,8 +1113,8 @@ function generateNether() {
   }
   fillVolcanoCraters();
   fillVolcanoShafts();
-  volcanoTunnels();
   volcanoCascades();
+  volcanoTunnels();
 }
 
 // ---------------------------------------------------------------------------
@@ -4669,8 +4724,14 @@ function closeHelpAndResume() {
 helpEl.addEventListener("click", (e) => { if (e.target === helpEl) closeHelpAndResume(); });
 helpEl.querySelector("#btnHelpClose").addEventListener("click", closeHelpAndResume);
 
+const isTyping = (e) => {
+  const t = e.target;
+  if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA")) return true;
+  if (t && t.isContentEditable) return true;
+  return false;
+};
 document.addEventListener("keydown", (e) => {
-  if (loading) return;
+  if (loading || isTyping(e)) return;
   if (helpOpen) {
     if (e.code === "Escape") { closeHelpAndResume(); e.preventDefault(); }
     return;
