@@ -126,14 +126,23 @@ small Python server for saving/loading worlds.
   `placeable: false`),
   GLOWSTONE (the multicolour portal block: solid, `placeable: true`, in the
   hotbar, drawn unlit via `basicFace` so it shines at full
-  strength no matter how far you stand from it. It comes in seven colours —
-  red, blue, green, orange, turquoise, yellow, purple (`GLOW_PALETTES`,
-  one tile texture per colour in `GLOW_TEX`); placing a stone rolls a random
+  strength no matter how far you stand from it. It comes in six colours —
+  green, red, blue, yellow, purple, turquoise (`GLOW_PALETTES`,
+  one tile texture per colour in `GLOW_TEX`); the block texture is lifted
+  brighter so the unlit blocks read as glowing (`GLOW_LIFT` — only the dominant
+  colour channels are lifted, so red/blue/purple stay saturated instead of
+  washing out toward pink/grey; green gets half the lift since it already pops
+  against the grey Nether, while blue is drawn as-is (`flat`) as a vivid royal
+  blue — saturated and luminous without drifting into cyan or washing pale —
+  and purple lifts only its blue channel so it stays violet instead of turning
+  pink) while the projected light colour (`glow`) is never brightened. Placing a stone rolls a random
   colour, but if any existing glowstone sits within 10 blocks it inherits that
   nearest stone's colour (`glowVariantNear`), so builds grow into single-colour
   clusters. Each stone's colour is stored per block per dimension
-  (`glowVariants`/`worldGlowVariants`, persisted in save format v6; old saves
-  are backfilled with clustered colours on load), rendered per-chunk as one
+  (`glowVariants`/`worldGlowVariants`, persisted in save format v7; old saves
+  are backfilled with clustered colours on load, and v6 saves from the
+  seven-colour era remap their indices via `LEGACY_GLOW_MAP`), rendered
+  per-chunk as one
   `InstancedMesh` per colour (`getGlowMats`, keyed `glowstone_v`), and the
   auto-built volcano door rings each get one random colour of their own. Each
   cluster casts a steady pool of light in its own colour:
@@ -342,8 +351,9 @@ small Python server for saving/loading worlds.
   buried in rock, the volcano surface is flattened into a level apron
   (`plat + 1 .. plat + 6` carved from `dOut+1` for 8 blocks) so the entrance
   reads square, and every opening is closed with a strict 6×6 GLOWSTONE (block
-  id 20, unlit `basicFace` bright-green pixel texture so it shines) square ring
-  (1 block thick, 4×4 hole) pressed against the flank. Tunnels carve
+  id 20, unlit `basicFace` pixel texture so it shines) square ring
+  (1 block thick, 4×4 hole), each ring a single random colour of the five,
+  pressed against the flank. Tunnels carve
   NETHERRACK/SOULSAND/BLUEFIRE and generation runs
   `volcanoCascades` before `volcanoTunnels`, so coulees never refill a tunnel.
   Each volcano spills a broad main plus a
@@ -432,15 +442,16 @@ small Python server for saving/loading worlds.
     the source and destination positions (`spawnEndermanBurst`, reusing the
     `bursts` effect system). Deleted with the dragon when leaving the End /
     resetting dims; spawned fresh every End entry.
-- **Save/load**: binary format (`SAVE_MAGIC`, version 6) capturing world
+- **Save/load**: binary format (`SAVE_MAGIC`, version 7) capturing world
   blocks (over/end/nether), dim, seeds (over/end/nether), player pos/yaw/pitch,
   fly state, hotbar selection,
   placed-flowers' stored color/rotation (`placedFlowers`) and per-glowstone
-  colour entries (`glowVariants`, one per dimension, in v6); extra per-entry byte
+  colour entries (`glowVariants`, one per dimension, in v7); extra per-entry byte
   pair for flowers in v3, the nether dim/seed/blocks added in v4; older v1/v2/v3
   saves still load, and v5 saves from the briefly-lived torch era are tolerated
-  and read past their torch entries. Saves older than v6 have their glowstone
-  colours backfilled (clustered) on load.
+  and read past their torch entries. Saves older than v7 have their glowstone
+  colours backfilled (clustered) on load, and v6 saves' stored seven-colour
+  indices are remapped onto the six via `LEGACY_GLOW_MAP`.
   Backends: File System Access API (`pickSaveFile`/`saveToFile`),
   IndexedDB fallback, and the server API (`apiLoad`/`apiList`). Autosave
   via `queueSave()`, world regen resets to new seeds (`regenerate`).

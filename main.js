@@ -27,20 +27,50 @@ const BLOCK_INFO = {
   [GLOWSTONE]:{ name: "Glowstone",  solid: true, opaque: true, placeable: true },
 };
 
-// Glowstone comes in seven colours (red, blue, green, orange, turquoise,
-// yellow, purple). Each palette drives both the block texture and the colour
-// of the light the stone casts. Placed stones cluster: a block placed within
-// 10 blocks of an existing one inherits its colour, otherwise it rolls random.
-const GLOW_PALETTES = [
-  { base: "#5c1020", noise: [92, 16, 32],  bright: "#ff3d5c", dark: "rgba(40,4,12,0.35)",  hi: "rgba(255,214,226,0.9)", glow: 0xff3d5c },
-  { base: "#10325c", noise: [16, 50, 92],  bright: "#3d8aff", dark: "rgba(4,12,40,0.35)",   hi: "rgba(214,232,255,0.9)", glow: 0x3d8aff },
-  { base: "#0e5c1c", noise: [14, 92, 28],  bright: "#3dff7a", dark: "rgba(3,28,9,0.35)",    hi: "rgba(210,255,220,0.9)", glow: 0x3dff7a },
-  { base: "#5c2e0e", noise: [92, 46, 14],  bright: "#ffa03d", dark: "rgba(40,16,3,0.35)",   hi: "rgba(255,233,210,0.9)", glow: 0xffa03d },
-  { base: "#0e5c4a", noise: [14, 92, 74],  bright: "#3dffe8", dark: "rgba(3,40,30,0.35)",   hi: "rgba(210,255,246,0.9)", glow: 0x3dffe8 },
-  { base: "#5c4a0e", noise: [92, 74, 14],  bright: "#ffe53d", dark: "rgba(40,30,3,0.35)",   hi: "rgba(255,251,214,0.9)", glow: 0xffe53d },
-  { base: "#3a0e5c", noise: [58, 14, 92],  bright: "#b23dff", dark: "rgba(24,3,40,0.35)",   hi: "rgba(240,214,255,0.9)", glow: 0xb23dff },
+// Glowstone comes in six colours (green, red, blue, yellow, purple,
+// turquoise). Each
+// palette drives both the block texture and the colour of the light the stone
+// casts. The block texture is lifted brighter on purpose (it is drawn unlit,
+// so a brighter texture reads as a brighter block); each colour is lifted only
+// along its dominant channels so the hue stays pure instead of washing out
+// toward white (a pure red stays a vivid red, not pink). Green already pops
+// against the grey Nether, so its lift is half the others'; blue and turquoise
+// are drawn as-is (`flat`) instead, with hand-picked saturated colours. The
+// projected light (glow) is never brightened. Placed stones cluster: a block
+// placed within 10 blocks of an existing one inherits its colour, otherwise
+// random.
+const GLOW_LIFT = 0.8;   // another 2x: all glowstones shine 4x brighter
+const GLOW_RAW = [
+  { base: [14, 92, 28],  bright: [61, 255, 122], glow: 0x3dff7a, lift: GLOW_LIFT * 0.5 },           // green
+  { base: [92, 16, 32],  bright: [255, 61, 92],  glow: 0xff3d5c, lift: GLOW_LIFT },                 // red
+  { base: [40, 80, 255], bright: [140, 200, 255], glow: 0x3d8aff, flat: true },          // blue: vivid royal blue, drawn as-is (reworked from scratch)
+  { base: [92, 74, 14],  bright: [255, 229, 61], glow: 0xffe53d, lift: GLOW_LIFT },                 // yellow
+  { base: [58, 14, 92],  bright: [178, 61, 255], glow: 0xb23dff, lift: GLOW_LIFT, thresh: 0.7 },    // purple: only blue lifts, so it stays violet not pink
+  { base: [0, 190, 215], bright: [150, 250, 255], glow: 0x00cdde, flat: true },         // turquoise: vivid blue-turquoise, drawn as-is
 ];
+const GLOW_PALETTES = GLOW_RAW.map((p) => {
+  const lift = (rgb, f) => {
+    const max = Math.max(...rgb);
+    const thresh = max * (p.thresh ?? 0.6);   // only the dominant channels get lifted
+    return rgb.map((v) => (v >= thresh ? Math.min(255, Math.round(v + (255 - v) * f)) : v));
+  };
+  const base = p.flat ? p.base : lift(p.base, p.lift);
+  const bright = p.flat ? p.bright : lift(p.bright, p.lift);
+  return {
+    base: `rgb(${base[0]},${base[1]},${base[2]})`,
+    noise: base,
+    bright: `rgb(${bright[0]},${bright[1]},${bright[2]})`,
+    dark: `rgba(${Math.round(base[0] * 0.3)},${Math.round(base[1] * 0.3)},${Math.round(base[2] * 0.3)},0.35)`,
+    hi: `rgba(${Math.min(255, base[0] + 90)},${Math.min(255, base[1] + 90)},${Math.min(255, base[2] + 90)},0.9)`,
+    glow: p.glow,
+  };
+});
 const GLOW_VARIANT_COUNT = GLOW_PALETTES.length;
+// Saves from the seven-colour era (orange removed for good) map their stored
+// variant index onto the new six: red→red, blue→blue, green→green,
+// orange→yellow, turquoise→turquoise, yellow→yellow, purple→purple. Turquoise
+// is appended at the end, so existing five-colour v7 saves stay valid.
+const LEGACY_GLOW_MAP = [1, 2, 0, 3, 5, 3, 4];
 
 // ---------------------------------------------------------------------------
 // Deterministic noise
@@ -230,7 +260,7 @@ const TEX = {
     ctx.fillStyle = "rgba(30,30,36,0.5)";
     for (let i = 0; i < 4; i++) ctx.fillRect(Math.random() * 14, Math.random() * 14, 3, 1);
   }),
-  glowstone: canvasTex((ctx) => drawGlowMesh(ctx, GLOW_PALETTES[2])),
+  glowstone: canvasTex((ctx) => drawGlowMesh(ctx, GLOW_PALETTES[0])),
   flower: canvasTex((ctx) => {
     const petals = ["rgb(232,30,52)", "rgb(56,106,252)", "rgb(248,188,16)", "rgb(16,204,186)", "rgb(244,132,34)", "rgb(160,80,224)", "rgb(232,30,52)", "rgb(56,106,252)"];
     ctx.clearRect(0, 0, 16, 16);
@@ -1401,7 +1431,7 @@ function recomputeGlowClusters() {
     if (v !== undefined) g.votes[v] = (g.votes[v] || 0) + 1;
   }
   for (const g of groups) {
-    let best = 2, bestN = -1;   // default to green on ties
+    let best = 0, bestN = -1;   // default to green on ties
     for (let v = 0; v < GLOW_VARIANT_COUNT; v++) {
       const n = g.votes[v] || 0;
       if (n > bestN) { bestN = n; best = v; }
@@ -1526,7 +1556,7 @@ function glowVariantNear(x, y, z) {
 }
 function glowVariantAt(x, y, z) {
   const v = worldGlowVariants.get(world).get(key(x, y, z));
-  return v === undefined ? 2 : v;   // default to green
+  return v === undefined ? 0 : v;   // default to green
 }
 
 // Chunked streaming renderer: the world (now 2x) is split into CHUNK-chunks
@@ -4283,7 +4313,7 @@ function serialize() {
   const dv = new DataView(buf);
   let o = 0;
   new Uint8Array(buf, o, 9).set(SAVE_MAGIC); o += 9;
-  dv.setUint8(o++, 6); // format version
+  dv.setUint8(o++, 7); // format version
   dv.setUint8(o++, dim === "end" ? 1 : dim === "nether" ? 2 : 0);
   dv.setInt32(o, seed, true); o += 4;
   dv.setInt32(o, endSeed, true); o += 4;
@@ -4342,7 +4372,7 @@ function deserialize(buf) {
   for (let i = 0; i < 9; i++) if (new Uint8Array(buf, o, 9)[i] !== SAVE_MAGIC[i]) throw new Error("Not a MiniCraft save");
   o += 9;
   const ver = dv.getUint8(o++);
-  if (ver !== 1 && ver !== 2 && ver !== 3 && ver !== 4 && ver !== 5 && ver !== 6) throw new Error("Unsupported save version");
+  if (ver !== 1 && ver !== 2 && ver !== 3 && ver !== 4 && ver !== 5 && ver !== 6 && ver !== 7) throw new Error("Unsupported save version");
   placedFlowers.clear();
   glowVariants.over.clear();
   glowVariants.end.clear();
@@ -4413,19 +4443,21 @@ function deserialize(buf) {
     for (let i = 0; i < t; i++) { o += 5; }
   }
   if (ver >= 6) {
-    const readVariants = (map) => {
+    const readVariants = (map, legacy) => {
       const g = dv.getUint32(o, true); o += 4;
       for (let i = 0; i < g; i++) {
         const x = dv.getUint8(o++) - 128;
         const y = dv.getUint8(o++);
         const z = dv.getUint8(o++) - 128;
         const v = dv.getUint8(o++);
-        if (v < GLOW_VARIANT_COUNT) map.set(key(x, y, z), v);
+        const m = legacy ? LEGACY_GLOW_MAP[v] : (v < GLOW_VARIANT_COUNT ? v : undefined);
+        if (m !== undefined) map.set(key(x, y, z), m);
       }
     };
-    readVariants(glowVariants.over);
-    readVariants(glowVariants.end);
-    readVariants(glowVariants.nether);
+    const legacy = ver < 7;   // v6 is the seven-colour era; remap its indices
+    readVariants(glowVariants.over, legacy);
+    readVariants(glowVariants.end, legacy);
+    readVariants(glowVariants.nether, legacy);
   } else {
     // Old saves have no glowstone colours: give every glowstone a clustered
     // colour so pre-built and placed stones don't all revert to green.
