@@ -206,10 +206,19 @@ small Python server for saving/loading worlds.
   Map (`collectEndWins` /
   `collectNetherWins` return all windows in a radius; `scanWorldPortals`
   registers the whole world, `refreshPortalFills` re-validates frames each
-  tick and prunes broken ones; portal scans are memoized per cell
-  (`portalMemo`/`netherMemo`) and any `setBlock` edit clears those memos, so a
-  frame built while the player stands still inside its future interior is
-  recognized immediately). Nether/End fills share one `portalFillGeo`
+  tick and prunes broken ones; portal scans are anchored to actual
+  PORTAL/OBSIDIAN blocks instead of brute-forcing radius windows: `setBlock`
+  maintains per-world `portalBlockSets` (`worldPortalSets`) of candidate blocks,
+  and `collectEndWins`/`collectNetherWins` enumerate just the possible windows
+  whose mandatory edge cells pass through each anchor block (deduped via a
+  `seen` Set) and validate them with the same `winOk`/`vWinOk`/`nWinOk`
+  checks, so a frame built while the player stands still inside its future
+  interior is recognized immediately with no per-frame window sweep).
+  `updatePortalVisual` rescans only when `portalDirty` is set or when half a
+  second has passed with the player on a new chunk cell; any `setBlock` edit
+  sets `portalDirty`, and `checkPortal` walks the live `portalFills` Map
+  instead of rescanning the world each frame. Nether/End fills share one
+  `portalFillGeo`
   and two `MeshBasicMaterial`s (purple `0x9b30ff` for Nether, black for End)
   with the same per-orientation `layoutPortalFill`; the purple glow marks an
   active portal. Fills render as per-cube `Mesh`s in a `THREE.Group` and are

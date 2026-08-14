@@ -322,7 +322,17 @@ let riverPaths = [];
 let tunnelPaths = [];
 let forestThresh = 0.5;
 
-function key(x, y, z) { return x + "," + y + "," + z; }
+// Packed integer block key so lookups allocate no strings. Unique for x,z in
+// [-1024, 1023] and y in [0, 2047], nowhere near Number's safe integer range.
+const KEY_OFF = 1024, KEY_MZ = 2048, KEY_MY = KEY_MZ * KEY_MZ;
+function key(x, y, z) { return (x + KEY_OFF) * KEY_MY + y * KEY_MZ + (z + KEY_OFF); }
+function keyXYZ(k) {
+  const z = (k % KEY_MZ) - KEY_OFF;
+  const t = Math.floor(k / KEY_MZ);
+  const y = t % KEY_MZ;
+  const x = Math.floor(t / KEY_MZ) - KEY_OFF;
+  return [x, y, z];
+}
 
 const worlds = { over: new Map(), end: new Map(), nether: new Map() };
 let dim = "over";
@@ -331,13 +341,42 @@ const getBlock = (x, y, z) => world.get(key(x, y, z)) || AIR;
 
 const placedFlowers = new Map();
 
+// Tracks every PORTAL/OBSIDIAN block so portal scans iterate only real frame
+// blocks instead of brute-forcing an 8-block-radius box cell by cell.
+const portalBlockSets = { over: new Set(), end: new Set(), nether: new Set() };
+const worldPortalSets = new WeakMap([
+  [worlds.over, portalBlockSets.over],
+  [worlds.end, portalBlockSets.end],
+  [worlds.nether, portalBlockSets.nether],
+]);
+
+let portalDirty = true;   // any block edit forces a portal rescan
+let worldDirty = true;    // any block edit marks the world for autosave
+
+function rebuildPortalBlocks() {
+  for (const name of ["over", "end", "nether"]) {
+    const set = portalBlockSets[name];
+    set.clear();
+    for (const [k, id] of worlds[name]) if (id === PORTAL || id === OBSIDIAN) set.add(k);
+  }
+}
+
 function setBlock(x, y, z, id) {
   if (y < 0 || y > MAX_Y) return;
   const k = key(x, y, z);
-  if (id === AIR) world.delete(k); else world.set(k, id);
+  const pb = worldPortalSets.get(world);
+  if (id === AIR) {
+    world.delete(k);
+    pb.delete(k);
+  } else {
+    world.set(k, id);
+    if (id === PORTAL || id === OBSIDIAN) pb.add(k); else pb.delete(k);
+  }
   if (id !== FLOWER) placedFlowers.delete(k);
-  portalMemo.dim = "";
+  endMemo.dim = "";
   netherMemo.dim = "";
+  portalDirty = true;
+  worldDirty = true;
 }
 
 function heightAt(x, z) {
@@ -654,6 +693,7 @@ function stairEntrances() {
 function generateWorld() {
   world = worlds.over;
   worlds.over.clear();
+  portalBlockSets.over.clear();
   waterScale = 1 + (hash2(0, 0, seed + 333) * 4 | 0);
   waterDepth = 1 + (hash2(0, 0, seed + 444) * 4 | 0);
   basinFreq = 0.007 / Math.sqrt(waterScale);
@@ -736,6 +776,7 @@ function generateClouds() {
 function generateEnd() {
   const w = worlds.end;
   w.clear();
+  portalBlockSets.end.clear();
   const R = END_PLATFORM_R;
   for (let x = -R; x <= R; x++)
     for (let z = -R; z <= R; z++)
@@ -799,6 +840,7 @@ function nearestNetherRiver(x, z) {
 function generateNether() {
   const w = worlds.nether;
   w.clear();
+  portalBlockSets.nether.clear();
   const S = WORLD_RADIUS;
   generateNetherRivers();
   const size = 2 * S + 1;
@@ -1133,7 +1175,11 @@ function rebuildChunk(cx, cz) {
 }
 
 // Incremental streaming: build only missing chunks inside the window, unload
-// chunks that fell outside it. Called when the player crosses a chunk border.
+// chunks that fell outside it. Called when the player crosses a chunk border;
+// the actual building is staggered across frames (drainChunkQueue) so a border
+// cross never rebuilds ~17 chunks in one frame.
+const chunkQueue = [];
+const CHUNK_BUDGET_MS = 4;
 function streamChunks() {
   const cx = chunkOf(freeCam ? camPos.x : pos.x);
   const cz = chunkOf(freeCam ? camPos.z : pos.z);
@@ -1149,19 +1195,44 @@ function streamChunks() {
   for (const [ck, meshes] of [...chunkMeshes]) {
     if (!keep.has(ck)) { disposeChunkMeshes(meshes); chunkMeshes.delete(ck); }
   }
+  for (let i = chunkQueue.length - 1; i >= 0; i--)
+    if (!keep.has(chunkQueue[i])) chunkQueue.splice(i, 1);
+  const queued = new Set(chunkQueue);
+  const missing = [];
   for (const ck of keep) {
-    if (!chunkMeshes.has(ck)) {
-      const [wx, wz] = ck.split("_");
-      rebuildChunk(+wx, +wz);
-    }
+    if (chunkMeshes.has(ck) || queued.has(ck)) continue;
+    const [wx, wz] = ck.split("_");
+    missing.push([ck, +wx, +wz]);
   }
-  meshCx = cx; meshCz = cz;
+  missing.sort((a, b) => {
+    const da = (a[1] - cx) * (a[1] - cx) + (a[2] - cz) * (a[2] - cz);
+    const db = (b[1] - cx) * (b[1] - cx) + (b[2] - cz) * (b[2] - cz);
+    return da - db;
+  });
+  for (const [ck] of missing) chunkQueue.push(ck);
+}
+
+function drainChunkQueue(all) {
+  if (!chunkQueue.length) return;
+  const deadline = all ? Infinity : performance.now() + CHUNK_BUDGET_MS;
+  while (chunkQueue.length && (all || performance.now() < deadline)) {
+    const ck = chunkQueue.shift();
+    if (chunkMeshes.has(ck)) continue;
+    const [wx, wz] = ck.split("_");
+    rebuildChunk(+wx, +wz);
+  }
+  if (!chunkQueue.length) {
+    meshCx = chunkOf(freeCam ? camPos.x : pos.x);
+    meshCz = chunkOf(freeCam ? camPos.z : pos.z);
+  }
 }
 
 function rebuildMeshes() {
   for (const meshes of chunkMeshes.values()) disposeChunkMeshes(meshes);
   chunkMeshes.clear();
+  chunkQueue.length = 0;
   streamChunks();
+  drainChunkQueue(true);
 }
 
 // Rebuild just the chunk(s) holding the given blocks (plus neighbours across
@@ -2196,6 +2267,8 @@ function setDimensionEnv() {
 function goToDimension(name, sx, sy, sz) {
   dim = name;
   world = worlds[name];
+  portalDirty = true;
+  worldDirty = true;
   clearPortalFills();
   if (name === "end") {
     generateEnd();
@@ -2334,84 +2407,146 @@ function windowDist(w, bx, by, bz) {
   return dx * dx + dy * dy + dz * dz;
 }
 
-function findEndWinNear(bx, by, bz, R) {
-  let best = null;
-  const consider = (w) => {
-    const d = windowDist(w, bx, by, bz);
-    if (!best || d < best.d) best = { w, d };
-  };
-  for (let wz = -R; wz <= R; wz++)
-    for (let wx = -R; wx <= R; wx++)
-      for (let wy = -R; wy <= R; wy++) {
-        if (vWinOk(bx + wx, by + wy, bz + wz)) consider({ orient: "v", minX: bx + wx, minY: by + wy, minZ: bz + wz });
-        if (vWinOk4(bx + wx, by + wy, bz + wz)) consider({ orient: "v", h: 4, minX: bx + wx, minY: by + wy, minZ: bz + wz });
-      }
-  for (let dy = -2; dy <= 2; dy++)
-    for (let wx = -R; wx <= R; wx++)
-      for (let wz = -R; wz <= R; wz++)
-        if (winOk(bx + wx, bz + wz, by + dy)) consider({ orient: "h", minX: bx + wx, minY: by + dy, minZ: bz + wz });
-  return best ? best.w : null;
+function forEachPortalBlockNear(bx, by, bz, R, fn) {
+  for (const pk of worldPortalSets.get(world)) {
+    const [px, py, pz] = keyXYZ(pk);
+    if (Math.abs(px - bx) > R || Math.abs(py - by) > R || Math.abs(pz - bz) > R) continue;
+    fn(px, py, pz);
+  }
 }
 
-function findNetherWinNear(bx, by, bz, R) {
-  let best = null;
-  const consider = (w) => {
-    const d = windowDist(w, bx, by, bz);
-    if (!best || d < best.d) best = { w, d };
-  };
-  for (let wz = -R; wz <= R; wz++)
-    for (let wx = -R; wx <= R; wx++)
-      for (let wy = -4; wy <= 4; wy++) {
-        if (nWinOk(bx + wx, by + wy, bz + wz, 5, 4)) consider({ orient: "v", face: "z", minX: bx + wx, minY: by + wy, minZ: bz + wz });
-        if (nWinOk(bx + wx, by + wy, bz + wz, 4, 5)) consider({ orient: "v", face: "z", dims: "4x5", minX: bx + wx, minY: by + wy, minZ: bz + wz });
-        if (nWinOk(bx + wx, by + wy, bz + wz, 4, 4)) consider({ orient: "v", face: "z", dims: "4x4", minX: bx + wx, minY: by + wy, minZ: bz + wz });
-        if (nWinOk(bx + wx, by + wy, bz + wz, 5, 4, "x")) consider({ orient: "v", face: "x", minX: bx + wx, minY: by + wy, minZ: bz + wz });
-        if (nWinOk(bx + wx, by + wy, bz + wz, 4, 5, "x")) consider({ orient: "v", face: "x", dims: "4x5", minX: bx + wx, minY: by + wy, minZ: bz + wz });
-        if (nWinOk(bx + wx, by + wy, bz + wz, 4, 4, "x")) consider({ orient: "v", face: "x", dims: "4x4", minX: bx + wx, minY: by + wy, minZ: bz + wz });
-      }
-  for (let dy = -2; dy <= 2; dy++)
-    for (let wx = -R; wx <= R; wx++)
-      for (let wz = -R; wz <= R; wz++) {
-        if (nFlatWinOk(bx + wx, bz + wz, by + dy, 5, 4)) consider({ orient: "h", minX: bx + wx, minY: by + dy, minZ: bz + wz, dims: "5x4" });
-        if (nFlatWinOk(bx + wx, bz + wz, by + dy, 4, 5)) consider({ orient: "h", minX: bx + wx, minY: by + dy, minZ: bz + wz, dims: "4x5" });
-      }
-  return best ? best.w : null;
+// Candidate window anchors where a portal block sits on the frame's mandatory
+// edge (corners are optional for End frames, always required for Nether ones).
+// Validating each candidate with the existing winOk checks keeps the window
+// layouts identical to before — only the scan is anchored to real blocks.
+function* endVerticalAnchors(px, py, pz) {
+  for (const h of [5, 4]) {
+    for (let wy = py - h + 2; wy <= py - 1; wy++) {
+      yield { orient: "v", h, minX: px, minY: wy, minZ: pz };
+      yield { orient: "v", h, minX: px - 4, minY: wy, minZ: pz };
+    }
+    for (let wx = px - 3; wx <= px - 1; wx++) {
+      yield { orient: "v", h, minX: wx, minY: py, minZ: pz };
+      yield { orient: "v", h, minX: wx, minY: py - (h - 1), minZ: pz };
+    }
+  }
+}
+function* endFlatAnchors(px, py, pz) {
+  for (let wz = pz - 3; wz <= pz - 1; wz++) {
+    yield { orient: "h", minX: px, minY: py, minZ: wz };
+    yield { orient: "h", minX: px - 4, minY: py, minZ: wz };
+  }
+  for (let wx = px - 3; wx <= px - 1; wx++) {
+    yield { orient: "h", minX: wx, minY: py, minZ: pz };
+    yield { orient: "h", minX: wx, minY: py, minZ: pz - 4 };
+  }
+}
+function* netherVerticalAnchors(px, py, pz) {
+  const shapes = [
+    { w: 5, h: 4, dims: undefined },
+    { w: 4, h: 5, dims: "4x5" },
+    { w: 4, h: 4, dims: "4x4" },
+  ];
+  for (const { w, h, dims } of shapes) {
+    for (let wy = py - h + 1; wy <= py; wy++) {
+      yield { orient: "v", face: "z", dims, minX: px, minY: wy, minZ: pz, w, h };
+      yield { orient: "v", face: "z", dims, minX: px - (w - 1), minY: wy, minZ: pz, w, h };
+    }
+    for (let wx = px - w + 1; wx <= px; wx++) {
+      yield { orient: "v", face: "z", dims, minX: wx, minY: py, minZ: pz, w, h };
+      yield { orient: "v", face: "z", dims, minX: wx, minY: py - (h - 1), minZ: pz, w, h };
+    }
+    for (let wz = pz - w + 1; wz <= pz; wz++) {
+      yield { orient: "v", face: "x", dims, minX: px, minY: py, minZ: wz, w, h };
+      yield { orient: "v", face: "x", dims, minX: px, minY: py - (h - 1), minZ: wz, w, h };
+    }
+    for (let wy = py - h + 1; wy <= py; wy++) {
+      yield { orient: "v", face: "x", dims, minX: px, minY: wy, minZ: pz, w, h };
+      yield { orient: "v", face: "x", dims, minX: px, minY: wy, minZ: pz - (w - 1), w, h };
+    }
+  }
+}
+function* netherFlatAnchors(px, py, pz) {
+  for (let wz = pz - 3; wz <= pz; wz++) {
+    yield { orient: "h", dims: "5x4", minX: px, minY: py, minZ: wz };
+    yield { orient: "h", dims: "5x4", minX: px - 4, minY: py, minZ: wz };
+  }
+  for (let wx = px - 4; wx <= px; wx++) {
+    yield { orient: "h", dims: "5x4", minX: wx, minY: py, minZ: pz };
+    yield { orient: "h", dims: "5x4", minX: wx, minY: py, minZ: pz - 3 };
+  }
+  for (let wz = pz - 4; wz <= pz; wz++) {
+    yield { orient: "h", dims: "4x5", minX: px, minY: py, minZ: wz };
+    yield { orient: "h", dims: "4x5", minX: px - 3, minY: py, minZ: wz };
+  }
+  for (let wx = px - 3; wx <= px; wx++) {
+    yield { orient: "h", dims: "4x5", minX: wx, minY: py, minZ: pz };
+    yield { orient: "h", dims: "4x5", minX: wx, minY: py, minZ: pz - 4 };
+  }
 }
 
 function collectEndWins(bx, by, bz, R) {
   const wins = [];
-  for (let wz = -R; wz <= R; wz++)
-    for (let wx = -R; wx <= R; wx++)
-      for (let wy = -R; wy <= R; wy++) {
-        if (vWinOk(bx + wx, by + wy, bz + wz)) wins.push({ orient: "v", minX: bx + wx, minY: by + wy, minZ: bz + wz });
-        if (vWinOk4(bx + wx, by + wy, bz + wz)) wins.push({ orient: "v", h: 4, minX: bx + wx, minY: by + wy, minZ: bz + wz });
-      }
-  for (let dy = -2; dy <= 2; dy++)
-    for (let wx = -R; wx <= R; wx++)
-      for (let wz = -R; wz <= R; wz++)
-        if (winOk(bx + wx, bz + wz, by + dy)) wins.push({ orient: "h", minX: bx + wx, minY: by + dy, minZ: bz + wz });
+  const seen = new Set();
+  forEachPortalBlockNear(bx, by, bz, R, (px, py, pz) => {
+    for (const a of endVerticalAnchors(px, py, pz)) {
+      const ok = a.h === 4 ? vWinOk4(a.minX, a.minY, a.minZ) : vWinOk(a.minX, a.minY, a.minZ);
+      if (!ok) continue;
+      const k = "v:" + a.minX + "," + a.minY + "," + a.minZ;
+      if (seen.has(k)) continue;
+      seen.add(k);
+      wins.push({ orient: "v", h: a.h, minX: a.minX, minY: a.minY, minZ: a.minZ });
+    }
+    for (const a of endFlatAnchors(px, py, pz)) {
+      if (!winOk(a.minX, a.minZ, a.minY)) continue;
+      const k = "h:" + a.minX + "," + a.minY + "," + a.minZ;
+      if (seen.has(k)) continue;
+      seen.add(k);
+      wins.push({ orient: "h", minX: a.minX, minY: a.minY, minZ: a.minZ });
+    }
+  });
   return wins;
 }
 
 function collectNetherWins(bx, by, bz, R) {
   const wins = [];
-  for (let wz = -R; wz <= R; wz++)
-    for (let wx = -R; wx <= R; wx++)
-      for (let wy = -4; wy <= 4; wy++) {
-        if (nWinOk(bx + wx, by + wy, bz + wz, 5, 4)) wins.push({ orient: "v", face: "z", minX: bx + wx, minY: by + wy, minZ: bz + wz });
-        if (nWinOk(bx + wx, by + wy, bz + wz, 4, 5)) wins.push({ orient: "v", face: "z", dims: "4x5", minX: bx + wx, minY: by + wy, minZ: bz + wz });
-        if (nWinOk(bx + wx, by + wy, bz + wz, 4, 4)) wins.push({ orient: "v", face: "z", dims: "4x4", minX: bx + wx, minY: by + wy, minZ: bz + wz });
-        if (nWinOk(bx + wx, by + wy, bz + wz, 5, 4, "x")) wins.push({ orient: "v", face: "x", minX: bx + wx, minY: by + wy, minZ: bz + wz });
-        if (nWinOk(bx + wx, by + wy, bz + wz, 4, 5, "x")) wins.push({ orient: "v", face: "x", dims: "4x5", minX: bx + wx, minY: by + wy, minZ: bz + wz });
-        if (nWinOk(bx + wx, by + wy, bz + wz, 4, 4, "x")) wins.push({ orient: "v", face: "x", dims: "4x4", minX: bx + wx, minY: by + wy, minZ: bz + wz });
-      }
-  for (let dy = -2; dy <= 2; dy++)
-    for (let wx = -R; wx <= R; wx++)
-      for (let wz = -R; wz <= R; wz++) {
-        if (nFlatWinOk(bx + wx, bz + wz, by + dy, 5, 4)) wins.push({ orient: "h", minX: bx + wx, minY: by + dy, minZ: bz + wz, dims: "5x4" });
-        if (nFlatWinOk(bx + wx, bz + wz, by + dy, 4, 5)) wins.push({ orient: "h", minX: bx + wx, minY: by + dy, minZ: bz + wz, dims: "4x5" });
-      }
+  const seen = new Set();
+  forEachPortalBlockNear(bx, by, bz, R, (px, py, pz) => {
+    for (const a of netherVerticalAnchors(px, py, pz)) {
+      if (!nWinOk(a.minX, a.minY, a.minZ, a.w, a.h, a.face)) continue;
+      const k = "v:" + a.face + ":" + (a.dims || "") + ":" + a.minX + "," + a.minY + "," + a.minZ;
+      if (seen.has(k)) continue;
+      seen.add(k);
+      wins.push({ orient: "v", face: a.face, dims: a.dims, minX: a.minX, minY: a.minY, minZ: a.minZ });
+    }
+    for (const a of netherFlatAnchors(px, py, pz)) {
+      const ww = a.dims === "4x5" ? 4 : 5, dd = a.dims === "4x5" ? 5 : 4;
+      if (!nFlatWinOk(a.minX, a.minZ, a.minY, ww, dd)) continue;
+      const k = "h:" + a.dims + ":" + a.minX + "," + a.minY + "," + a.minZ;
+      if (seen.has(k)) continue;
+      seen.add(k);
+      wins.push({ orient: "h", dims: a.dims, minX: a.minX, minY: a.minY, minZ: a.minZ });
+    }
+  });
   return wins;
+}
+
+function findEndWinNear(bx, by, bz, R) {
+  let best = null;
+  for (const w of collectEndWins(bx, by, bz, R)) {
+    const d = windowDist(w, bx, by, bz);
+    if (!best || d < best.d) best = { w, d };
+  }
+  return best ? best.w : null;
+}
+
+function findNetherWinNear(bx, by, bz, R) {
+  let best = null;
+  for (const w of collectNetherWins(bx, by, bz, R)) {
+    const d = windowDist(w, bx, by, bz);
+    if (!best || d < best.d) best = { w, d };
+  }
+  return best ? best.w : null;
 }
 
 const PORTAL_FILL_DIST = Math.ceil(RENDER_DIST * CHUNK * Math.SQRT2);
@@ -2522,37 +2657,27 @@ function refreshPortalFills(bx, by, bz) {
 }
 
 function scanWorldPortals() {
-  for (const [k, id] of world) {
-    if (id !== PORTAL && id !== OBSIDIAN) continue;
-    const c = k.split(",").map(Number);
-    const [x, y, z] = c;
+  for (const pk of worldPortalSets.get(world)) {
+    const [x, y, z] = keyXYZ(pk);
     for (const w of collectEndWins(x, y, z, 6)) ensurePortalFill(w, false);
     for (const w of collectNetherWins(x, y, z, 6)) ensurePortalFill(w, true);
   }
 }
 
 let endReturnWin = null;
-const portalMemo = { dim: "", bx: 0, by: 0, bz: 0, win: null };
+const endMemo = { dim: "", bx: -9999, by: -9999, bz: -9999, win: null };
+const netherMemo = { dim: "", bx: -9999, by: -9999, bz: -9999, win: null };
 let portalScanT = 0;
+const lastScanCell = { dim: "", bx: -9999, by: -9999, bz: -9999 };
 
 function scanEndPortal(bx, by, bz) {
   if (endReturnWin && vWinOk(endReturnWin.minX, endReturnWin.minY, endReturnWin.minZ) &&
       insideEndInterior(endReturnWin, bx, by, bz)) return endReturnWin;
-  if (portalMemo.dim === "end" && portalMemo.bx === bx && portalMemo.by === by && portalMemo.bz === bz) return portalMemo.win;
-  portalMemo.dim = "end"; portalMemo.bx = bx; portalMemo.by = by; portalMemo.bz = bz;
-  const w = findEndWinNear(bx, by, bz, 5);
-  portalMemo.win = w;
-  return w;
+  if (endMemo.dim === "end" && endMemo.bx === bx && endMemo.by === by && endMemo.bz === bz) return endMemo.win;
+  endMemo.dim = "end"; endMemo.bx = bx; endMemo.by = by; endMemo.bz = bz;
+  endMemo.win = findEndWinNear(bx, by, bz, 5);
+  return endMemo.win;
 }
-
-function scanOverPortal(bx, by, bz) {
-  if (portalMemo.dim === "over" && portalMemo.bx === bx && portalMemo.by === by && portalMemo.bz === bz) return portalMemo.win;
-  portalMemo.dim = "over"; portalMemo.bx = bx; portalMemo.by = by; portalMemo.bz = bz;
-  portalMemo.win = findEndWinNear(bx, by, bz, 8);
-  return portalMemo.win;
-}
-
-const netherMemo = { dim: "", bx: 0, by: 0, bz: 0, win: null };
 
 function scanNetherPortal(bx, by, bz) {
   if (netherMemo.dim === dim && netherMemo.bx === bx && netherMemo.by === by && netherMemo.bz === bz) return netherMemo.win;
@@ -2568,11 +2693,18 @@ function winCenter(win) {
 }
 
 function updatePortalVisual() {
-  portalScanT -= dt;
-  if (portalScanT <= 0) { portalScanT = 0.5; portalMemo.dim = ""; netherMemo.dim = ""; refreshPortalFills(Math.floor(freeCam ? camPos.x : pos.x), Math.floor((freeCam ? camPos.y : pos.y) + 0.9), Math.floor(freeCam ? camPos.z : pos.z)); }
   const px = freeCam ? camPos.x : pos.x;
   const py = freeCam ? camPos.y : pos.y;
   const pz = freeCam ? camPos.z : pos.z;
+  const bx = Math.floor(px), by = Math.floor(py + 0.9), bz = Math.floor(pz);
+  portalScanT -= dt;
+  if (portalDirty || (portalScanT <= 0 &&
+      (dim !== lastScanCell.dim || bx !== lastScanCell.bx || by !== lastScanCell.by || bz !== lastScanCell.bz))) {
+    portalScanT = 0.5;
+    portalDirty = false;
+    lastScanCell.dim = dim; lastScanCell.bx = bx; lastScanCell.by = by; lastScanCell.bz = bz;
+    refreshPortalFills(bx, by, bz);
+  }
   const maxD2 = PORTAL_FILL_DIST * PORTAL_FILL_DIST;
   for (const f of portalFills.values()) {
     if (f.dim !== dim) { f.group.visible = false; continue; }
@@ -2655,30 +2787,24 @@ function nearPortalSpawn(win, dir) {
 function checkPortal() {
   if (portalCd > 0) return;
   const bx = Math.floor(freeCam ? camPos.x : pos.x);
+  const by = Math.floor((freeCam ? camPos.y : pos.y) + EYE);
   const bz = Math.floor(freeCam ? camPos.z : pos.z);
-  if (dim === "over") {
-    const by = Math.floor((freeCam ? camPos.y : pos.y) + EYE);
-    const win = scanOverPortal(bx, by, bz);
-    if (win) {
-      if (insideEndInterior(win, bx, by, bz)) {
-        const forward = new THREE.Vector3(-Math.sin(yaw), 0, -Math.cos(yaw));
-        const right = new THREE.Vector3(Math.cos(yaw), 0, -Math.sin(yaw));
-        let ddx = 0, ddz = 0;
-        if (keys["ArrowUp"]) { ddx += forward.x; ddz += forward.z; }
-        if (keys["ArrowDown"]) { ddx -= forward.x; ddz -= forward.z; }
-        if (keys["ArrowRight"]) { ddx += right.x; ddz += right.z; }
-        if (keys["ArrowLeft"]) { ddx -= right.x; ddz -= right.z; }
-        if (ddx === 0 && ddz === 0) { ddx = forward.x; ddz = forward.z; }
-        overPortalSpawn = nearPortalSpawn(win, { x: ddx, z: ddz });
-        const c = winCenter(win);
-        overPortalFace = Math.atan2(-(c.x + 0.5 - overPortalSpawn.x), -(c.z + 0.5 - overPortalSpawn.z));
-        goToDimension("end", END_SPAWN.x, END_SPAWN.y, END_SPAWN.z);
-        showMsg("You arrived in The End");
-        return;
+  if (dim === "end" && !endCleared) {
+    const wE = scanEndPortal(bx, by, bz);
+    const wN = scanNetherPortal(bx, by, bz);
+    if ((wE && insideEndInterior(wE, bx, by, bz)) || (wN && insideNetherInterior(wN, bx, by, bz))) {
+      const now = performance.now();
+      if (now - dormantMsgAt > 3000) {
+        dormantMsgAt = now;
+        showMsg("The End is sealed — slay the Ender Dragon to open its portals");
       }
     }
-    const winN = scanNetherPortal(bx, by, bz);
-    if (winN && insideNetherInterior(winN, bx, by, bz)) {
+    return;
+  }
+  for (const f of portalFills.values()) {
+    if (f.dim !== dim) continue;
+    if (f.nether) {
+      if (!insideNetherInterior(f.win, bx, by, bz)) continue;
       const forward = new THREE.Vector3(-Math.sin(yaw), 0, -Math.cos(yaw));
       const right = new THREE.Vector3(Math.cos(yaw), 0, -Math.sin(yaw));
       let ddx = 0, ddz = 0;
@@ -2687,39 +2813,39 @@ function checkPortal() {
       if (keys["ArrowRight"]) { ddx += right.x; ddz += right.z; }
       if (keys["ArrowLeft"]) { ddx -= right.x; ddz -= right.z; }
       if (ddx === 0 && ddz === 0) { ddx = forward.x; ddz = forward.z; }
-      overPortalSpawn = nearPortalSpawn(winN, { x: ddx, z: ddz });
-      const c = winCenter(winN);
+      overPortalSpawn = nearPortalSpawn(f.win, { x: ddx, z: ddz });
+      const c = winCenter(f.win);
       overPortalFace = Math.atan2(-(c.x + 0.5 - overPortalSpawn.x), -(c.z + 0.5 - overPortalSpawn.z));
-      goToDimension("nether", NETHER_SPAWN.x, NETHER_SPAWN.y, NETHER_SPAWN.z);
-      showMsg("You entered The Nether");
-    }
-  } else if (dim === "end" || dim === "nether") {
-    const by = Math.floor(pos.y + EYE);
-    const winE = dim === "end" ? scanEndPortal(bx, by, bz) : scanOverPortal(bx, by, bz);
-    const winN = scanNetherPortal(bx, by, bz);
-    const inN = winN && insideNetherInterior(winN, bx, by, bz);
-    const inE = winE && insideEndInterior(winE, bx, by, bz);
-    if (!inN && !inE) return;
-    if (dim === "end" && !endCleared) {
-      const now = performance.now();
-      if (now - dormantMsgAt > 3000) {
-        dormantMsgAt = now;
-        showMsg("The End is sealed — slay the Ender Dragon to open its portals");
+      if (dim === "nether") {
+        goToDimension("over", overPortalSpawn.x, overPortalSpawn.y, overPortalSpawn.z);
+        showMsg("You returned to the Overworld");
+      } else {
+        goToDimension("nether", NETHER_SPAWN.x, NETHER_SPAWN.y, NETHER_SPAWN.z);
+        showMsg("You entered The Nether");
+      }
+      return;
+    } else {
+      if (!insideEndInterior(f.win, bx, by, bz)) continue;
+      const forward = new THREE.Vector3(-Math.sin(yaw), 0, -Math.cos(yaw));
+      const right = new THREE.Vector3(Math.cos(yaw), 0, -Math.sin(yaw));
+      let ddx = 0, ddz = 0;
+      if (keys["ArrowUp"]) { ddx += forward.x; ddz += forward.z; }
+      if (keys["ArrowDown"]) { ddx -= forward.x; ddz -= forward.z; }
+      if (keys["ArrowRight"]) { ddx += right.x; ddz += right.z; }
+      if (keys["ArrowLeft"]) { ddx -= right.x; ddz -= right.z; }
+      if (ddx === 0 && ddz === 0) { ddx = forward.x; ddz = forward.z; }
+      overPortalSpawn = nearPortalSpawn(f.win, { x: ddx, z: ddz });
+      const c = winCenter(f.win);
+      overPortalFace = Math.atan2(-(c.x + 0.5 - overPortalSpawn.x), -(c.z + 0.5 - overPortalSpawn.z));
+      if (dim === "end") {
+        goToDimension("over", overPortalSpawn.x, overPortalSpawn.y, overPortalSpawn.z);
+        showMsg("You returned to the Overworld");
+      } else {
+        goToDimension("end", END_SPAWN.x, END_SPAWN.y, END_SPAWN.z);
+        showMsg("You arrived in The End");
       }
       return;
     }
-    if (dim === "end" && inN) {
-      goToDimension("nether", NETHER_SPAWN.x, NETHER_SPAWN.y, NETHER_SPAWN.z);
-      showMsg("You entered The Nether");
-      return;
-    }
-    if (dim === "nether" && inE) {
-      goToDimension("end", END_SPAWN.x, END_SPAWN.y, END_SPAWN.z);
-      showMsg("You arrived in The End");
-      return;
-    }
-    goToDimension("over", overPortalSpawn.x, overPortalSpawn.y, overPortalSpawn.z);
-    showMsg("You returned to the Overworld");
   }
 }
 
@@ -3468,18 +3594,11 @@ async function storageClear() {
 }
 
 function serialize() {
-  const writeBlocks = (map) => {
-    const arr = [];
-    map.forEach((id, k) => { const s = k.split(","); arr.push([+s[0], +s[1], +s[2], id]); });
-    return arr;
-  };
-  const over = writeBlocks(worlds.over);
-  const end = writeBlocks(worlds.end);
-  const nether = writeBlocks(worlds.nether);
-  const placed = [];
-  placedFlowers.forEach((p, k) => { const s = k.split(","); placed.push([+s[0], +s[1], +s[2], p.v, p.a]); });
-  const m = placed.length;
-  const buf = new ArrayBuffer(105 + (over.length + end.length + nether.length) * 4 + m * 5);
+  const count = (map) => { let n = 0; map.forEach(() => n++); return n; };
+  const over = worlds.over, end = worlds.end, nether = worlds.nether;
+  const on = count(over), en = count(end), nn = count(nether);
+  const m = placedFlowers.size;
+  const buf = new ArrayBuffer(105 + (on + en + nn) * 4 + m * 5);
   const dv = new DataView(buf);
   let o = 0;
   new Uint8Array(buf, o, 9).set(SAVE_MAGIC); o += 9;
@@ -3498,35 +3617,28 @@ function serialize() {
   dv.setFloat64(o, overPortalSpawn.x, true); o += 8;
   dv.setFloat64(o, overPortalSpawn.y, true); o += 8;
   dv.setFloat64(o, overPortalSpawn.z, true); o += 8;
-  dv.setUint32(o, over.length, true); o += 4;
-  for (const [x, y, z, id] of over) {
-    dv.setUint8(o++, x + 128);
-    dv.setUint8(o++, y);
-    dv.setUint8(o++, z + 128);
-    dv.setUint8(o++, id);
-  }
-  dv.setUint32(o, end.length, true); o += 4;
-  for (const [x, y, z, id] of end) {
-    dv.setUint8(o++, x + 128);
-    dv.setUint8(o++, y);
-    dv.setUint8(o++, z + 128);
-    dv.setUint8(o++, id);
-  }
-  dv.setUint32(o, nether.length, true); o += 4;
-  for (const [x, y, z, id] of nether) {
-    dv.setUint8(o++, x + 128);
-    dv.setUint8(o++, y);
-    dv.setUint8(o++, z + 128);
-    dv.setUint8(o++, id);
-  }
+  const writeMap = (map, n) => {
+    dv.setUint32(o, n, true); o += 4;
+    map.forEach((id, k) => {
+      const [x, y, z] = keyXYZ(k);
+      dv.setUint8(o++, x + 128);
+      dv.setUint8(o++, y);
+      dv.setUint8(o++, z + 128);
+      dv.setUint8(o++, id);
+    });
+  };
+  writeMap(over, on);
+  writeMap(end, en);
+  writeMap(nether, nn);
   dv.setUint32(o, m, true); o += 4;
-  for (const [fx, fy, fz, fv, fa] of placed) {
+  placedFlowers.forEach((p, k) => {
+    const [fx, fy, fz] = keyXYZ(k);
     dv.setUint8(o++, fx + 128);
     dv.setUint8(o++, fy);
     dv.setUint8(o++, fz + 128);
-    dv.setUint8(o++, fv);
-    dv.setUint8(o++, Math.round(fa / (Math.PI * 2) * 255));
-  }
+    dv.setUint8(o++, p.v);
+    dv.setUint8(o++, Math.round(p.a / (Math.PI * 2) * 255));
+  });
   return buf;
 }
 
@@ -3599,6 +3711,8 @@ function deserialize(buf) {
   }
   dim = dimFlag === 2 ? "nether" : dimFlag === 1 ? "end" : "over";
   world = worlds[dim];
+  worldDirty = true;
+  rebuildPortalBlocks();
 }
 
 function canSave() {
@@ -3820,22 +3934,16 @@ async function pickSaveFile() {
 }
 
 async function saveToFile(opts = {}) {
-  if (apiOk && saveName) {
-    try {
-      const res = await fetch("api/worlds/" + encodeURIComponent(saveName), {
-        method: "PUT", body: serialize(), keepalive: !!opts.keepalive,
-      });
-      if (res.ok) { lastManualSave = Date.now(); updateAutosaveEl(); }
-      else throw new Error("save failed");
-    } catch {
-      if (autosaveEl) autosaveEl.textContent = "Save failed — run `python3 server.py` and open http://localhost:8383";
-    }
-    return;
-  }
   if (!canSave()) return;
   const buf = serialize();
+  worldDirty = false;
   try {
-    if (fileMode) {
+    if (apiOk && saveName) {
+      const res = await fetch("api/worlds/" + encodeURIComponent(saveName), {
+        method: "PUT", body: buf, keepalive: !!opts.keepalive,
+      });
+      if (!res.ok) throw new Error("save failed");
+    } else if (fileMode) {
       const writable = await saveHandle.createWritable();
       await writable.write(buf);
       await writable.close();
@@ -3845,9 +3953,12 @@ async function saveToFile(opts = {}) {
     lastManualSave = Date.now();
     updateAutosaveEl();
   } catch (e) {
-    if (autosaveEl) autosaveEl.textContent = fileMode
-      ? "Autosave failed (file deleted or permission revoked) — press J to pick a new file"
-      : "Autosave failed (storage unavailable)";
+    worldDirty = true;
+    if (autosaveEl) autosaveEl.textContent = apiOk
+      ? "Save failed — run `python3 server.py` and open http://localhost:8383"
+      : fileMode
+        ? "Autosave failed (file deleted or permission revoked) — press J to pick a new file"
+        : "Autosave failed (storage unavailable)";
   }
 }
 
@@ -3980,6 +4091,10 @@ function resetDims() {
   clearPortalFills();
   worlds.end.clear();
   worlds.nether.clear();
+  portalBlockSets.end.clear();
+  portalBlockSets.nether.clear();
+  portalDirty = true;
+  worldDirty = true;
   overPortalSpawn = { x: 0.5, y: 1.01, z: 0.5 };
   overPortalFace = null;
   endCleared = false;
@@ -4055,7 +4170,7 @@ function requestLock() {
   if (p && p.catch) p.catch(() => {});
 }
 
-setInterval(() => { if (canSave() && started) saveToFile(); }, 10000);
+setInterval(() => { if (canSave() && started && worldDirty) saveToFile(); }, 10000);
 addEventListener("pagehide", () => { if (canSave()) saveToFile({ keepalive: true }); });
 document.addEventListener("visibilitychange", () => { if (document.hidden && canSave()) saveToFile({ keepalive: true }); });
 
@@ -4313,6 +4428,7 @@ function loop(now) {
     const pcx = chunkOf(freeCam ? camPos.x : pos.x);
     const pcz = chunkOf(freeCam ? camPos.z : pos.z);
     if (pcx !== meshCx || pcz !== meshCz) streamChunks();
+    drainChunkQueue();
   }
 
   renderer.render(scene, camera);
