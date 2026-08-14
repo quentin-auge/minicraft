@@ -3,7 +3,7 @@ import * as THREE from "three";
 // ---------------------------------------------------------------------------
 // Block definitions
 // ---------------------------------------------------------------------------
-const AIR = 0, GRASS = 1, DIRT = 2, STONE = 3, SAND = 4, LOG = 5, LEAVES = 6, WATER = 7, PLANKS = 8, GLASS = 9, TNT = 10, FLOWER = 11, PORTAL = 12, ENDSTONE = 13, CLOUD = 14, OBSIDIAN = 15, LAVA = 16, NETHERRACK = 17, SOULSAND = 18, GLOWSTONE = 19;
+const AIR = 0, GRASS = 1, DIRT = 2, STONE = 3, SAND = 4, LOG = 5, LEAVES = 6, WATER = 7, PLANKS = 8, GLASS = 9, TNT = 10, FLOWER = 11, PORTAL = 12, ENDSTONE = 13, CLOUD = 14, OBSIDIAN = 15, BLUEFIRE = 16, NETHERRACK = 17, SOULSAND = 18, GLOWSTONE = 19;
 
 const BLOCK_INFO = {
   [GRASS]:   { name: "Grass",    solid: true,  opaque: true,  placeable: true },
@@ -21,7 +21,7 @@ const BLOCK_INFO = {
   [ENDSTONE]:{ name: "End Stone",solid: true,  opaque: true,  placeable: false },
   [CLOUD]:   { name: "Cloud",    solid: true,  opaque: true,  placeable: false },
   [OBSIDIAN]:{ name: "Obsidian", solid: true,  opaque: true,  placeable: true },
-  [LAVA]:    { name: "Lava",     solid: false, opaque: false, placeable: false },
+  [BLUEFIRE]:{ name: "Blue Fire", solid: false, opaque: false, placeable: false },
   [NETHERRACK]:{ name: "Netherrack", solid: true, opaque: true, placeable: true },
   [SOULSAND]:  { name: "Soul Sand",   solid: true, opaque: true, placeable: false },
   [GLOWSTONE]: { name: "Glowstone",   solid: true, opaque: true, placeable: false },
@@ -179,40 +179,40 @@ const TEX = {
     ctx.fillStyle = "rgba(24,10,26,0.9)";
     ctx.fillRect(2, 7, 2, 1); ctx.fillRect(6, 12, 1, 1); ctx.fillRect(10, 3, 2, 1); ctx.fillRect(13, 9, 1, 1);
   }),
-  lava: canvasTex((ctx) => {
-    ctx.fillStyle = "#ff7b1c"; ctx.fillRect(0, 0, 16, 16);
-    pxNoise(ctx, [255, 123, 28], 26);
-    ctx.fillStyle = "#ffd23f";
+  bluefire: canvasTex((ctx) => {
+    ctx.fillStyle = "#1d1d5e"; ctx.fillRect(0, 0, 16, 16);
+    pxNoise(ctx, [29, 29, 94], 26);
+    ctx.fillStyle = "#3b3bd4";
     for (let i = 0; i < 12; i++) ctx.fillRect(Math.random() * 16, Math.random() * 16, 1, 1);
-    ctx.fillStyle = "#b33a00";
-    for (let i = 0; i < 6; i++) ctx.fillRect(Math.random() * 16, Math.random() * 16, 2, 1);
-    ctx.fillStyle = "rgba(255,214,84,0.9)";
-    for (let i = 0; i < 4; i++) ctx.fillRect(Math.random() * 15, Math.random() * 15, 1, 2);
+    ctx.fillStyle = "#57e0ff";
+    for (let i = 0; i < 6; i++) ctx.fillRect(Math.random() * 15, Math.random() * 15, 1, 2);
+    ctx.fillStyle = "#eaf9ff";
+    for (let i = 0; i < 5; i++) ctx.fillRect(Math.random() * 15, Math.random() * 15, 1, 1);
   }),
   netherrack: canvasTex((ctx) => {
-    ctx.fillStyle = "#6b3340"; ctx.fillRect(0, 0, 16, 16);
-    pxNoise(ctx, [107, 51, 64], 26);
-    ctx.fillStyle = "rgba(0,0,0,0.22)";
+    ctx.fillStyle = "#282c52"; ctx.fillRect(0, 0, 16, 16);
+    pxNoise(ctx, [40, 44, 82], 26);
+    ctx.fillStyle = "rgba(0,0,0,0.28)";
     for (let i = 0; i < 8; i++) ctx.fillRect(Math.random() * 14, Math.random() * 14, 2 + Math.random() * 2, 2 + Math.random() * 2);
-    ctx.fillStyle = "rgba(255,60,60,0.28)";
+    ctx.fillStyle = "rgba(70,110,255,0.3)";
     for (let i = 0; i < 6; i++) ctx.fillRect(Math.random() * 15, Math.random() * 15, 1, 1);
   }),
   soulsand: canvasTex((ctx) => {
-    ctx.fillStyle = "#7a6a55"; ctx.fillRect(0, 0, 16, 16);
-    pxNoise(ctx, [122, 106, 85], 18);
-    ctx.fillStyle = "rgba(0,0,0,0.25)";
+    ctx.fillStyle = "#454a6e"; ctx.fillRect(0, 0, 16, 16);
+    pxNoise(ctx, [69, 74, 110], 18);
+    ctx.fillStyle = "rgba(0,0,0,0.28)";
     for (let i = 0; i < 10; i++) ctx.fillRect(Math.random() * 15, Math.random() * 15, 1, 1);
-    ctx.fillStyle = "rgba(90,70,50,0.5)";
+    ctx.fillStyle = "rgba(30,36,70,0.5)";
     for (let i = 0; i < 4; i++) ctx.fillRect(Math.random() * 14, Math.random() * 14, 3, 1);
   }),
   glowstone: canvasTex((ctx) => {
-    ctx.fillStyle = "#f0c44a"; ctx.fillRect(0, 0, 16, 16);
-    pxNoise(ctx, [240, 196, 74], 32);
-    ctx.fillStyle = "#fff6cf";
+    ctx.fillStyle = "#3a6ee0"; ctx.fillRect(0, 0, 16, 16);
+    pxNoise(ctx, [58, 110, 224], 32);
+    ctx.fillStyle = "#a8d4ff";
     for (let i = 0; i < 9; i++) ctx.fillRect(Math.random() * 15, Math.random() * 15, 1 + Math.random(), 1 + Math.random());
-    ctx.fillStyle = "rgba(150,95,10,0.35)";
+    ctx.fillStyle = "rgba(10,20,70,0.35)";
     for (let i = 0; i < 5; i++) ctx.fillRect(Math.random() * 14, Math.random() * 14, 2, 2);
-    ctx.fillStyle = "rgba(255,255,255,0.8)";
+    ctx.fillStyle = "rgba(235,248,255,0.9)";
     ctx.fillRect(6, 7, 2, 2); ctx.fillRect(11, 3, 1, 1); ctx.fillRect(4, 12, 1, 1);
   }),
   flower: canvasTex((ctx) => {
@@ -268,7 +268,7 @@ function materialsFor(id) {
     case ENDSTONE: return faceTex(TEX.endstone);
     case CLOUD: return faceTex(TEX.cloud);
     case OBSIDIAN: return faceTex(TEX.obsidian);
-    case LAVA: return basicFace(TEX.lava);
+    case BLUEFIRE: return basicFace(TEX.bluefire);
     case NETHERRACK: return faceTex(TEX.netherrack);
     case SOULSAND: return faceTex(TEX.soulsand);
     case GLOWSTONE: return basicFace(TEX.glowstone);
@@ -784,14 +784,169 @@ function generateEnd() {
 }
 
 // ---------------------------------------------------------------------------
-// The Nether: a terrifying rock dimension under a black sky. Towering rock
-// mountains rise out of a glowing lava sea; winding canyons cut down to the
-// lava as rivers, and lava streaks pour down the faces of cliffs that drop
-// into the sea.
+// The Nether: a hostile blue-fire dimension under an orange/red/blue sky.
+// Immense fire-spewing volcanoes rise out of a glowing blue-fire sea; winding
+// canyons cut down to the fire, and blue fire streaks pour down the faces of
+// cliffs that drop into the sea.
 // ---------------------------------------------------------------------------
-const NETHER_LAVA_LEVEL = 12;
+const NETHER_FIRE_LEVEL = 12;
 const NETHER_RIVER_COUNT = 4;
 let netherRiverPaths = [];
+let volcanoes = [];
+
+function generateVolcanoes() {
+  volcanoes = [];
+  const S = WORLD_RADIUS;
+  const count = 2 + Math.floor(hash2(0, 0, netherSeed + 901) * 2);
+  for (let i = 0; i < count; i++) {
+    const radius = 70 + Math.floor(hash2(i, 2, netherSeed + 913) * 16);
+    const minDist = radius + 6;
+    const maxDist = Math.min(S - 2, Math.max(minDist + 4, S - 6));
+    const ang = hash2(i, 0, netherSeed + 911) * Math.PI * 2;
+    const rad = minDist + hash2(i, 1, netherSeed + 912) * (maxDist - minDist);
+    let vx = Math.round(Math.cos(ang) * rad);
+    let vz = Math.round(Math.sin(ang) * rad);
+    if (vx < -S + radius) vx = -S + radius;
+    if (vx > S - radius) vx = S - radius;
+    if (vz < -S + radius) vz = -S + radius;
+    if (vz > S - radius) vz = S - radius;
+    // Keep the cone's near edge clear of the spawn pad no matter what.
+    const dd = Math.hypot(vx, vz);
+    if (dd < radius + 6) {
+      const a = Math.atan2(vz, vx);
+      vx = Math.round(Math.cos(a) * (radius + 6));
+      vz = Math.round(Math.sin(a) * (radius + 6));
+    }
+    const peak = 260 + Math.floor(hash2(i, 3, netherSeed + 914) * 24);
+    const craterR = 5 + Math.floor(hash2(i, 4, netherSeed + 915) * 5);
+    const craterDepth = 14 + Math.floor(hash2(i, 5, netherSeed + 916) * 14);
+    const flowAng = hash2(i, 6, netherSeed + 917) * Math.PI * 2;
+    const flowAng2 = flowAng + 0.9 + hash2(i, 7, netherSeed + 918) * 0.8;
+    const m = fbm(vx * 0.008, vz * 0.008, netherSeed) * 2 - 1;
+    const r = fbm(vx * 0.03, vz * 0.03, netherSeed + 7);
+    const c = fbm(vx * 0.014, vz * 0.014, netherSeed + 17) * 2 - 1;
+    const baseY = Math.max(1, Math.min(96, Math.floor(12 + m * 44 + r * 10 + Math.max(0, c) * 18)));
+    volcanoes.push({ x: vx, z: vz, radius, peak, rim: peak * 0.85, craterR, craterDepth, flowAng, flowAng2, baseY });
+  }
+}
+
+function volcanoHeightAt(v, x, z) {
+  const d = Math.hypot(x - v.x, z - v.z);
+  if (d >= v.radius) return null;
+  const t = 1 - d / v.radius;
+  const slope = Math.pow(t, 1.2);
+  const rimT = Math.max(0.001, 1 - v.craterR / v.radius);
+  const rimSlope = Math.pow(rimT, 1.2);
+  if (d <= v.craterR) {
+    // Flat plateau with a fire bowl cut into its centre.
+    let h = v.rim;
+    const k = 1 - d / v.craterR;
+    h -= v.craterDepth * k * k;
+    return h;
+  }
+  // Rocky cone slope rising from the terrain to the rim.
+  const ridge = 0.9 + 0.2 * (fbm(x * 0.07 + 40, z * 0.07 + 40, netherSeed + 921) - 0.5);
+  return v.rim * (slope / rimSlope) * ridge;
+}
+
+function fillVolcanoCraters() {
+  const w = worlds.nether;
+  for (const v of volcanoes) {
+    const top = Math.round(v.rim);
+    for (let dx = -v.craterR; dx <= v.craterR; dx++)
+      for (let dz = -v.craterR; dz <= v.craterR; dz++) {
+        const d = Math.hypot(dx, dz);
+        if (d > v.craterR) continue;
+        const floor = Math.max(1, Math.round(volcanoHeightAt(v, v.x + dx, v.z + dz)));
+        for (let y = floor; y <= top; y++) w.set(key(v.x + dx, y, v.z + dz), BLUEFIRE);
+      }
+  }
+}
+
+function fillVolcanoShafts() {
+  const w = worlds.nether;
+  for (const v of volcanoes) {
+    const top = Math.round(v.rim);
+    for (let dx = -v.craterR; dx <= v.craterR; dx++)
+      for (let dz = -v.craterR; dz <= v.craterR; dz++) {
+        if (Math.hypot(dx, dz) > v.craterR) continue;
+        for (let y = v.baseY; y <= top; y++) w.set(key(v.x + dx, y, v.z + dz), BLUEFIRE);
+      }
+  }
+}
+
+// Tunnels into the volcano sides: three 5-wide, 3-tall corridors dug at ground
+// level from the outer flank straight to the central lava shaft, so the fire
+// column is easy to find and reach from outside.
+function volcanoTunnels() {
+  const w = worlds.nether;
+  const S = WORLD_RADIUS;
+  for (const v of volcanoes) {
+    const y0 = v.baseY + 1;
+    for (let k = 0; k < 3; k++) {
+      const dir = v.flowAng + (k * 2 * Math.PI) / 3;
+      for (let d = v.craterR + 1; d <= v.radius - 2; d++) {
+        const mx = Math.cos(dir + Math.PI / 2), mz = Math.sin(dir + Math.PI / 2);
+        const px = Math.cos(dir) * d, pz = Math.sin(dir) * d;
+        for (let off = -2; off <= 2; off++) {
+          const wx = v.x + Math.round(px + mx * off);
+          const wz = v.z + Math.round(pz + mz * off);
+          if (wx < -S || wx > S || wz < -S || wz > S) continue;
+          for (let y = y0; y <= y0 + 2; y++) {
+            const cur = getBlock(wx, y, wz);
+            if (cur === NETHERRACK || cur === SOULSAND) w.set(key(wx, y, wz), AIR);
+          }
+        }
+      }
+    }
+  }
+}
+
+// Big top-to-bottom lava flows down the flanks of each volcano: a broad main
+// coulee and a narrower side coulee spill out of the crater rim and run all
+// the way to the base, thickest right at the top where they burst out and
+// tapering as they spread downhill into wide tongues.
+function volcanoCascades() {
+  const w = worlds.nether;
+  const S = WORLD_RADIUS;
+  const courses = (v) => [
+    { ang: v.flowAng, half: 0.17, foot: v.radius - 2, mx: 6 },
+    { ang: v.flowAng2, half: 0.09, foot: v.radius - 6, mx: 4 },
+  ];
+  for (const v of volcanoes) {
+    for (const course of courses(v)) {
+      const x0 = Math.max(-S, v.x - Math.ceil(v.radius) - 1);
+      const x1 = Math.min(S, v.x + Math.ceil(v.radius) + 1);
+      const z0 = Math.max(-S, v.z - Math.ceil(v.radius) - 1);
+      const z1 = Math.min(S, v.z + Math.ceil(v.radius) + 1);
+      const len = course.foot - v.craterR + 2;
+      for (let x = x0; x <= x1; x++) {
+        for (let z = z0; z <= z1; z++) {
+          const h = volcanoHeightAt(v, x, z);
+          if (h == null) continue;
+          const dx = x - v.x, dz = z - v.z;
+          const d = Math.hypot(dx, dz);
+          if (d < v.craterR - 1 || d > course.foot) continue;
+          let a = Math.atan2(dz, dx) - course.ang;
+          while (a > Math.PI) a -= Math.PI * 2;
+          while (a < -Math.PI) a += Math.PI * 2;
+          if (Math.abs(a) > course.half) continue;
+          const hy = Math.round(h);
+          if (getBlock(x, hy, z) !== NETHERRACK) continue;
+          if (getBlock(x, hy + 1, z) !== AIR) continue;
+          const t = (d - (v.craterR - 1)) / len;
+          let thick = 2 + Math.round(course.mx * (1 - t));
+          if (hash2(x, z, 88 + course.mx) < 0.16) thick += 2;
+          if (thick > 9) thick = 9;
+          for (let y = hy; y > hy - thick; y--) {
+            if (y < 1) continue;
+            w.set(key(x, y, z), BLUEFIRE);
+          }
+        }
+      }
+    }
+  }
+}
 
 function generateNetherRivers() {
   netherRiverPaths = [];
@@ -843,6 +998,7 @@ function generateNether() {
   portalBlockSets.nether.clear();
   const S = WORLD_RADIUS;
   generateNetherRivers();
+  generateVolcanoes();
   const size = 2 * S + 1;
   const heights = new Float32Array(size * size);
   const idx = (x, z) => (z + S) * size + (x + S);
@@ -855,21 +1011,25 @@ function generateNether() {
       const rv = nearestNetherRiver(x, z);
       if (rv && rv.d <= rv.w) {
         const t = rv.d / rv.w;
-        h = Math.min(h, NETHER_LAVA_LEVEL - 2 + Math.floor(t * 4));
+        h = Math.min(h, NETHER_FIRE_LEVEL - 2 + Math.floor(t * 4));
       }
       h = Math.max(1, Math.min(96, h));
+      for (const v of volcanoes) {
+        const vh = volcanoHeightAt(v, x, z);
+        if (vh != null) h = Math.max(h, Math.round(vh));
+      }
       heights[idx(x, z)] = h;
       for (let y = 0; y <= h; y++) w.set(key(x, y, z), NETHERRACK);
-      // Soul-sand shores: the top block of columns near the lava line
+      // Soul-sand shores: the top block of columns near the fire line
       // becomes dark soul sand, so the sea has a grim black beach.
-      if (h >= NETHER_LAVA_LEVEL && h <= NETHER_LAVA_LEVEL + 2)
+      if (h >= NETHER_FIRE_LEVEL && h <= NETHER_FIRE_LEVEL + 2)
         w.set(key(x, h, z), SOULSAND);
-      if (h < NETHER_LAVA_LEVEL)
-        for (let y = h + 1; y <= NETHER_LAVA_LEVEL; y++) w.set(key(x, y, z), LAVA);
+      if (h < NETHER_FIRE_LEVEL)
+        for (let y = h + 1; y <= NETHER_FIRE_LEVEL; y++) w.set(key(x, y, z), BLUEFIRE);
       // Scattered glowstone: rare columns carry a glowing knot of gold
       // blocks at their summit, a few blocks above the land.
-      if (h > NETHER_LAVA_LEVEL + 6 && hash2(x, z, netherSeed + 41) < 0.012) {
-        const gy = Math.min(96, h + 1 + Math.floor(hash2(x, z, netherSeed + 42) * 2));
+      if (h > NETHER_FIRE_LEVEL + 6 && hash2(x, z, netherSeed + 41) < 0.012) {
+        const gy = Math.min(Math.max(h, 96), h + 1 + Math.floor(hash2(x, z, netherSeed + 42) * 2));
         if (getBlock(x, gy, z) === AIR) w.set(key(x, gy, z), GLOWSTONE);
         for (let dy = 1; dy <= 2; dy++) {
           const ny = gy - dy;
@@ -884,18 +1044,22 @@ function generateNether() {
   for (let x = -S; x <= S; x++) {
     for (let z = -S; z <= S; z++) {
       const h = heights[idx(x, z)];
-      if (h < NETHER_LAVA_LEVEL + 5) continue;
+      if (h < NETHER_FIRE_LEVEL + 5) continue;
       for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
         const nx = x + dx, nz = z + dz;
         if (nx < -S || nx > S || nz < -S || nz > S) continue;
         const hn = heights[idx(nx, nz)];
-        if (hn > NETHER_LAVA_LEVEL) continue;
-        const fall = Math.min(5, Math.round((h - NETHER_LAVA_LEVEL) * 0.45));
-        for (let y = NETHER_LAVA_LEVEL + 1; y <= NETHER_LAVA_LEVEL + fall; y++)
-          w.set(key(nx, y, nz), LAVA);
+        if (hn > NETHER_FIRE_LEVEL) continue;
+        const fall = Math.min(5, Math.round((h - NETHER_FIRE_LEVEL) * 0.45));
+        for (let y = NETHER_FIRE_LEVEL + 1; y <= NETHER_FIRE_LEVEL + fall; y++)
+          w.set(key(nx, y, nz), BLUEFIRE);
       }
     }
   }
+  fillVolcanoCraters();
+  fillVolcanoShafts();
+  volcanoTunnels();
+  volcanoCascades();
 }
 
 // ---------------------------------------------------------------------------
@@ -905,7 +1069,7 @@ const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x87ceeb);
 scene.fog = new THREE.Fog(0x87ceeb, 60, 160);
 
-const camera = new THREE.PerspectiveCamera(75, innerWidth / innerHeight, 0.1, 300);
+const camera = new THREE.PerspectiveCamera(75, innerWidth / innerHeight, 0.1, 900);
 camera.rotation.order = "YXZ";
 
 const renderer = new THREE.WebGLRenderer({ antialias: true });
@@ -919,6 +1083,51 @@ sun.position.set(60, 90, 40);
 scene.add(sun);
 const hemi = new THREE.HemisphereLight(0xbfd4ff, 0x5a6a4a, 0.75);
 scene.add(hemi);
+
+// The Nether sky: a big back-side dome painted with an orange/red/blue
+// gradient (deep blue zenith with stars, red band, burning orange horizon)
+// plus a glowing sun disc, all following the camera so the horizon never
+// moves. It's only visible in the Nether; the other dimensions keep flat
+// background colours.
+const skyDome = new THREE.Mesh(
+  new THREE.SphereGeometry(620, 32, 24),
+  new THREE.MeshBasicMaterial({
+    map: (() => {
+      const c = document.createElement("canvas");
+      c.width = c.height = 512;
+      const ctx = c.getContext("2d");
+      const g = ctx.createLinearGradient(0, 0, 0, 512);
+      g.addColorStop(0.0, "#0a1230");
+      g.addColorStop(0.38, "#1a1c5c");
+      g.addColorStop(0.58, "#3a2a92");
+      g.addColorStop(0.72, "#5a3a80");
+      g.addColorStop(0.84, "#b04a4a");
+      g.addColorStop(0.92, "#ff7a3a");
+      g.addColorStop(1.0, "#101a38");
+      ctx.fillStyle = g; ctx.fillRect(0, 0, 512, 512);
+      for (let i = 0; i < 110; i++) {
+        ctx.fillStyle = `rgba(255,255,255,${0.35 + Math.random() * 0.6})`;
+        ctx.fillRect(Math.random() * 512, Math.random() * 130, 1.5, 1.5);
+      }
+      const t = new THREE.CanvasTexture(c);
+      t.magFilter = THREE.LinearFilter;
+      t.minFilter = THREE.LinearMipmapLinearFilter;
+      t.colorSpace = THREE.SRGBColorSpace;
+      return t;
+    })(),
+    side: THREE.BackSide,
+    fog: false,
+    depthWrite: false,
+  })
+);
+skyDome.visible = false;
+scene.add(skyDome);
+const netherSun = new THREE.Mesh(
+  new THREE.CircleGeometry(55, 28),
+  new THREE.MeshBasicMaterial({ color: 0xff8a2e, fog: false, depthWrite: false, transparent: true, opacity: 0.95 })
+);
+netherSun.position.set(0, 170, 500);
+skyDome.add(netherSun);
 
 const boxGeo = new THREE.BoxGeometry(1, 1, 1);
 const dummy = new THREE.Object3D();
@@ -1641,7 +1850,7 @@ function exitFreeCam() {
   flingActive = false;
   const outOfLevel =
     Math.abs(pos.x) > WORLD_RADIUS || Math.abs(pos.z) > WORLD_RADIUS ||
-    pos.y < 0 || pos.y > 60;
+    pos.y < 0 || pos.y > MAX_Y;
   if (outOfLevel) spawnPlayer();
 }
 
@@ -1651,7 +1860,7 @@ function headInWater() {
     const py = pos.y + (i === 0 ? 0.3 : PLAYER_H - 0.4);
     for (let bx = Math.floor(pos.x - hw); bx <= Math.floor(pos.x + hw); bx++)
       for (let bz = Math.floor(pos.z - hw); bz <= Math.floor(pos.z + hw); bz++)
-        if (getBlock(bx, Math.floor(py), bz) === WATER || getBlock(bx, Math.floor(py), bz) === LAVA) return true;
+        if (getBlock(bx, Math.floor(py), bz) === WATER || getBlock(bx, Math.floor(py), bz) === BLUEFIRE) return true;
   }
   return false;
 }
@@ -1673,7 +1882,7 @@ function pickBlock(origin, dir) {
 
   for (let i = 0; i < 256; i++) {
     const id = getBlock(x, y, z);
-    if (id !== AIR && id !== WATER && id !== LAVA) return { x, y, z, id, face };
+    if (id !== AIR && id !== WATER && id !== BLUEFIRE) return { x, y, z, id, face };
     if (tMaxX < tMaxY && tMaxX < tMaxZ) {
       x += stepX; tMaxX += tDeltaX; face = [-stepX, 0, 0];
     } else if (tMaxY < tMaxZ) {
@@ -1905,7 +2114,7 @@ function explodeTNT(x, y, z, pointBlank, homing = false) {
         if (dx * dx + dy * dy + dz * dz > R2) continue;
         const gx = bx + dx, gy = by + dy, gz = bz + dz;
         const id = getBlock(gx, gy, gz);
-        if (id === AIR || id === WATER || id === LAVA) continue;
+        if (id === AIR || id === WATER || id === BLUEFIRE) continue;
         if (id === STONE && gy === 0) continue;
         if (protectedBlocks.has(key(gx, gy, gz))) continue;
         if (id === TNT) {
@@ -2068,6 +2277,7 @@ function spawnExplosion(cx, cy, cz) {
 
 function tickEffects(dt) {
   updateNetherEmbers(dt, performance.now() / 1000);
+  updateVolcanoEmbers(dt, performance.now() / 1000);
   for (let i = bursts.length - 1; i >= 0; i--) {
     const b = bursts[i];
     b.life -= dt;
@@ -2119,7 +2329,7 @@ function ensureEmbers() {
   emberMaxLife = new Float32Array(EMBER_COUNT);
   for (let i = 0; i < EMBER_COUNT; i++) {
     posA[i * 3] = 0; posA[i * 3 + 1] = -100; posA[i * 3 + 2] = 0;
-    colA[i * 3] = 1; colA[i * 3 + 1] = 0.5 + Math.random() * 0.35; colA[i * 3 + 2] = 0.15;
+    colA[i * 3] = 0.35 + Math.random() * 0.25; colA[i * 3 + 1] = 0.7 + Math.random() * 0.3; colA[i * 3 + 2] = 1;
     emberLife[i] = 0; emberMaxLife[i] = 0;
   }
   const geo = new THREE.BufferGeometry();
@@ -2150,10 +2360,10 @@ function spawnEmber(i) {
     const pz = pos.z + (Math.random() * 2 - 1) * 36;
     const bx = Math.floor(px), bz = Math.floor(pz);
     if (bx < -S || bx > S || bz < -S || bz > S) continue;
-    if (getBlock(bx, NETHER_LAVA_LEVEL, bz) === LAVA) {
+    if (getBlock(bx, NETHER_FIRE_LEVEL, bz) === BLUEFIRE) {
       const attr = emberPts.geometry.attributes.position;
       attr.array[i * 3] = bx + 0.5;
-      attr.array[i * 3 + 1] = NETHER_LAVA_LEVEL + 0.6;
+      attr.array[i * 3 + 1] = NETHER_FIRE_LEVEL + 0.6;
       attr.array[i * 3 + 2] = bz + 0.5;
       attr.needsUpdate = true;
       emberVel[i * 3] = (Math.random() * 2 - 1) * 0.8;
@@ -2172,13 +2382,99 @@ function updateNetherEmbers(dt, time) {
   ensureEmbers();
   const attr = emberPts.geometry.attributes.position;
   for (let i = 0; i < EMBER_COUNT; i++) {
-    if (emberLife[i] <= 0 || attr.array[i * 3 + 1] > NETHER_LAVA_LEVEL + 24) {
+    if (emberLife[i] <= 0 || attr.array[i * 3 + 1] > NETHER_FIRE_LEVEL + 24) {
       spawnEmber(i);
     } else {
       emberLife[i] -= dt;
       attr.array[i * 3] += (emberVel[i * 3] + Math.sin(time * 2 + i) * 0.4) * dt;
       attr.array[i * 3 + 1] += emberVel[i * 3 + 1] * dt;
       attr.array[i * 3 + 2] += (emberVel[i * 3 + 2] + Math.cos(time * 1.7 + i) * 0.4) * dt;
+    }
+  }
+  attr.needsUpdate = true;
+}
+
+// Volcano eruption fountains: blue fire blobs belched from each volcano's
+// crater, arcing high into the sky then splashing back down into the fire.
+const VOLCANO_EMBER_COUNT = 340;
+let volcanoPts = null;
+let volcanoVel = null;
+let volcanoBase = null;
+let volcanoLife = null;
+let volcanoMaxLife = null;
+
+function ensureVolcanoEmbers() {
+  if (volcanoPts) return;
+  const posA = new Float32Array(VOLCANO_EMBER_COUNT * 3);
+  const colA = new Float32Array(VOLCANO_EMBER_COUNT * 3);
+  volcanoVel = new Float32Array(VOLCANO_EMBER_COUNT * 3);
+  volcanoBase = new Float32Array(VOLCANO_EMBER_COUNT);
+  volcanoLife = new Float32Array(VOLCANO_EMBER_COUNT);
+  volcanoMaxLife = new Float32Array(VOLCANO_EMBER_COUNT);
+  for (let i = 0; i < VOLCANO_EMBER_COUNT; i++) {
+    posA[i * 3] = 0; posA[i * 3 + 1] = -100; posA[i * 3 + 2] = 0;
+    colA[i * 3] = 0.5 + Math.random() * 0.3; colA[i * 3 + 1] = 0.8 + Math.random() * 0.2; colA[i * 3 + 2] = 1;
+    volcanoLife[i] = 0; volcanoMaxLife[i] = 0;
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute("position", new THREE.BufferAttribute(posA, 3));
+  geo.setAttribute("color", new THREE.BufferAttribute(colA, 3));
+  const mat = new THREE.PointsMaterial({
+    size: 0.34, vertexColors: true, transparent: true, opacity: 1,
+    depthWrite: false, blending: THREE.AdditiveBlending,
+  });
+  volcanoPts = new THREE.Points(geo, mat);
+  scene.add(volcanoPts);
+}
+
+function removeVolcanoEmbers() {
+  if (volcanoPts) {
+    scene.remove(volcanoPts);
+    volcanoPts.geometry.dispose();
+    volcanoPts.material.dispose();
+    volcanoPts = null;
+    volcanoVel = null; volcanoBase = null; volcanoLife = null; volcanoMaxLife = null;
+  }
+}
+
+function spawnVolcanoEmber(i) {
+  if (!volcanoes.length) { volcanoLife[i] = 0; return; }
+  const v = volcanoes[(Math.random() * volcanoes.length) | 0];
+  for (let tries = 0; tries < 8; tries++) {
+    const ox = (Math.random() * 2 - 1) * v.craterR * 0.9;
+    const oz = (Math.random() * 2 - 1) * v.craterR * 0.9;
+    if (ox * ox + oz * oz > v.craterR * v.craterR) continue;
+    const base = v.rim - v.craterDepth * (0.2 + Math.random() * 0.5);
+    const attr = volcanoPts.geometry.attributes.position;
+    attr.array[i * 3] = v.x + ox + 0.5;
+    attr.array[i * 3 + 1] = base;
+    attr.array[i * 3 + 2] = v.z + oz + 0.5;
+    attr.needsUpdate = true;
+    volcanoVel[i * 3] = (Math.random() * 2 - 1) * 7;
+    volcanoVel[i * 3 + 1] = 22 + Math.random() * 20;
+    volcanoVel[i * 3 + 2] = (Math.random() * 2 - 1) * 7;
+    volcanoBase[i] = base;
+    volcanoMaxLife[i] = 1.8 + Math.random() * 1.6;
+    volcanoLife[i] = volcanoMaxLife[i];
+    return;
+  }
+  volcanoLife[i] = 0;
+}
+
+function updateVolcanoEmbers(dt, time) {
+  if (dim !== "nether") { removeVolcanoEmbers(); return; }
+  ensureVolcanoEmbers();
+  const attr = volcanoPts.geometry.attributes.position;
+  for (let i = 0; i < VOLCANO_EMBER_COUNT; i++) {
+    if (volcanoLife[i] <= 0) {
+      spawnVolcanoEmber(i);
+    } else {
+      volcanoLife[i] -= dt;
+      attr.array[i * 3] += (volcanoVel[i * 3] + Math.sin(time * 3 + i) * 0.9) * dt;
+      attr.array[i * 3 + 1] += volcanoVel[i * 3 + 1] * dt;
+      attr.array[i * 3 + 2] += (volcanoVel[i * 3 + 2] + Math.cos(time * 2.4 + i) * 0.9) * dt;
+      volcanoVel[i * 3 + 1] -= 30 * dt;
+      if (attr.array[i * 3 + 1] < volcanoBase[i] - 3) volcanoLife[i] = 0;
     }
   }
   attr.needsUpdate = true;
@@ -2244,18 +2540,21 @@ function buildNetherPortal() {
 
 function setDimensionEnv() {
   if (dim === "end") {
+    skyDome.visible = false;
     scene.background.setHex(0x000000);
     scene.fog.color.setHex(0x000000);
     scene.fog.near = 30; scene.fog.far = 150;
     sun.color.setHex(0xfff5e0); sun.intensity = 0.35;
     hemi.color.setHex(0xbfd4ff); hemi.intensity = 0.45;
   } else if (dim === "nether") {
-    scene.background.setHex(0x000000);
-    scene.fog.color.setHex(0x260604);
-    scene.fog.near = 15; scene.fog.far = 70;
-    sun.color.setHex(0xff3b00); sun.intensity = 0.6;
-    hemi.color.setHex(0x3d0f0f); hemi.intensity = 0.5;
+    skyDome.visible = true;
+    scene.background.setHex(0x0b1228);
+    scene.fog.color.setHex(0x131c3a);
+    scene.fog.near = 20; scene.fog.far = 110;
+    sun.color.setHex(0x9fb4ff); sun.intensity = 0.85;
+    hemi.color.setHex(0x4a5ab8); hemi.intensity = 0.6;
   } else {
+    skyDome.visible = false;
     scene.background.setHex(0x87ceeb);
     scene.fog.color.setHex(0x87ceeb);
     scene.fog.near = 60; scene.fog.far = 160;
@@ -4493,16 +4792,21 @@ function loop(now) {
       for (const m of typeMats.get(WATER)) m.opacity = o;
     }
 
-    // Glowing lava flicker
-    if (typeMats.has(LAVA)) {
-      const k = 0.85 + 0.15 * Math.sin(now * 0.005) * Math.sin(now * 0.0013 + 1);
-      for (const m of typeMats.get(LAVA)) m.color.setScalar(k);
+    // Glowing blue-fire flicker
+    if (typeMats.has(BLUEFIRE)) {
+      const k = 0.9 + 0.1 * Math.sin(now * 0.005) * Math.sin(now * 0.0013 + 1);
+      for (const m of typeMats.get(BLUEFIRE)) m.color.setScalar(k);
     }
 
     const pcx = chunkOf(freeCam ? camPos.x : pos.x);
     const pcz = chunkOf(freeCam ? camPos.z : pos.z);
     if (pcx !== meshCx || pcz !== meshCz) streamChunks();
     drainChunkQueue();
+  }
+
+  if (skyDome.visible) {
+    skyDome.position.copy(camera.position);
+    skyDome.rotation.y += dt * 0.01;
   }
 
   renderer.render(scene, camera);
