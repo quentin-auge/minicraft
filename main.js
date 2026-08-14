@@ -1033,6 +1033,8 @@ const EYE = 1.62;
 const GRAVITY = 26;
 const JUMP = 8.2;
 const WALK = 4.4, SPRINT = 7.2, FLY = 10;
+const STEP_SPEED = 5.5;
+const AUTO_JUMP = 7.5;
 const GRAPPLE_SPEED = 26;
 const GRAPPLE_THROW = 70;
 const GRAPPLE_FLING = 34;
@@ -1054,6 +1056,7 @@ const vel = new THREE.Vector3();
 const camPos = new THREE.Vector3();
 let yaw = 0, pitch = 0;
 let onGround = false, flying = false, freeCam = false, locked = false;
+let stepDown = false, wasOnGround = false;
 const keys = {};
 
 function spawnPlayer() {
@@ -1065,6 +1068,7 @@ function spawnPlayer() {
   }
   vel.set(0, 0, 0);
   flingActive = false;
+  stepDown = false;
 }
 
 function isSolid(x, y, z) {
@@ -1072,16 +1076,13 @@ function isSolid(x, y, z) {
   return !!info && info.solid;
 }
 
-function tryStep(dirX, dirZ) {
-  const nx = dirX !== 0 ? Math.floor(pos.x + dirX * (PLAYER_HW + 0.001)) : Math.floor(pos.x);
-  const nz = dirZ !== 0 ? Math.floor(pos.z + dirZ * (PLAYER_HW + 0.001)) : Math.floor(pos.z);
-  const feetY = Math.floor(pos.y);
-  const standY = feetY + 1;
-  if (!isSolid(nx, feetY, nz)) return false;
-  if (isSolid(nx, standY, nz) || isSolid(nx, standY + 1, nz)) return false;
-  pos.y = standY + 0.001;
-  vel.y = 0;
-  onGround = true;
+function tryStep(bx, by, bz) {
+  if (!onGround || stepDown) return false;
+  if (by !== Math.floor(pos.y)) return false;
+  if (isSolid(bx, by + 1, bz) || isSolid(bx, by + 2, bz)) return false;
+  vel.y = AUTO_JUMP;
+  onGround = false;
+  stepDown = false;
   return true;
 }
 
@@ -1095,11 +1096,11 @@ function moveAxisX(dx) {
     for (let bz = Math.floor(pos.z - PLAYER_HW); bz <= Math.floor(pos.z + PLAYER_HW); bz++) {
       if (!isSolid(cellX, by, bz)) continue;
       if (dir > 0 && edge > cellX) {
-        if (tryStep(dir, 0)) return;
+        tryStep(cellX, by, bz);
         pos.x = cellX - PLAYER_HW - 0.001; vel.x = 0; return;
       }
       if (dir < 0 && edge < cellX + 0.999) {
-        if (tryStep(dir, 0)) return;
+        tryStep(cellX, by, bz);
         pos.x = cellX + 1 + PLAYER_HW + 0.001; vel.x = 0; return;
       }
     }
@@ -1114,11 +1115,11 @@ function moveAxisZ(dz) {
     for (let bx = Math.floor(pos.x - PLAYER_HW); bx <= Math.floor(pos.x + PLAYER_HW); bx++) {
       if (!isSolid(bx, by, cellZ)) continue;
       if (dir > 0 && edge > cellZ) {
-        if (tryStep(0, dir)) return;
+        tryStep(bx, by, cellZ);
         pos.z = cellZ - PLAYER_HW - 0.001; vel.z = 0; return;
       }
       if (dir < 0 && edge < cellZ + 0.999) {
-        if (tryStep(0, dir)) return;
+        tryStep(bx, by, cellZ);
         pos.z = cellZ + 1 + PLAYER_HW + 0.001; vel.z = 0; return;
       }
     }
@@ -1130,8 +1131,14 @@ function moveAxisY(dy) {
   for (let bx = Math.floor(pos.x - PLAYER_HW); bx <= Math.floor(pos.x + PLAYER_HW); bx++)
     for (let bz = Math.floor(pos.z - PLAYER_HW); bz <= Math.floor(pos.z + PLAYER_HW); bz++) {
       if (vel.y > 0 && isSolid(bx, Math.floor(top), bz) && top > Math.floor(top)) { pos.y = Math.floor(top) - PLAYER_H - 0.001; vel.y = 0; return; }
-      if (vel.y <= 0 && isSolid(bx, Math.floor(feet), bz)) { pos.y = Math.floor(feet) + 1 + 0.001; vel.y = 0; onGround = true; flingActive = false; return; }
+      if (vel.y <= 0 && isSolid(bx, Math.floor(feet), bz)) { pos.y = Math.floor(feet) + 1 + 0.001; vel.y = 0; onGround = true; stepDown = false; flingActive = false; return; }
     }
+  if (vel.y < 0 && wasOnGround && !stepDown) {
+    const fy = Math.floor(pos.y) - 1;
+    for (let bx = Math.floor(pos.x - PLAYER_HW); bx <= Math.floor(pos.x + PLAYER_HW) && !stepDown; bx++)
+      for (let bz = Math.floor(pos.z - PLAYER_HW); bz <= Math.floor(pos.z + PLAYER_HW); bz++)
+        if (isSolid(bx, fy, bz)) { stepDown = true; break; }
+  }
 }
 function collide() {
   moveAxisY(vel.y * dt);
@@ -1157,6 +1164,7 @@ function fireGrapple() {
   grapplePulling = false;
   grapplePass = true;
   grappleActive = true;
+  stepDown = false;
 }
 
 function blockedBody(px, py, pz) {
@@ -1305,12 +1313,14 @@ function updatePlayer(dt) {
   const inWater = headInWater();
 
   if (flying) {
+    stepDown = false;
     const speed = FLY;
     if (move.lengthSq() > 0) move.normalize().multiplyScalar(speed);
     vel.x = move.x; vel.z = move.z;
     vel.y = (keys["Space"] ? speed : 0) - (sprintKey ? speed : 0);
     flingActive = false;
   } else if (inWater) {
+    stepDown = false;
     // Buoyancy: automatically float toward the surface, hold Space to swim up.
     const speed = 4.2;
     if (move.lengthSq() > 0) move.normalize().multiplyScalar(speed);
@@ -1333,10 +1343,15 @@ function updatePlayer(dt) {
     } else {
       vel.x = move.x; vel.z = move.z;
     }
-    vel.y -= GRAVITY * dt;
-    if (keys["Space"] && onGround) { vel.y = JUMP; onGround = false; }
+    if (stepDown) {
+      vel.y = -STEP_SPEED;
+    } else {
+      vel.y -= GRAVITY * dt;
+    }
+    if (keys["Space"] && onGround) { vel.y = JUMP; onGround = false; stepDown = false; }
     if (vel.y < -40) vel.y = -40;
   }
+  wasOnGround = onGround;
   collide();
 }
 
