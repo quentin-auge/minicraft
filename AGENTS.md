@@ -343,24 +343,30 @@ small Python server for saving/loading worlds.
   reads as a glowing fire lake. A central BLUEFIRE shaft (`fillVolcanoShafts`)
   as wide as the crater (`craterR`) runs up the middle of each volcano from
   the ground base (`baseY`) all the way to the crater, a big swimmable lava
-  chimney. Twelve straight 4×4 tunnels (`volcanoTunnels`, spaced 30° apart) are
-  dug dead-straight in to the lava shaft from mouths spread across every height
-  of the cone — each tunnel gets its own level, interleaved via `(k*7) % 12`
-  between `baseY + 6` and `rim * 0.8` so neighbouring tunnels are never at the
-  same height, and every mouth bores horizontally to the fire column. Each mouth
-  sits at the outermost point on its heading where the flank clears the doorway
-  (`dOut` scan via `volcanoHeightAt`, threshold `hT + 5`) so the bore stays
-  buried in rock, the volcano surface is flattened into a level apron
-  (`plat + 1 .. plat + 6` carved from `dOut+1` for 8 blocks) so the entrance
-  reads square, and every opening is closed with a strict 6×6 GLOWSTONE (block
-  id 20, unlit `basicFace` pixel texture so it shines) square ring
-  (1 block thick, 4×4 hole), each ring a single random colour of the five,
-  pressed against the flank. Tunnels carve
-  NETHERRACK/SOULSAND/BLUEFIRE and generation runs
-  `volcanoCascades` before `volcanoTunnels`, so coulees never refill a tunnel.
+  chimney. Twelve straight 4×4 tunnels (`volcanoTunnels`, 30°-spaced headings) are
+  dug dead-straight in to the lava shaft from mouths spread across the vertical
+  faces of the cone that overlook the platform's interior (towards the map
+  centre, `toCentre = atan2(-z, -x)`, the heading arc `toCentre ± π/2`) — never
+  on the exterior — with each tunnel at its own height, interleaved via
+  `(k*7) % 12` between `baseY + 6` and `rim * 0.8` so neighbouring tunnels are
+  never at the same level. Each mouth sits at the outermost point on its heading
+  where the flank clears the doorway (`dOut` scan via `volcanoHeightAt`,
+  threshold `hT + 5`) so the bore stays buried in rock, the volcano surface is
+  flattened into a level apron (`plat + 1 .. plat + 6` carved from `dOut+1` for
+  8 blocks) so the entrance reads square, and every opening is closed with a
+  strict 6×6 GLOWSTONE (block id 20, unlit `basicFace` pixel texture so it
+  shines) square ring (1 block thick, 4×4 hole), each ring a single random
+  colour of the six. Tunnels carve
+  NETHERRACK/SOULSAND only (blue fire is kept, so a cascade raining over a
+  doorway is never cut) and generation runs `volcanoCascades` before
+  `volcanoTunnels`, so coulees never fill a tunnel.
   Each volcano spills a broad main plus a
-  narrower side lava coulee over the rim that runs all the way down its
-  flank to the base (`volcanoCascades`, angular courses deepest near the rim
+  narrower side lava coulee over the rim that runs the whole way down the
+  interior-facing flank to the very base without interruption
+  (`volcanoCascades`, both course angles `flowAng`/`flowAng2` fixed near
+  `toCentre` so they pour onto the platform's side; carved
+  straight off the volcano surface via `volcanoHeightAt`,
+  deepest near the rim
   where they burst out, up to 9 blocks thick, thinning and widening downhill
   into uneven tongues), and a constant eruption fountain
   (`updateVolcanoEmbers`/`spawnVolcanoEmber`, ~340 additive `THREE.Points`

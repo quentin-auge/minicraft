@@ -906,8 +906,9 @@ function generateVolcanoes() {
     const peak = 260 + Math.floor(hash2(i, 3, netherSeed + 914) * 24);
     const craterR = 5 + Math.floor(hash2(i, 4, netherSeed + 915) * 5);
     const craterDepth = 14 + Math.floor(hash2(i, 5, netherSeed + 916) * 14);
-    const flowAng = hash2(i, 6, netherSeed + 917) * Math.PI * 2;
-    const flowAng2 = flowAng + 0.9 + hash2(i, 7, netherSeed + 918) * 0.8;
+    const toCentre = Math.atan2(-vz, -vx);                        // towards the platform interior
+    const flowAng = toCentre + (hash2(i, 6, netherSeed + 917) - 0.5) * 1.4;
+    const flowAng2 = toCentre + 0.55 + hash2(i, 7, netherSeed + 918) * 0.5;
     const m = fbm(vx * 0.008, vz * 0.008, netherSeed) * 2 - 1;
     const r = fbm(vx * 0.03, vz * 0.03, netherSeed + 7);
     const c = fbm(vx * 0.014, vz * 0.014, netherSeed + 17) * 2 - 1;
@@ -961,12 +962,14 @@ function fillVolcanoShafts() {
   }
 }
 
-// Twelve straight 4x4 tunnels per volcano, one per heading spread around the
-// cone at twelve different heights (interleaved so neighbouring tunnels are
-// never at the same level), each running dead-straight from a mouth on the
-// flank in to the central lava shaft. The surface is flattened into a level
-// apron at each mouth and every entrance is closed with a strict 6x6 glowstone
-// square ring around the 4x4 opening.
+// Twelve straight 4x4 tunnels per volcano, one per heading spread across the
+// vertical faces of the cone that overlook the platform's interior (towards the
+// map centre), never the exterior — at twelve different heights (interleaved so
+// neighbouring tunnels are never at the same level). Each runs dead-straight
+// from a mouth on the flank in to the central lava shaft. The surface is
+// flattened into a level apron at each mouth and every entrance is closed with
+// a strict 6x6 glowstone square ring around the 4x4 opening. Tunnels carve rock
+// only, so the blue-fire cascades pouring past the mouths are never interrupted.
 function volcanoTunnels() {
   const w = worlds.nether;
   const S = WORLD_RADIUS;
@@ -976,8 +979,9 @@ function volcanoTunnels() {
     const hHi = v.rim * 0.8;
     const hRange = hHi - hLo;
     const minD = v.craterR + 1;
+    const toCentre = Math.atan2(-v.z, -v.x);   // direction facing the platform interior
     for (let k = 0; k < TUNNELS; k++) {
-      const dir = v.flowAng + (k * 2 * Math.PI) / TUNNELS;
+      const dir = toCentre - Math.PI / 2 + ((k + 0.5) * Math.PI) / TUNNELS;
       const dx = Math.cos(dir), dz = Math.sin(dir);
       const mx = Math.cos(dir + Math.PI / 2), mz = Math.sin(dir + Math.PI / 2);
       const frac = ((k * 7) % TUNNELS) / TUNNELS;
@@ -999,7 +1003,7 @@ function volcanoTunnels() {
           if (wx < -S || wx > S || wz < -S || wz > S) continue;
           for (let y = plat + 1; y <= plat + 4; y++) {
             const cur = getBlock(wx, y, wz);
-            if (cur === NETHERRACK || cur === SOULSAND || cur === BLUEFIRE) w.set(key(wx, y, wz), AIR);
+            if (cur === NETHERRACK || cur === SOULSAND) w.set(key(wx, y, wz), AIR);
           }
         }
       }
@@ -1012,7 +1016,7 @@ function volcanoTunnels() {
           if (wx < -S || wx > S || wz < -S || wz > S) continue;
           for (let y = plat + 1; y <= plat + 6; y++) {
             const cur = getBlock(wx, y, wz);
-            if (cur === NETHERRACK || cur === SOULSAND || cur === BLUEFIRE) w.set(key(wx, y, wz), AIR);
+            if (cur === NETHERRACK || cur === SOULSAND) w.set(key(wx, y, wz), AIR);
           }
         }
       }
@@ -1025,6 +1029,7 @@ function volcanoTunnels() {
         const wx = pX + Math.round(mx * off);
         const wz = pZ + Math.round(mz * off);
         if (wx < -S || wx > S || wz < -S || wz > S) return;
+        if (getBlock(wx, yy, wz) === BLUEFIRE) return;
         const k = key(wx, yy, wz);
         w.set(k, GLOWSTONE);
         glowstoneBlockSets.nether.add(k);
@@ -1036,16 +1041,18 @@ function volcanoTunnels() {
   }
 }
 
-// Big top-to-bottom lava flows down the flanks of each volcano: a broad main
-// coulee and a narrower side coulee spill out of the crater rim and run all
-// the way to the base, thickest right at the top where they burst out and
-// tapering as they spread downhill into wide tongues.
+// Big top-to-bottom lava flows down the interior-facing faces of each volcano:
+// a broad main coulee and a narrower side coulee spill out of the crater rim on
+// the side that overlooks the platform interior and run the whole way to the
+// very base without interruption, thickest right at the top where they burst
+// out and tapering as they spread downhill into wide tongues. Carved straight
+// off the volcano surface, so they keep flowing over the tunnel mouths.
 function volcanoCascades() {
   const w = worlds.nether;
   const S = WORLD_RADIUS;
   const courses = (v) => [
-    { ang: v.flowAng, half: 0.17, foot: v.radius - 2, mx: 6 },
-    { ang: v.flowAng2, half: 0.09, foot: v.radius - 6, mx: 4 },
+    { ang: v.flowAng, half: 0.17, foot: v.radius, mx: 6 },
+    { ang: v.flowAng2, half: 0.09, foot: v.radius, mx: 4 },
   ];
   for (const v of volcanoes) {
     for (const course of courses(v)) {
@@ -1066,8 +1073,7 @@ function volcanoCascades() {
           while (a < -Math.PI) a += Math.PI * 2;
           if (Math.abs(a) > course.half) continue;
           const hy = Math.round(h);
-          if (getBlock(x, hy, z) !== NETHERRACK) continue;
-          if (getBlock(x, hy + 1, z) !== AIR) continue;
+          if (hy < 1) continue;
           const t = (d - (v.craterR - 1)) / len;
           let thick = 2 + Math.round(course.mx * (1 - t));
           if (hash2(x, z, 88 + course.mx) < 0.16) thick += 2;
