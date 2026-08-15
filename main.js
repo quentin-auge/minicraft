@@ -877,6 +877,17 @@ const NETHER_RIVER_COUNT = 4;
 let netherRiverPaths = [];
 let volcanoes = [];
 
+// Great lava lake terrain: the Nether floor sits under the fire line almost
+// everywhere, so the blue-fire sea reads as one huge lake; two scales of island
+// noise plus relief raise small, medium and large blobs above the fire.
+function netherLandHeight(x, z) {
+  const q = fbm(x * 0.0065, z * 0.0065, netherSeed + 311);
+  const q2 = fbm(x * 0.013, z * 0.013, netherSeed + 317);
+  const rel = (fbm(x * 0.03, z * 0.03, netherSeed + 313) - 0.5) * 18;
+  let h = Math.floor(NETHER_FIRE_LEVEL - 4 + (q - 0.42) * 32 + (q2 - 0.5) * 26 + rel);
+  return Math.max(1, Math.min(96, h));
+}
+
 function generateVolcanoes() {
   volcanoes = [];
   const S = WORLD_RADIUS;
@@ -909,10 +920,7 @@ function generateVolcanoes() {
     const toCentre = Math.atan2(-vz, -vx);                        // towards the platform interior
     const flowAng = toCentre + (hash2(i, 6, netherSeed + 917) - 0.5) * 1.4;
     const flowAng2 = toCentre + 0.55 + hash2(i, 7, netherSeed + 918) * 0.5;
-    const m = fbm(vx * 0.008, vz * 0.008, netherSeed) * 2 - 1;
-    const r = fbm(vx * 0.03, vz * 0.03, netherSeed + 7);
-    const c = fbm(vx * 0.014, vz * 0.014, netherSeed + 17) * 2 - 1;
-    const baseY = Math.max(1, Math.min(96, Math.floor(12 + m * 44 + r * 10 + Math.max(0, c) * 18)));
+    const baseY = Math.max(NETHER_FIRE_LEVEL, Math.min(96, Math.floor(netherLandHeight(vx, vz))));
     volcanoes.push({ x: vx, z: vz, radius, peak, rim: peak * 0.85, craterR, craterDepth, flowAng, flowAng2, baseY });
   }
 }
@@ -1046,7 +1054,9 @@ function volcanoTunnels() {
 // the side that overlooks the platform interior and run the whole way to the
 // very base without interruption, thickest right at the top where they burst
 // out and tapering as they spread downhill into wide tongues. Carved straight
-// off the volcano surface, so they keep flowing over the tunnel mouths.
+// off the volcano surface, so they keep flowing over the tunnel mouths. Past
+// the cone's foot each course keeps cutting a narrow trench across any island
+// in its way until it reaches the great lava lake, so the fires pour into it.
 function volcanoCascades() {
   const w = worlds.nether;
   const S = WORLD_RADIUS;
@@ -1082,6 +1092,28 @@ function volcanoCascades() {
             if (y < 1) continue;
             w.set(key(x, y, z), BLUEFIRE);
           }
+        }
+      }
+      // Extend the course beyond the cone's foot towards the lake: cut a
+      // tapering trench through any island in the way, down to fire level, and
+      // flood it, so the coulee keeps flowing all the way to the lava lake.
+      const cdx = Math.cos(course.ang), cdz = Math.sin(course.ang);
+      const cmx = Math.cos(course.ang + Math.PI / 2), cmz = Math.sin(course.ang + Math.PI / 2);
+      for (let d = v.radius + 1; d <= v.radius + 60; d++) {
+        const hc = netherLandHeight(v.x + Math.round(cdx * d), v.z + Math.round(cdz * d));
+        if (hc <= NETHER_FIRE_LEVEL) break;   // reached the lake
+        const wd = Math.max(1, Math.round((course.mx - 2) * Math.max(0.25, 1 - (d - v.radius) / 60)));
+        for (let off = -wd; off <= wd; off++) {
+          const wx = v.x + Math.round(cdx * d + cmx * off);
+          const wz = v.z + Math.round(cdz * d + cmz * off);
+          if (wx < -S || wx > S || wz < -S || wz > S) continue;
+          const hi = netherLandHeight(wx, wz);
+          if (hi <= NETHER_FIRE_LEVEL) continue;
+          for (let y = NETHER_FIRE_LEVEL + 1; y <= hi; y++) {
+            const cur = getBlock(wx, y, wz);
+            if (cur === NETHERRACK || cur === SOULSAND || cur === GLOWSTONE) w.set(key(wx, y, wz), AIR);
+          }
+          w.set(key(wx, NETHER_FIRE_LEVEL, wz), BLUEFIRE);
         }
       }
     }
@@ -1146,10 +1178,7 @@ function generateNether() {
   const idx = (x, z) => (z + S) * size + (x + S);
   for (let x = -S; x <= S; x++) {
     for (let z = -S; z <= S; z++) {
-      const m = fbm(x * 0.008, z * 0.008, netherSeed) * 2 - 1;
-      const r = fbm(x * 0.03, z * 0.03, netherSeed + 7);
-      const c = fbm(x * 0.014, z * 0.014, netherSeed + 17) * 2 - 1;
-      let h = Math.floor(12 + m * 44 + r * 10 + Math.max(0, c) * 18);
+      let h = netherLandHeight(x, z);
       const rv = nearestNetherRiver(x, z);
       if (rv && rv.d <= rv.w) {
         const t = rv.d / rv.w;

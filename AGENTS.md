@@ -323,9 +323,12 @@ small Python server for saving/loading worlds.
   stars, lighter grey band and horizon) with a
   pale grey sun disc (`netherSun`, orbits slowly as the dome rotates), plus
   `setDimensionEnv` neutral grey-white sun light and hemisphere fill and dark
-  grey fog. Rock mountains (`generateNether`, fbm height ~12–84) rise
-  out of a glowing blue-fire sea (`NETHER_FIRE_LEVEL`) where the old lava sea
-  used to be (the block id 16 stays the same, so saves keep loading; it's just
+  grey fog. The floor of the Nether is a huge lava lake: `netherLandHeight`
+  (fbm island blobs on the fire line) keeps the terrain under `NETHER_FIRE_LEVEL`
+  almost everywhere, so the glowing blue-fire sea reads as one great lake, and
+  only the noise highs rise into small/medium/large islands with hilly relief —
+  where the old lava sea used to
+  be (the block id 16 stays the same, so saves keep loading; it's just
   re-skinned and renamed Blue Fire). Winding canyons (`generateNetherRivers`/
   `nearestNetherRiver`) are carved down to the fire so they fill as blue-fire
   rivers, and steep cliffs that drop into the sea get vertical blue-fire
@@ -333,7 +336,8 @@ small Python server for saving/loading worlds.
   (`generateVolcanoes`/`volcanoHeightAt`, exactly 2 per world forced onto
   opposite sides of the map so the cones stay clearly distinct instead of drifting
   together, each placed far from spawn
-  with a spawn clearance that scales with each cone's radius, radius 70–85 —
+  with a spawn clearance that scales with each cone's radius, radius 70–85,
+  seated on the lake via `baseY = max(NETHER_FIRE_LEVEL, netherLandHeight)` —
   bases span ~the whole 193-block world, plateau rim at `peak * 0.85` with
   peak 260–284, crater
   radius 5–10 and depth 14–28) tower up to ~240 blocks, right under the
@@ -368,7 +372,10 @@ small Python server for saving/loading worlds.
   straight off the volcano surface via `volcanoHeightAt`,
   deepest near the rim
   where they burst out, up to 9 blocks thick, thinning and widening downhill
-  into uneven tongues), and a constant eruption fountain
+  into uneven tongues) and then keeps going past the cone's foot: each course
+  cuts a tapering trench through any island in its way down to fire level and
+  floods it, so the coulees pour straight into the great lava lake),
+  and a constant eruption fountain
   (`updateVolcanoEmbers`/`spawnVolcanoEmber`, ~340 additive `THREE.Points`
   launched up out of the crater fire, arcing and splashing back down; torn
   down on leaving the Nether). Everything in the Nether is dark grey: terrain
