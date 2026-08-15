@@ -3,7 +3,7 @@ import * as THREE from "three";
 // ---------------------------------------------------------------------------
 // Block definitions
 // ---------------------------------------------------------------------------
-const AIR = 0, GRASS = 1, DIRT = 2, STONE = 3, SAND = 4, LOG = 5, LEAVES = 6, WATER = 7, PLANKS = 8, GLASS = 9, TNT = 10, FLOWER = 11, PORTAL = 12, ENDSTONE = 13, CLOUD = 14, OBSIDIAN = 15, BLUEFIRE = 16, NETHERRACK = 17, SOULSAND = 18, GLOWSTONE = 20;
+const AIR = 0, GRASS = 1, DIRT = 2, STONE = 3, SAND = 4, LOG = 5, LEAVES = 6, WATER = 7, PLANKS = 8, GLASS = 9, TNT = 10, FLOWER = 11, PORTAL = 12, ENDSTONE = 13, CLOUD = 14, OBSIDIAN = 15, LAVA = 16, NETHERRACK = 17, SOULSAND = 18, GLOWSTONE = 20;
 
 const BLOCK_INFO = {
   [GRASS]:   { name: "Grass",    solid: true,  opaque: true,  placeable: true },
@@ -21,7 +21,7 @@ const BLOCK_INFO = {
   [ENDSTONE]:{ name: "End Stone",solid: true,  opaque: true,  placeable: false },
   [CLOUD]:   { name: "Cloud",    solid: true,  opaque: true,  placeable: false },
   [OBSIDIAN]:{ name: "Obsidian", solid: true,  opaque: true,  placeable: true },
-  [BLUEFIRE]:{ name: "Blue Fire", solid: false, opaque: false, placeable: true },
+  [LAVA]:{ name: "Lava", solid: false, opaque: false, placeable: true },
   [NETHERRACK]:{ name: "Netherrack", solid: true, opaque: true, placeable: true },
   [SOULSAND]:  { name: "Soul Sand",   solid: true, opaque: true, placeable: false },
   [GLOWSTONE]:{ name: "Glowstone",  solid: true, opaque: true, placeable: true },
@@ -230,7 +230,7 @@ const TEX = {
     ctx.fillStyle = "rgba(24,10,26,0.9)";
     ctx.fillRect(2, 7, 2, 1); ctx.fillRect(6, 12, 1, 1); ctx.fillRect(10, 3, 2, 1); ctx.fillRect(13, 9, 1, 1);
   }),
-  bluefire: canvasTex((ctx) => {
+  lava: canvasTex((ctx) => {
     ctx.fillStyle = "#1d1d5e"; ctx.fillRect(0, 0, 16, 16);
     pxNoise(ctx, [29, 29, 94], 26);
     ctx.fillStyle = "#3b3bd4";
@@ -311,7 +311,7 @@ function materialsFor(id) {
     case ENDSTONE: return faceTex(TEX.endstone);
     case CLOUD: return faceTex(TEX.cloud);
     case OBSIDIAN: return faceTex(TEX.obsidian);
-    case BLUEFIRE: return basicFace(TEX.bluefire);
+    case LAVA: return basicFace(TEX.lava, { fog: false });
     case NETHERRACK: return faceTex(TEX.netherrack);
     case SOULSAND: return faceTex(TEX.soulsand);
     case GLOWSTONE: return basicFace(TEX.glowstone, { fog: false });
@@ -863,9 +863,9 @@ function generateEnd() {
 }
 
 // ---------------------------------------------------------------------------
-// The Nether: a hostile blue-fire dimension under a dark grey sky.
-// Immense fire-spewing volcanoes rise out of a glowing blue-fire sea; winding
-// canyons cut down to the fire, and blue fire streaks pour down the faces of
+// The Nether: a hostile lava dimension under a dark grey sky.
+// Immense fire-spewing volcanoes rise out of a glowing lava sea; winding
+// canyons cut down to the fire, and lava streaks pour down the faces of
 // cliffs that drop into the sea.
 // ---------------------------------------------------------------------------
 const NETHER_FIRE_LEVEL = 12;
@@ -874,7 +874,7 @@ let netherRiverPaths = [];
 let volcanoes = [];
 
 // Great lava lake terrain: the Nether floor sits under the fire line almost
-// everywhere, so the blue-fire sea reads as one huge lake; two scales of island
+// everywhere, so the lava sea reads as one huge lake; two scales of island
 // noise plus relief raise small, medium and large blobs above the fire.
 function netherLandHeight(x, z) {
   const q = fbm(x * 0.0065, z * 0.0065, netherSeed + 311);
@@ -949,7 +949,7 @@ function fillVolcanoCraters() {
         const d = Math.hypot(dx, dz);
         if (d > v.craterR) continue;
         const floor = Math.max(1, Math.round(volcanoHeightAt(v, v.x + dx, v.z + dz)));
-        for (let y = floor; y <= top; y++) w.set(key(v.x + dx, y, v.z + dz), BLUEFIRE);
+        for (let y = floor; y <= top; y++) w.set(key(v.x + dx, y, v.z + dz), LAVA);
       }
   }
 }
@@ -961,7 +961,7 @@ function fillVolcanoShafts() {
     for (let dx = -v.craterR; dx <= v.craterR; dx++)
       for (let dz = -v.craterR; dz <= v.craterR; dz++) {
         if (Math.hypot(dx, dz) > v.craterR) continue;
-        for (let y = v.baseY; y <= top; y++) w.set(key(v.x + dx, y, v.z + dz), BLUEFIRE);
+        for (let y = v.baseY; y <= top; y++) w.set(key(v.x + dx, y, v.z + dz), LAVA);
       }
   }
 }
@@ -973,7 +973,7 @@ function fillVolcanoShafts() {
 // from a mouth on the flank in to the central lava shaft. The surface is
 // flattened into a level apron at each mouth and every entrance is closed with
 // a strict 6x6 glowstone square ring around the 4x4 opening. Tunnels carve rock
-// only, so the blue-fire cascades pouring past the mouths are never interrupted.
+// only, so the lava cascades pouring past the mouths are never interrupted.
 function volcanoTunnels() {
   const w = worlds.nether;
   const S = WORLD_RADIUS;
@@ -1033,7 +1033,7 @@ function volcanoTunnels() {
         const wx = pX + Math.round(mx * off);
         const wz = pZ + Math.round(mz * off);
         if (wx < -S || wx > S || wz < -S || wz > S) return;
-        if (getBlock(wx, yy, wz) === BLUEFIRE) return;
+        if (getBlock(wx, yy, wz) === LAVA) return;
         const k = key(wx, yy, wz);
         w.set(k, GLOWSTONE);
         glowstoneBlockSets.nether.add(k);
@@ -1086,7 +1086,7 @@ function volcanoCascades() {
           if (thick > 9) thick = 9;
           for (let y = hy; y > hy - thick; y--) {
             if (y < 1) continue;
-            w.set(key(x, y, z), BLUEFIRE);
+            w.set(key(x, y, z), LAVA);
           }
         }
       }
@@ -1109,7 +1109,7 @@ function volcanoCascades() {
             const cur = getBlock(wx, y, wz);
             if (cur === NETHERRACK || cur === SOULSAND || cur === GLOWSTONE) w.set(key(wx, y, wz), AIR);
           }
-          w.set(key(wx, NETHER_FIRE_LEVEL, wz), BLUEFIRE);
+          w.set(key(wx, NETHER_FIRE_LEVEL, wz), LAVA);
         }
       }
     }
@@ -1192,7 +1192,7 @@ function generateNether() {
       if (h >= NETHER_FIRE_LEVEL && h <= NETHER_FIRE_LEVEL + 2)
         w.set(key(x, h, z), SOULSAND);
       if (h < NETHER_FIRE_LEVEL)
-        for (let y = h + 1; y <= NETHER_FIRE_LEVEL; y++) w.set(key(x, y, z), BLUEFIRE);
+        for (let y = h + 1; y <= NETHER_FIRE_LEVEL; y++) w.set(key(x, y, z), LAVA);
     }
   }
   for (let x = -S; x <= S; x++) {
@@ -1206,7 +1206,7 @@ function generateNether() {
         if (hn > NETHER_FIRE_LEVEL) continue;
         const fall = Math.min(5, Math.round((h - NETHER_FIRE_LEVEL) * 0.45));
         for (let y = NETHER_FIRE_LEVEL + 1; y <= NETHER_FIRE_LEVEL + fall; y++)
-          w.set(key(nx, y, nz), BLUEFIRE);
+          w.set(key(nx, y, nz), LAVA);
       }
     }
   }
@@ -2226,7 +2226,7 @@ function headInWater() {
     const py = pos.y + (i === 0 ? 0.3 : PLAYER_H - 0.4);
     for (let bx = Math.floor(pos.x - hw); bx <= Math.floor(pos.x + hw); bx++)
       for (let bz = Math.floor(pos.z - hw); bz <= Math.floor(pos.z + hw); bz++)
-        if (getBlock(bx, Math.floor(py), bz) === WATER || getBlock(bx, Math.floor(py), bz) === BLUEFIRE) return true;
+        if (getBlock(bx, Math.floor(py), bz) === WATER || getBlock(bx, Math.floor(py), bz) === LAVA) return true;
   }
   return false;
 }
@@ -2237,7 +2237,7 @@ function waterSurfaceTop() {
     for (let bz = Math.floor(pos.z - PLAYER_HW); bz <= Math.floor(pos.z + PLAYER_HW); bz++)
       for (let y = MAX_Y; y >= 0; y--) {
         const id = getBlock(bx, y, bz);
-        if (id === WATER || id === BLUEFIRE) {
+        if (id === WATER || id === LAVA) {
           if (y + 1 > top) top = y + 1;
           break;
         }
@@ -2262,7 +2262,7 @@ function pickBlock(origin, dir, skipLiquid) {
 
   for (let i = 0; i < 256; i++) {
     const id = getBlock(x, y, z);
-    if (id !== AIR && !(skipLiquid && (id === WATER || id === BLUEFIRE))) return { x, y, z, id, face };
+    if (id !== AIR && !(skipLiquid && (id === WATER || id === LAVA))) return { x, y, z, id, face };
     if (tMaxX < tMaxY && tMaxX < tMaxZ) {
       x += stepX; tMaxX += tDeltaX; face = [-stepX, 0, 0];
     } else if (tMaxY < tMaxZ) {
@@ -2320,7 +2320,7 @@ function breakBlock() {
   if (protectedBlocks.has(key(x, y, z))) return;
   if (getBlock(x, y, z) === STONE && y === 0) return;
   if (getBlock(x, y, z) === TNT) { igniteTNT(x, y, z); return; }
-  if (getBlock(x, y, z) === WATER || getBlock(x, y, z) === BLUEFIRE) return;
+  if (getBlock(x, y, z) === WATER || getBlock(x, y, z) === LAVA) return;
   setBlock(x, y, z, AIR);
   refreshBlocks([[x, y, z]]);
   queueSave();
@@ -2331,11 +2331,11 @@ function placeBlock(id) {
   const [nx, ny, nz] = currentBlock.face;
   const px = currentBlock.x + nx, py = currentBlock.y + ny, pz = currentBlock.z + nz;
   const target = getBlock(px, py, pz);
-  if (target !== AIR && !(target === id && (id === WATER || id === BLUEFIRE))) return;
+  if (target !== AIR && !(target === id && (id === WATER || id === LAVA))) return;
   if (target === AIR) {
     if (intersectsPlayer(px, py, pz)) return;
     const under = getBlock(px, py - 1, pz);
-    if ((under === WATER || under === BLUEFIRE) && id !== under) return;
+    if ((under === WATER || under === LAVA) && id !== under) return;
   }
   if (id === FLOWER) placedFlowers.set(key(px, py, pz), { v: randomFlowerVariant(), a: Math.random() * Math.PI * 2 });
   if (id === GLOWSTONE) worldGlowVariants.get(world).set(key(px, py, pz), glowVariantNear(px, py, pz));
@@ -2501,7 +2501,7 @@ function explodeTNT(x, y, z, pointBlank, homing = false) {
         if (dx * dx + dy * dy + dz * dz > R2) continue;
         const gx = bx + dx, gy = by + dy, gz = bz + dz;
         const id = getBlock(gx, gy, gz);
-        if (id === AIR || id === WATER || id === BLUEFIRE) continue;
+        if (id === AIR || id === WATER || id === LAVA) continue;
         if (id === STONE && gy === 0) continue;
         if (protectedBlocks.has(key(gx, gy, gz))) continue;
         if (id === TNT) {
@@ -2747,7 +2747,7 @@ function spawnEmber(i) {
     const pz = pos.z + (Math.random() * 2 - 1) * 36;
     const bx = Math.floor(px), bz = Math.floor(pz);
     if (bx < -S || bx > S || bz < -S || bz > S) continue;
-    if (getBlock(bx, NETHER_FIRE_LEVEL, bz) === BLUEFIRE) {
+    if (getBlock(bx, NETHER_FIRE_LEVEL, bz) === LAVA) {
       const attr = emberPts.geometry.attributes.position;
       attr.array[i * 3] = bx + 0.5;
       attr.array[i * 3 + 1] = NETHER_FIRE_LEVEL + 0.6;
@@ -2781,7 +2781,7 @@ function updateNetherEmbers(dt, time) {
   attr.needsUpdate = true;
 }
 
-// Volcano eruption fountains: blue fire blobs belched from each volcano's
+// Volcano eruption fountains: lava blobs belched from each volcano's
 // crater, arcing high into the sky then splashing back down into the fire.
 const VOLCANO_EMBER_COUNT = 340;
 let volcanoPts = null;
@@ -5022,11 +5022,11 @@ let selected = 0;
 const hotbarEl = document.getElementById("hotbar");
 
 // The hotbar is dimension-aware: in the Nether and the End the Flower slot
-// holds GLOWSTONE and the Water slot holds blue lava; the Overworld keeps
+// holds GLOWSTONE and the Water slot holds lava; the Overworld keeps
 // flowers and water.
 function hotbarList() {
   if (dim === "nether" || dim === "end")
-    return [GRASS, DIRT, STONE, SAND, LOG, PLANKS, GLASS, LEAVES, BLUEFIRE, GLOWSTONE, TNT, PORTAL, OBSIDIAN];
+    return [GRASS, DIRT, STONE, SAND, LOG, PLANKS, GLASS, LEAVES, LAVA, GLOWSTONE, TNT, PORTAL, OBSIDIAN];
   return HOTBAR;
 }
 function rebuildHotbar() {
@@ -5281,10 +5281,10 @@ function loop(now) {
       for (const m of typeMats.get(WATER)) m.opacity = o;
     }
 
-    // Glowing blue-fire flicker
-    if (typeMats.has(BLUEFIRE)) {
-      const k = 0.9 + 0.1 * Math.sin(now * 0.005) * Math.sin(now * 0.0013 + 1);
-      for (const m of typeMats.get(BLUEFIRE)) m.color.setScalar(k);
+    // Glowing lava flicker
+    if (typeMats.has(LAVA)) {
+      const k = 1.1 + 0.15 * Math.sin(now * 0.005) * Math.sin(now * 0.0013 + 1);
+      for (const m of typeMats.get(LAVA)) m.color.setScalar(k);
     }
 
     const pcx = chunkOf(freeCam ? camPos.x : pos.x);
