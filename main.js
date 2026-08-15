@@ -1932,7 +1932,7 @@ function moveAxisY(dy) {
       if (vel.y > 0 && isSolid(bx, Math.floor(top), bz) && top > Math.floor(top)) { pos.y = Math.floor(top) - PLAYER_H - 0.001; vel.y = 0; return; }
       if (vel.y <= 0 && isSolid(bx, Math.floor(feet), bz)) { pos.y = Math.floor(feet) + 1 + 0.001; vel.y = 0; onGround = true; stepDown = false; flingActive = false; return; }
     }
-  if (vel.y < 0 && wasOnGround && !stepDown) {
+  if (vel.y < 0 && wasOnGround && !stepDown && !flingActive) {
     const fy = Math.floor(pos.y) - 1;
     for (let bx = Math.floor(pos.x - PLAYER_HW); bx <= Math.floor(pos.x + PLAYER_HW) && !stepDown; bx++)
       for (let bz = Math.floor(pos.z - PLAYER_HW); bz <= Math.floor(pos.z + PLAYER_HW); bz++)
