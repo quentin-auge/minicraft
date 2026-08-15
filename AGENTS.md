@@ -128,7 +128,11 @@ small Python server for saving/loading worlds.
   hotbar, drawn unlit via `basicFace` so it shines at full
   strength no matter how far you stand from it. It comes in six colours —
   green, red, blue, yellow, purple, turquoise (`GLOW_PALETTES`,
-  one tile texture per colour in `GLOW_TEX`); the block texture is lifted
+  one tile texture per colour in `GLOW_TEX`); each tile is a plain solid
+  square of its bright colour with a hairline one-pixel darker border
+  (`drawGlowMesh`),
+  clearly a glowing rock,
+  unlike the orange-blue lava; the block texture is lifted
   brighter so the unlit blocks read as glowing (`GLOW_LIFT` — only the dominant
   colour channels are lifted, so red/blue/purple stay saturated instead of
   washing out toward pink/grey; green gets half the lift since it already pops

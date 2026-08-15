@@ -128,14 +128,10 @@ const makeTex = (base, amount = 24) => canvasTex((ctx) => {
   pxNoise(ctx, base, amount);
 });
 function drawGlowMesh(ctx, p) {
-  ctx.fillStyle = p.base; ctx.fillRect(0, 0, 16, 16);
-  pxNoise(ctx, p.noise, 32);
-  ctx.fillStyle = p.bright;
-  for (let i = 0; i < 9; i++) ctx.fillRect(Math.random() * 15, Math.random() * 15, 1 + Math.random(), 1 + Math.random());
-  ctx.fillStyle = p.dark;
-  for (let i = 0; i < 5; i++) ctx.fillRect(Math.random() * 14, Math.random() * 14, 2, 2);
-  ctx.fillStyle = p.hi;
-  ctx.fillRect(6, 7, 2, 2); ctx.fillRect(11, 3, 1, 1); ctx.fillRect(4, 12, 1, 1);
+  ctx.fillStyle = p.bright; ctx.fillRect(0, 0, 16, 16);
+  const border = `rgb(${(p.noise[0] * 0.75) | 0},${(p.noise[1] * 0.75) | 0},${(p.noise[2] * 0.75) | 0})`;
+  ctx.strokeStyle = border; ctx.lineWidth = 0.5;
+  ctx.strokeRect(0, 0, 16, 16);
 }
 
 const TEX = {
@@ -260,7 +256,7 @@ const TEX = {
     ctx.fillStyle = "rgba(30,30,36,0.5)";
     for (let i = 0; i < 4; i++) ctx.fillRect(Math.random() * 14, Math.random() * 14, 3, 1);
   }),
-  glowstone: canvasTex((ctx) => drawGlowMesh(ctx, GLOW_PALETTES[0])),
+  glowstone: canvasTex((ctx) => drawGlowMesh(ctx, GLOW_PALETTES[3])),
   flower: canvasTex((ctx) => {
     const petals = ["rgb(232,30,52)", "rgb(56,106,252)", "rgb(248,188,16)", "rgb(16,204,186)", "rgb(244,132,34)", "rgb(160,80,224)", "rgb(232,30,52)", "rgb(56,106,252)"];
     ctx.clearRect(0, 0, 16, 16);
