@@ -5095,6 +5095,7 @@ async function buildWorld() {
     netherSeed = Math.floor(Math.random() * 100000);
     placedFlowers.clear();
     generateWorld();
+    flying = false;
     spawnPlayer();
     scanWorldPortals();
     rebuildMeshes();
