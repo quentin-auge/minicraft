@@ -2260,7 +2260,8 @@ function pickBlock(origin, dir, skipLiquid) {
   let tMaxZ = dir.z !== 0 ? ((stepZ > 0 ? Math.floor(origin.z) + 1 - origin.z : origin.z - Math.floor(origin.z)) / Math.abs(dir.z)) : Infinity;
   let face = [0, 0, 0];
 
-  for (let i = 0; i < 256; i++) {
+  for (let i = 0; i < 1024; i++) {
+    if (x < -WORLD_RADIUS || x > WORLD_RADIUS || z < -WORLD_RADIUS || z > WORLD_RADIUS || y < 0 || y > MAX_Y) break;
     const id = getBlock(x, y, z);
     if (id !== AIR && !(skipLiquid && (id === WATER || id === LAVA))) return { x, y, z, id, face };
     if (tMaxX < tMaxY && tMaxX < tMaxZ) {
@@ -2288,7 +2289,7 @@ scene.add(highlight);
 const ropeA = new THREE.Vector3(), ropeB = new THREE.Vector3();
 const grappleCubeGeo = new THREE.BoxGeometry(0.1, 0.1, 0.1);
 const grappleCubeMat = new THREE.MeshBasicMaterial({ color: 0x8a6d3b });
-const GRAPPLE_CUBES = 1100;
+const GRAPPLE_CUBES = 2600;
 const grappleCubes = new THREE.InstancedMesh(grappleCubeGeo, grappleCubeMat, GRAPPLE_CUBES);
 grappleCubes.frustumCulled = false;
 grappleCubes.visible = false;
