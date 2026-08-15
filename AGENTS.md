@@ -127,8 +127,8 @@ stays bright at distance, `placeable: true` so it
   `placeable: false`),
   GLOWSTONE (the multicolour portal block: solid, `placeable: true`, in the
   hotbar, drawn unlit via `basicFace` so it shines at full
-  strength no matter how far you stand from it. It comes in six colours —
-  green, red, blue, yellow, purple, turquoise (`GLOW_PALETTES`,
+   strength no matter how far you stand from it. It comes in seven colours —
+   green, red, blue, yellow, orange, purple, turquoise (`GLOW_PALETTES`,
   one tile texture per colour in `GLOW_TEX`); the texture is drawn by
   `drawGlowMesh` as classic packed-nugget crumbly cells — bright cells with
   thin dark seams and pale hot cores, clearly a solid glowing rock, unlike

@@ -45,6 +45,7 @@ const GLOW_RAW = [
   { base: [92, 16, 32],  bright: [255, 61, 92],  glow: 0xff3d5c, lift: GLOW_LIFT },                 // red
   { base: [40, 80, 255], bright: [140, 200, 255], glow: 0x3d8aff, flat: true },          // blue: vivid royal blue, drawn as-is (reworked from scratch)
   { base: [92, 74, 14],  bright: [255, 229, 61], glow: 0xffe53d, lift: GLOW_LIFT },                 // yellow
+  { base: [92, 50, 14],  bright: [255, 150, 30], glow: 0xff9620, lift: GLOW_LIFT },                 // orange
   { base: [58, 14, 92],  bright: [178, 61, 255], glow: 0xb23dff, lift: GLOW_LIFT, thresh: 0.7 },    // purple: only blue lifts, so it stays violet not pink
   { base: [0, 190, 215], bright: [150, 250, 255], glow: 0x00cdde, flat: true },         // turquoise: vivid blue-turquoise, drawn as-is
 ];
@@ -66,11 +67,10 @@ const GLOW_PALETTES = GLOW_RAW.map((p) => {
   };
 });
 const GLOW_VARIANT_COUNT = GLOW_PALETTES.length;
-// Saves from the seven-colour era (orange removed for good) map their stored
-// variant index onto the new six: red→red, blue→blue, green→green,
-// orange→yellow, turquoise→turquoise, yellow→yellow, purple→purple. Turquoise
-// is appended at the end, so existing five-colour v7 saves stay valid.
-const LEGACY_GLOW_MAP = [1, 2, 0, 3, 5, 3, 4];
+// Saves from the seven-colour era (orange was briefly removed) map their stored
+// variant index onto the current seven: red→red, blue→blue, green→green,
+// orange→orange, turquoise→turquoise, yellow→yellow, purple→purple.
+const LEGACY_GLOW_MAP = [1, 2, 0, 4, 6, 3, 5];
 
 // ---------------------------------------------------------------------------
 // Deterministic noise
