@@ -171,8 +171,14 @@ small Python server for saving/loading worlds.
   `AUTO_JUMP` hop when the touched block is exactly one high and clear —
   `tryStep` inspects the actual cell the footprint hits, so corners climb
   cleanly without deviating the line of travel; it only fires while on the
-  ground and moving into the block), and walking off a
-  1-block ledge glides down at constant `STEP_SPEED` instead of free-falling
+  ground and moving into the block). The same climb works out of water and
+  blue fire: while swimming (`inWater`) `tryStep` fires even without ground
+  contact (`stepFromWater`) when the blocking block is at or one above the
+  feet floor, lifting the player at just-enough velocity to clear the shore
+  (`sqrt(2*GRAVITY*…)`, min `AUTO_JUMP`) and coasting the hop with gravity
+  instead of buoyancy (`stepHop`), so you can simply swim back up onto a shore
+  at the same level — shallow water and netherrack beaches included. Walking
+  off a 1-block ledge glides down at constant `STEP_SPEED` instead of free-falling
   (`stepDown` triggers only when the ground was solid the previous frame and is
   exactly one block below — jumps and tall drops keep normal gravity).
 - **Editing**: pointer-raycast block pick (DDA), infinite reach (`REACH`), white

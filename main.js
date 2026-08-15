@@ -1851,6 +1851,7 @@ const camPos = new THREE.Vector3();
 let yaw = 0, pitch = 0;
 let onGround = false, flying = false, freeCam = false, locked = false;
 let stepDown = false, wasOnGround = false;
+let stepFromWater = false, stepHop = false;
 const keys = {};
 
 function spawnPlayer() {
@@ -1871,10 +1872,18 @@ function isSolid(x, y, z) {
 }
 
 function tryStep(bx, by, bz) {
-  if (!onGround || stepDown) return false;
-  if (by !== Math.floor(pos.y)) return false;
-  if (isSolid(bx, by + 1, bz) || isSolid(bx, by + 2, bz)) return false;
-  vel.y = AUTO_JUMP;
+  if (stepDown) return false;
+  if (!stepFromWater) {
+    if (!onGround) return false;
+    if (by !== Math.floor(pos.y)) return false;
+    if (isSolid(bx, by + 1, bz) || isSolid(bx, by + 2, bz)) return false;
+    vel.y = AUTO_JUMP;
+  } else {
+    if (by !== Math.floor(pos.y) && by !== Math.floor(pos.y) + 1) return false;
+    if (isSolid(bx, by + 1, bz) || isSolid(bx, by + 2, bz)) return false;
+    vel.y = Math.max(AUTO_JUMP, Math.sqrt(2 * GRAVITY * Math.max(0.1, by + 1.05 - pos.y)));
+    stepHop = true;
+  }
   onGround = false;
   stepDown = false;
   return true;
@@ -2110,6 +2119,8 @@ function updatePlayer(dt) {
 
   if (flying) {
     stepDown = false;
+    stepFromWater = false;
+    stepHop = false;
     const speed = FLY;
     if (move.lengthSq() > 0) move.normalize().multiplyScalar(speed);
     vel.x = move.x; vel.z = move.z;
@@ -2117,6 +2128,7 @@ function updatePlayer(dt) {
     flingActive = false;
   } else if (inWater) {
     stepDown = false;
+    stepFromWater = true;
     // Buoyancy: automatically float toward the surface, hold Space to swim up.
     // The depth bonus applies only while Space is held: +20% speed per 10 blocks
     // below the surface, capped at SWIM_MAX (100x base float speed). Releasing Space drops you back to float speed.
@@ -2124,18 +2136,25 @@ function updatePlayer(dt) {
     if (move.lengthSq() > 0) move.normalize().multiplyScalar(speed);
     vel.x += (move.x - vel.x) * Math.min(1, dt * 8);
     vel.z += (move.z - vel.z) * Math.min(1, dt * 8);
-    const surface = waterSurfaceTop();
-    const depth = surface === -Infinity ? 0 : Math.max(0, surface - (pos.y + 0.3));
-    const rise = Math.min(1 + 0.2 * (depth / 10), SWIM_MAX / SWIM_SPEED);
-    const target = keys["Space"] ? SWIM_SPEED * rise : FLOAT_SPEED;
-    if (keys["Space"]) {
-      vel.y += (target - vel.y) * Math.min(1, dt * 4);
-    } else if (vel.y > FLOAT_SPEED) {
-      vel.y = FLOAT_SPEED;
+    if (stepHop) {
+      vel.y -= GRAVITY * dt;
+      if (vel.y <= 0 || onGround) stepHop = false;
     } else {
-      vel.y += (FLOAT_SPEED - vel.y) * Math.min(1, dt * 4);
+      const surface = waterSurfaceTop();
+      const depth = surface === -Infinity ? 0 : Math.max(0, surface - (pos.y + 0.3));
+      const rise = Math.min(1 + 0.2 * (depth / 10), SWIM_MAX / SWIM_SPEED);
+      const target = keys["Space"] ? SWIM_SPEED * rise : FLOAT_SPEED;
+      if (keys["Space"]) {
+        vel.y += (target - vel.y) * Math.min(1, dt * 4);
+      } else if (vel.y > FLOAT_SPEED) {
+        vel.y = FLOAT_SPEED;
+      } else {
+        vel.y += (FLOAT_SPEED - vel.y) * Math.min(1, dt * 4);
+      }
     }
   } else {
+    stepFromWater = false;
+    stepHop = false;
     const sprint = sprintKey && move.lengthSq() > 0;
     const speed = sprint ? SPRINT : WALK;
     if (move.lengthSq() > 0) move.normalize().multiplyScalar(speed);
