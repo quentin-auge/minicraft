@@ -317,11 +317,11 @@ small Python server for saving/loading worlds.
   freezes the main thread (compositor animations survive the stall, hiding the
   hitch perfectly), then fades out (600 ms) over the freshly generated
   dimension.
-- **The Nether**: a hostile third dimension under a dark grey sky — a
+- **The Nether**: a hostile third dimension under a dark dusk sky — a
   big back-side sky dome (`skyDome`, follows the camera so the horizon never
-  moves, `fog: false` so it stays clear past the fog; deep grey zenith with
-  stars, lighter grey band and horizon) with a
-  pale grey sun disc (`netherSun`, orbits slowly as the dome rotates), plus
+  moves, `fog: false` so it stays clear past the fog; deep navy zenith with
+  stars, purple band and a red/orange glow at the horizon) with a
+  glowing orange sun disc (`netherSun`, orbits slowly as the dome rotates), plus
   `setDimensionEnv` neutral grey-white sun light and hemisphere fill and dark
   grey fog. The floor of the Nether is a huge lava lake: `netherLandHeight`
   (fbm island blobs on the fire line) keeps the terrain under `NETHER_FIRE_LEVEL`

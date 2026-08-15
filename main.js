@@ -1242,11 +1242,11 @@ scene.add(sun);
 const hemi = new THREE.HemisphereLight(0xbfd4ff, 0x5a6a4a, 0.75);
 scene.add(hemi);
 
-// The Nether sky: a big back-side dome painted with a dark grey
-// gradient (deep grey zenith with stars, lighter grey band and horizon)
-// plus a glowing sun disc, all following the camera so the horizon never
-// moves. It's only visible in the Nether; the other dimensions keep flat
-// background colours.
+// The Nether sky: a big back-side dome painted with a dark dusk gradient
+// (deep navy-blue zenith with stars, purple band, red/orange glow at the
+// horizon) plus a glowing orange sun disc, all following the camera so the
+// horizon never moves. It's only visible in the Nether; the other dimensions
+// keep flat background colours.
 const skyDome = new THREE.Mesh(
   new THREE.SphereGeometry(620, 32, 24),
   new THREE.MeshBasicMaterial({
@@ -1255,13 +1255,13 @@ const skyDome = new THREE.Mesh(
       c.width = c.height = 512;
       const ctx = c.getContext("2d");
       const g = ctx.createLinearGradient(0, 0, 0, 512);
-      g.addColorStop(0.0, "#1b1b1f");
-      g.addColorStop(0.38, "#2c2c32");
-      g.addColorStop(0.58, "#393940");
-      g.addColorStop(0.72, "#47474f");
-      g.addColorStop(0.84, "#5c5c66");
-      g.addColorStop(0.92, "#70707a");
-      g.addColorStop(1.0, "#1b1b1f");
+      g.addColorStop(0.0, "#0a1230");
+      g.addColorStop(0.38, "#1a1c5c");
+      g.addColorStop(0.58, "#3a2a92");
+      g.addColorStop(0.72, "#5a3a80");
+      g.addColorStop(0.84, "#b04a4a");
+      g.addColorStop(0.92, "#ff7a3a");
+      g.addColorStop(1.0, "#101a38");
       ctx.fillStyle = g; ctx.fillRect(0, 0, 512, 512);
       for (let i = 0; i < 110; i++) {
         ctx.fillStyle = `rgba(255,255,255,${0.35 + Math.random() * 0.6})`;
@@ -1282,7 +1282,7 @@ skyDome.visible = false;
 scene.add(skyDome);
 const netherSun = new THREE.Mesh(
   new THREE.CircleGeometry(55, 28),
-  new THREE.MeshBasicMaterial({ color: 0xcfcfd6, fog: false, depthWrite: false, transparent: true, opacity: 0.7 })
+  new THREE.MeshBasicMaterial({ color: 0xff8a2e, fog: false, depthWrite: false, transparent: true, opacity: 0.95 })
 );
 netherSun.position.set(0, 170, 500);
 skyDome.add(netherSun);
