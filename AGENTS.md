@@ -187,6 +187,40 @@ stays bright at distance, `placeable: true` so it
   exactly one block below — jumps and tall drops keep normal gravity).
 - **Editing**: pointer-raycast block pick (DDA), infinite reach (`REACH`), white
   `highlight` box on the targeted block. Left click places, right click breaks.
+  Holding either button chains the action after 1s
+  (`CHAIN_HOLD`, specified in the order added then removed) at `CHAIN_RATE` (10/s):
+  the `editHold` map tracks each button's down state and a per-frame timer until
+  `CHAIN_HOLD` elapses, then fires every `1/CHAIN_RATE` using `dt`. Holding right
+  digs a straight tunnel: each repeat breaks the live raycast `currentBlock`, so
+  removing one block exposes the next one behind it. Holding left grows a
+  straight walkable plateau staircase: the click that starts the hold anchors
+  `chainHome` where it landed (the block placed on the raycast target), and a
+  cursor advances one cell per repeat along the straight line to the current
+  feet cell (`feetDest`: the closest empty cell at the player's own feet level,
+  scanned `CHAIN_SCAN` up to 3 columns ahead along the yaw, refusing
+  player-overlapping cells; horizontal steps use the ray/grid crossing of
+  `lineStep`). Instead of climbing or descending on every block, the flight
+  splits into flat plateaus: the average run of a plateau is the horizontal
+  distance divided by the vertical distance to the feet (`avg`, recomputed each
+  repeat as the player moves, driving a `chainPlat` decrementing counter), so
+  the cursor stays level for a run of ~avg blocks then rises/falls one block
+  per plateau edge — every hop is the walkable 1-block rise/fall of the
+  auto-step. The cursor always
+  reaches the feet cell — the final block lands right in front of the player —
+  even when a cell along the way is blocked (the cursor skips on and the stairs
+  re-form); every placed cell lays its whole 2x2 `chainPad` (the cell plus its
+  `+x`/`+z` neighbours, with the trailing corner also filled on the diagonal
+  arrival cell), so the staircase is a solid 2x2 footprint with no holes
+  anywhere; when the average plateau would come out shorter than 1 block (the
+  flight is too steep — more vertical than horizontal — it can't be climbed),
+  the stairs become a spiral (`chainSpiral`): the cursor circles the anchor
+  column clockwise (`chainSpin` cycling the four headings), dropping one block
+  per turn, until the slope to the feet flattens and plateauing resumes. The
+  chain rate is not constant: after
+  `CHAIN_HOLD` elapses it fires at `CHAIN_RATE` and accelerates smoothly by
+  `CHAIN_ACCEL` blocks/s per second held (rate = `CHAIN_RATE + CHAIN_ACCEL *
+  held`, capped at `MAX_CHAIN_RATE`), driven by a per-button accumulator
+  (`editHold[b].acc`) that pops actions as often as the live rate requires.
 - **Grappling hook**: hold middle mouse click on the targeted block to fire a
   hook that first flies fast to the target (`GRAPPLE_THROW = 70`, while it
   flies you keep full control — you keep falling and moving, the rope follows

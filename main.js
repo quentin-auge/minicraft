@@ -2326,22 +2326,165 @@ function breakBlock() {
   queueSave();
 }
 function placeBlock(id) {
-  if (!currentBlock) return;
-  if (!BLOCK_INFO[id] || !BLOCK_INFO[id].placeable) return;
+  if (!currentBlock) return false;
   const [nx, ny, nz] = currentBlock.face;
   const px = currentBlock.x + nx, py = currentBlock.y + ny, pz = currentBlock.z + nz;
+  if (!tryPlace(id, px, py, pz)) return false;
+  chainHome = [px, py, pz];
+  chainPlat = null;
+  chainSpin = 0;
+  return true;
+}
+function tryPlace(id, px, py, pz) {
+  if (!BLOCK_INFO[id] || !BLOCK_INFO[id].placeable) return false;
   const target = getBlock(px, py, pz);
-  if (target !== AIR && !(target === id && (id === WATER || id === LAVA))) return;
+  if (target !== AIR && !(target === id && (id === WATER || id === LAVA))) return false;
   if (target === AIR) {
-    if (intersectsPlayer(px, py, pz)) return;
+    if (intersectsPlayer(px, py, pz)) return false;
     const under = getBlock(px, py - 1, pz);
-    if ((under === WATER || under === LAVA) && id !== under) return;
+    if ((under === WATER || under === LAVA) && id !== under) return false;
   }
   if (id === FLOWER) placedFlowers.set(key(px, py, pz), { v: randomFlowerVariant(), a: Math.random() * Math.PI * 2 });
   if (id === GLOWSTONE) worldGlowVariants.get(world).set(key(px, py, pz), glowVariantNear(px, py, pz));
   setBlock(px, py, pz, id);
   refreshBlocks([[px, py, pz]]);
   queueSave();
+  return true;
+}
+
+// Holding left/right click for a moment chains actions, accelerating smoothly
+// with each second the button stays held.
+const CHAIN_HOLD = 1.0;
+const CHAIN_RATE = 10;
+const CHAIN_ACCEL = 10;
+const MAX_CHAIN_RATE = 60;
+const CHAIN_SCAN = 3;
+const editHold = {
+  0: { down: false, t: 0, acc: 0 },
+  2: { down: false, t: 0, acc: 0 },
+};
+let chainHome = null;
+let chainPlat = null;
+let chainSpin = 0;
+// Closest empty cell at the player's own feet level, straight ahead.
+function feetDest() {
+  const dx = -Math.sin(yaw), dz = -Math.cos(yaw);
+  const feetY = Math.floor(pos.y);
+  for (let i = 1; i <= CHAIN_SCAN; i++) {
+    const cx = Math.round(pos.x + dx * i);
+    const cz = Math.round(pos.z + dz * i);
+    if (Math.abs(cx) > WORLD_RADIUS || Math.abs(cz) > WORLD_RADIUS) continue;
+    if (getBlock(cx, feetY, cz) !== AIR) continue;
+    if (intersectsPlayer(cx, feetY, cz)) continue;
+    return [cx, feetY, cz];
+  }
+  return null;
+}
+// Next grid cell along the straight ray from cell (fx,fy,fz) toward (dx,dy,dz).
+function lineStep(fx, fy, fz, dx, dy, dz) {
+  const len = Math.sqrt(dx * dx + dy * dy + dz * dz);
+  if (len < 1e-9) return null;
+  const ux = dx / len, uy = dy / len, uz = dz / len;
+  const tDx = ux === 0 ? Infinity : Math.abs(1 / ux);
+  const tDy = uy === 0 ? Infinity : Math.abs(1 / uy);
+  const tDz = uz === 0 ? Infinity : Math.abs(1 / uz);
+  let tMx = ux > 0 ? 0.5 / ux : ux < 0 ? 0.5 / -ux : Infinity;
+  let tMy = uy > 0 ? 0.5 / uy : uy < 0 ? 0.5 / -uy : Infinity;
+  let tMz = uz > 0 ? 0.5 / uz : uz < 0 ? 0.5 / -uz : Infinity;
+  let nx = fx, ny = fy, nz = fz;
+  if (tMy < tMx && tMy < tMz) ny += uy > 0 ? 1 : -1;
+  else if (tMz < tMx) nz += uz > 0 ? 1 : -1;
+  else nx += ux > 0 ? 1 : -1;
+  return [nx, ny, nz];
+}
+// Plateau staircase from the anchor toward the feet. Instead of climbing or
+// descending on every block, the flight splits into flat plateaus: the average
+// run of a plateau is the horizontal distance divided by the vertical
+// distance (averaged per flight and recomputed each repeat as the feet move).
+// The cursor advances one cell per repeat along the straight line to the feet
+// cell, staying level for a run of ~avg blocks, then rising/falling one block
+// per plateau edge, so every hop is the walkable 1-block rise/fall of the
+// auto-step; the final block always lands at the feet cell (even when a cell
+// along the way is blocked — the cursor skips on and the stairs re-form). Every
+// placed cell lays its whole 2x2 `chainPad` (the cell plus its `+x`/`+z`
+// neighbours) so the staircase is a solid 2x2 footprint with no holes
+// anywhere. If the average plateau would come out shorter than 1 block (the
+// flight is too steep — more vertical than horizontal), it builds a spiral
+// staircase instead (`chainSpiral`): the cursor circles the anchor column
+// clockwise, dropping one block per turn, until the slope to the feet
+// flattens and chainStep resumes normal plateauing.
+function chainStep() {
+  if (!chainHome) return;
+  const dest = feetDest();
+  if (!dest) return;
+  if (chainHome[0] === dest[0] && chainHome[1] === dest[1] && chainHome[2] === dest[2]) return;
+  let nx = chainHome[0], ny = chainHome[1], nz = chainHome[2];
+  const dx = dest[0] - nx, dy = dest[1] - ny, dz = dest[2] - nz;
+  const horiz = Math.hypot(dx, dz);
+  const vert = Math.abs(dy);
+  if (vert > 0 && horiz / vert < 1) {
+    chainSpiral(dest, nx, ny, nz);
+    return;
+  }
+  const avg = vert > 0 ? horiz / vert : 1;
+  if (chainPlat == null) chainPlat = avg;
+  else chainPlat = Math.min(chainPlat, avg);
+  const id = hotbarList()[selected];
+  const diag = dx !== 0 && dz !== 0;
+  if (diag) {
+    nx += dx > 0 ? 1 : -1;
+    nz += dz > 0 ? 1 : -1;
+  } else {
+    const px = nx, pz = nz;
+    if (dx !== 0 || dz !== 0) {
+      const h = lineStep(nx, ny, nz, dx, 0, dz);
+      nx = h[0];
+      nz = h[2];
+    }
+    if (nx === px && nz === pz) return;
+  }
+  if (vert > 0) {
+    chainPlat -= 1;
+    if (chainPlat < 1) {
+      if (ny > dest[1]) ny--;
+      else if (ny < dest[1]) ny++;
+      chainPlat += avg;
+    }
+  }
+  if (ny < 0 || ny > MAX_Y) return;
+  if (nx < -WORLD_RADIUS || nx > WORLD_RADIUS || nz < -WORLD_RADIUS || nz > WORLD_RADIUS) return;
+  chainHome = [nx, ny, nz];
+  chainPad(id, nx, ny, nz);
+  if (dx !== 0 && dz !== 0 && nx === dest[0] && nz === dest[2]) chainPad(id, nx - 1, ny, nz - 1);
+}
+// Lay the 2x2 footprint of the cell at (nx,ny,nz): the cell plus its +x and +z
+// neighbours, so every step is a solid 2x2 pad and consecutive pads overlap
+// into a hole-free staircase.
+function chainPad(id, nx, ny, nz) {
+  if (nx >= -WORLD_RADIUS && nx <= WORLD_RADIUS) {
+    if (nz >= -WORLD_RADIUS && nz <= WORLD_RADIUS) tryPlace(id, nx, ny, nz);
+    if (nz + 1 <= WORLD_RADIUS) tryPlace(id, nx, ny, nz + 1);
+  }
+  if (nx + 1 <= WORLD_RADIUS) {
+    if (nz >= -WORLD_RADIUS && nz <= WORLD_RADIUS) tryPlace(id, nx + 1, ny, nz);
+    if (nz + 1 <= WORLD_RADIUS) tryPlace(id, nx + 1, ny, nz + 1);
+  }
+}
+// Spiral staircase fallback: circle the anchor column clockwise, dropping one
+// block per turn, until the direct slope to the feet is gentle enough that
+// chainStep resumes normal plateauing.
+function chainSpiral(dest, nx, ny, nz) {
+  const dirs = [[1, 0], [0, -1], [-1, 0], [0, 1]];
+  const d = dirs[chainSpin % 4];
+  chainSpin = (chainSpin + 1) % 4;
+  nx += d[0];
+  nz += d[1];
+  if (ny > dest[1]) ny--;
+  else if (ny < dest[1]) ny++;
+  if (ny < 0 || ny > MAX_Y) return;
+  if (nx < -WORLD_RADIUS || nx > WORLD_RADIUS || nz < -WORLD_RADIUS || nz > WORLD_RADIUS) return;
+  chainHome = [nx, ny, nz];
+  chainPad(hotbarList()[selected], nx, ny, nz);
 }
 function intersectsPlayer(bx, by, bz) {
   return (
@@ -5100,11 +5243,24 @@ document.addEventListener("mousemove", (e) => {
 
 document.addEventListener("mousedown", (e) => {
   if (!locked || helpOpen || loading) return;
-  if (e.button === 0) placeBlock(hotbarList()[selected]);
+  if (e.button === 0 || e.button === 2) {
+    const h = editHold[e.button];
+    h.down = true;
+    h.t = 0;
+    h.acc = 0;
+    if (e.button === 0) placeBlock(hotbarList()[selected]);
+    else breakBlock();
+  }
   if (e.button === 1) { e.preventDefault(); fireGrapple(); }
-  if (e.button === 2) breakBlock();
 });
 document.addEventListener("mouseup", (e) => {
+  if (e.button === 0 || e.button === 2) {
+    const h = editHold[e.button];
+    h.down = false;
+    h.t = 0;
+    h.acc = 0;
+    if (e.button === 0) { chainHome = null; chainPlat = null; chainSpin = 0; }
+  }
   if (e.button !== 1 || loading) return;
   if (!grappleActive) return;
   if (grapplePulling) {
@@ -5232,6 +5388,29 @@ function loop(now) {
     }
     camera.rotation.set(pitch, yaw, 0);
     updateTarget();
+    if (locked) {
+      for (const b of [0, 2]) {
+        const h = editHold[b];
+        if (!h.down) continue;
+        h.t += dt;
+        const chained = h.t - CHAIN_HOLD;
+        if (chained < 0) continue;
+        const step = 1 / Math.min(MAX_CHAIN_RATE, CHAIN_RATE + CHAIN_ACCEL * chained);
+        h.acc += dt;
+        while (h.acc >= step) {
+          h.acc -= step;
+          if (b === 0) chainStep();
+          else breakBlock();
+        }
+      }
+    } else {
+      editHold[0].down = editHold[2].down = false;
+      editHold[0].t = editHold[2].t = 0;
+      editHold[0].acc = editHold[2].acc = 0;
+      chainHome = null;
+      chainPlat = null;
+      chainSpin = 0;
+    }
     if (grappleActive) {
       grappleCubes.visible = true;
       grappleHead.visible = true;
