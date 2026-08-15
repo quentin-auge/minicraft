@@ -2520,11 +2520,9 @@ function explodeTNT(x, y, z, pointBlank, homing = false) {
         }
         affected.push([gx, gy, gz]);
       }
-  if (affected.length) {
-    for (const [axc, ayc, azc] of affected) setBlock(axc, ayc, azc, AIR);
-    refreshBlocks([[bx, by, bz], ...affected]);
-    queueSave();
-  }
+  for (const [axc, ayc, azc] of affected) setBlock(axc, ayc, azc, AIR);
+  refreshBlocks([[bx, by, bz], ...affected]);
+  queueSave();
 }
 
 function spawnDragonDeath(cx, cy, cz) {
