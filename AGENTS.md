@@ -38,7 +38,7 @@ small Python server for saving/loading worlds.
   both persisted in saves. Land is ~79%; the ~15% water is carved as low-freq
   basins (`basinFreq`/`basinThresh`, per-world quantile) whose ocean-floor
   depth scales with `waterDepth` (`BASIN_SHORE`+`BASIN_DEPTH`). Each new world
-  randomly picks water size 1–4 (basin frequency ∝ 1/√scale) and depth 1–4
+  randomly picks water size 1–4 (basin frequency ∝ 1/√scale) and depth 1–3
   (from `seed` via `hash2`, recomputed in `generateWorld`). A few meandering
   rivers (`generateRivers`, seeded winding paths) cut 8–14 wide channels down to `RIVER_BED = 8` through the land. Underground, a catacombs
   network replaces the old caves: five long winding 3×3-square tunnels
@@ -167,12 +167,12 @@ stays bright at distance, `placeable: true` so it
   also glow). Each volcano is now **hollow**: after the tunnels are carved,
   `hollowVolcanoes` strips the deep rock so a solid cell is carved only when
   it lies more than `HOLLOW_SHELL` (2) steps of solid NETHERRACK/SOULSAND away
-  from any air — a bounded flood keeps the whole surface as a thick wall shell
-  (and a thick rock envelope around every tunnel and coulee, so no face that
+  from any air — a bounded flood keeps the whole surface as a thin wall shell
+  (and a thin rock envelope around every tunnel and coulee, so no face that
   was visible before becomes visible from outside) — and only outside a
   protected core cylinder (`craterR + 3`) that keeps the crater bowl, the lava
   shaft and the tunnel mouths intact. The cone interior is one big walkable
-  chamber wrapped in a 2-block wall; the player must dig through the thick
+  chamber wrapped in a 2-block wall; the player must dig through the thin
   shell to reach it. Stored-`AIR` (0) entries count as air for the carving
   (`volcanoAir`).)
   The **hotbar is dimension-aware** (`hotbarList`/`rebuildHotbar`): in the
@@ -450,11 +450,17 @@ stays bright at distance, `placeable: true` so it
   interior-facing flank to the very base without interruption
   (`volcanoCascades`, both course angles `flowAng`/`flowAng2` fixed near
   `toCentre` so they pour onto the platform's side; carved
-  straight off the volcano surface via `volcanoHeightAt`,
-  deepest near the rim
-  where they burst out, up to `CASCADE_MAX_THICK` (45) blocks thick —
-  `CASCADE_THICK_SCALE` (5) x sunk into the flank — thinning and widening downhill
-  into uneven tongues) and then keeps going past the cone's foot: each course
+  down the actual visible surface (the cone flank where it stands tall, the
+  island terrain where the cone is buried, via `volcanoHeightAt` and
+  `netherLandHeight`),
+  each course a `CASCADE_THICK` (5)-thick tongue down the surface — 1 block
+  sunk below the surface so the flow reads as carved into the volcano
+  wall, the rest standing proud so it reads thick from the outside, so every
+  run is an unbroken sheet of lava from the rim to the fire —
+  and `hollowVolcanoes` keeps a
+  1-block wall of rock against every lava cell (the whole outer cone wall is
+  `HOLLOW_SHELL`-thick, so the dug-in flow never breaches into the hollow
+  chamber) and then keeps going past the cone's foot: each course
   cuts a tapering trench through any island in its way down to fire level and
   floods it, so the coulees pour straight into the great lava lake),
   and a constant eruption fountain

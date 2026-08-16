@@ -772,7 +772,7 @@ function generateWorld() {
   glowstoneBlockSets.over.clear();
   glowVariants.over.clear();
   waterScale = 1 + (hash2(0, 0, seed + 333) * 4 | 0);
-  waterDepth = 1 + (hash2(0, 0, seed + 444) * 4 | 0);
+  waterDepth = 1 + (hash2(0, 0, seed + 444) * 3 | 0);
   basinFreq = 0.007 / Math.sqrt(waterScale);
   const vals = [];
   for (let x = -WORLD_RADIUS; x <= WORLD_RADIUS; x += 2)
@@ -871,8 +871,7 @@ function generateEnd() {
 const NETHER_FIRE_LEVEL = 12;
 const NETHER_RIVER_COUNT = 4;
 const HOLLOW_SHELL = 2;             // cone wall / tunnel envelope thickness kept when hollowing
-const CASCADE_THICK_SCALE = 5;      // how many x the lava cascade is sunk into the flank
-const CASCADE_MAX_THICK = 45;
+const CASCADE_THICK = 5;            // lava cascade depth: 1 block sunk + 4 proud of the flank
 let netherRiverPaths = [];
 let volcanoes = [];
 
@@ -1063,7 +1062,9 @@ function volcanoAir(w, x, y, z) {
 // steps of solid rock away from any air, so no exterior face is exposed and
 // the tunnels read exactly as they were, and only outside the protected core
 // cylinder that keeps the crater bowl, the lava shaft and the tunnel mouths
-// intact. The player must dig through the thick wall to reach the chamber.
+// intact. Any rock cell touching a LAVA cell is kept as a 1-block wall, so
+// the thick lava cascades and pours are hidden from the chamber interior.
+// The player must dig through the thick wall to reach the chamber.
 function hollowVolcanoes() {
   const w = worlds.nether;
   const S = WORLD_RADIUS;
@@ -1120,19 +1121,32 @@ function hollowVolcanoes() {
       }
       layer = next;
     }
-    for (const k of cells) if (!keep.has(k)) w.set(k, AIR);
+    for (const k of cells) {
+      if (keep.has(k)) continue;
+      const [x, y, z] = keyXYZ(k);
+      // Keep a 1-block wall of rock against every lava cell (cascades, crater
+      // and shaft pours), so the thick flows are hidden from the chamber.
+      if (w.get(key(x - 1, y, z)) === LAVA || w.get(key(x + 1, y, z)) === LAVA ||
+          w.get(key(x, y - 1, z)) === LAVA || w.get(key(x, y + 1, z)) === LAVA ||
+          w.get(key(x, y, z - 1)) === LAVA || w.get(key(x, y, z + 1)) === LAVA) continue;
+      w.set(k, AIR);
+    }
   }
 }
 
 // Big top-to-bottom lava flows down the interior-facing faces of each volcano:
 // a broad main coulee and a narrower side coulee spill out of the crater rim on
 // the side that overlooks the platform interior and run the whole way to the
-// very base without interruption, thickest right at the top where they burst
-// out (up to `CASCADE_MAX_THICK`, CASCADE_THICK_SCALE x sunk into the flank)
-// and tapering as they spread downhill into wide tongues. Carved straight
-// off the volcano surface, so they keep flowing over the tunnel mouths. Past
-// the cone's foot each course keeps cutting a narrow trench across any island
-// in its way until it reaches the great lava lake, so the fires pour into it.
+// very base without interruption. Each course is a CASCADE_THICK-thick tongue
+// down the visible surface (volcano flank where the cone rises, island terrain
+// where it doesn't) — 1 block sinks below the surface so the flow reads as
+// carved into the volcano wall, the rest stand proud so it reads thick from the
+// outside, so every run is an unbroken sheet of lava from the rim to the fire.
+// `hollowVolcanoes` keeps a 1-block shell of rock
+// against every lava cell, so the flow never breaches into the hollow chamber.
+// Past the cone's foot each course keeps cutting a narrow trench across any
+// island in its way until it reaches the great lava lake, so the fires pour
+// into it.
 function volcanoCascades() {
   const w = worlds.nether;
   const S = WORLD_RADIUS;
@@ -1142,15 +1156,12 @@ function volcanoCascades() {
   ];
   for (const v of volcanoes) {
     for (const course of courses(v)) {
-      const x0 = Math.max(-S, v.x - Math.ceil(v.radius) - 1);
-      const x1 = Math.min(S, v.x + Math.ceil(v.radius) + 1);
-      const z0 = Math.max(-S, v.z - Math.ceil(v.radius) - 1);
-      const z1 = Math.min(S, v.z + Math.ceil(v.radius) + 1);
-      const len = course.foot - v.craterR + 2;
+      const x0 = Math.max(-S, v.x - Math.ceil(course.foot) - 1);
+      const x1 = Math.min(S, v.x + Math.ceil(course.foot) + 1);
+      const z0 = Math.max(-S, v.z - Math.ceil(course.foot) - 1);
+      const z1 = Math.min(S, v.z + Math.ceil(course.foot) + 1);
       for (let x = x0; x <= x1; x++) {
         for (let z = z0; z <= z1; z++) {
-          const h = volcanoHeightAt(v, x, z);
-          if (h == null) continue;
           const dx = x - v.x, dz = z - v.z;
           const d = Math.hypot(dx, dz);
           if (d < v.craterR - 1 || d > course.foot) continue;
@@ -1158,16 +1169,18 @@ function volcanoCascades() {
           while (a > Math.PI) a -= Math.PI * 2;
           while (a < -Math.PI) a += Math.PI * 2;
           if (Math.abs(a) > course.half) continue;
-          const hy = Math.round(h);
+          // Follow the actual surface: the cone flank where it stands tall, the
+          // island terrain where the cone is buried, so the coulee keeps running
+          // downhill all the way to the foot instead of clipping into the rock.
+          const vh = volcanoHeightAt(v, x, z);
+          const surf = vh == null ? netherLandHeight(x, z) : Math.max(vh, netherLandHeight(x, z));
+          const hy = Math.round(surf);
           if (hy < 1) continue;
-          const t = (d - (v.craterR - 1)) / len;
-          let thick = 2 * CASCADE_THICK_SCALE + Math.round(course.mx * CASCADE_THICK_SCALE * (1 - t));
-          if (hash2(x, z, 88 + course.mx) < 0.16) thick += 2 * CASCADE_THICK_SCALE;
-          if (thick > CASCADE_MAX_THICK) thick = CASCADE_MAX_THICK;
-          for (let y = hy; y > hy - thick; y--) {
-            if (y < 1) continue;
-            w.set(key(x, y, z), LAVA);
-          }
+          // A CASCADE_THICK-thick tongue down the surface: 1 block sunk below
+          // the surface so the flow digs a little into the volcano wall, the
+          // rest standing proud so the flow reads thick from the outside.
+          for (let y = hy - 1; y <= hy + (CASCADE_THICK - 2); y++)
+            if (y >= 1 && y <= MAX_Y) w.set(key(x, y, z), LAVA);
         }
       }
       // Extend the course beyond the cone's foot towards the lake: cut a
