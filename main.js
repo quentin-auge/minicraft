@@ -5502,7 +5502,10 @@ document.addEventListener("keydown", (e) => {
   if (e.code === "KeyK" && !loading) select(selected - 1);
   if (e.code === "KeyL" && !loading) select(selected + 1);
   if (e.code === "KeyF" && dim !== "end") { freeCam = !freeCam; if (freeCam) camPos.copy(camera.position); else exitFreeCam(); }
-  if (e.code === "Escape") { if (saveName) saveToFile(); }
+  if (e.code === "Escape") {
+    if (saveName) saveToFile();
+    if (started && !locked && !loading) requestLock();
+  }
   if (["Space", "Tab", "ArrowUp", "ArrowDown"].includes(e.code)) e.preventDefault();
 });
 document.addEventListener("keyup", (e) => { keys[e.code] = false; });
