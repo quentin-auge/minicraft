@@ -1829,6 +1829,9 @@ const JUMP_FLING_DAMP = 0.15;
 const AIR_SPEED = 7.2;
 const AIR_STEER = 2.5;
 const STEP_SPEED = 5.5;
+const STEP_UP = 12;
+const STEP_UP_EASE = 0.03;
+const STEP_UP_MIN = 4;
 const AUTO_JUMP = 8.2;
 const GRAPPLE_SPEED = 26;
 const GRAPPLE_THROW = 70;
@@ -1855,6 +1858,7 @@ const camPos = new THREE.Vector3();
 let yaw = 0, pitch = 0;
 let onGround = false, flying = false, freeCam = false, locked = false;
 let stepDown = false, wasOnGround = false;
+let stepUp = false, stepUpClearY = 0;
 let stepFromWater = false, stepHop = false;
 let airT = 0;
 const keys = {};
@@ -1883,7 +1887,9 @@ function tryStep(bx, by, bz) {
     if (!onGround) return false;
     if (by !== Math.floor(pos.y)) return false;
     if (isSolid(bx, by + 1, bz) || isSolid(bx, by + 2, bz)) return false;
-    vel.y = AUTO_JUMP;
+    stepUp = true;
+    stepUpClearY = by + 1;
+    vel.y = STEP_UP;
   } else {
     if (by !== Math.floor(pos.y) && by !== Math.floor(pos.y) + 1) return false;
     if (isSolid(bx, by + 1, bz) || isSolid(bx, by + 2, bz)) return false;
@@ -1905,12 +1911,12 @@ function moveAxisX(dx) {
     for (let bz = Math.floor(pos.z - PLAYER_HW); bz <= Math.floor(pos.z + PLAYER_HW); bz++) {
       if (!isSolid(cellX, by, bz)) continue;
       if (dir > 0 && edge > cellX) {
-        tryStep(cellX, by, bz);
-        pos.x = cellX - PLAYER_HW - 0.001; vel.x = 0; return;
+        if (!tryStep(cellX, by, bz)) vel.x = 0;
+        pos.x = cellX - PLAYER_HW - 0.001; return;
       }
       if (dir < 0 && edge < cellX + 0.999) {
-        tryStep(cellX, by, bz);
-        pos.x = cellX + 1 + PLAYER_HW + 0.001; vel.x = 0; return;
+        if (!tryStep(cellX, by, bz)) vel.x = 0;
+        pos.x = cellX + 1 + PLAYER_HW + 0.001; return;
       }
     }
 }
@@ -1924,12 +1930,12 @@ function moveAxisZ(dz) {
     for (let bx = Math.floor(pos.x - PLAYER_HW); bx <= Math.floor(pos.x + PLAYER_HW); bx++) {
       if (!isSolid(bx, by, cellZ)) continue;
       if (dir > 0 && edge > cellZ) {
-        tryStep(bx, by, cellZ);
-        pos.z = cellZ - PLAYER_HW - 0.001; vel.z = 0; return;
+        if (!tryStep(bx, by, cellZ)) vel.z = 0;
+        pos.z = cellZ - PLAYER_HW - 0.001; return;
       }
       if (dir < 0 && edge < cellZ + 0.999) {
-        tryStep(bx, by, cellZ);
-        pos.z = cellZ + 1 + PLAYER_HW + 0.001; vel.z = 0; return;
+        if (!tryStep(bx, by, cellZ)) vel.z = 0;
+        pos.z = cellZ + 1 + PLAYER_HW + 0.001; return;
       }
     }
 }
@@ -1940,7 +1946,7 @@ function moveAxisY(dy) {
   for (let bx = Math.floor(pos.x - PLAYER_HW); bx <= Math.floor(pos.x + PLAYER_HW); bx++)
     for (let bz = Math.floor(pos.z - PLAYER_HW); bz <= Math.floor(pos.z + PLAYER_HW); bz++) {
       if (vel.y > 0 && isSolid(bx, Math.floor(top), bz) && top > Math.floor(top)) { pos.y = Math.floor(top) - PLAYER_H - 0.001; vel.y = 0; return; }
-      if (vel.y <= 0 && isSolid(bx, Math.floor(feet), bz)) { pos.y = Math.floor(feet) + 1 + 0.001; vel.y = 0; onGround = true; stepDown = false; flingActive = false; return; }
+      if (vel.y <= 0 && isSolid(bx, Math.floor(feet), bz)) { pos.y = Math.floor(feet) + 1 + 0.001; vel.y = 0; onGround = true; stepDown = false; stepUp = false; flingActive = false; return; }
     }
   if (vel.y < 0 && wasOnGround && !stepDown && !flingActive) {
     const fy = Math.floor(pos.y) - 1;
@@ -2125,6 +2131,7 @@ function updatePlayer(dt) {
 
   if (flying) {
     stepDown = false;
+    stepUp = false;
     stepFromWater = false;
     stepHop = false;
     const speed = FLY;
@@ -2134,6 +2141,7 @@ function updatePlayer(dt) {
     flingActive = false;
   } else if (inWater) {
     stepDown = false;
+    stepUp = false;
     stepFromWater = true;
     // Buoyancy: automatically float toward the surface, hold Space to swim up.
     // The depth bonus applies only while Space is held: +20% speed per 10 blocks
@@ -2172,7 +2180,7 @@ function updatePlayer(dt) {
       const sp = Math.hypot(vel.x, vel.z);
       if (sp > GRAPPLE_FLING) { vel.x *= GRAPPLE_FLING / sp; vel.z *= GRAPPLE_FLING / sp; }
       if (sp < 1) flingActive = false;
-    } else if (!onGround) {
+    } else if (!onGround && !stepUp) {
       // Airborne: steer gently toward the pressed direction; with no input the
       // launch momentum coasts and decays slowly.
       if (move.lengthSq() > 0) {
@@ -2187,7 +2195,26 @@ function updatePlayer(dt) {
       airT = 0;
       vel.x = move.x; vel.z = move.z;
     }
-    if (stepDown) {
+    if (stepUp) {
+      // Non-jumping one-block climb: the feet glide straight up, easing out as the
+      // step's top approaches, and land exactly on it (no arc, no overshoot) while
+      // walking/running continues without a hop or stall.
+      if (blockedBody(pos.x, pos.y + 0.99, pos.z)) {
+        stepUp = false;
+        vel.y = 0;
+      } else {
+        // Glide up steadily, easing out near the top, but never slower than
+        // STEP_UP_MIN so the climb always reaches and lands on the step.
+        const glide = Math.max(STEP_UP_MIN, Math.min(STEP_UP, (stepUpClearY - pos.y) / STEP_UP_EASE));
+        vel.y = glide;
+        if (pos.y + glide * dt >= stepUpClearY) {
+          pos.y = stepUpClearY;
+          vel.y = 0;
+          stepUp = false;
+          onGround = true;
+        }
+      }
+    } else if (stepDown) {
       vel.y = -STEP_SPEED;
     } else {
       vel.y -= GRAVITY * dt;
@@ -2202,7 +2229,7 @@ function updatePlayer(dt) {
         if (airT <= JUMP_BOOST_TIME) vel.y += JUMP_BOOST_ACCEL * dt;
       }
     }
-    if (keys["Space"] && onGround) { vel.y = JUMP_MIN; onGround = false; stepDown = false; }
+    if (keys["Space"] && onGround) { vel.y = JUMP_MIN; onGround = false; stepDown = false; stepUp = false; }
     if (vel.y < -40) vel.y = -40;
   }
   wasOnGround = onGround;

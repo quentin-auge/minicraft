@@ -191,12 +191,14 @@ stays bright at distance, `placeable: true` so it
   level) scans the spawn column from `MAX_Y` down (skipping CLOUD) and stands
   on the top solid found, so the player never settles inside hills, mesas or
   builds that rise above the old fixed 60-block scan ceiling.
-  Auto-steps are smooth: walking into a 1-block step auto-jumps (a tight
-  `AUTO_JUMP` hop when the touched block is exactly one high and clear —
-  `tryStep` inspects the actual cell the footprint hits, so corners climb
-  cleanly without deviating the line of travel; it only fires while on the
-  ground and moving into the block). The same climb works out of water and
-  lava: while swimming (`inWater`) `tryStep` fires even without ground
+  Auto-steps are smooth, not jumps: walking into a 1-block step auto-climbs (`tryStep`
+  inspects the actual cell the footprint hits, so corners climb cleanly without
+  deviating the line of travel; it only fires while on the ground and moving into the
+  block). The feet slide straight up at a fast constant `STEP_UP`, easing out as the
+  top approaches (`STEP_UP_EASE`), and land exactly on the step's top
+  (`stepUp`/`stepUpClearY`, no arc, no overshoot, gravity never takes over
+  mid-climb), so walking/running continues with no hop or stall; the same climb
+  works out of water and lava while swimming (`inWater`) `tryStep` fires even without ground
   contact (`stepFromWater`) when the blocking block is at or one above the
   feet floor, lifting the player at just-enough velocity to clear the shore
   (`sqrt(2*GRAVITY*…)`, min `AUTO_JUMP`) and coasting the hop with gravity
