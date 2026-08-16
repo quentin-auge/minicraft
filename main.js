@@ -870,6 +870,9 @@ function generateEnd() {
 // ---------------------------------------------------------------------------
 const NETHER_FIRE_LEVEL = 12;
 const NETHER_RIVER_COUNT = 4;
+const HOLLOW_SHELL = 2;             // cone wall / tunnel envelope thickness kept when hollowing
+const CASCADE_THICK_SCALE = 5;      // how many x the lava cascade is sunk into the flank
+const CASCADE_MAX_THICK = 45;
 let netherRiverPaths = [];
 let volcanoes = [];
 
@@ -1045,11 +1048,88 @@ function volcanoTunnels() {
   }
 }
 
+// A cell counts as air for the hollowing when it is missing from the world map
+// or stored as AIR (the generators leave 0-valued entries behind, e.g. bores).
+function volcanoAir(w, x, y, z) {
+  const id = w.get(key(x, y, z));
+  return id === undefined || id === AIR;
+}
+
+// Hollow out the volcano cone: strip the deep rock so each volcano is one big
+// walkable interior chamber while the exterior surface, the central lava
+// column and the 4x4 tunnel corridors are untouched. The cone keeps a thick
+// wall shell (`HOLLOW_SHELL`) and every tunnel/coulee keeps a thick rock
+// envelope: a solid cell is carved only when it lies more than `HOLLOW_SHELL`
+// steps of solid rock away from any air, so no exterior face is exposed and
+// the tunnels read exactly as they were, and only outside the protected core
+// cylinder that keeps the crater bowl, the lava shaft and the tunnel mouths
+// intact. The player must dig through the thick wall to reach the chamber.
+function hollowVolcanoes() {
+  const w = worlds.nether;
+  const S = WORLD_RADIUS;
+  for (const v of volcanoes) {
+    const minX = Math.max(-S, v.x - v.radius);
+    const maxX = Math.min(S, v.x + v.radius);
+    const minZ = Math.max(-S, v.z - v.radius);
+    const maxZ = Math.min(S, v.z + v.radius);
+    const R2 = v.radius * v.radius;
+    const coreR2 = (v.craterR + 3) * (v.craterR + 3);
+    const topAt = (x, z) =>
+      Math.min(MAX_Y, Math.max(1, Math.round(Math.max(netherLandHeight(x, z), volcanoHeightAt(v, x, z)))));
+    const solid = (x, y, z) => {
+      const id = w.get(key(x, y, z));
+      return id === NETHERRACK || id === SOULSAND;
+    };
+    const inRing = (dx, dz) => {
+      const d2 = dx * dx + dz * dz;
+      return d2 < R2 && d2 > coreR2;
+    };
+    // First pass: collect every solid ring cell; the ones that touch air (all
+    // exterior faces, tunnel bores and the like) seed the shell.
+    const cells = [];
+    const seeds = [];
+    for (let x = minX; x <= maxX; x++) {
+      for (let z = minZ; z <= maxZ; z++) {
+        const dx = x - v.x, dz = z - v.z;
+        if (!inRing(dx, dz)) continue;
+        const top = topAt(x, z);
+        for (let y = 1; y <= top; y++) {
+          if (!solid(x, y, z)) continue;
+          const k = key(x, y, z);
+          cells.push(k);
+          if (volcanoAir(w, x - 1, y, z) || volcanoAir(w, x + 1, y, z) ||
+              volcanoAir(w, x, y - 1, z) || volcanoAir(w, x, y + 1, z) ||
+              volcanoAir(w, x, y, z - 1) || volcanoAir(w, x, y, z + 1)) seeds.push(k);
+        }
+      }
+    }
+    // Bounded flood from the shell: everything the flood reaches within
+    // HOLLOW_SHELL steps of air is kept, the remaining deep rock is hollowed.
+    const keep = new Set(seeds);
+    let layer = seeds;
+    for (let d = 0; d < HOLLOW_SHELL - 1 && layer.length; d++) {
+      const next = [];
+      for (const k of layer) {
+        const [x, y, z] = keyXYZ(k);
+        if (solid(x - 1, y, z) && !keep.has(key(x - 1, y, z))) keep.add(key(x - 1, y, z)), next.push(key(x - 1, y, z));
+        if (solid(x + 1, y, z) && !keep.has(key(x + 1, y, z))) keep.add(key(x + 1, y, z)), next.push(key(x + 1, y, z));
+        if (solid(x, y - 1, z) && !keep.has(key(x, y - 1, z))) keep.add(key(x, y - 1, z)), next.push(key(x, y - 1, z));
+        if (solid(x, y + 1, z) && !keep.has(key(x, y + 1, z))) keep.add(key(x, y + 1, z)), next.push(key(x, y + 1, z));
+        if (solid(x, y, z - 1) && !keep.has(key(x, y, z - 1))) keep.add(key(x, y, z - 1)), next.push(key(x, y, z - 1));
+        if (solid(x, y, z + 1) && !keep.has(key(x, y, z + 1))) keep.add(key(x, y, z + 1)), next.push(key(x, y, z + 1));
+      }
+      layer = next;
+    }
+    for (const k of cells) if (!keep.has(k)) w.set(k, AIR);
+  }
+}
+
 // Big top-to-bottom lava flows down the interior-facing faces of each volcano:
 // a broad main coulee and a narrower side coulee spill out of the crater rim on
 // the side that overlooks the platform interior and run the whole way to the
 // very base without interruption, thickest right at the top where they burst
-// out and tapering as they spread downhill into wide tongues. Carved straight
+// out (up to `CASCADE_MAX_THICK`, CASCADE_THICK_SCALE x sunk into the flank)
+// and tapering as they spread downhill into wide tongues. Carved straight
 // off the volcano surface, so they keep flowing over the tunnel mouths. Past
 // the cone's foot each course keeps cutting a narrow trench across any island
 // in its way until it reaches the great lava lake, so the fires pour into it.
@@ -1081,9 +1161,9 @@ function volcanoCascades() {
           const hy = Math.round(h);
           if (hy < 1) continue;
           const t = (d - (v.craterR - 1)) / len;
-          let thick = 2 + Math.round(course.mx * (1 - t));
-          if (hash2(x, z, 88 + course.mx) < 0.16) thick += 2;
-          if (thick > 9) thick = 9;
+          let thick = 2 * CASCADE_THICK_SCALE + Math.round(course.mx * CASCADE_THICK_SCALE * (1 - t));
+          if (hash2(x, z, 88 + course.mx) < 0.16) thick += 2 * CASCADE_THICK_SCALE;
+          if (thick > CASCADE_MAX_THICK) thick = CASCADE_MAX_THICK;
           for (let y = hy; y > hy - thick; y--) {
             if (y < 1) continue;
             w.set(key(x, y, z), LAVA);
@@ -1214,6 +1294,7 @@ function generateNether() {
   fillVolcanoShafts();
   volcanoCascades();
   volcanoTunnels();
+  hollowVolcanoes();
 }
 
 // ---------------------------------------------------------------------------

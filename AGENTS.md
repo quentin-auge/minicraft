@@ -164,7 +164,17 @@ stays bright at distance, `placeable: true` so it
   and costs nothing in between (no per-frame world scan) —
   and it replaces FLOWER in the
   Nether/End hotbar; volcano door frames are built from it so tunnel mouths
-  also glow).
+  also glow). Each volcano is now **hollow**: after the tunnels are carved,
+  `hollowVolcanoes` strips the deep rock so a solid cell is carved only when
+  it lies more than `HOLLOW_SHELL` (2) steps of solid NETHERRACK/SOULSAND away
+  from any air — a bounded flood keeps the whole surface as a thick wall shell
+  (and a thick rock envelope around every tunnel and coulee, so no face that
+  was visible before becomes visible from outside) — and only outside a
+  protected core cylinder (`craterR + 3`) that keeps the crater bowl, the lava
+  shaft and the tunnel mouths intact. The cone interior is one big walkable
+  chamber wrapped in a 2-block wall; the player must dig through the thick
+  shell to reach it. Stored-`AIR` (0) entries count as air for the carving
+  (`volcanoAir`).)
   The **hotbar is dimension-aware** (`hotbarList`/`rebuildHotbar`): in the
   Nether and the End the Flower slot holds GLOWSTONE and the Water slot holds
   LAVA, while the Overworld keeps flowers and water; the hotbar is rebuilt
@@ -442,7 +452,8 @@ stays bright at distance, `placeable: true` so it
   `toCentre` so they pour onto the platform's side; carved
   straight off the volcano surface via `volcanoHeightAt`,
   deepest near the rim
-  where they burst out, up to 9 blocks thick, thinning and widening downhill
+  where they burst out, up to `CASCADE_MAX_THICK` (45) blocks thick —
+  `CASCADE_THICK_SCALE` (5) x sunk into the flank — thinning and widening downhill
   into uneven tongues) and then keeps going past the cone's foot: each course
   cuts a tapering trench through any island in its way down to fire level and
   floods it, so the coulees pour straight into the great lava lake),
