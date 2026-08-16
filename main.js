@@ -5386,6 +5386,18 @@ function closeHelp() {
   helpOpen = false;
   helpEl.style.display = "none";
 }
+let escLockPending = false;
+function resumeLockAfterEscape() {
+  if (escLockPending) return;
+  escLockPending = true;
+  const onUp = (e) => {
+    if (e.code !== "Escape") return;
+    escLockPending = false;
+    document.removeEventListener("keyup", onUp);
+    requestLock();
+  };
+  document.addEventListener("keyup", onUp);
+}
 function closeHelpAndResume() {
   closeHelp();
   helpCloseTime = Date.now();
@@ -5409,7 +5421,12 @@ const isTyping = (e) => {
 document.addEventListener("keydown", (e) => {
   if (loading || isTyping(e)) return;
   if (helpOpen) {
-    if (e.code === "Escape") { closeHelpAndResume(); e.preventDefault(); }
+    if (e.code === "Escape") {
+      closeHelp();
+      helpCloseTime = Date.now();
+      if (started) resumeLockAfterEscape();
+      e.preventDefault();
+    }
     return;
   }
   if (e.code === "KeyH" && !keys[e.code]) { openHelp(); e.preventDefault(); return; }
@@ -5421,7 +5438,7 @@ document.addEventListener("keydown", (e) => {
   if (e.code === "Escape") {
     if (started) {
       saveToFile();
-      if (!locked && !loading) requestLock();
+      if (!locked && !loading) resumeLockAfterEscape();
     }
   }
   if (["Space", "Tab", "ArrowUp", "ArrowDown"].includes(e.code)) e.preventDefault();
