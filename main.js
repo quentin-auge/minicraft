@@ -1862,6 +1862,7 @@ let onGround = false, flying = false, freeCam = false, locked = false;
 let stepDown = false, wasOnGround = false;
 let stepUp = false, stepUpClearY = 0;
 let stepFromWater = false, stepHop = false;
+let wasInWater = false;
 let airT = 0;
 const keys = {};
 
@@ -2138,6 +2139,8 @@ function updatePlayer(dt) {
   if (a) move.sub(right);
 
   const inWater = headInWater();
+  if (inWater && !wasInWater && vel.y < 0) vel.y *= 0.3;
+  wasInWater = inWater;
 
   if (flying) {
     stepDown = false;
