@@ -24,3 +24,7 @@ An internet connection is needed to load Three.js from the CDN.
 - **Grappling hook**: fly through worlds in one click
 - **TNT**: bomb stuff and kill the Ender Dragon
 - **Autosave**: don't loose your crafted worlds
+
+## Credits
+
+Opencode x DeepSeek V4 Flash
