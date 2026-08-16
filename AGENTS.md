@@ -184,8 +184,10 @@ stays bright at distance, `placeable: true` so it
   hold the higher you climb — a full hold reaches ~14 blocks, a tap barely
   leaves the ground. The thrust never works while falling, in water or flying.
   While airborne you can steer
-  gently toward the held movement keys at `AIR_SPEED` = 7.2 blended via
-  `AIR_STEER` = 2.5, and with no input the horizontal momentum coasts with a
+  gently toward the held movement keys — holding Shift steers toward a sprint
+  air speed (`SPRINT × AIR_SPRINT`, so sprinting jumps travel further), walking
+  stays at `WALK`, blended via `AIR_STEER` = 2.5, and with no input the
+  horizontal momentum coasts with a
   slow `JUMP_FLING_DAMP` (0.15) decay until you land.
   Respawn (`spawnPlayer`, used for new worlds, void falls and flying out of the
   level) scans the spawn column from `MAX_Y` down (skipping CLOUD) and stands

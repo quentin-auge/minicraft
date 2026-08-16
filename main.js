@@ -1826,7 +1826,7 @@ const JUMP_RAMP = 0.25;
 const JUMP_BOOST_ACCEL = 40;
 const JUMP_BOOST_TIME = 0.15;
 const JUMP_FLING_DAMP = 0.15;
-const AIR_SPEED = 7.2;
+const AIR_SPRINT = 1.35;
 const AIR_STEER = 2.5;
 const STEP_SPEED = 5.5;
 const STEP_UP = 12;
@@ -2185,8 +2185,11 @@ function updatePlayer(dt) {
       // launch momentum coasts and decays slowly.
       if (move.lengthSq() > 0) {
         const k = Math.min(1, AIR_STEER * dt);
-        vel.x += (move.x * (AIR_SPEED / speed) - vel.x) * k;
-        vel.z += (move.z * (AIR_SPEED / speed) - vel.z) * k;
+        // Sprinting jumps travel further: holding Shift while airborne steers
+        // toward a SPRINT-based air speed (with a bonus), walking stays at WALK.
+        const airTarget = (keys["ShiftLeft"] || keys["ShiftRight"]) ? SPRINT * AIR_SPRINT : WALK;
+        vel.x += (move.x * (airTarget / speed) - vel.x) * k;
+        vel.z += (move.z * (airTarget / speed) - vel.z) * k;
       } else {
         const damp = Math.max(0, 1 - JUMP_FLING_DAMP * dt);
         vel.x *= damp; vel.z *= damp;
