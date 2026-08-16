@@ -171,6 +171,10 @@ stays bright at distance, `placeable: true` so it
   on every dimension change, load and new world.)
 - **Player**: AABB collision, gravity, jump, walk/sprint, fly mode, swimming,
   free-cam (spectator). Third-person-style first-person camera, yaw/pitch.
+  Respawn (`spawnPlayer`, used for new worlds, void falls and flying out of the
+  level) scans the spawn column from `MAX_Y` down (skipping CLOUD) and stands
+  on the top solid found, so the player never settles inside hills, mesas or
+  builds that rise above the old fixed 60-block scan ceiling.
   Auto-steps are smooth: walking into a 1-block step auto-jumps (a tight
   `AUTO_JUMP` hop when the touched block is exactly one high and clear —
   `tryStep` inspects the actual cell the footprint hits, so corners climb
@@ -287,7 +291,9 @@ stays bright at distance, `placeable: true` so it
   terrain (`resolveSpawn`: a ring search from the recorded entry spot that
   requires full body clearance, solid ground under the feet, and no portal
   interior — so a build or blast at the old spot never leaves you stuck in a
-  wall, floating, or standing in another frame), flying is forbidden in the
+  wall, floating, or standing in another frame; its last-ditch fallback scans
+  the entry column from `MAX_Y` down (skipping CLOUD) and only lands on a top
+  solid with body clearance, so it never returns an embedded point), flying is forbidden in the
   End, and free-cam
   (F) is disabled there; you land just short of the return portal (cooldown +
   zeroed movement prevent an instant round-trip).

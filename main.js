@@ -1851,8 +1851,9 @@ let stepFromWater = false, stepHop = false;
 const keys = {};
 
 function spawnPlayer() {
-  for (let y = 60; y > 0; y--) {
-    if (getBlock(0, y, 0) !== AIR) {
+  for (let y = MAX_Y; y > 0; y--) {
+    if (getBlock(0, y, 0) === CLOUD) continue;
+    if (isSolid(0, y, 0)) {
       pos.set(0.5, y + 1.01, 0.5);
       break;
     }
@@ -3688,6 +3689,12 @@ function resolveSpawn(sx, sy, sz) {
         if (inPortalBody(px, py, pz)) continue;
         return { x: px, y: py, z: pz };
       }
+  }
+  for (let y = MAX_Y; y > 0; y--) {
+    const fx = Math.floor(sx), fz = Math.floor(sz);
+    if (getBlock(fx, y, fz) === CLOUD) continue;
+    if (isSolid(fx, y, fz) && bodyClear(fx + 0.5, y + 1.01, fz + 0.5) && !inPortalBody(fx + 0.5, y + 1.01, fz + 0.5))
+      return { x: fx + 0.5, y: y + 1.01, z: fz + 0.5 };
   }
   return { x: sx, y: sy, z: sz };
 }
