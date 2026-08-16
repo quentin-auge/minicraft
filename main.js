@@ -2159,7 +2159,7 @@ function updatePlayer(dt) {
     // keeps building the whole way up, then SWIM_AREA blocks before the
     // surface a steady deceleration (SWIM_BRAKE) settles you back to a calm
     // FLOAT_SPEED drift. Space does nothing in water.
-    const speed = 4.2;
+    const speed = (sprintKey && move.lengthSq() > 0) ? SPRINT : 4.2;
     if (move.lengthSq() > 0) move.normalize().multiplyScalar(speed);
     vel.x += (move.x - vel.x) * Math.min(1, dt * 8);
     vel.z += (move.z - vel.z) * Math.min(1, dt * 8);

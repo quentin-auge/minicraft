@@ -470,7 +470,8 @@ stays bright at distance, `placeable: true` so it
   `SWIM_MAX` 64 via `waterSurfaceTop`, never a rocket); `SWIM_AREA` 10
   blocks below the surface a steady deceleration — eased toward
   `FLOAT_SPEED` 1.8 at `SWIM_BRAKE` 1.5/s — settles you back to a calm
-  drift (no bob, Space does nothing in water), LAVA
+  drift (no bob, Space does nothing in water; holding Shift while swimming
+  sprints at `SPRINT` like on land), LAVA
   is placeable only onto another LAVA cell or directly on the fire above one,
   can't be removed, and TNT blasts never destroy
   LAVA. The Nether's auto-built return portal (`buildNetherPortal`, an obsidian
