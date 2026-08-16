@@ -1817,11 +1817,11 @@ function isExposed(x, y, z) {
 const PLAYER_HW = 0.3;
 const PLAYER_H = 1.8;
 const EYE = 1.62;
-const GRAVITY = 26;
+const GRAVITY = 31.2;
 const JUMP = 8.2;
 const WALK = 4.4, SPRINT = 7.2, FLY = 10;
 const STEP_SPEED = 5.5;
-const AUTO_JUMP = 7.5;
+const AUTO_JUMP = 8.2;
 const GRAPPLE_SPEED = 26;
 const GRAPPLE_THROW = 70;
 const GRAPPLE_FLING = 34;
