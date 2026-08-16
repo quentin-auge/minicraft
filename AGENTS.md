@@ -19,7 +19,7 @@ small Python server for saving/loading worlds.
 
 - `index.html` — full UI: stylesheet, overlay/menu (New World, Load Save),
   help panel (with portal diagram), HUD (crosshair, hotbar, dimension label,
-  boss bar, toast, autosave status), the Three.js import map.
+  boss bar, toast), the Three.js import map.
 - `main.js` — all game logic in one ES module, organized in sections:
   block definitions → procedural textures → world gen → renderer →
   instanced meshing → player physics → raycast/highlight → editing →
@@ -554,11 +554,16 @@ stays bright at distance, `placeable: true` so it
   and read past their torch entries. Saves older than v7 have their glowstone
   colours backfilled (clustered) on load, and v6 saves' stored seven-colour
   indices are remapped onto the six via `LEGACY_GLOW_MAP`.
-  Backends: File System Access API (`pickSaveFile`/`saveToFile`),
-  IndexedDB fallback, and the server API (`apiLoad`/`apiList`). Autosave
-  via `queueSave()`, world regen resets to new seeds (`regenerate`).
+  Backends: File System Access API (`pickSaveFile`/`saveToFile`) and the
+  server API (`apiLoad`/`apiList`) — world saves always go to disk (a `.sav`
+  file in `save/` via the server, or a user-picked file via the FS Access
+  API); nothing is ever kept in browser storage except the remembered
+  save-directory handle (`getSaveDir`/IDB key `savedir`). Autosave
+  runs every 3 s while the world is dirty (plus on pause/Escape and on page
+  hide), via `queueSave()` / the 3-second timer; world regen resets to new
+  seeds (`regenerate`).
 - **HUD/UI**: crosshair, hotbar with slot icons (wheel or K/L selects), dimension
-  label, toasts, autosave indicator; pause overlay (Resume/New
+  label, toasts; pause overlay (Resume/New
   World/Load Save) and H help panel (portal diagrams: `portalArt` for the
   horizontal End frame, `netherArt` for the 5×4 obsidian Nether frame).
   Loading a world

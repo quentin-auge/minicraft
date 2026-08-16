@@ -4612,16 +4612,14 @@ function updateEnderman(e, dt) {
 
 // ---------------------------------------------------------------------------
 // Save / load
-// Normal mode (run `python3 server.py`, open http://localhost:8383): every world is a
-// .sav file in save/ on disk, named when you press New World.
-// Fallback when opened straight from disk or a plain static server:
-// Chromium saves to a user-picked file; Firefox/Safari keep it in IndexedDB,
-// J exports it as .sav, Load imports one. Same binary format either way.
+// World saves always go to disk: with `python3 server.py` running, every world
+// is a .sav file in save/ on disk, named when you press New World; otherwise
+// Chromium writes to a user-picked file via the File System Access API. Same
+// binary format either way.
 // ---------------------------------------------------------------------------
 const SAVE_MAGIC = [0x4d, 0x49, 0x4e, 0x49, 0x43, 0x52, 0x41, 0x46, 0x54]; // "MINICRAFT"
 const fileMode = "showSaveFilePicker" in window && "showOpenFilePicker" in window;
 const fileDirOK = typeof window.showDirectoryPicker === "function";
-const hasIDB = typeof indexedDB !== "undefined";
 const apiOkPromise = fetch("api/worlds").then((r) => r.ok).catch(() => false);
 let apiOk = false;
 apiOkPromise.then((v) => { apiOk = v; });
@@ -4636,7 +4634,6 @@ function setLoading(on) {
   loading = on;
   if (loadingEl) loadingEl.style.display = on ? "flex" : "none";
 }
-const autosaveEl = document.getElementById("autosave");
 
 function dbOpen() {
   return new Promise((resolve, reject) => {
@@ -4645,36 +4642,6 @@ function dbOpen() {
     req.onsuccess = () => resolve(req.result);
     req.onerror = () => reject(req.error);
   });
-}
-async function storageSave(buf) {
-  const db = await dbOpen();
-  await new Promise((resolve, reject) => {
-    const tx = db.transaction("saves", "readwrite");
-    tx.objectStore("saves").put(buf, "autosave");
-    tx.oncomplete = resolve;
-    tx.onerror = () => reject(tx.error);
-  });
-  db.close();
-}
-async function storageLoad() {
-  const db = await dbOpen();
-  const buf = await new Promise((resolve, reject) => {
-    const req = db.transaction("saves", "readonly").objectStore("saves").get("autosave");
-    req.onsuccess = () => resolve(req.result || null);
-    req.onerror = () => reject(req.error);
-  });
-  db.close();
-  return buf;
-}
-async function storageClear() {
-  const db = await dbOpen();
-  await new Promise((resolve, reject) => {
-    const tx = db.transaction("saves", "readwrite");
-    tx.objectStore("saves").delete("autosave");
-    tx.oncomplete = resolve;
-    tx.onerror = () => reject(tx.error);
-  });
-  db.close();
 }
 
 function serialize() {
@@ -4865,21 +4832,7 @@ function deserialize(buf) {
 
 function canSave() {
   if (apiOk && saveName) return true;
-  return fileMode ? !!saveHandle : hasIDB;
-}
-
-function updateAutosaveEl() {
-  if (!autosaveEl) return;
-  if (apiOk) {
-    autosaveEl.textContent = saveName
-      ? "World: " + saveName + (lastManualSave ? " · saved " + new Date(lastManualSave).toLocaleTimeString() : "")
-      : "Start a world with New World";
-    return;
-  }
-  if (!fileMode && !hasIDB) autosaveEl.textContent = "Autosave: not supported in this browser";
-  else if (!canSave()) autosaveEl.textContent = started ? "No save file (press J)" : fileMode ? "Pick a save file when you start" : "Autosave: kept in your browser";
-  else if (lastManualSave) autosaveEl.textContent = "Saved " + new Date(lastManualSave).toLocaleTimeString();
-  else autosaveEl.textContent = fileMode ? "Save file: " + saveHandle.name : "Autosave: on (in browser)";
+  return fileMode && !!saveHandle;
 }
 
 function updateCamera() {
@@ -4930,16 +4883,6 @@ function showMsg(text) {
   toastEl.textContent = text;
   toastEl.style.opacity = "1";
   toastTimer = 2.6;
-}
-
-function downloadSave(buf) {
-  const blob = new Blob([buf], { type: "application/octet-stream" });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = "minicraft.sav";
-  a.click();
-  setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
 async function apiList() {
@@ -5077,13 +5020,7 @@ async function pickSaveFile() {
       try { await handle.requestPermission({ mode: "readwrite" }); } catch {}
       saveHandle = handle;
       await saveToFile();
-      updateAutosaveEl();
     } catch {}
-  } else if (hasIDB) {
-    try { await storageSave(serialize()); } catch {}
-    downloadSave(serialize());
-    lastManualSave = Date.now();
-    updateAutosaveEl();
   }
 }
 
@@ -5101,18 +5038,13 @@ async function saveToFile(opts = {}) {
       const writable = await saveHandle.createWritable();
       await writable.write(buf);
       await writable.close();
-    } else {
-      await storageSave(buf);
     }
     lastManualSave = Date.now();
-    updateAutosaveEl();
   } catch (e) {
     worldDirty = true;
-    if (autosaveEl) autosaveEl.textContent = apiOk
+    showMsg(apiOk
       ? "Save failed — run `python3 server.py` and open http://localhost:8383"
-      : fileMode
-        ? "Autosave failed (file deleted or permission revoked) — press J to pick a new file"
-        : "Autosave failed (storage unavailable)";
+      : "Save failed (file deleted or permission revoked) — pick a new save file");
   }
 }
 
@@ -5179,7 +5111,6 @@ async function loadSave() {
         saveName = normalizeWorldName(file.name) || file.name;
         await restoreSave(await file.arrayBuffer());
         await saveToFile();
-        updateAutosaveEl();
         return true;
       } catch { setLoading(false); return false; }
     }
@@ -5191,11 +5122,10 @@ async function loadSave() {
       setLoading(true);
       await restoreSave(await apiLoad(name));
       await saveToFile();
-      updateAutosaveEl();
       return true;
     } catch {
       setLoading(false);
-      if (autosaveEl) autosaveEl.textContent = "That file isn't a valid MiniCraft save.";
+      showMsg("That file isn't a valid MiniCraft save.");
       return false;
     }
   }
@@ -5210,7 +5140,6 @@ async function loadSave() {
       const file = await handle.getFile();
       await restoreSave(await file.arrayBuffer());
       await saveToFile();
-      updateAutosaveEl();
       return true;
     } catch { setLoading(false); return false; }
   }
@@ -5220,23 +5149,14 @@ async function loadSave() {
       setLoading(true);
       await restoreSave(picked.buf);
       await saveToFile();
-      updateAutosaveEl();
       return true;
     } catch {
       setLoading(false);
-      if (autosaveEl) autosaveEl.textContent = "That file isn't a valid MiniCraft save.";
+      showMsg("That file isn't a valid MiniCraft save.");
       return false;
     }
   }
-  const cached = await storageLoad();
-  if (cached) {
-    try {
-      await restoreSave(cached);
-      updateAutosaveEl();
-      return true;
-    } catch { return false; }
-  }
-  if (autosaveEl) autosaveEl.textContent = "No save found.";
+  showMsg("No save found.");
   return false;
 }
 
@@ -5303,11 +5223,9 @@ function queueSave() {
 
 function enterGame() {
   started = true;
-  updateAutosaveEl();
   overlay.style.display = "none";
   crosshair.style.display = "block";
   hotbarEl.style.display = "flex";
-  info.style.display = "block";
   resumeBtn.style.display = "none";
   requestLock();
   startLockPoll();
@@ -5332,7 +5250,7 @@ function requestLock() {
   if (p && p.catch) p.catch(() => {});
 }
 
-setInterval(() => { if (canSave() && started && worldDirty) saveToFile(); }, 10000);
+setInterval(() => { if (canSave() && started && worldDirty) saveToFile(); }, 3000);
 addEventListener("pagehide", () => { if (canSave()) saveToFile({ keepalive: true }); });
 document.addEventListener("visibilitychange", () => { if (document.hidden && canSave()) saveToFile({ keepalive: true }); });
 
@@ -5384,7 +5302,6 @@ document.addEventListener("wheel", (e) => { if (!loading) select(selected + (e.d
 // ---------------------------------------------------------------------------
 const overlay = document.getElementById("overlay");
 const crosshair = document.getElementById("crosshair");
-const info = document.getElementById("info");
 const resumeBtn = document.getElementById("btnResume");
 
 overlay.addEventListener("click", () => {
@@ -5411,7 +5328,6 @@ document.addEventListener("pointerlockchange", () => {
   overlay.style.display = locked ? "none" : "flex";
   crosshair.style.display = locked ? "block" : "none";
   hotbarEl.style.display = locked ? "flex" : "none";
-  info.style.display = locked ? "block" : "none";
   resumeBtn.style.display = (!locked && started) ? "block" : "none";
 });
 
@@ -5503,8 +5419,10 @@ document.addEventListener("keydown", (e) => {
   if (e.code === "KeyL" && !loading) select(selected + 1);
   if (e.code === "KeyF" && dim !== "end") { freeCam = !freeCam; if (freeCam) camPos.copy(camera.position); else exitFreeCam(); }
   if (e.code === "Escape") {
-    if (saveName) saveToFile();
-    if (started && !locked && !loading) requestLock();
+    if (started) {
+      saveToFile();
+      if (!locked && !loading) requestLock();
+    }
   }
   if (["Space", "Tab", "ArrowUp", "ArrowDown"].includes(e.code)) e.preventDefault();
 });
