@@ -1818,8 +1818,16 @@ const PLAYER_HW = 0.3;
 const PLAYER_H = 1.8;
 const EYE = 1.62;
 const GRAVITY = 31.2;
-const JUMP = 8.2;
 const WALK = 4.4, SPRINT = 7.2, FLY = 10;
+const JUMP_MIN = 8.2;
+const JUMP_HOLD_TIME = 0.7;
+const JUMP_THRUST = 45;
+const JUMP_RAMP = 0.25;
+const JUMP_BOOST_ACCEL = 40;
+const JUMP_BOOST_TIME = 0.15;
+const JUMP_FLING_DAMP = 0.15;
+const AIR_SPEED = 7.2;
+const AIR_STEER = 2.5;
 const STEP_SPEED = 5.5;
 const AUTO_JUMP = 8.2;
 const GRAPPLE_SPEED = 26;
@@ -1848,6 +1856,7 @@ let yaw = 0, pitch = 0;
 let onGround = false, flying = false, freeCam = false, locked = false;
 let stepDown = false, wasOnGround = false;
 let stepFromWater = false, stepHop = false;
+let airT = 0;
 const keys = {};
 
 function spawnPlayer() {
@@ -2163,15 +2172,37 @@ function updatePlayer(dt) {
       const sp = Math.hypot(vel.x, vel.z);
       if (sp > GRAPPLE_FLING) { vel.x *= GRAPPLE_FLING / sp; vel.z *= GRAPPLE_FLING / sp; }
       if (sp < 1) flingActive = false;
+    } else if (!onGround) {
+      // Airborne: steer gently toward the pressed direction; with no input the
+      // launch momentum coasts and decays slowly.
+      if (move.lengthSq() > 0) {
+        const k = Math.min(1, AIR_STEER * dt);
+        vel.x += (move.x * (AIR_SPEED / speed) - vel.x) * k;
+        vel.z += (move.z * (AIR_SPEED / speed) - vel.z) * k;
+      } else {
+        const damp = Math.max(0, 1 - JUMP_FLING_DAMP * dt);
+        vel.x *= damp; vel.z *= damp;
+      }
     } else {
+      airT = 0;
       vel.x = move.x; vel.z = move.z;
     }
     if (stepDown) {
       vel.y = -STEP_SPEED;
     } else {
       vel.y -= GRAVITY * dt;
+      // Hold Space to keep climbing: the thrust fades in smoothly from takeoff
+      // (no hard threshold), so a quick tap barely climbs while a hold engages
+      // immediately instead of after a dead delay.
+      if (!onGround && keys["Space"] && airT < JUMP_HOLD_TIME && vel.y > 0) {
+        airT += dt;
+        vel.y += JUMP_THRUST * Math.min(1, airT / JUMP_RAMP) * dt;
+        // Boost: extra upward acceleration for the first JUMP_BOOST_TIME of a
+        // jump, so takeoff kicks you up clearly instead of sagging.
+        if (airT <= JUMP_BOOST_TIME) vel.y += JUMP_BOOST_ACCEL * dt;
+      }
     }
-    if (keys["Space"] && onGround) { vel.y = JUMP; onGround = false; stepDown = false; }
+    if (keys["Space"] && onGround) { vel.y = JUMP_MIN; onGround = false; stepDown = false; }
     if (vel.y < -40) vel.y = -40;
   }
   wasOnGround = onGround;

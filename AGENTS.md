@@ -171,6 +171,22 @@ stays bright at distance, `placeable: true` so it
   on every dimension change, load and new world.)
 - **Player**: AABB collision, gravity, jump, walk/sprint, fly mode, swimming,
   free-cam (spectator). Third-person-style first-person camera, yaw/pitch.
+  Jumping is hold-powered, no charging:
+  a Space press while grounded is a plain regular jump (`JUMP_MIN` = 8.2), so a
+  quick tap is the same hop as always. Holding Space adds upward thrust
+  (`JUMP_THRUST` = 45) that fades in smoothly from takeoff
+  (ramped over `JUMP_RAMP` 0.25 s, so a quick tap barely climbs while a hold
+  engages immediately — no hard threshold, no dead delay) plus a takeoff
+  kick (`JUMP_BOOST_ACCEL` = 40 for the first `JUMP_BOOST_TIME` 0.15 s, so the
+  launch accelerates upward clearly instead of sagging) and keeps pushing
+  while airborne for up to `JUMP_HOLD_TIME`
+  (0.7 s) as long as you're still ascending (`vel.y > 0`), so the longer you
+  hold the higher you climb — a full hold reaches ~14 blocks, a tap barely
+  leaves the ground. The thrust never works while falling, in water or flying.
+  While airborne you can steer
+  gently toward the held movement keys at `AIR_SPEED` = 7.2 blended via
+  `AIR_STEER` = 2.5, and with no input the horizontal momentum coasts with a
+  slow `JUMP_FLING_DAMP` (0.15) decay until you land.
   Respawn (`spawnPlayer`, used for new worlds, void falls and flying out of the
   level) scans the spawn column from `MAX_Y` down (skipping CLOUD) and stands
   on the top solid found, so the player never settles inside hills, mesas or
