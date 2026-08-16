@@ -201,11 +201,12 @@ stays bright at distance, `placeable: true` so it
   (`stepUp`/`stepUpClearY`, no arc, no overshoot, gravity never takes over
   mid-climb), so walking/running continues with no hop or stall; the same climb
   works out of water and lava while swimming (`inWater`) `tryStep` fires even without ground
-  contact (`stepFromWater`) when the blocking block is at or one above the
-  feet floor, lifting the player at just-enough velocity to clear the shore
-  (`sqrt(2*GRAVITY*…)`, min `AUTO_JUMP`) and coasting the hop with gravity
-  instead of buoyancy (`stepHop`), so you can simply swim back up onto a shore
-  at the same level — shallow water and netherrack beaches included. Walking
+  contact (`stepFromWater`) when the blocking block is at the feet floor — the
+  player glides smoothly up onto the shore with the same `stepUp` raise, no
+  hop — so you can simply swim back up onto a shore
+  at the same level; a shore one block higher keeps the small coasting hop
+  via gravity (`stepHop`, `sqrt(2*GRAVITY*…)`, min `AUTO_JUMP`),
+  shallow water and netherrack beaches included. Walking
   off a 1-block ledge glides down at constant `STEP_SPEED` instead of free-falling
   (`stepDown` triggers only when the ground was solid the previous frame and is
   exactly one block below — jumps and tall drops keep normal gravity).

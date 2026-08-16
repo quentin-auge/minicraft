@@ -1895,8 +1895,16 @@ function tryStep(bx, by, bz) {
   } else {
     if (by !== Math.floor(pos.y) && by !== Math.floor(pos.y) + 1) return false;
     if (isSolid(bx, by + 1, bz) || isSolid(bx, by + 2, bz)) return false;
-    vel.y = Math.max(AUTO_JUMP, Math.sqrt(2 * GRAVITY * Math.max(0.1, by + 1.05 - pos.y)));
-    stepHop = true;
+    if (by === Math.floor(pos.y)) {
+      // Same-level shore climb: smooth glide up onto the block, no hop.
+      stepUp = true;
+      stepUpClearY = by + 1;
+      vel.y = STEP_UP;
+    } else {
+      // One-block-higher shore in water: keep the small hop.
+      vel.y = Math.max(AUTO_JUMP, Math.sqrt(2 * GRAVITY * Math.max(0.1, by + 1.05 - pos.y)));
+      stepHop = true;
+    }
   }
   onGround = false;
   stepDown = false;
@@ -2143,7 +2151,6 @@ function updatePlayer(dt) {
     flingActive = false;
   } else if (inWater) {
     stepDown = false;
-    stepUp = false;
     stepFromWater = true;
     // Buoyancy: a gentle linear speed-up deep underwater (SWIM_ACCEL) that
     // keeps building the whole way up, then SWIM_AREA blocks before the
@@ -2153,7 +2160,23 @@ function updatePlayer(dt) {
     if (move.lengthSq() > 0) move.normalize().multiplyScalar(speed);
     vel.x += (move.x - vel.x) * Math.min(1, dt * 8);
     vel.z += (move.z - vel.z) * Math.min(1, dt * 8);
-    if (stepHop) {
+    if (stepUp) {
+      // Same-level shore raise while swimming: glide straight up onto the
+      // block, easing out at the top, no hop — same as a ground step.
+      if (blockedBody(pos.x, pos.y + 0.99, pos.z)) {
+        stepUp = false;
+        vel.y = 0;
+      } else {
+        const glide = Math.max(STEP_UP_MIN, Math.min(STEP_UP, (stepUpClearY - pos.y) / STEP_UP_EASE));
+        vel.y = glide;
+        if (pos.y + glide * dt >= stepUpClearY) {
+          pos.y = stepUpClearY;
+          vel.y = 0;
+          stepUp = false;
+          onGround = true;
+        }
+      }
+    } else if (stepHop) {
       vel.y -= GRAVITY * dt;
       if (vel.y <= 0 || onGround) stepHop = false;
     } else {
