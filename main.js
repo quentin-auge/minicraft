@@ -3608,38 +3608,34 @@ const portalFillGeo = new THREE.BoxGeometry(0.98, 0.98, 0.98);
 const portalFillMatBlack = new THREE.MeshBasicMaterial({ color: 0x000000 });
 const portalFillMatPurple = new THREE.MeshBasicMaterial({ color: 0x9b30ff });
 
-function layoutPortalFill(group, win, nether) {
-  let i = 0;
-  const set = (x, y, z) => {
-    const m = group.children[i++];
-    m.visible = true;
-    m.position.set(x + 0.5, y + 0.5, z + 0.5);
-  };
+function portalFillCells(win, nether) {
+  const cells = [];
+  const push = (x, y, z) => cells.push([x, y, z]);
   if (win.orient === "v") {
     if (nether) {
       if (win.face === "x") {
         const cy = { "4x5": 3, "4x4": 2 }[win.dims] || 2;
         const cz = win.dims === "4x5" || win.dims === "4x4" ? 2 : 3;
         for (let y = win.minY + 1; y <= win.minY + cy; y++)
-          for (let z = win.minZ + 1; z <= win.minZ + cz; z++) set(win.minX, y, z);
+          for (let z = win.minZ + 1; z <= win.minZ + cz; z++) push(win.minX, y, z);
       } else if (win.dims === "4x5") {
         for (let y = win.minY + 1; y <= win.minY + 3; y++)
-          for (let x = win.minX + 1; x <= win.minX + 2; x++) set(x, y, win.minZ);
+          for (let x = win.minX + 1; x <= win.minX + 2; x++) push(x, y, win.minZ);
       } else if (win.dims === "4x4") {
         for (let y = win.minY + 1; y <= win.minY + 2; y++)
-          for (let x = win.minX + 1; x <= win.minX + 2; x++) set(x, y, win.minZ);
+          for (let x = win.minX + 1; x <= win.minX + 2; x++) push(x, y, win.minZ);
       } else {
         for (let y = win.minY + 1; y <= win.minY + 2; y++)
-          for (let x = win.minX + 1; x <= win.minX + 3; x++) set(x, y, win.minZ);
+          for (let x = win.minX + 1; x <= win.minX + 3; x++) push(x, y, win.minZ);
       }
     } else {
       const top = win.h === 4 ? win.minY + 2 : win.minY + 3;
       if (win.face === "x") {
         for (let y = win.minY + 1; y <= top; y++)
-          for (let z = win.minZ + 1; z <= win.minZ + 3; z++) set(win.minX, y, z);
+          for (let z = win.minZ + 1; z <= win.minZ + 3; z++) push(win.minX, y, z);
       } else {
         for (let y = win.minY + 1; y <= top; y++)
-          for (let x = win.minX + 1; x <= win.minX + 3; x++) set(x, y, win.minZ);
+          for (let x = win.minX + 1; x <= win.minX + 3; x++) push(x, y, win.minZ);
       }
     }
   } else {
@@ -3647,13 +3643,39 @@ function layoutPortalFill(group, win, nether) {
       const xw = win.dims === "4x5" ? 2 : 3;
       const xt = win.dims === "4x5" ? 3 : 2;
       for (let x = win.minX + 1; x <= win.minX + xw; x++)
-        for (let z = win.minZ + 1; z <= win.minZ + xt; z++) set(x, win.minY, z);
+        for (let z = win.minZ + 1; z <= win.minZ + xt; z++) push(x, win.minY, z);
     } else {
       for (let x = win.minX + 1; x <= win.minX + 3; x++)
-        for (let z = win.minZ + 1; z <= win.minZ + 3; z++) set(x, win.minY, z);
+        for (let z = win.minZ + 1; z <= win.minZ + 3; z++) push(x, win.minY, z);
     }
   }
+  return cells;
+}
+
+function layoutPortalFill(group, win, nether) {
+  let i = 0;
+  const set = (x, y, z) => {
+    const m = group.children[i++];
+    m.visible = true;
+    m.position.set(x + 0.5, y + 0.5, z + 0.5);
+  };
+  for (const [x, y, z] of portalFillCells(win, nether)) set(x, y, z);
   for (; i < group.children.length; i++) group.children[i].visible = false;
+}
+
+// A portal only fires when the player's actual body touches its fill blocks —
+// a ground (flat) portal never grabs you just because you jump over it, since
+// the fill is a thin slab at `win.minY` while the body hovers above it.
+function touchesPortalFill(f) {
+  const px = freeCam ? camPos.x : pos.x;
+  const py = freeCam ? camPos.y : pos.y;
+  const pz = freeCam ? camPos.z : pos.z;
+  for (const [x, y, z] of portalFillCells(f.win, f.nether)) {
+    if (px + PLAYER_HW > x && px - PLAYER_HW < x + 1 &&
+        py + PLAYER_H > y && py < y + 1 &&
+        pz + PLAYER_HW > z && pz - PLAYER_HW < z + 1) return true;
+  }
+  return false;
 }
 
 function ensurePortalFill(win, nether) {
@@ -3893,7 +3915,8 @@ function checkPortal() {
   if (dim === "end" && !endCleared) {
     const wE = scanEndPortal(bx, by, bz);
     const wN = scanNetherPortal(bx, by, bz);
-    if ((wE && insideEndInterior(wE, bx, by, bz)) || (wN && insideNetherInterior(wN, bx, by, bz))) {
+    const touched = (w, nether) => w && touchesPortalFill({ win: w, nether });
+    if (touched(wE, false) || touched(wN, true)) {
       const now = performance.now();
       if (now - dormantMsgAt > 3000) {
         dormantMsgAt = now;
@@ -3904,8 +3927,8 @@ function checkPortal() {
   }
   for (const f of portalFills.values()) {
     if (f.dim !== dim) continue;
+    if (!touchesPortalFill(f)) continue;
     if (f.nether) {
-      if (!insideNetherInterior(f.win, bx, by, bz)) continue;
       const forward = new THREE.Vector3(-Math.sin(yaw), 0, -Math.cos(yaw));
       const right = new THREE.Vector3(Math.cos(yaw), 0, -Math.sin(yaw));
       let ddx = 0, ddz = 0;
@@ -3924,7 +3947,6 @@ function checkPortal() {
       }
       return;
     } else {
-      if (!insideEndInterior(f.win, bx, by, bz)) continue;
       const forward = new THREE.Vector3(-Math.sin(yaw), 0, -Math.cos(yaw));
       const right = new THREE.Vector3(Math.cos(yaw), 0, -Math.sin(yaw));
       let ddx = 0, ddz = 0;

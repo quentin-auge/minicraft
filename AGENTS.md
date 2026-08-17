@@ -303,7 +303,11 @@ stays bright at distance, `placeable: true` so it
   `findEndWinNear`/`findNetherWinNear` scan both and pick the nearest window).
   End portals can be a flat 5×5 ring (4 sides, corners optional) or a vertical
   5×5/5×4 panel, both with black air interior plus solid black fill when
-  active; walk into their 3×3 interior to jump to the End. The End is freshly
+  active; walk into their 3×3 interior to jump to the End. A portal fires only
+  when the player's body actually touches its fill blocks
+  (`touchesPortalFill`: the fill cells from `portalFillCells`, AABB against the
+  player body), so a flat ground portal never grabs you just because you jump
+  over it — the fill is a thin slab while your feet hover above it. The End is freshly
   regenerated on every entry — builds are not kept, the dragon respawns at full
   health and the vertical 5×5 return portal (upright frame, `buildReturnPortal`)
   is always standing on the platform but the End is sealed until the dragon dies:
