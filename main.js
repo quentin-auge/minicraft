@@ -5535,6 +5535,10 @@ function loop(now) {
     if (freeCam) {
       updateFreeCam(dt);
       camera.position.copy(camPos);
+      // While flying, the build anchor follows the camera, so placing and
+      // breaking target live terrain and the hold-chain builds from where you
+      // actually are instead of the stale ground position.
+      pos.copy(camPos);
     } else {
       updatePlayer(dt);
       camera.position.set(pos.x, pos.y + EYE, pos.z);

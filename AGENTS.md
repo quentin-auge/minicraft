@@ -181,6 +181,9 @@ stays bright at distance, `placeable: true` so it
   on every dimension change, load and new world.)
 - **Player**: AABB collision, gravity, jump, walk/sprint, fly mode, swimming,
   free-cam (spectator). Third-person-style first-person camera, yaw/pitch.
+  While flying (F), the build anchor tracks the camera position, so placing and
+  breaking blocks works from the air just like on the ground and the hold-left
+  chain builds toward your airborne position instead of a stale ground spot.
   Jumping is hold-powered, no charging:
   a Space press while grounded is a plain regular jump (`JUMP_MIN` = 8.2), so a
   quick tap is the same hop as always. Holding Space adds upward thrust
