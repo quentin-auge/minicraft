@@ -489,12 +489,13 @@ stays bright at distance, `placeable: true` so it
   you can wade in from any direction; falling in is damped on entry —
   a downward plunge is damped on entry (`vel.y *= 0.3` on the first frame in water),
   so jumping into a lake barely dips beneath the surface; ascent is a gentle linear speed-up
-  deep underwater — `vel.y` +`SWIM_ACCEL` 1.0 blocks/s² each second, so the
+  deep underwater — `vel.y` +`SWIM_ACCEL` 2.0 blocks/s² each second, so the
   climb starts very slow and keeps building the whole way up (capped at
   `SWIM_MAX` 64 via `waterSurfaceTop`, never a rocket); `SWIM_AREA` 10
   blocks below the surface a steady deceleration — eased toward
-  `FLOAT_SPEED` 1.8 at `SWIM_BRAKE` 1.5/s — settles you back to a calm
-  drift (no bob, Space does nothing in water; holding Shift while swimming
+  `FLOAT_SPEED` 3.6 at `SWIM_BRAKE` 1.5/s — settles you back to a calm
+  drift (both the deep ascent `SWIM_ACCEL` 2.0 blocks/s² and the surface
+  `FLOAT_SPEED` are doubled speed, so rising to the surface is ~2x as fast; holding Shift while swimming
   sprints at `SPRINT` like on land), LAVA
   is placeable only onto another LAVA cell or directly on the fire above one,
   can't be removed, and TNT blasts never destroy

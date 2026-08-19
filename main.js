@@ -1930,8 +1930,8 @@ const AUTO_JUMP = 8.2;
 const GRAPPLE_SPEED = 26;
 const GRAPPLE_THROW = 70;
 const GRAPPLE_FLING = 34;
-const FLOAT_SPEED = 1.8;
-const SWIM_ACCEL = 1.0;
+const FLOAT_SPEED = 3.6;
+const SWIM_ACCEL = 2.0;
 const SWIM_AREA = 10;
 const SWIM_BRAKE = 1.5;
 const SWIM_MAX = 64;
@@ -2249,10 +2249,11 @@ function updatePlayer(dt) {
   } else if (inWater) {
     stepDown = false;
     stepFromWater = true;
-    // Buoyancy: a gentle linear speed-up deep underwater (SWIM_ACCEL) that
-    // keeps building the whole way up, then SWIM_AREA blocks before the
-    // surface a steady deceleration (SWIM_BRAKE) settles you back to a calm
-    // FLOAT_SPEED drift. Space does nothing in water.
+    // Buoyancy: a linear speed-up deep underwater (SWIM_ACCEL) that keeps
+    // building the whole way up, then SWIM_AREA blocks before the surface a
+    // steady deceleration (SWIM_BRAKE) settles you back to a calm FLOAT_SPEED
+    // drift. Both the deep accel and the surface drift are doubled speed.
+    // Space does nothing in water.
     const speed = (sprintKey && move.lengthSq() > 0) ? SPRINT : 4.2;
     if (move.lengthSq() > 0) move.normalize().multiplyScalar(speed);
     vel.x += (move.x - vel.x) * Math.min(1, dt * 8);
