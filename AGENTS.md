@@ -179,7 +179,7 @@ stays bright at distance, `placeable: true` so it
   Nether and the End the Flower slot holds GLOWSTONE and the Water slot holds
   LAVA, while the Overworld keeps flowers and water; the hotbar is rebuilt
   on every dimension change, load and new world.)
-- **Player**: AABB collision, gravity, jump, walk/sprint, fly mode, swimming,
+- **Player**: AABB collision, gravity (`GRAVITY = 37.44`, +20% twice), jump, walk/sprint, fly mode, swimming,
   free-cam (spectator). Third-person-style first-person camera, yaw/pitch.
   While flying (F), the build anchor tracks the camera position, so placing and
   breaking blocks works from the air just like on the ground and the hold-left
@@ -201,7 +201,7 @@ stays bright at distance, `placeable: true` so it
   air speed (`SPRINT × AIR_SPRINT`, so sprinting jumps travel further), walking
   stays at `WALK`, blended via `AIR_STEER` = 2.5, and with no input the
   horizontal momentum coasts with a
-  slow `JUMP_FLING_DAMP` (0.15) decay until you land.
+  slow `JUMP_FLING_DAMP` (6) decay until you land (jump inertia `jumpBoost` stacks on consecutive sprint jumps, `jumpIdle` resets when stalled or idle 0.12s). Coyote time (`coyote` 0.18s) and jump buffer (`jumpBuffer` 0.25s) allow forgiving ground jumps (`prevSpace`/`spaceNow` tracking, `spaceJustPressed`/`spaceJustReleased` halves upward velocity on early release). Rebound on water: falling into water while holding Space while a recent jump is tracked (`jumpOriginY`/`jumpPeakY`/`lastSpaceDownY`/`jumpHoldContinuous`) bounces back to that height (`waterSurfaceTop` delta → `sqrt(2*GRAVITY*delta)`, sprint-boosted, `bounced` flag) instead of damping. Swimming ascent is doubled (`SWIM_ACCEL` 2.0, `FLOAT_SPEED` 3.6) with `SWIM_AREA`/`SWIM_BRAKE` surface easing. Debug HUD (`#debugHud`) shows pos/vel/onGround.
   Respawn (`spawnPlayer`, used for new worlds, void falls and flying out of the
   level) scans the spawn column from `MAX_Y` down (skipping CLOUD) and stands
   on the top solid found, so the player never settles inside hills, mesas or
@@ -209,7 +209,7 @@ stays bright at distance, `placeable: true` so it
   Auto-steps are smooth, not jumps: walking into a 1-block step auto-climbs (`tryStep`
   inspects the actual cell the footprint hits, so corners climb cleanly without
   deviating the line of travel; it only fires while on the ground and moving into the
-  block). The feet slide straight up at a fast constant `STEP_UP`, easing out as the
+  block; `tryStep` now checks only `isSolid(bx,by+1)` so a 2-high ceiling is climbable and `stepUp` no longer aborts on `blockedBody`). The feet slide straight up at a fast constant `STEP_UP`, easing out as the
   top approaches (`STEP_UP_EASE`), and land exactly on the step's top
   (`stepUp`/`stepUpClearY`, no arc, no overshoot, gravity never takes over
   mid-climb), so walking/running continues with no hop or stall; the same climb
@@ -224,43 +224,35 @@ stays bright at distance, `placeable: true` so it
   (`stepDown` triggers only when the ground was solid the previous frame and is
   exactly one block below — jumps and tall drops keep normal gravity).
 - **Editing**: pointer-raycast block pick (DDA), infinite reach (`REACH`), white
-  `highlight` box on the targeted block. Left click places, right click breaks.
-  Holding either button chains the action after 1s
+  `highlight` box on the targeted block. Left click places, right click breaks (both work while flying — build anchor tracks camera). Holding either button chains the action after 1s
   (`CHAIN_HOLD`, specified in the order added then removed) at `CHAIN_RATE` (10/s):
   the `editHold` map tracks each button's down state and a per-frame timer until
   `CHAIN_HOLD` elapses, then fires every `1/CHAIN_RATE` using `dt`. Holding right
   digs a straight tunnel: each repeat breaks the live raycast `currentBlock`, so
   removing one block exposes the next one behind it. Holding left grows a
-  straight walkable plateau staircase: the click that starts the hold anchors
+  straight walkable staircase: the click that starts the hold anchors
   `chainHome` where it landed (the block placed on the raycast target), and a
   cursor advances one cell per repeat along the straight line to the current
-  feet cell (`feetDest`: the grid cell exactly one step ahead of the player at
-  feet level, so the flight always lands one block in front of the feet and
-  from a cliff edge it prolongs the terrain straight out at foot level;
+  feet cell (`feetDest`: at most 2 blocks ahead of the player at foot level —
+  normally 1 block ahead, but when within 1-2 blocks of a cliff edge it
+  bridges straight out at foot level with no gap, otherwise it lands at most
+  2 blocks from the player;
   horizontal steps use the ray/grid crossing of
-  `lineStep`). Instead of climbing or descending on every block, the flight
-  splits into flat plateaus: the average run of a plateau is the horizontal
-  distance divided by the vertical distance to the feet (`avg`, recomputed each
-  repeat as the player moves, driving a `chainPlat` decrementing counter), so
-  the cursor stays level for a run of ~avg blocks then rises/falls one block
-  per plateau edge — every hop is the walkable 1-block rise/fall of the
-  auto-step. The cursor always
+  `lineStep`). The flight is always 1-block high per step at a time (no plateau averaging — every horizontal move that still has vertical distance moves 1 vertical toward `dest`), so every hop is the walkable 1-block rise/fall of the
+  auto-step, solid wedged (ascending fills at new pos at old height, descending fills at old pos at new height, via `oldX`/`oldY`/`oldZ` tracking, so the wedge is solid with no gap at the cliff edge) and diagonal moves fill the corner. The cursor always
   reaches the feet cell — when within 1 block horizontally and vertically,
   the final block snaps directly to the feet position — even when a cell along
   the way is blocked (the cursor skips on and the stairs re-form); every placed
   cell lays its whole 2x2 `chainPad` (the cell plus its
   `+x`/`+z` neighbours, with the trailing corner also filled on the diagonal
   arrival cell), so the staircase is a solid 2x2 footprint with no holes
-  anywhere; when the average plateau would come out shorter than 1 block (the
-  flight is too steep — more vertical than horizontal — it can't be climbed),
-  the stairs become a spiral (`chainSpiral`): the cursor circles the anchor
-  column clockwise (`chainSpin` cycling the four headings), dropping one block
-  per turn, until the slope to the feet flattens and plateauing resumes. The
+  anywhere; when the vertical is steeper than horizontal (`horiz/vert <1`), the
+  stairs become a spiral (`chainSpiral`): central 1-block column with 2×3 pinwheel tread (2 deep radial ×3 wide tangential, `dirs`/`perps` rotated 90°, `chainSpin` clockwise) winding clockwise, each tread with 2-high railings in the same material as the stairs (5 outer cells beyond the tread at `ny` and `ny+1` via `wallOffs`), dropping one block per turn, until the slope flattens and `chainStep` resumes. The
   chain rate is not constant: after
   `CHAIN_HOLD` elapses it fires at `CHAIN_RATE` and accelerates smoothly by
   `CHAIN_ACCEL` blocks/s per second held (rate = `CHAIN_RATE + CHAIN_ACCEL *
   held`, capped at `MAX_CHAIN_RATE`), driven by a per-button accumulator
-  (`editHold[b].acc`) that pops actions as often as the live rate requires.
+  (`editHold[b].acc`) that pops actions as often as the live rate requires. A portal fires only when the player's body actually touches its fill (`touchesPortalFill`), not when jumping over it, and volcanos' walls & cascade thickness were reworked (`HOLLOW_SHELL`/`CASCADE_THICK`).
 - **Grappling hook**: hold middle mouse click on the targeted block to fire a
   hook that first flies fast to the target (`GRAPPLE_THROW = 70`, while it
   flies you keep full control — you keep falling and moving, the rope follows
