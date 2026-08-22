@@ -1919,7 +1919,7 @@ const JUMP_THRUST = 45;
 const JUMP_RAMP = 0.25;
 const JUMP_BOOST_ACCEL = 40;
 const JUMP_BOOST_TIME = 0.15;
-const JUMP_FLING_DAMP = 0.15;
+const JUMP_FLING_DAMP = 6;
 const AIR_SPRINT = 1.35;
 const AIR_STEER = 2.5;
 const STEP_SPEED = 5.5;
@@ -1958,6 +1958,9 @@ let stepUp = false, stepUpClearY = 0;
 let stepFromWater = false, stepHop = false;
 let wasInWater = false;
 let airT = 0;
+let jumpBoost = 1;
+let jumpCount = 0;
+let jumpIdle = 0;
 const keys = {};
 
 function spawnPlayer() {
@@ -2086,6 +2089,8 @@ function fireGrapple() {
   grapplePulling = false;
   grapplePass = true;
   grappleActive = true;
+  jumpCount = 1;
+  jumpIdle = 0;
   stepDown = false;
 }
 
@@ -2247,6 +2252,7 @@ function updatePlayer(dt) {
     vel.y = (keys["Space"] ? speed : 0) - (sprintKey ? speed : 0);
     flingActive = false;
   } else if (inWater) {
+    if (jumpBoost > 1) { jumpBoost = 1; jumpCount = 0; jumpIdle = 0; }
     stepDown = false;
     stepFromWater = true;
     // Buoyancy: a linear speed-up deep underwater (SWIM_ACCEL) that keeps
@@ -2295,7 +2301,8 @@ function updatePlayer(dt) {
     stepFromWater = false;
     stepHop = false;
     const sprint = sprintKey && move.lengthSq() > 0;
-    const speed = sprint ? SPRINT : WALK;
+    const baseSpeed = sprint ? SPRINT : WALK;
+    const speed = Math.min(baseSpeed * jumpBoost, WALK * 3);
     if (move.lengthSq() > 0) move.normalize().multiplyScalar(speed);
     if (flingActive) {
       vel.x += move.x * 4.0 * dt;
@@ -2304,24 +2311,29 @@ function updatePlayer(dt) {
       vel.x *= damp; vel.z *= damp;
       const sp = Math.hypot(vel.x, vel.z);
       if (sp > GRAPPLE_FLING) { vel.x *= GRAPPLE_FLING / sp; vel.z *= GRAPPLE_FLING / sp; }
-      if (sp < 1) flingActive = false;
+      if (sp < 1) { flingActive = false; }
     } else if (!onGround && !stepUp) {
-      // Airborne: steer gently toward the pressed direction; with no input the
-      // launch momentum coasts and decays slowly.
       if (move.lengthSq() > 0) {
         const k = Math.min(1, AIR_STEER * dt);
-        // Sprinting jumps travel further: holding Shift while airborne steers
-        // toward a SPRINT-based air speed (with a bonus), walking stays at WALK.
-        const airTarget = (keys["ShiftLeft"] || keys["ShiftRight"]) ? SPRINT * AIR_SPRINT : WALK;
+        const curSpd = Math.hypot(vel.x, vel.z);
+        const airTarget = Math.max(curSpd, Math.min(baseSpeed * AIR_SPRINT * jumpBoost, WALK * 3));
         vel.x += (move.x * (airTarget / speed) - vel.x) * k;
         vel.z += (move.z * (airTarget / speed) - vel.z) * k;
       } else {
-        const damp = Math.max(0, 1 - JUMP_FLING_DAMP * dt);
+        const dampVal = jumpBoost > 1 ? 0.08 : JUMP_FLING_DAMP;
+        const damp = Math.max(0, 1 - dampVal * dt);
         vel.x *= damp; vel.z *= damp;
       }
     } else {
       airT = 0;
-      vel.x = move.x; vel.z = move.z;
+      if (move.lengthSq() > 0) {
+        vel.x += (move.x - vel.x) * Math.min(1, dt * 12);
+        vel.z += (move.z - vel.z) * Math.min(1, dt * 12);
+      } else {
+        const fr = jumpBoost > 1 ? 0.9 : 5;
+        const friction = Math.max(0, 1 - dt * fr);
+        vel.x *= friction; vel.z *= friction;
+      }
     }
     if (stepUp) {
       // Non-jumping one-block climb: the feet glide straight up, easing out as the
@@ -2357,11 +2369,46 @@ function updatePlayer(dt) {
         if (airT <= JUMP_BOOST_TIME) vel.y += JUMP_BOOST_ACCEL * dt;
       }
     }
-    if (keys["Space"] && onGround) { vel.y = JUMP_MIN; onGround = false; stepDown = false; stepUp = false; }
+    if (keys["Space"] && onGround) {
+      vel.y = JUMP_MIN; onGround = false; stepDown = false; stepUp = false;
+      jumpIdle = 0;
+      const hasHInput = keys["KeyW"] || keys["KeyS"] || keys["KeyD"] || keys["KeyA"] ||
+                        keys["ArrowUp"] || keys["ArrowDown"] || keys["ArrowRight"] || keys["ArrowLeft"];
+      if (hasHInput) {
+        jumpCount++;
+        if (jumpCount >= 2) jumpBoost = 3 - (3 - jumpBoost) * 0.625;
+      } else {
+        jumpCount = 0;
+        jumpBoost = 1;
+      }
+    }
     if (vel.y < -40) vel.y = -40;
   }
   wasOnGround = onGround;
+  const preX = pos.x, preZ = pos.z;
   collide();
+  if (!flying && !grappleActive) {
+    if (onGround && jumpBoost > 1) jumpIdle += dt;
+    const moved = Math.hypot(pos.x - preX, pos.z - preZ);
+    const expected = Math.hypot(vel.x, vel.z) * dt;
+    const hasInput = keys["KeyW"] || keys["KeyS"] || keys["KeyD"] || keys["KeyA"] ||
+                     keys["ArrowUp"] || keys["ArrowDown"] || keys["ArrowRight"] || keys["ArrowLeft"];
+    const hSpd = Math.hypot(vel.x, vel.z);
+    if (jumpBoost > 1 && onGround && expected > 0.05 && moved < expected * 0.5) {
+      jumpBoost = 1; jumpCount = 0; jumpIdle = 0;
+    } else if (jumpBoost > 1 && onGround && hSpd < WALK * 0.6) {
+      jumpBoost = 1; jumpCount = 0; jumpIdle = 0;
+    } else if (jumpBoost > 1 && onGround && jumpIdle > 0.12) {
+      jumpBoost = 1; jumpCount = 0; jumpIdle = 0;
+    } else if (jumpBoost > 1 && onGround && !hasInput) {
+      jumpBoost = 1; jumpCount = 0; jumpIdle = 0;
+    } else if (jumpBoost > 1 && onGround) {
+      if (!hasInput) {
+        jumpBoost = Math.max(1, jumpBoost - dt * 8);
+      }
+      if (jumpBoost <= 1.01) { jumpCount = 0; jumpIdle = 0; }
+    }
+  }
 }
 
 // Free camera (spectator): detach from the player, fly through anything.
