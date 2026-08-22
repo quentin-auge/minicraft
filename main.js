@@ -1911,7 +1911,7 @@ function isExposed(x, y, z) {
 const PLAYER_HW = 0.3;
 const PLAYER_H = 1.8;
 const EYE = 1.62;
-const GRAVITY = 31.2;
+const GRAVITY = 37.44;
 const WALK = 4.4, SPRINT = 7.2, FLY = 10;
 const JUMP_MIN = 8.2;
 const JUMP_HOLD_TIME = 0.7;
