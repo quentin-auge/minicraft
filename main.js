@@ -1939,6 +1939,7 @@ const STEP_UP_MIN = 4;
 const AUTO_JUMP = 8.2;
 const GRAPPLE_SPEED = 26;
 const GRAPPLE_THROW = 70;
+const GRAPPLE_RETRACT = 275;
 const GRAPPLE_FLING = 34;
 const FLOAT_SPEED = 3.6;
 const SWIM_ACCEL = 2.0;
@@ -1958,6 +1959,9 @@ let grappleArrived = false;
 let grapplePulling = false;
 let grapplePass = true;
 let grappleTopY = 0;
+let grappleRetracting = false;
+let grappleRetractLife = 0;
+const grappleHookPos = new THREE.Vector3();
 let flingActive = false;
 const vel = new THREE.Vector3();
 const camPos = new THREE.Vector3();
@@ -1993,6 +1997,7 @@ function spawnPlayer() {
   vel.set(0, 0, 0);
   flingActive = false;
   stepDown = false;
+  grappleRetracting = false;
 }
 
 function isSolid(x, y, z) {
@@ -2115,6 +2120,7 @@ function fireGrapple() {
   grapplePulling = false;
   grapplePass = true;
   grappleActive = true;
+  grappleRetracting = false;
   jumpCount = 1;
   jumpIdle = 0;
   stepDown = false;
@@ -5637,8 +5643,13 @@ document.addEventListener("mouseup", (e) => {
   } else {
     stepDown = false;
   }
+  grappleRetracting = true;
+  grappleRetractLife = 0;
+  if (grappleHooked) grappleHookPos.copy(grappleTarget);
+  else grappleHookPos.copy(grappleStart).lerp(grappleTarget, grappleFly);
   grappleActive = false;
   grappleArrived = false;
+  grapplePulling = false;
 });
 
 const helpEl = document.getElementById("help");
@@ -5874,12 +5885,32 @@ function loop(now) {
       leftStairs = false;
       leftTimer = 0;
     }
+    let showRope = false;
     if (grappleActive) {
-      grappleCubes.visible = true;
-      grappleHead.visible = true;
+      showRope = true;
       ropeA.set(pos.x, pos.y + 0.3, pos.z);
       ropeB.copy(grappleStart).lerp(grappleTarget, grappleFly);
       if (grappleHooked) ropeB.copy(grappleTarget);
+    } else if (grappleRetracting && !loading) {
+      grappleRetractLife += dt;
+      const ex = pos.x, ey = pos.y + 0.3, ez = pos.z;
+      const dhx = ex - grappleHookPos.x, dhy = ey - grappleHookPos.y, dhz = ez - grappleHookPos.z;
+      const dh = Math.sqrt(dhx * dhx + dhy * dhy + dhz * dhz);
+      const stepH = GRAPPLE_RETRACT * dt;
+      if (dh <= stepH + 0.05 || grappleRetractLife > 1.5) {
+        grappleRetracting = false;
+      } else {
+        grappleHookPos.x += dhx / dh * stepH;
+        grappleHookPos.y += dhy / dh * stepH;
+        grappleHookPos.z += dhz / dh * stepH;
+        ropeA.set(ex, ey, ez);
+        ropeB.copy(grappleHookPos);
+        showRope = true;
+      }
+    }
+    if (showRope) {
+      grappleCubes.visible = true;
+      grappleHead.visible = true;
       const dx = ropeB.x - ropeA.x, dy = ropeB.y - ropeA.y, dz = ropeB.z - ropeA.z;
       const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
       const n = Math.max(4, Math.min(GRAPPLE_CUBES, Math.round(dist / 0.15)));

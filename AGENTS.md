@@ -281,7 +281,10 @@ stays bright at distance, `placeable: true` so it
   the hook flies) just drops you straight down with no fling or inertia. A thin
   pixelated rope (cube chain ~1/10 block, dense over the whole
   path) plus a blocky hook head shows the pull from the eye to the flying/stuck
-  hook.
+  hook. On release the hook detaches and retracts — it zips straight back
+  toward your eye at `GRAPPLE_RETRACT` (275) with the rope following, then
+  vanishes when it reaches you (or after 1.5 s); firing again mid-retract
+  cancels it.
 - **TNT**: lighting fuses (HUD fuse sprite), delayed explosions with blocks
   destroyed/tossed and particle flashes. Breaking a TNT lights a 3s fuse and
   explosions chain-react: a blast near another TNT block lights it, and a lit
