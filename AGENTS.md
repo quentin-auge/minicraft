@@ -76,11 +76,19 @@ small Python server for saving/loading worlds.
   of overlapping 3D-ellipsoid puffs (a few per cloud, lumpy like real clouds),
   each at its own height and ~30% scaled up to 2x bigger, via
   `hash2` — filling a band that starts at 2x max tree height (`CLOUD_BASE`)
-  and extends 3x max tree height high (`CLOUD_LAYER`); that original band is
-  stacked 3 times (`CLOUD_LAYERS`, reseeded per layer) up the sky, with
+  and extends 2.4x max tree height high (`CLOUD_LAYER` = 120, -20%); that
+  original band is stacked 3 times (`CLOUD_LAYERS`, reseeded per layer) up the
+  sky (`CLOUD_TOP` 460, `CLOUD_SPAN` 360), with
   `MAX_Y = 999` (raised from 254; saves store y as 16-bit in format v8).
   Clouds keep the standard fogged material and camera far plane, so from the
   ground only the lowest decks are visible — higher layers show as you climb.
+  Climbing through the cloud band from 3/8 to 5/8 (`SKY_SPACE_START` 235 →
+  `SKY_SPACE_END` 325) fades the Overworld sky and fog from day blue
+  (`DAY_SKY`) to starry night (`SPACE_SKY`, smoothstep) while a
+  camera-following star sphere (`skyStars`, ~520 points) fades in and sun/hemi
+  light dim; `setDimensionEnv` hides the stars in the Nether/End. The moon only
+  appears from 4/8 (`MOON_VIS_START` 280) so the whole hemisphere is seen at once
+  together with the stars.
 - **Textures**: 16×16 pixel-art textures drawn procedurally on canvas
   (`TEX`, `makeTex`, `pxNoise`, `canvasTex`), NearestFilter + sRGB.
 - **Rendering**: chunked streaming. The overworld is split into `CHUNK` (16)×

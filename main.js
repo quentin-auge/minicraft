@@ -333,8 +333,11 @@ const RENDER_DIST = 8;
 const MAX_Y = 999;
 const MAX_TREE_H = 50;
 const CLOUD_BASE = 2 * MAX_TREE_H;
-const CLOUD_LAYER = 3 * MAX_TREE_H;
+const CLOUD_LAYER = 2.4 * MAX_TREE_H;
 const CLOUD_LAYERS = 3;
+const CLOUD_TOP = CLOUD_BASE + CLOUD_LAYERS * CLOUD_LAYER;
+const CLOUD_SPAN = CLOUD_TOP - CLOUD_BASE;
+const MOON_VIS_START = CLOUD_BASE + CLOUD_SPAN * 0.5;
 const LAND_RAISE = 20.0;
 const BASIN_SHORE = 1.5;
 const BASIN_DEPTH = 2.2;
@@ -1415,6 +1418,39 @@ const netherSun = new THREE.Mesh(
 );
 netherSun.position.set(0, 170, 500);
 skyDome.add(netherSun);
+
+// High-altitude night sky: as the player climbs toward the top cloud decks,
+// the day sky/fog colour fades to near-black and a sphere of stars (following
+// the camera, like the Nether dome) fades in. Purely cosmetic — driven from
+// the main loop in the Overworld only.
+const skyStars = (() => {
+  const N = 520;
+  const arr = new Float32Array(N * 3);
+  for (let i = 0; i < N; i++) {
+    const u = Math.random() * 2 - 1;
+    const ph = Math.random() * Math.PI * 2;
+    const r = Math.sqrt(1 - u * u);
+    arr[i * 3] = Math.cos(ph) * r * 820;
+    arr[i * 3 + 1] = u * 820;
+    arr[i * 3 + 2] = Math.sin(ph) * r * 820;
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute("position", new THREE.BufferAttribute(arr, 3));
+  const m = new THREE.PointsMaterial({
+    color: 0xffffff, size: 2.2, sizeAttenuation: false,
+    transparent: true, opacity: 0, fog: false, depthWrite: false,
+  });
+  const p = new THREE.Points(g, m);
+  p.frustumCulled = false;
+  p.visible = false;
+  scene.add(p);
+  return p;
+})();
+const DAY_SKY = new THREE.Color(0x87ceeb);
+const SPACE_SKY = new THREE.Color(0x05070f);
+const SKY_SPACE_START = CLOUD_BASE + CLOUD_SPAN * 3 / 8;
+const SKY_SPACE_END = CLOUD_BASE + CLOUD_SPAN * 5 / 8;
+const SKY_STAR_START = SKY_SPACE_START, SKY_STAR_FULL = SKY_SPACE_END;
 
 const boxGeo = new THREE.BoxGeometry(1, 1, 1);
 const dummy = new THREE.Object3D();
@@ -3518,6 +3554,7 @@ function buildNetherPortal() {
 function setDimensionEnv() {
   if (dim === "end") {
     skyDome.visible = false;
+    skyStars.visible = false;
     scene.background.setHex(0x000000);
     scene.fog.color.setHex(0x000000);
     scene.fog.near = 30; scene.fog.far = 150;
@@ -3525,6 +3562,7 @@ function setDimensionEnv() {
     hemi.color.setHex(0xbfd4ff); hemi.intensity = 0.45;
   } else if (dim === "nether") {
     skyDome.visible = true;
+    skyStars.visible = false;
     scene.background.setHex(0x111114);
     scene.fog.color.setHex(0x1c1c21);
     scene.fog.near = 20; scene.fog.far = 110;
@@ -5985,6 +6023,20 @@ function loop(now) {
     if (dim === "end") updateDragon(dt);
     if (dim === "end") updateEndermen(dt);
     if (toastTimer > 0) { toastTimer -= dt; if (toastTimer <= 0) toastEl.style.opacity = "0"; }
+
+    if (dim === "over") {
+      const y = camera.position.y;
+      let ts = (y - SKY_SPACE_START) / (SKY_SPACE_END - SKY_SPACE_START);
+      ts = Math.max(0, Math.min(1, ts));
+      const s = ts * ts * (3 - 2 * ts);
+      scene.background.copy(DAY_SKY).lerp(SPACE_SKY, s);
+      scene.fog.color.copy(scene.background);
+      sun.intensity = 1.1 * (1 - 0.55 * s);
+      hemi.intensity = 0.75 * (1 - 0.55 * s);
+      skyStars.material.opacity = s;
+      skyStars.position.copy(camera.position);
+      skyStars.visible = s > 0.01;
+    }
 
     // Gentle water shimmer
     if (typeMats.has(WATER)) {
