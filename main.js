@@ -330,10 +330,11 @@ const WORLD_RADIUS = 96;
 const WATER_LEVEL = 10;
 const CHUNK = 16;
 const RENDER_DIST = 8;
-const MAX_Y = 254;
+const MAX_Y = 999;
 const MAX_TREE_H = 50;
 const CLOUD_BASE = 2 * MAX_TREE_H;
 const CLOUD_LAYER = 3 * MAX_TREE_H;
+const CLOUD_LAYERS = 3;
 const LAND_RAISE = 20.0;
 const BASIN_SHORE = 1.5;
 const BASIN_DEPTH = 2.2;
@@ -368,6 +369,23 @@ let forestThresh = 0.5;
 // Packed integer block key so lookups allocate no strings. Unique for x,z in
 // [-1024, 1023] and y in [0, 2047], nowhere near Number's safe integer range.
 const KEY_OFF = 1024, KEY_MZ = 2048, KEY_MY = KEY_MZ * KEY_MZ;
+const colTops = {
+  over: new Uint16Array(KEY_MZ * KEY_MZ),
+  end: new Uint16Array(KEY_MZ * KEY_MZ),
+  nether: new Uint16Array(KEY_MZ * KEY_MZ),
+};
+const colTopIdx = (x, z) => (x + KEY_OFF) * KEY_MZ + (z + KEY_OFF);
+function rebuildColTops(only) {
+  for (const name of only ? [only] : ["over", "end", "nether"]) {
+    const ct = colTops[name];
+    ct.fill(0);
+    worlds[name].forEach((id, k) => {
+      const [x, y, z] = keyXYZ(k);
+      const ci = colTopIdx(x, z);
+      if (y > ct[ci]) ct[ci] = y;
+    });
+  }
+}
 function key(x, y, z) { return (x + KEY_OFF) * KEY_MY + y * KEY_MZ + (z + KEY_OFF); }
 function keyXYZ(k) {
   const z = (k % KEY_MZ) - KEY_OFF;
@@ -445,6 +463,9 @@ function setBlock(x, y, z, id) {
     gv.delete(k);
   } else {
     world.set(k, id);
+    const ct = colTops[dim];
+    const ci = colTopIdx(x, z);
+    if (y > ct[ci]) ct[ci] = y;
     if (id === PORTAL || id === OBSIDIAN) pb.add(k); else pb.delete(k);
     if (id === GLOWSTONE) gs.add(k); else gs.delete(k);
     if (id !== GLOWSTONE) gv.delete(k);
@@ -774,6 +795,7 @@ function stairEntrances() {
 function generateWorld() {
   world = worlds.over;
   worlds.over.clear();
+  colTops.over.fill(0);
   portalBlockSets.over.clear();
   glowstoneBlockSets.over.clear();
   glowVariants.over.clear();
@@ -823,35 +845,40 @@ function generateWorld() {
 // Scatter solid white clouds you can climb on, made of a few overlapping 3D
 // ellipsoid puffs so they look like real fluffy cloud clusters. Each cloud
 // picks a height on its own; some (~30%) are scaled up to 2x. The band starts
-// at 2x max tree height and extends 3x max tree height beyond it.
+// at 2x max tree height and extends 3x beyond it, and CLOUD_LAYERS copies of
+// that band are stacked on top of each other (reseeded per layer) up the sky.
 function generateClouds() {
   const n = Math.round(((WORLD_RADIUS * 2) * (WORLD_RADIUS * 2)) / 1100);
-  for (let i = 0; i < n; i++) {
-    const cx = Math.round((hash2(i, 1, seed + 4242) * 2 - 1) * (WORLD_RADIUS - 8));
-    const cz = Math.round((hash2(i, 2, seed + 4242) * 2 - 1) * (WORLD_RADIUS - 8));
-    const scale = hash2(i, 8, seed + 4242) < 0.3 ? 2 : 1;
-    const yBase = CLOUD_BASE + Math.floor(hash2(i, 5, seed + 4242) * (CLOUD_LAYER - 8));
-    const puffs = 3 + Math.floor(hash2(i, 7, seed + 4242) * 3);
-    const spread = (1.5 + hash2(i, 3, seed + 4242) * 4) * scale;
-    for (let p = 0; p < puffs; p++) {
-      const ox = (hash2(i, p, 111) * 2 - 1) * spread;
-      const oz = (hash2(i, p, 222) * 2 - 1) * spread;
-      const oy = (hash2(i, p, 333) - 0.5) * spread * 0.5;
-      const Px = cx + Math.round(ox);
-      const Pz = cz + Math.round(oz);
-      const Py = yBase + Math.round(oy);
-      const ra = 1 + Math.round((1.5 + hash2(i, p, 444) * 3) * scale);
-      const rb = 1 + Math.round((1.5 + hash2(i, p, 555) * 2.5) * scale);
-      const rh = 1 + Math.round((hash2(i, p, 666) * 2.5) * scale);
-      const mx = Math.ceil(ra), mz = Math.ceil(rb), my = Math.ceil(rh);
-      for (let dx = -mx; dx <= mx; dx++)
-        for (let dz = -mz; dz <= mz; dz++)
-          for (let dy = -my; dy <= my; dy++) {
-            if (dx * dx / (ra * ra) + dz * dz / (rb * rb) + dy * dy / (rh * rh) > 1) continue;
-            const yy = Py + dy;
-            if (yy < 0 || yy > MAX_Y) continue;
-            setBlock(Px + dx, yy, Pz + dz, CLOUD);
-          }
+  for (let l = 0; l < CLOUD_LAYERS; l++) {
+    const lo = CLOUD_BASE + l * CLOUD_LAYER;
+    const ls = seed + 4242 + l * 131;
+    for (let i = 0; i < n; i++) {
+      const cx = Math.round((hash2(i, 1, ls) * 2 - 1) * (WORLD_RADIUS - 8));
+      const cz = Math.round((hash2(i, 2, ls) * 2 - 1) * (WORLD_RADIUS - 8));
+      const scale = hash2(i, 8, ls) < 0.3 ? 2 : 1;
+      const yBase = lo + Math.floor(hash2(i, 5, ls) * (CLOUD_LAYER - 8));
+      const puffs = 3 + Math.floor(hash2(i, 7, ls) * 3);
+      const spread = (1.5 + hash2(i, 3, ls) * 4) * scale;
+      for (let p = 0; p < puffs; p++) {
+        const ox = (hash2(i, p, 111 + l) * 2 - 1) * spread;
+        const oz = (hash2(i, p, 222 + l) * 2 - 1) * spread;
+        const oy = (hash2(i, p, 333 + l) - 0.5) * spread * 0.5;
+        const Px = cx + Math.round(ox);
+        const Pz = cz + Math.round(oz);
+        const Py = yBase + Math.round(oy);
+        const ra = 1 + Math.round((1.5 + hash2(i, p, 444 + l) * 3) * scale);
+        const rb = 1 + Math.round((1.5 + hash2(i, p, 555 + l) * 2.5) * scale);
+        const rh = 1 + Math.round((hash2(i, p, 666 + l) * 2.5) * scale);
+        const mx = Math.ceil(ra), mz = Math.ceil(rb), my = Math.ceil(rh);
+        for (let dx = -mx; dx <= mx; dx++)
+          for (let dz = -mz; dz <= mz; dz++)
+            for (let dy = -my; dy <= my; dy++) {
+              if (dx * dx / (ra * ra) + dz * dz / (rb * rb) + dy * dy / (rh * rh) > 1) continue;
+              const yy = Py + dy;
+              if (yy < 0 || yy > MAX_Y) continue;
+              setBlock(Px + dx, yy, Pz + dz, CLOUD);
+            }
+      }
     }
   }
 }
@@ -859,13 +886,18 @@ function generateClouds() {
 function generateEnd() {
   const w = worlds.end;
   w.clear();
+  colTops.end.fill(0);
   portalBlockSets.end.clear();
   glowstoneBlockSets.end.clear();
   glowVariants.end.clear();
   const R = END_PLATFORM_R;
+  const ct = colTops.end;
   for (let x = -R; x <= R; x++)
-    for (let z = -R; z <= R; z++)
+    for (let z = -R; z <= R; z++) {
       for (let y = END_PLATFORM_TOP - 2; y <= END_PLATFORM_TOP; y++) w.set(key(x, y, z), ENDSTONE);
+      const ci = colTopIdx(x, z);
+      if (END_PLATFORM_TOP > ct[ci]) ct[ci] = END_PLATFORM_TOP;
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1314,6 +1346,7 @@ function generateNether() {
   volcanoCascades();
   volcanoTunnels();
   hollowVolcanoes();
+  rebuildColTops("nether");
 }
 
 // ---------------------------------------------------------------------------
@@ -1732,7 +1765,8 @@ function rebuildChunk(cx, cz) {
   const glows = [];
   for (let x = x0; x <= x1; x++)
     for (let z = z0; z <= z1; z++) {
-      for (let y = 0; y <= MAX_Y; y++) {
+      const ct = colTops[dim][colTopIdx(x, z)];
+      for (let y = 0; y <= ct; y++) {
         const id = getBlock(x, y, z);
         if (id === AIR || !BLOCK_INFO[id]) continue;
         if (id === FLOWER) { flowers.push([x, y, z]); continue; }
@@ -2556,14 +2590,16 @@ function headInWater() {
 function waterSurfaceTop() {
   let top = -Infinity;
   for (let bx = Math.floor(pos.x - PLAYER_HW); bx <= Math.floor(pos.x + PLAYER_HW); bx++)
-    for (let bz = Math.floor(pos.z - PLAYER_HW); bz <= Math.floor(pos.z + PLAYER_HW); bz++)
-      for (let y = MAX_Y; y >= 0; y--) {
+    for (let bz = Math.floor(pos.z - PLAYER_HW); bz <= Math.floor(pos.z + PLAYER_HW); bz++) {
+      const ct = colTops[dim][colTopIdx(bx, bz)];
+      for (let y = ct; y >= 0; y--) {
         const id = getBlock(bx, y, bz);
         if (id === WATER || id === LAVA) {
           if (y + 1 > top) top = y + 1;
           break;
         }
       }
+    }
   return top;
 }
 
@@ -4911,11 +4947,11 @@ function serialize() {
   const on = count(over), en = count(end), nn = count(nether);
   const m = placedFlowers.size;
   const gov = glowVariants.over.size, gev = glowVariants.end.size, gnv = glowVariants.nether.size;
-  const buf = new ArrayBuffer(117 + (on + en + nn) * 4 + m * 5 + (gov + gev + gnv) * 4);
+  const buf = new ArrayBuffer(117 + (on + en + nn) * 5 + m * 6 + (gov + gev + gnv) * 5);
   const dv = new DataView(buf);
   let o = 0;
   new Uint8Array(buf, o, 9).set(SAVE_MAGIC); o += 9;
-  dv.setUint8(o++, 7); // format version
+  dv.setUint8(o++, 8); // format version
   dv.setUint8(o++, dim === "end" ? 1 : dim === "nether" ? 2 : 0);
   dv.setInt32(o, seed, true); o += 4;
   dv.setInt32(o, endSeed, true); o += 4;
@@ -4935,7 +4971,7 @@ function serialize() {
     map.forEach((id, k) => {
       const [x, y, z] = keyXYZ(k);
       dv.setUint8(o++, x + 128);
-      dv.setUint8(o++, y);
+      dv.setUint16(o, y, true); o += 2;
       dv.setUint8(o++, z + 128);
       dv.setUint8(o++, id);
     });
@@ -4947,7 +4983,7 @@ function serialize() {
   placedFlowers.forEach((p, k) => {
     const [fx, fy, fz] = keyXYZ(k);
     dv.setUint8(o++, fx + 128);
-    dv.setUint8(o++, fy);
+    dv.setUint16(o, fy, true); o += 2;
     dv.setUint8(o++, fz + 128);
     dv.setUint8(o++, p.v);
     dv.setUint8(o++, Math.round(p.a / (Math.PI * 2) * 255));
@@ -4957,7 +4993,7 @@ function serialize() {
     map.forEach((v, k) => {
       const [x, y, z] = keyXYZ(k);
       dv.setUint8(o++, x + 128);
-      dv.setUint8(o++, y);
+      dv.setUint16(o, y, true); o += 2;
       dv.setUint8(o++, z + 128);
       dv.setUint8(o++, v);
     });
@@ -4974,7 +5010,9 @@ function deserialize(buf) {
   for (let i = 0; i < 9; i++) if (new Uint8Array(buf, o, 9)[i] !== SAVE_MAGIC[i]) throw new Error("Not a MiniCraft save");
   o += 9;
   const ver = dv.getUint8(o++);
-  if (ver !== 1 && ver !== 2 && ver !== 3 && ver !== 4 && ver !== 5 && ver !== 6 && ver !== 7) throw new Error("Unsupported save version");
+  if (ver !== 1 && ver !== 2 && ver !== 3 && ver !== 4 && ver !== 5 && ver !== 6 && ver !== 7 && ver !== 8) throw new Error("Unsupported save version");
+  const yWidth = ver >= 8 ? 2 : 1;
+  const readY = () => { const y = yWidth === 2 ? dv.getUint16(o, true) : dv.getUint8(o); o += yWidth; return y; };
   placedFlowers.clear();
   glowVariants.over.clear();
   glowVariants.end.clear();
@@ -5003,7 +5041,7 @@ function deserialize(buf) {
   worlds.over.clear();
   for (let i = 0; i < n; i++) {
     const x = dv.getUint8(o++) - 128;
-    const y = dv.getUint8(o++);
+    const y = readY();
     const z = dv.getUint8(o++) - 128;
     worlds.over.set(key(x, y, z), dv.getUint8(o++));
   }
@@ -5012,7 +5050,7 @@ function deserialize(buf) {
     worlds.end.clear();
     for (let i = 0; i < ne; i++) {
       const x = dv.getUint8(o++) - 128;
-      const y = dv.getUint8(o++);
+      const y = readY();
       const z = dv.getUint8(o++) - 128;
       worlds.end.set(key(x, y, z), dv.getUint8(o++));
     }
@@ -5022,7 +5060,7 @@ function deserialize(buf) {
     worlds.nether.clear();
     for (let i = 0; i < nn; i++) {
       const x = dv.getUint8(o++) - 128;
-      const y = dv.getUint8(o++);
+      const y = readY();
       const z = dv.getUint8(o++) - 128;
       worlds.nether.set(key(x, y, z), dv.getUint8(o++));
     }
@@ -5031,7 +5069,7 @@ function deserialize(buf) {
     const m = dv.getUint32(o, true); o += 4;
     for (let i = 0; i < m; i++) {
       const x = dv.getUint8(o++) - 128;
-      const y = dv.getUint8(o++);
+      const y = readY();
       const z = dv.getUint8(o++) - 128;
       const v = dv.getUint8(o++);
       const a = dv.getUint8(o++) / 255 * Math.PI * 2;
@@ -5049,7 +5087,7 @@ function deserialize(buf) {
       const g = dv.getUint32(o, true); o += 4;
       for (let i = 0; i < g; i++) {
         const x = dv.getUint8(o++) - 128;
-        const y = dv.getUint8(o++);
+        const y = readY();
         const z = dv.getUint8(o++) - 128;
         const v = dv.getUint8(o++);
         const m = legacy ? LEGACY_GLOW_MAP[v] : (v < GLOW_VARIANT_COUNT ? v : undefined);
@@ -5085,6 +5123,7 @@ function deserialize(buf) {
   dim = dimFlag === 2 ? "nether" : dimFlag === 1 ? "end" : "over";
   world = worlds[dim];
   worldDirty = true;
+  rebuildColTops();
   rebuildPortalBlocks();
   rebuildHotbar();
   recomputeGlowClusters();

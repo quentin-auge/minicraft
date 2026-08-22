@@ -76,7 +76,11 @@ small Python server for saving/loading worlds.
   of overlapping 3D-ellipsoid puffs (a few per cloud, lumpy like real clouds),
   each at its own height and ~30% scaled up to 2x bigger, via
   `hash2` — filling a band that starts at 2x max tree height (`CLOUD_BASE`)
-  and extends 3x max tree height high (`CLOUD_LAYER`, top ≤ 254 = `MAX_Y`).
+  and extends 3x max tree height high (`CLOUD_LAYER`); that original band is
+  stacked 3 times (`CLOUD_LAYERS`, reseeded per layer) up the sky, with
+  `MAX_Y = 999` (raised from 254; saves store y as 16-bit in format v8).
+  Clouds keep the standard fogged material and camera far plane, so from the
+  ground only the lowest decks are visible — higher layers show as you climb.
 - **Textures**: 16×16 pixel-art textures drawn procedurally on canvas
   (`TEX`, `makeTex`, `pxNoise`, `canvasTex`), NearestFilter + sRGB.
 - **Rendering**: chunked streaming. The overworld is split into `CHUNK` (16)×
@@ -84,7 +88,11 @@ small Python server for saving/loading worlds.
   the player are meshed (added/removed as you cross chunk borders in
   `streamChunks()`/`rebuildChunk`). Each chunk is one `InstancedMesh` per
   block type with only exposed faces; every mesh calls `computeBoundingSphere()`
-  so Three.js frustum-culls off-screen chunks. Shared per-type materials
+  so Three.js frustum-culls off-screen chunks. Each column's highest set block
+  is cached per dimension (`colTops`, updated in `setBlock` and rebuilt after
+  world gen/load via `rebuildColTops`), so chunk meshing and the water-surface
+  scan only walk up to each column's real top instead of the full 1000-row
+  sky. Shared per-type materials
   (`typeMats`). Editing rebuilds just the touched chunk(s) via
   `refreshBlocks()`, not the whole world. No shadow maps; fog +
   hemisphere/directional light.
@@ -541,7 +549,7 @@ stays bright at distance, `placeable: true` so it
     the source and destination positions (`spawnEndermanBurst`, reusing the
     `bursts` effect system). Deleted with the dragon when leaving the End /
     resetting dims; spawned fresh every End entry.
-- **Save/load**: binary format (`SAVE_MAGIC`, version 7) capturing world
+- **Save/load**: binary format (`SAVE_MAGIC`, version 8) capturing world
   blocks (over/end/nether), dim, seeds (over/end/nether), player pos/yaw/pitch,
   fly state, hotbar selection,
   placed-flowers' stored color/rotation (`placedFlowers`) and per-glowstone
