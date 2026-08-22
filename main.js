@@ -1961,6 +1961,14 @@ let airT = 0;
 let jumpBoost = 1;
 let jumpCount = 0;
 let jumpIdle = 0;
+let jumpOriginY = null;
+let jumpPeakY = null;
+let jumpHoldContinuous = false;
+let lastSpaceDownY = null;
+let prevSpace = false;
+let waterDipActive = false;
+let waterDipTimer = 0;
+let waterDipTarget = null;
 const keys = {};
 
 function spawnPlayer() {
@@ -2237,9 +2245,65 @@ function updatePlayer(dt) {
   if (d) move.add(right);
   if (a) move.sub(right);
 
-  const inWater = headInWater();
-  if (inWater && !wasInWater && vel.y < 0) vel.y *= 0.3;
-  wasInWater = inWater;
+  let inWater = headInWater();
+  const enteredWater = inWater && !wasInWater;
+  const spaceNow = !!keys["Space"];
+  const spaceJustPressed = spaceNow && !prevSpace;
+  const spaceJustReleased = !spaceNow && prevSpace;
+  if (spaceJustPressed) {
+    lastSpaceDownY = pos.y;
+    if (!onGround && !flying && !inWater) {
+      jumpPeakY = pos.y;
+      if (jumpOriginY === null) jumpOriginY = pos.y;
+      jumpHoldContinuous = true;
+    }
+  }
+  if (spaceJustReleased && vel.y > 0 && !onGround && !flying) { vel.y *= 0.45; airT = JUMP_HOLD_TIME; }
+  prevSpace = spaceNow;
+  if (!onGround && !flying && !spaceNow) jumpHoldContinuous = false;
+  if (onGround) { jumpOriginY = null; jumpPeakY = null; waterDipActive = false; if (!spaceNow) jumpHoldContinuous = false; }
+  if (jumpOriginY !== null && !onGround && !flying) jumpPeakY = Math.max(jumpPeakY, pos.y);
+  let bounced = false;
+  if (enteredWater && spaceNow && (jumpOriginY !== null || lastSpaceDownY !== null)) {
+    const surface = waterSurfaceTop();
+    let isLiquid = false;
+    for (let bx = Math.floor(pos.x - PLAYER_HW); bx <= Math.floor(pos.x + PLAYER_HW); bx++)
+      for (let bz = Math.floor(pos.z - PLAYER_HW); bz <= Math.floor(pos.z + PLAYER_HW); bz++) {
+        const lid = getBlock(bx, surface - 1, bz);
+        if (lid === WATER || lid === LAVA) isLiquid = true;
+      }
+    if (isLiquid && surface !== -Infinity) {
+      let target = null;
+      if (jumpHoldContinuous && jumpPeakY !== null) target = jumpPeakY;
+      else if (lastSpaceDownY !== null) target = lastSpaceDownY;
+      else target = jumpOriginY;
+      if (target !== null && pos.y < target - 0.5) {
+        const delta = target - (surface + 0.1);
+        if (delta > 0) {
+          const bv = Math.sqrt(2 * GRAVITY * delta);
+          vel.y = bv;
+          if (sprintKey) {
+            if (move.lengthSq() > 0) {
+              const s = SPRINT * 2;
+              const mn = move.clone().normalize().multiplyScalar(s);
+              vel.x = mn.x; vel.z = mn.z;
+            } else { vel.x *= 2; vel.z *= 2; }
+          }
+          airT = JUMP_HOLD_TIME;
+          pos.y = surface + 0.1;
+          inWater = false;
+          wasInWater = false;
+          onGround = false;
+          stepUp = false; stepDown = false; stepFromWater = false; stepHop = false;
+          bounced = true;
+        }
+      }
+    }
+  }
+  if (!bounced) {
+    if (inWater && !wasInWater && vel.y < 0) vel.y *= 0.3;
+    wasInWater = inWater;
+  }
 
   if (flying) {
     stepDown = false;
@@ -2251,6 +2315,7 @@ function updatePlayer(dt) {
     vel.x = move.x; vel.z = move.z;
     vel.y = (keys["Space"] ? speed : 0) - (sprintKey ? speed : 0);
     flingActive = false;
+  } else if (bounced) {
   } else if (inWater) {
     if (jumpBoost > 1) { jumpBoost = 1; jumpCount = 0; jumpIdle = 0; }
     stepDown = false;
@@ -2361,7 +2426,7 @@ function updatePlayer(dt) {
       // Hold Space to keep climbing: the thrust fades in smoothly from takeoff
       // (no hard threshold), so a quick tap barely climbs while a hold engages
       // immediately instead of after a dead delay.
-      if (!onGround && keys["Space"] && airT < JUMP_HOLD_TIME && vel.y > 0) {
+      if (!onGround && spaceNow && airT < JUMP_HOLD_TIME && vel.y > 0) {
         airT += dt;
         vel.y += JUMP_THRUST * Math.min(1, airT / JUMP_RAMP) * dt;
         // Boost: extra upward acceleration for the first JUMP_BOOST_TIME of a
@@ -2371,6 +2436,7 @@ function updatePlayer(dt) {
     }
     if (keys["Space"] && onGround) {
       vel.y = JUMP_MIN; onGround = false; stepDown = false; stepUp = false;
+      jumpOriginY = pos.y; jumpPeakY = pos.y; jumpHoldContinuous = true; lastSpaceDownY = pos.y; airT = 0;
       jumpIdle = 0;
       const hasHInput = keys["KeyW"] || keys["KeyS"] || keys["KeyD"] || keys["KeyA"] ||
                         keys["ArrowUp"] || keys["ArrowDown"] || keys["ArrowRight"] || keys["ArrowLeft"];
