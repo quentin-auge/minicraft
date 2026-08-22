@@ -1922,7 +1922,7 @@ const JUMP_BOOST_TIME = 0.15;
 const JUMP_FLING_DAMP = 6;
 const AIR_SPRINT = 1.35;
 const AIR_STEER = 2.5;
-const STEP_SPEED = 5.5;
+const STEP_SPEED = 9.5;
 const STEP_UP = 12;
 const STEP_UP_EASE = 0.03;
 const STEP_UP_MIN = 4;
@@ -2068,6 +2068,14 @@ function moveAxisY(dy) {
     for (let bx = Math.floor(pos.x - PLAYER_HW); bx <= Math.floor(pos.x + PLAYER_HW) && !stepDown; bx++)
       for (let bz = Math.floor(pos.z - PLAYER_HW); bz <= Math.floor(pos.z + PLAYER_HW); bz++)
         if (isSolid(bx, fy, bz)) { stepDown = true; break; }
+  }
+  if (stepDown) {
+    const fy = Math.floor(pos.y) - 1;
+    let supp = false;
+    for (let bx = Math.floor(pos.x - PLAYER_HW); bx <= Math.floor(pos.x + PLAYER_HW) && !supp; bx++)
+      for (let bz = Math.floor(pos.z - PLAYER_HW); bz <= Math.floor(pos.z + PLAYER_HW); bz++)
+        if (isSolid(bx, fy, bz)) supp = true;
+    if (!supp) stepDown = false;
   }
 }
 function collide() {
@@ -2221,6 +2229,7 @@ function updateGrapple(dt) {
   if (blocked) {
     vel.set(0, 0, 0);
     grapplePulling = false;
+    stepDown = false;
     return false;
   }
   grapplePulling = true;
@@ -2404,7 +2413,16 @@ function updatePlayer(dt) {
         onGround = true;
       }
     } else if (stepDown) {
-      vel.y = -STEP_SPEED;
+      if (flingActive) { stepDown = false; vel.y -= GRAVITY * dt; }
+      else {
+        const fy = Math.floor(pos.y) - 1;
+        let supp = false;
+        for (let bx = Math.floor(pos.x - PLAYER_HW); bx <= Math.floor(pos.x + PLAYER_HW) && !supp; bx++)
+          for (let bz = Math.floor(pos.z - PLAYER_HW); bz <= Math.floor(pos.z + PLAYER_HW); bz++)
+            if (isSolid(bx, fy, bz)) supp = true;
+        if (!supp) { stepDown = false; vel.y -= GRAVITY * dt; }
+        else vel.y = -STEP_SPEED;
+      }
     } else {
       vel.y -= GRAVITY * dt;
       // Hold Space to keep climbing: the thrust fades in smoothly from takeoff
@@ -5523,6 +5541,11 @@ document.addEventListener("mouseup", (e) => {
     const dist = Math.hypot(dx, dy, dz) || 1;
     vel.set((dx / dist) * GRAPPLE_FLING, (dy / dist) * GRAPPLE_FLING, (dz / dist) * GRAPPLE_FLING);
     flingActive = true;
+    stepDown = false;
+    wasOnGround = false;
+    onGround = false;
+  } else {
+    stepDown = false;
   }
   grappleActive = false;
   grappleArrived = false;
