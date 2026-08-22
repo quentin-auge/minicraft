@@ -221,12 +221,12 @@ stays bright at distance, `placeable: true` so it
   (`stepDown` triggers only when the ground was solid the previous frame and is
   exactly one block below — jumps and tall drops keep normal gravity).
 - **Editing**: pointer-raycast block pick (DDA), infinite reach (`REACH`), white
-  `highlight` box on the targeted block. Left click places, right click breaks (both work while flying — build anchor tracks camera). Holding either button chains the action after 1s
-  (`CHAIN_HOLD`, specified in the order added then removed) at `CHAIN_RATE` (10/s):
-  the `editHold` map tracks each button's down state and a per-frame timer until
-  `CHAIN_HOLD` elapses, then fires every `1/CHAIN_RATE` using `dt`. Holding right
+  `highlight` box on the targeted block. Left click places, right click breaks (both work while flying — build anchor tracks camera). Holding left click is two-phase: while the mouse moves, it paints — each movement event places one block where the cursor aims, but only onto a block of a different kind than the selected one, and only within `CHAIN_RANGE` (4) blocks of any block already placed during this hold (`clickAnchors`, reset per press). If the mouse never moved during the hold, after 1s without moving (`leftTimer`) the hold latches into bridge mode (`leftStairs`): the staircase builder below starts immediately and keeps building until release — mouse movement mid-bridge is ignored, and once the mouse has moved during a hold (`leftEverMoved`) the bridge can never engage for that hold. Holding right
   digs a straight tunnel: each repeat breaks the live raycast `currentBlock`, so
-  removing one block exposes the next one behind it. Holding left grows a
+  removing one block exposes the next one behind it; moving the mouse while holding right starts the dig immediately (skipping the 1s gate), and chained breaks are limited to `CHAIN_RANGE` (4) blocks of any block already removed during this hold (`clickAnchors`). Holding either button chains the action after 1s
+  (`CHAIN_HOLD`) at `CHAIN_RATE` (10/s):
+  the `editHold` map tracks each button's down state and a per-frame timer until
+  `CHAIN_HOLD` elapses, then fires every `1/CHAIN_RATE` using `dt`. Holding left grows a
   straight walkable staircase: the click that starts the hold anchors
   `chainHome` where it landed (the block placed on the raycast target), and a
   cursor advances one cell per repeat along the straight line to the current

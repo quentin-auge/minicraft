@@ -2691,6 +2691,17 @@ const editHold = {
 let chainHome = null;
 let chainPlat = null;
 let chainSpin = 0;
+// Hold-left-click phases: moving the mouse paints blocks where aimed; after
+// 1s without moving, the hold latches into bridge (staircase) mode.
+let leftMoved = false;
+let leftTimer = 0;
+let leftStairs = false;
+let leftEverMoved = false;
+let rightMoved = false;
+// Positions of every block placed/removed during the current click hold:
+// chained edits are only allowed within CHAIN_RANGE blocks of any of them.
+let clickAnchors = [];
+const CHAIN_RANGE = 4;
 // The landing cell for the chain staircase: the grid cell exactly one step
 // ahead of the player at feet level. Over a cliff edge that prolongs the
 // terrain straight out at foot level instead of diving after the ground below.
@@ -5582,6 +5593,10 @@ document.addEventListener("mousemove", (e) => {
   yaw -= e.movementX * 0.0022;
   pitch -= e.movementY * 0.0022;
   pitch = Math.max(-Math.PI / 2 + 0.01, Math.min(Math.PI / 2 - 0.01, pitch));
+  leftMoved = true;
+  leftEverMoved = true;
+  leftTimer = 0;
+  rightMoved = true;
 });
 
 document.addEventListener("mousedown", (e) => {
@@ -5591,8 +5606,13 @@ document.addEventListener("mousedown", (e) => {
     h.down = true;
     h.t = 0;
     h.acc = 0;
-    if (e.button === 0) placeBlock(hotbarList()[selected]);
-    else breakBlock();
+    if (e.button === 0) {
+      leftMoved = false; leftTimer = 0; leftStairs = false; leftEverMoved = false; clickAnchors = [];
+      if (placeBlock(hotbarList()[selected])) clickAnchors.push([currentBlock.x + currentBlock.face[0], currentBlock.y + currentBlock.face[1], currentBlock.z + currentBlock.face[2]]);
+    } else {
+      rightMoved = false; clickAnchors = [];
+      if (currentBlock) { const b = [currentBlock.x, currentBlock.y, currentBlock.z]; breakBlock(); clickAnchors.push(b); }
+    }
   }
   if (e.button === 1) { e.preventDefault(); fireGrapple(); }
 });
@@ -5602,7 +5622,7 @@ document.addEventListener("mouseup", (e) => {
     h.down = false;
     h.t = 0;
     h.acc = 0;
-    if (e.button === 0) { chainHome = null; chainPlat = null; chainSpin = 0; }
+    if (e.button === 0) { chainHome = null; chainPlat = null; chainSpin = 0; leftStairs = false; leftTimer = 0; clickAnchors = []; }
   }
   if (e.button !== 1 || loading) return;
   if (!grappleActive) return;
@@ -5773,23 +5793,77 @@ function loop(now) {
     if (hudEnabled && jumpBoost > 1.01) { boostEl.textContent = "Speed x" + jumpBoost.toFixed(1); boostEl.style.display = "block"; }
     else boostEl.style.display = "none";
     if (locked) {
-      let didChain = false;
-      for (const b of [0, 2]) {
-        const h = editHold[b];
-        if (!h.down) continue;
-        h.t += dt;
-        const chained = h.t - CHAIN_HOLD;
-        if (chained < 0) continue;
-        const step = 1 / Math.min(MAX_CHAIN_RATE, CHAIN_RATE + CHAIN_ACCEL * chained);
-        h.acc += dt;
-        while (h.acc >= step) {
-          h.acc -= step;
-          if (!didChain) { beginPlaceBatch(); didChain = true; }
-          if (b === 0) chainStep();
-          else breakBlock();
+      if (editHold[0].down) {
+        if (!leftStairs && !leftEverMoved) {
+          if (!leftMoved) {
+            leftTimer += dt;
+            if (leftTimer >= 1) {
+              leftStairs = true;
+              editHold[0].t = CHAIN_HOLD;
+              editHold[0].acc = 0;
+            }
+          } else {
+            leftTimer = 0;
+          }
+        }
+        if (leftStairs) {
+          let didChain = false;
+          const h = editHold[0];
+          h.t += dt;
+          const chained = h.t - CHAIN_HOLD;
+          if (chained >= 0) {
+            const step = 1 / Math.min(MAX_CHAIN_RATE, CHAIN_RATE + CHAIN_ACCEL * chained);
+            h.acc += dt;
+            while (h.acc >= step) {
+              h.acc -= step;
+              if (!didChain) { beginPlaceBatch(); didChain = true; }
+              chainStep();
+            }
+          }
+          if (didChain) endPlaceBatch();
+        } else if (leftMoved && currentBlock && currentBlock.id !== hotbarList()[selected]) {
+          // Paint phase: place where aimed, only onto a block of a different
+          // kind, within CHAIN_RANGE of the last block placed on this click.
+          const wx = currentBlock.x + currentBlock.face[0];
+          const wy = currentBlock.y + currentBlock.face[1];
+          const wz = currentBlock.z + currentBlock.face[2];
+          const near = !clickAnchors.length || clickAnchors.some(([ax, ay, az]) =>
+            (wx - ax) ** 2 + (wy - ay) ** 2 + (wz - az) ** 2 <= CHAIN_RANGE * CHAIN_RANGE);
+          if (near && tryPlace(hotbarList()[selected], wx, wy, wz)) {
+            clickAnchors.push([wx, wy, wz]);
+            if (!chainHome) chainHome = [wx, wy, wz];
+          }
+          leftMoved = false; // one block per movement event
+        } else {
+          leftMoved = false;
         }
       }
-      if (didChain) endPlaceBatch();
+      // Holding right click chains digging; moving the mouse starts it right away.
+      if (editHold[2].down) {
+        const h = editHold[2];
+        if (rightMoved) h.t = Math.max(h.t, CHAIN_HOLD);
+        let didChain = false;
+        h.t += dt;
+        const chained = h.t - CHAIN_HOLD;
+        if (chained >= 0) {
+          const step = 1 / Math.min(MAX_CHAIN_RATE, CHAIN_RATE + CHAIN_ACCEL * chained);
+          h.acc += dt;
+          while (h.acc >= step) {
+            h.acc -= step;
+            if (!didChain) { beginPlaceBatch(); didChain = true; }
+            if (currentBlock) {
+              const { x, y, z } = currentBlock;
+              const near = !clickAnchors.length || clickAnchors.some(([ax, ay, az]) =>
+                (x - ax) ** 2 + (y - ay) ** 2 + (z - az) ** 2 <= CHAIN_RANGE * CHAIN_RANGE);
+              if (near) {
+                breakBlock();
+                clickAnchors.push([x, y, z]);
+              }
+            }
+          }
+          if (didChain) endPlaceBatch();
+        }
+      }
     } else {
       editHold[0].down = editHold[2].down = false;
       editHold[0].t = editHold[2].t = 0;
@@ -5797,6 +5871,8 @@ function loop(now) {
       chainHome = null;
       chainPlat = null;
       chainSpin = 0;
+      leftStairs = false;
+      leftTimer = 0;
     }
     if (grappleActive) {
       grappleCubes.visible = true;
