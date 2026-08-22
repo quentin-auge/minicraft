@@ -1994,13 +1994,13 @@ function tryStep(bx, by, bz) {
   if (!stepFromWater) {
     if (!onGround) return false;
     if (by !== Math.floor(pos.y)) return false;
-    if (isSolid(bx, by + 1, bz) || isSolid(bx, by + 2, bz)) return false;
+    if (isSolid(bx, by + 1, bz)) return false;
     stepUp = true;
     stepUpClearY = by + 1;
     vel.y = STEP_UP;
   } else {
     if (by !== Math.floor(pos.y) && by !== Math.floor(pos.y) + 1) return false;
-    if (isSolid(bx, by + 1, bz) || isSolid(bx, by + 2, bz)) return false;
+    if (isSolid(bx, by + 1, bz)) return false;
     if (by === Math.floor(pos.y)) {
       // Same-level shore climb: smooth glide up onto the block, no hop.
       stepUp = true;
@@ -2330,20 +2330,13 @@ function updatePlayer(dt) {
     vel.x += (move.x - vel.x) * Math.min(1, dt * 8);
     vel.z += (move.z - vel.z) * Math.min(1, dt * 8);
     if (stepUp) {
-      // Same-level shore raise while swimming: glide straight up onto the
-      // block, easing out at the top, no hop — same as a ground step.
-      if (blockedBody(pos.x, pos.y + 0.99, pos.z)) {
-        stepUp = false;
+      const glide = Math.max(STEP_UP_MIN, Math.min(STEP_UP, (stepUpClearY - pos.y) / STEP_UP_EASE));
+      vel.y = glide;
+      if (pos.y + glide * dt >= stepUpClearY) {
+        pos.y = stepUpClearY;
         vel.y = 0;
-      } else {
-        const glide = Math.max(STEP_UP_MIN, Math.min(STEP_UP, (stepUpClearY - pos.y) / STEP_UP_EASE));
-        vel.y = glide;
-        if (pos.y + glide * dt >= stepUpClearY) {
-          pos.y = stepUpClearY;
-          vel.y = 0;
-          stepUp = false;
-          onGround = true;
-        }
+        stepUp = false;
+        onGround = true;
       }
     } else if (stepHop) {
       vel.y -= GRAVITY * dt;
@@ -2401,23 +2394,13 @@ function updatePlayer(dt) {
       }
     }
     if (stepUp) {
-      // Non-jumping one-block climb: the feet glide straight up, easing out as the
-      // step's top approaches, and land exactly on it (no arc, no overshoot) while
-      // walking/running continues without a hop or stall.
-      if (blockedBody(pos.x, pos.y + 0.99, pos.z)) {
-        stepUp = false;
+      const glide = Math.max(STEP_UP_MIN, Math.min(STEP_UP, (stepUpClearY - pos.y) / STEP_UP_EASE));
+      vel.y = glide;
+      if (pos.y + glide * dt >= stepUpClearY) {
+        pos.y = stepUpClearY;
         vel.y = 0;
-      } else {
-        // Glide up steadily, easing out near the top, but never slower than
-        // STEP_UP_MIN so the climb always reaches and lands on the step.
-        const glide = Math.max(STEP_UP_MIN, Math.min(STEP_UP, (stepUpClearY - pos.y) / STEP_UP_EASE));
-        vel.y = glide;
-        if (pos.y + glide * dt >= stepUpClearY) {
-          pos.y = stepUpClearY;
-          vel.y = 0;
-          stepUp = false;
-          onGround = true;
-        }
+        stepUp = false;
+        onGround = true;
       }
     } else if (stepDown) {
       vel.y = -STEP_SPEED;
@@ -2785,19 +2768,30 @@ function chainPad(id, nx, ny, nz) {
 // chainStep resumes normal plateauing.
 function chainSpiral(dest, nx, ny, nz) {
   const dirs = [[1, 0], [0, -1], [-1, 0], [0, 1]];
-  const d = dirs[chainSpin % 4];
+  const perps = [[0, -1], [-1, 0], [0, 1], [1, 0]];
+  const idx = chainSpin % 4;
   chainSpin = (chainSpin + 1) % 4;
-  const oldY = ny;
-  nx += d[0];
-  nz += d[1];
+  const d = dirs[idx], p = perps[idx];
   if (ny > dest[1]) ny--;
   else if (ny < dest[1]) ny++;
   if (ny < 0 || ny > MAX_Y) return;
   if (nx < -WORLD_RADIUS || nx > WORLD_RADIUS || nz < -WORLD_RADIUS || nz > WORLD_RADIUS) return;
   chainHome = [nx, ny, nz];
   const id = hotbarList()[selected];
-  if (oldY !== ny) chainPad(id, nx, oldY, nz);
-  chainPad(id, nx, ny, nz);
+  tryPlace(id, nx, ny, nz);
+  const offs = [[d[0], d[1]], [d[0] * 2, d[1] * 2], [d[0] + p[0], d[1] + p[1]], [d[0] * 2 + p[0], d[1] * 2 + p[1]], [d[0] + p[0] * 2, d[1] + p[1] * 2], [d[0] * 2 + p[0] * 2, d[1] * 2 + p[1] * 2]];
+  for (const o of offs) {
+    const x = nx + o[0], z = nz + o[1];
+    if (x < -WORLD_RADIUS || x > WORLD_RADIUS || z < -WORLD_RADIUS || z > WORLD_RADIUS) continue;
+    tryPlace(id, x, ny, z);
+  }
+  const wallOffs = [[d[0] * 3, d[1] * 3], [d[0] * 3 + p[0], d[1] * 3 + p[1]], [d[0] * 3 + p[0] * 2, d[1] * 3 + p[1] * 2], [d[0] + p[0] * 3, d[1] + p[1] * 3], [d[0] * 2 + p[0] * 3, d[1] * 2 + p[1] * 3]];
+  for (const o of wallOffs) {
+    const x = nx + o[0], z = nz + o[1];
+    if (x < -WORLD_RADIUS || x > WORLD_RADIUS || z < -WORLD_RADIUS || z > WORLD_RADIUS) continue;
+    if (ny <= MAX_Y) tryPlace(id, x, ny, z);
+    if (ny + 1 <= MAX_Y) tryPlace(id, x, ny + 1, z);
+  }
 }
 function intersectsPlayer(bx, by, bz) {
   return (
