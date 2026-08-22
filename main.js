@@ -4939,9 +4939,11 @@ function updateCamera() {
 // HUD (dimension label, toast)
 // ---------------------------------------------------------------------------
 const dimEl = document.getElementById("dim");
+const boostEl = document.getElementById("boost");
 const toastEl = document.getElementById("toast");
 const bossBarEl = document.getElementById("bossbar");
 const bossFillEl = document.getElementById("bossfill");
+let hudEnabled = false;
 let toastTimer = 0;
 
 function updateBossBar() {
@@ -5525,6 +5527,11 @@ document.addEventListener("keydown", (e) => {
     return;
   }
   if (e.code === "KeyH" && !keys[e.code]) { openHelp(); e.preventDefault(); return; }
+  if (e.key === "?" && !isTyping(e)) {
+    hudEnabled = !hudEnabled;
+    if (!hudEnabled) boostEl.style.display = "none";
+    e.preventDefault();
+  }
   if (keys[e.code]) { e.preventDefault(); return; }
   keys[e.code] = true;
   if (e.code === "KeyK" && !loading) select(selected - 1);
@@ -5554,12 +5561,14 @@ document.getElementById("btnNew").addEventListener("click", async (e) => {
       if (existing.some((w) => w.name === name) && !confirm("Overwrite existing save '" + name.replace(/\.sav$/i, "") + "'?")) return;
       saveName = name;
       await buildWorld();
+      hudEnabled = false; boostEl.style.display = "none";
       enterGame();
       await saveToFile();
       return;
     }
     if (fileMode) await pickSaveFile();
     await buildWorld();
+    hudEnabled = false; boostEl.style.display = "none";
     enterGame();
   } finally {
     menuBusy = false;
@@ -5570,7 +5579,7 @@ document.getElementById("btnLoad").addEventListener("click", async (e) => {
   if (menuBusy || loading) return;
   menuBusy = true;
   try {
-    if (await loadSave()) enterGame();
+    if (await loadSave()) { hudEnabled = false; boostEl.style.display = "none"; enterGame(); }
   } finally {
     menuBusy = false;
   }
@@ -5606,6 +5615,8 @@ function loop(now) {
     }
     camera.rotation.set(pitch, yaw, 0);
     updateTarget();
+    if (hudEnabled && jumpBoost > 1.01) { boostEl.textContent = "Speed x" + jumpBoost.toFixed(1); boostEl.style.display = "block"; }
+    else boostEl.style.display = "none";
     if (locked) {
       for (const b of [0, 2]) {
         const h = editHold[b];
