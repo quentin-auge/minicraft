@@ -1928,6 +1928,7 @@ const JUMP_THRUST = 45;
 const JUMP_RAMP = 0.25;
 const JUMP_BOOST_ACCEL = 40;
 const JUMP_BOOST_TIME = 0.15;
+const JUMP_BUFFER = 0.2;
 const JUMP_FLING_DAMP = 6;
 const AIR_SPRINT = 1.35;
 const AIR_STEER = 2.5;
@@ -1970,6 +1971,7 @@ let airT = 0;
 let jumpBoost = 1;
 let jumpCount = 0;
 let jumpIdle = 0;
+let jumpBuffer = 0;
 let jumpOriginY = null;
 let jumpPeakY = null;
 let jumpHoldContinuous = false;
@@ -2267,7 +2269,9 @@ function updatePlayer(dt) {
   const spaceNow = !!keys["Space"];
   const spaceJustPressed = spaceNow && !prevSpace;
   const spaceJustReleased = !spaceNow && prevSpace;
+  jumpBuffer = Math.max(0, jumpBuffer - dt);
   if (spaceJustPressed) {
+    jumpBuffer = Math.max(jumpBuffer, JUMP_BUFFER + dt);
     lastSpaceDownY = pos.y;
     if (!onGround && !flying && !inWater) {
       jumpPeakY = pos.y;
@@ -2445,7 +2449,8 @@ function updatePlayer(dt) {
         if (airT <= JUMP_BOOST_TIME) vel.y += JUMP_BOOST_ACCEL * dt;
       }
     }
-    if (keys["Space"] && onGround) {
+    if (jumpBuffer > 0 && onGround) {
+      jumpBuffer = 0;
       vel.y = JUMP_MIN; onGround = false; stepDown = false; stepUp = false;
       jumpOriginY = pos.y; jumpPeakY = pos.y; jumpHoldContinuous = true; lastSpaceDownY = pos.y; airT = 0;
       jumpIdle = 0;
@@ -5683,6 +5688,7 @@ document.addEventListener("keydown", (e) => {
   }
   if (keys[e.code]) { e.preventDefault(); return; }
   keys[e.code] = true;
+  if (e.code === "Space") jumpBuffer = Math.max(jumpBuffer, JUMP_BUFFER + 0.02);
   if (e.code === "KeyK" && !loading) select(selected - 1);
   if (e.code === "KeyL" && !loading) select(selected + 1);
   if (e.code === "KeyF" && dim !== "end") { freeCam = !freeCam; if (freeCam) camPos.copy(camera.position); else exitFreeCam(); }
