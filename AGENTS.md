@@ -234,9 +234,10 @@ stays bright at distance, `placeable: true` so it
   straight walkable plateau staircase: the click that starts the hold anchors
   `chainHome` where it landed (the block placed on the raycast target), and a
   cursor advances one cell per repeat along the straight line to the current
-  feet cell (`feetDest`: the closest empty cell at the player's own feet level,
-  scanned `CHAIN_SCAN` up to 3 columns ahead along the yaw, refusing
-  player-overlapping cells; horizontal steps use the ray/grid crossing of
+  feet cell (`feetDest`: the grid cell exactly one step ahead of the player at
+  feet level, so the flight always lands one block in front of the feet and
+  from a cliff edge it prolongs the terrain straight out at foot level;
+  horizontal steps use the ray/grid crossing of
   `lineStep`). Instead of climbing or descending on every block, the flight
   splits into flat plateaus: the average run of a plateau is the horizontal
   distance divided by the vertical distance to the feet (`avg`, recomputed each
@@ -244,9 +245,10 @@ stays bright at distance, `placeable: true` so it
   the cursor stays level for a run of ~avg blocks then rises/falls one block
   per plateau edge — every hop is the walkable 1-block rise/fall of the
   auto-step. The cursor always
-  reaches the feet cell — the final block lands right in front of the player —
-  even when a cell along the way is blocked (the cursor skips on and the stairs
-  re-form); every placed cell lays its whole 2x2 `chainPad` (the cell plus its
+  reaches the feet cell — when within 1 block horizontally and vertically,
+  the final block snaps directly to the feet position — even when a cell along
+  the way is blocked (the cursor skips on and the stairs re-form); every placed
+  cell lays its whole 2x2 `chainPad` (the cell plus its
   `+x`/`+z` neighbours, with the trailing corner also filled on the diagonal
   arrival cell), so the staircase is a solid 2x2 footprint with no holes
   anywhere; when the average plateau would come out shorter than 1 block (the

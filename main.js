@@ -2546,7 +2546,6 @@ const CHAIN_HOLD = 1.0;
 const CHAIN_RATE = 10;
 const CHAIN_ACCEL = 10;
 const MAX_CHAIN_RATE = 60;
-const CHAIN_SCAN = 3;
 const editHold = {
   0: { down: false, t: 0, acc: 0 },
   2: { down: false, t: 0, acc: 0 },
@@ -2554,19 +2553,20 @@ const editHold = {
 let chainHome = null;
 let chainPlat = null;
 let chainSpin = 0;
-// Closest empty cell at the player's own feet level, straight ahead.
+// The landing cell for the chain staircase: the grid cell exactly one step
+// ahead of the player at feet level. Over a cliff edge that prolongs the
+// terrain straight out at foot level instead of diving after the ground below.
+// If that cell is solid, no build (the terrain is already there); if it's
+// water, no build (cannot bridge over liquid from below). The cell always
+// lands one block in front of the player's feet, on the ground.
 function feetDest() {
   const dx = -Math.sin(yaw), dz = -Math.cos(yaw);
-  const feetY = Math.floor(pos.y);
-  for (let i = 1; i <= CHAIN_SCAN; i++) {
-    const cx = Math.round(pos.x + dx * i);
-    const cz = Math.round(pos.z + dz * i);
-    if (Math.abs(cx) > WORLD_RADIUS || Math.abs(cz) > WORLD_RADIUS) continue;
-    if (getBlock(cx, feetY, cz) !== AIR) continue;
-    if (intersectsPlayer(cx, feetY, cz)) continue;
-    return [cx, feetY, cz];
-  }
-  return null;
+  const cx = Math.round(pos.x + dx);
+  const cz = Math.round(pos.z + dz);
+  if (Math.abs(cx) > WORLD_RADIUS || Math.abs(cz) > WORLD_RADIUS) return null;
+  const fy = Math.floor(pos.y);
+  if (getBlock(cx, fy, cz) !== AIR) return null;
+  return [cx, fy - 1, cz];
 }
 // Next grid cell along the straight ray from cell (fx,fy,fz) toward (dx,dy,dz).
 function lineStep(fx, fy, fz, dx, dy, dz) {
@@ -2605,11 +2605,19 @@ function chainStep() {
   if (!chainHome) return;
   const dest = feetDest();
   if (!dest) return;
-  if (chainHome[0] === dest[0] && chainHome[1] === dest[1] && chainHome[2] === dest[2]) return;
   let nx = chainHome[0], ny = chainHome[1], nz = chainHome[2];
   const dx = dest[0] - nx, dy = dest[1] - ny, dz = dest[2] - nz;
   const horiz = Math.hypot(dx, dz);
   const vert = Math.abs(dy);
+  const id = hotbarList()[selected];
+  if (horiz <= 1 && vert <= 1) {
+    chainPad(id, nx, ny, nz);
+    if (ny > dest[1]) for (let y = ny - 1; y >= dest[1]; y--) chainPad(id, dest[0], y, dest[2]);
+    else if (ny < dest[1]) for (let y = ny + 1; y <= dest[1]; y++) chainPad(id, dest[0], y, dest[2]);
+    chainPad(id, dest[0], dest[1], dest[2]);
+    chainHome = [dest[0], dest[1], dest[2]];
+    return;
+  }
   if (vert > 0 && horiz / vert < 1) {
     chainSpiral(dest, nx, ny, nz);
     return;
@@ -2617,7 +2625,6 @@ function chainStep() {
   const avg = vert > 0 ? horiz / vert : 1;
   if (chainPlat == null) chainPlat = avg;
   else chainPlat = Math.min(chainPlat, avg);
-  const id = hotbarList()[selected];
   const diag = dx !== 0 && dz !== 0;
   if (diag) {
     nx += dx > 0 ? 1 : -1;
@@ -2631,6 +2638,7 @@ function chainStep() {
     }
     if (nx === px && nz === pz) return;
   }
+  const oldY = ny;
   if (vert > 0) {
     chainPlat -= 1;
     if (chainPlat < 1) {
@@ -2642,6 +2650,7 @@ function chainStep() {
   if (ny < 0 || ny > MAX_Y) return;
   if (nx < -WORLD_RADIUS || nx > WORLD_RADIUS || nz < -WORLD_RADIUS || nz > WORLD_RADIUS) return;
   chainHome = [nx, ny, nz];
+  if (oldY !== ny) chainPad(id, nx, oldY, nz);
   chainPad(id, nx, ny, nz);
   if (dx !== 0 && dz !== 0 && nx === dest[0] && nz === dest[2]) chainPad(id, nx - 1, ny, nz - 1);
 }
@@ -2665,6 +2674,7 @@ function chainSpiral(dest, nx, ny, nz) {
   const dirs = [[1, 0], [0, -1], [-1, 0], [0, 1]];
   const d = dirs[chainSpin % 4];
   chainSpin = (chainSpin + 1) % 4;
+  const oldY = ny;
   nx += d[0];
   nz += d[1];
   if (ny > dest[1]) ny--;
@@ -2672,7 +2682,9 @@ function chainSpiral(dest, nx, ny, nz) {
   if (ny < 0 || ny > MAX_Y) return;
   if (nx < -WORLD_RADIUS || nx > WORLD_RADIUS || nz < -WORLD_RADIUS || nz > WORLD_RADIUS) return;
   chainHome = [nx, ny, nz];
-  chainPad(hotbarList()[selected], nx, ny, nz);
+  const id = hotbarList()[selected];
+  if (oldY !== ny) chainPad(id, nx, oldY, nz);
+  chainPad(id, nx, ny, nz);
 }
 function intersectsPlayer(bx, by, bz) {
   return (
