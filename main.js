@@ -1877,7 +1877,10 @@ function rebuildMeshes() {
 
 // Rebuild just the chunk(s) holding the given blocks (plus neighbours across
 // a chunk border), so editing cost stays tiny even in a 2x world.
+let refreshDefer = null;
 function refreshBlocks(coords) {
+  if (refreshDefer) { for (const c of coords) refreshDefer.push(c); return; }
+  if (placeBatch) { for (const c of coords) placeBatch.push(c); return; }
   const keys = new Set();
   for (const [x, , z] of coords) {
     const cx = chunkOf(x), cz = chunkOf(z);
@@ -2852,6 +2855,10 @@ const tntBombMats = materialsFor(TNT);
 const tntLit = new Map();
 const bursts = [];
 const flashes = [];
+const explosionQueue = [];
+let explosionBudgetMs = 7;
+let explosionsPerFrame = 64;
+const chainPending = new Set();
 
 function makeTNTBomb() {
   return new THREE.Mesh(tntBombGeo, tntBombMats);
@@ -2864,7 +2871,8 @@ function clearTNTVisual(t) {
   if (t.mesh) { scene.remove(t.mesh); t.mesh = null; }
 }
 
-function igniteTNT(bx, by, bz) {
+const CHAIN_FUSE = 0.05;
+function igniteTNT(bx, by, bz, fuse = FUSE_TIME) {
   const k = key(bx, by, bz);
   if (tntLit.has(k)) {
     const t = tntLit.get(k);
@@ -2876,7 +2884,7 @@ function igniteTNT(bx, by, bz) {
   const spr = makeFuseSprite();
   spr.position.set(bx + 0.5, by + 1.35, bz + 0.5);
   scene.add(spr);
-  const t = { bx, by, bz, px: bx + 0.5, py: by + 1.1, pz: bz + 0.5, fuse: FUSE_TIME, life: FUSE_TIME + 2, spr, mesh: null, stuck: false, ax: 0, ay: 0, az: 0 };
+  const t = { bx, by, bz, px: bx + 0.5, py: by + 1.1, pz: bz + 0.5, fuse, life: fuse + 2, spr, mesh: null, stuck: false, ax: 0, ay: 0, az: 0 };
   if (dim === "end" && dragon.mesh) {
     setBlock(bx, by, bz, AIR);
     refreshBlocks([[bx, by, bz]]);
@@ -2940,14 +2948,14 @@ function tickTNT(dt) {
       if (t.stuck) {
         clearTNTVisual(t);
         tntLit.delete(k);
-        explodeTNT(t.px, t.py, t.pz, true, true);
+        enqueueExplosion(t.px, t.py, t.pz, true, true);
       } else if (!dragon.mesh) {
         clearTNTVisual(t);
         tntLit.delete(k);
       } else if ((t.life -= dt) <= 0) {
         clearTNTVisual(t);
         tntLit.delete(k);
-        explodeTNT(t.px, t.py, t.pz, false, true);
+        enqueueExplosion(t.px, t.py, t.pz, false, true);
       }
       continue;
     }
@@ -2955,7 +2963,7 @@ function tickTNT(dt) {
     if (t.fuse <= 0) {
       clearTNTVisual(t);
       tntLit.delete(k);
-      explodeTNT(t.bx, t.by, t.bz, t.stuck);
+      enqueueExplosion(t.bx, t.by, t.bz, t.stuck, false);
     } else {
       drawFuseSprite(t.spr, t.fuse);
     }
@@ -2967,49 +2975,88 @@ function dragonBlastDamage(dist, pointBlank) {
   return DRAGON_FULL_DMG - (DRAGON_FULL_DMG - DRAGON_MIN_DMG) * Math.min(1, dist / DRAGON_HIT_DIST);
 }
 
+const CHAIN_DELAY = 50;
+function enqueueExplosion(x, y, z, pointBlank, homing = false, delay = 0) {
+  const due = delay ? performance.now() + delay : 0;
+  explosionQueue.push({ x, y, z, pointBlank, homing, due });
+}
 function explodeTNT(x, y, z, pointBlank, homing = false) {
-  const bx = Math.floor(x), by = Math.floor(y), bz = Math.floor(z);
-  if (pointBlank) spawnDragonBurst(x + 0.5, y + 0.5, z + 0.5);
-  else spawnExplosion(x + 0.5, y + 0.5, z + 0.5);
-  if (dim === "end" && dragon.mesh) {
-    const cd = Math.hypot(dragon.mesh.position.x - (x + 0.5), dragon.mesh.position.y - (y + 0.5), dragon.mesh.position.z - (z + 0.5));
-    damageDragon(dragonBlastDamage(cd, pointBlank));
-  }
-  if (homing) return;
+  enqueueExplosion(x, y, z, pointBlank, homing);
+}
+function processExplosionQueue() {
+  if (!explosionQueue.length) return;
+  const t0 = performance.now();
+  let processed = 0;
+  refreshDefer = [];
   glowDefer++;
-  setBlock(bx, by, bz, AIR);
-  const R = BLAST_RADIUS, R2 = R * R;
-  const affected = [];
-  for (let dx = -R; dx <= R; dx++)
-    for (let dy = -R; dy <= R; dy++)
-      for (let dz = -R; dz <= R; dz++) {
-        if (dx * dx + dy * dy + dz * dz > R2) continue;
-        const gx = bx + dx, gy = by + dy, gz = bz + dz;
-        const id = getBlock(gx, gy, gz);
-        if (id === AIR || id === WATER || id === LAVA) continue;
-        if (id === STONE && gy === 0) continue;
-        if (protectedBlocks.has(key(gx, gy, gz))) continue;
-        if (id === TNT) {
-          const tk = key(gx, gy, gz);
-          if (tntLit.has(tk)) {
-            const lt = tntLit.get(tk);
-            if (!lt.mesh) {
-              clearTNTVisual(lt);
-              tntLit.delete(tk);
-              explodeTNT(gx, gy, gz, lt.stuck);
-            }
-          } else {
-            igniteTNT(gx, gy, gz);
-          }
-          continue;
-        }
-        affected.push([gx, gy, gz]);
+  const batchKeys = new Set();
+  while (explosionQueue.length && processed < explosionsPerFrame && (performance.now() - t0) < explosionBudgetMs) {
+    const peek = explosionQueue[0];
+    if (peek.due && peek.due > performance.now()) break;
+    const { x, y, z, pointBlank, homing } = explosionQueue.shift();
+    const kShift = key(Math.floor(x), Math.floor(y), Math.floor(z));
+    if (chainPending.has(kShift)) chainPending.delete(kShift);
+    const cx = x + 0.5, cy = y + 0.5, cz = z + 0.5;
+    if (pointBlank) spawnDragonBurst(cx, cy, cz);
+    else spawnExplosion(cx, cy, cz);
+    if (dim === "end" && dragon.mesh) {
+      const cd = Math.hypot(dragon.mesh.position.x - cx, dragon.mesh.position.y - cy, dragon.mesh.position.z - cz);
+      damageDragon(dragonBlastDamage(cd, pointBlank));
+    }
+    if (homing) { processed++; continue; }
+    const bx = Math.floor(x), by = Math.floor(y), bz = Math.floor(z);
+    const k0 = key(bx, by, bz);
+    if (!protectedBlocks.has(k0) && !batchKeys.has(k0)) {
+      const id0 = getBlock(bx, by, bz);
+      if (id0 !== WATER && id0 !== LAVA && !(id0 === STONE && by === 0)) {
+        batchKeys.add(k0);
+        setBlock(bx, by, bz, AIR);
+        refreshDefer.push([bx, by, bz]);
       }
-  for (const [axc, ayc, azc] of affected) setBlock(axc, ayc, azc, AIR);
+    }
+    const R = BLAST_RADIUS, R2 = R * R;
+    for (let dx = -R; dx <= R; dx++) for (let dy = -R; dy <= R; dy++) for (let dz = -R; dz <= R; dz++) {
+      if (dx * dx + dy * dy + dz * dz > R2) continue;
+      const gx = bx + dx, gy = by + dy, gz = bz + dz;
+      if (gy < 0 || gy > MAX_Y) continue;
+      if (gx < -WORLD_RADIUS || gx > WORLD_RADIUS || gz < -WORLD_RADIUS || gz > WORLD_RADIUS) continue;
+      const kk = key(gx, gy, gz);
+      if (batchKeys.has(kk)) continue;
+      const id = getBlock(gx, gy, gz);
+      if (id === AIR || id === WATER || id === LAVA) continue;
+      if (id === STONE && gy === 0) continue;
+      if (protectedBlocks.has(kk)) continue;
+      if (id === TNT) {
+        if (tntLit.has(kk)) {
+          const lt = tntLit.get(kk);
+          if (!lt.mesh) {
+            if (chainPending.has(kk)) continue;
+            clearTNTVisual(lt);
+            tntLit.delete(kk);
+            chainPending.add(kk);
+            enqueueExplosion(gx, gy, gz, lt.stuck, false, CHAIN_DELAY);
+          }
+        } else {
+          if (chainPending.has(kk)) continue;
+          chainPending.add(kk);
+          enqueueExplosion(gx, gy, gz, false, false, CHAIN_DELAY);
+        }
+        continue;
+      }
+      batchKeys.add(kk);
+      setBlock(gx, gy, gz, AIR);
+      refreshDefer.push([gx, gy, gz]);
+    }
+    processed++;
+  }
   glowDefer--;
   if (glowDefer === 0 && glowDirtyDeferred) { glowDirtyDeferred = false; recomputeGlowClusters(); syncGlowLights(); }
-  refreshBlocks([[bx, by, bz], ...affected]);
-  queueSave();
+  const toRefresh = refreshDefer;
+  refreshDefer = null;
+  if (toRefresh.length) {
+    refreshBlocks(toRefresh);
+    queueSave();
+  }
 }
 
 function spawnDragonDeath(cx, cy, cz) {
@@ -5777,6 +5824,7 @@ function loop(now) {
       grappleHead.visible = false;
     }
     tickTNT(dt);
+    processExplosionQueue();
     tickEffects(dt);
     syncGlowLights(dt);
     if (portalCd > 0) portalCd -= dt;
