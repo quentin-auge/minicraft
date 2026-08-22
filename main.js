@@ -412,8 +412,11 @@ const worldGlowstoneSets = new WeakMap([
   [worlds.nether, glowstoneBlockSets.nether],
 ]);
 
-let portalDirty = true;   // any block edit forces a portal rescan
-let worldDirty = true;    // any block edit marks the world for autosave
+let portalDirty = true;
+let worldDirty = true;
+let glowDefer = 0;
+let glowDirtyDeferred = false;
+let placeBatch = null;
 
 function rebuildPortalBlocks() {
   for (const name of ["over", "end", "nether"]) {
@@ -447,7 +450,10 @@ function setBlock(x, y, z, id) {
     if (id !== GLOWSTONE) gv.delete(k);
   }
   if (id !== FLOWER) placedFlowers.delete(k);
-  if (wasG !== gs.has(k)) { recomputeGlowClusters(); syncGlowLights(); }
+  if (wasG !== gs.has(k)) {
+    if (glowDefer > 0) glowDirtyDeferred = true;
+    else { recomputeGlowClusters(); syncGlowLights(); }
+  }
   endMemo.dim = "";
   netherMemo.dim = "";
   portalDirty = true;
@@ -2625,8 +2631,8 @@ function breakBlock() {
   if (getBlock(x, y, z) === TNT) { igniteTNT(x, y, z); return; }
   if (getBlock(x, y, z) === WATER || getBlock(x, y, z) === LAVA) return;
   setBlock(x, y, z, AIR);
-  refreshBlocks([[x, y, z]]);
-  queueSave();
+  if (placeBatch) placeBatch.push([x, y, z]);
+  else { refreshBlocks([[x, y, z]]); queueSave(); }
 }
 function placeBlock(id) {
   if (!currentBlock) return false;
@@ -2650,9 +2656,18 @@ function tryPlace(id, px, py, pz) {
   if (id === FLOWER) placedFlowers.set(key(px, py, pz), { v: randomFlowerVariant(), a: Math.random() * Math.PI * 2 });
   if (id === GLOWSTONE) worldGlowVariants.get(world).set(key(px, py, pz), glowVariantNear(px, py, pz));
   setBlock(px, py, pz, id);
-  refreshBlocks([[px, py, pz]]);
-  queueSave();
+  if (placeBatch) placeBatch.push([px, py, pz]);
+  else { refreshBlocks([[px, py, pz]]); queueSave(); }
   return true;
+}
+function beginPlaceBatch() { placeBatch = []; glowDefer++; }
+function endPlaceBatch() {
+  if (!placeBatch) { glowDefer = Math.max(0, glowDefer - 1); return; }
+  const batch = placeBatch;
+  placeBatch = null;
+  glowDefer = Math.max(0, glowDefer - 1);
+  if (glowDefer === 0 && glowDirtyDeferred) { glowDirtyDeferred = false; recomputeGlowClusters(); syncGlowLights(); }
+  if (batch.length) { refreshBlocks(batch); queueSave(); }
 }
 
 // Holding left/right click for a moment chains actions, accelerating smoothly
@@ -2961,6 +2976,7 @@ function explodeTNT(x, y, z, pointBlank, homing = false) {
     damageDragon(dragonBlastDamage(cd, pointBlank));
   }
   if (homing) return;
+  glowDefer++;
   setBlock(bx, by, bz, AIR);
   const R = BLAST_RADIUS, R2 = R * R;
   const affected = [];
@@ -2990,6 +3006,8 @@ function explodeTNT(x, y, z, pointBlank, homing = false) {
         affected.push([gx, gy, gz]);
       }
   for (const [axc, ayc, azc] of affected) setBlock(axc, ayc, azc, AIR);
+  glowDefer--;
+  if (glowDefer === 0 && glowDirtyDeferred) { glowDirtyDeferred = false; recomputeGlowClusters(); syncGlowLights(); }
   refreshBlocks([[bx, by, bz], ...affected]);
   queueSave();
 }
@@ -5702,6 +5720,7 @@ function loop(now) {
     if (hudEnabled && jumpBoost > 1.01) { boostEl.textContent = "Speed x" + jumpBoost.toFixed(1); boostEl.style.display = "block"; }
     else boostEl.style.display = "none";
     if (locked) {
+      let didChain = false;
       for (const b of [0, 2]) {
         const h = editHold[b];
         if (!h.down) continue;
@@ -5712,10 +5731,12 @@ function loop(now) {
         h.acc += dt;
         while (h.acc >= step) {
           h.acc -= step;
+          if (!didChain) { beginPlaceBatch(); didChain = true; }
           if (b === 0) chainStep();
           else breakBlock();
         }
       }
+      if (didChain) endPlaceBatch();
     } else {
       editHold[0].down = editHold[2].down = false;
       editHold[0].t = editHold[2].t = 0;
