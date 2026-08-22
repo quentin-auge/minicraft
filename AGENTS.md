@@ -201,7 +201,7 @@ stays bright at distance, `placeable: true` so it
   air speed (`SPRINT × AIR_SPRINT`, so sprinting jumps travel further), walking
   stays at `WALK`, blended via `AIR_STEER` = 2.5, and with no input the
   horizontal momentum coasts with a
-  slow `JUMP_FLING_DAMP` (6) decay until you land (jump inertia `jumpBoost` stacks on consecutive sprint jumps, `jumpIdle` resets when stalled or idle 0.12s). Coyote time (`coyote` 0.18s) and jump buffer (`jumpBuffer` 0.25s) allow forgiving ground jumps (`prevSpace`/`spaceNow` tracking, `spaceJustPressed`/`spaceJustReleased` halves upward velocity on early release). Rebound on water: falling into water while holding Space while a recent jump is tracked (`jumpOriginY`/`jumpPeakY`/`lastSpaceDownY`/`jumpHoldContinuous`) bounces back to that height (`waterSurfaceTop` delta → `sqrt(2*GRAVITY*delta)`, sprint-boosted, `bounced` flag) instead of damping. Swimming ascent is doubled (`SWIM_ACCEL` 2.0, `FLOAT_SPEED` 3.6) with `SWIM_AREA`/`SWIM_BRAKE` surface easing. Debug HUD (`#debugHud`) shows pos/vel/onGround.
+   slow `JUMP_FLING_DAMP` (6) decay until you land (jump inertia `jumpBoost` stacks on consecutive sprint jumps, `jumpIdle` resets when stalled or idle 0.12s). Coyote time (`coyote` 0.18s) and jump buffer (`jumpBuffer` 0.25s) allow forgiving ground jumps (`prevSpace`/`spaceNow` tracking, `spaceJustPressed`/`spaceJustReleased` halves upward velocity on early release). Rebound on water/lava: falling into water/lava while holding Space while a recent jump is tracked (`jumpOriginY`/`jumpPeakY`/`lastSpaceDownY`/`jumpHoldContinuous`) bounces back to that height (`waterSurfaceTop` delta → `sqrt(2*GRAVITY*delta)`, sprint-boosted, `bounced` flag) instead of damping. Swimming: full-AABB water detection (`headInWater` checks `pos.y+0.01` to `pos.y+PLAYER_H-0.01` for WATER/LAVA), deep ascent `SWIM_ACCEL` 2.0, shallow hold at 65% immersed (`targetY = surface-1.17`, `err*4` spring with `SWIM_BRAKE*2`, `SWIM_AREA` 10) — player floats waist-chest deep, not feet-on-surface. Debug HUD (`#debugHud`) shows pos/vel/onGround.
   Respawn (`spawnPlayer`, used for new worlds, void falls and flying out of the
   level) scans the spawn column from `MAX_Y` down (skipping CLOUD) and stands
   on the top solid found, so the player never settles inside hills, mesas or
@@ -213,12 +213,9 @@ stays bright at distance, `placeable: true` so it
   top approaches (`STEP_UP_EASE`), and land exactly on the step's top
   (`stepUp`/`stepUpClearY`, no arc, no overshoot, gravity never takes over
   mid-climb), so walking/running continues with no hop or stall; the same climb
-  works out of water and lava while swimming (`inWater`) `tryStep` fires even without ground
-  contact (`stepFromWater`) when the blocking block is at the feet floor — the
-  player glides smoothly up onto the shore with the same `stepUp` raise, no
-  hop — so you can simply swim back up onto a shore
-  at the same level; a shore one block higher keeps the small coasting hop
-  via gravity (`stepHop`, `sqrt(2*GRAVITY*…)`, min `AUTO_JUMP`),
+   works out of water and lava while swimming (`inWater`) `tryStep` fires even without ground
+   contact (`stepFromWater`) when the blocking block is at the feet floor up to 2 blocks above (`fy` to `fy+2`, `isSolid(bx,by+1)` check) — the player glides smoothly up onto the shore with the same `stepUp` raise at same level, or hops (`stepHop`, `sqrt(2*GRAVITY*…)`, min `AUTO_JUMP`) for 1–2 blocks higher — so you can swim back up onto a shore
+   at the same level even when floating 65% deep; a shore 1–2 blocks higher still hops,
   shallow water and netherrack beaches included. Walking
   off a 1-block ledge glides down at constant `STEP_SPEED` instead of free-falling
   (`stepDown` triggers only when the ground was solid the previous frame and is
@@ -479,18 +476,7 @@ stays bright at distance, `placeable: true` so it
   and respawning every ~2–5 s; torn down on leaving the Nether) float up off
   the lava sea all around you. LAVA behaves like water: you auto-float
   to the
-  surface (`headInWater` treats LAVA like WATER, and both are non-solid so
-  you can wade in from any direction; falling in is damped on entry —
-  a downward plunge is damped on entry (`vel.y *= 0.3` on the first frame in water),
-  so jumping into a lake barely dips beneath the surface; ascent is a gentle linear speed-up
-  deep underwater — `vel.y` +`SWIM_ACCEL` 2.0 blocks/s² each second, so the
-  climb starts very slow and keeps building the whole way up (capped at
-  `SWIM_MAX` 64 via `waterSurfaceTop`, never a rocket); `SWIM_AREA` 10
-  blocks below the surface a steady deceleration — eased toward
-  `FLOAT_SPEED` 3.6 at `SWIM_BRAKE` 1.5/s — settles you back to a calm
-  drift (both the deep ascent `SWIM_ACCEL` 2.0 blocks/s² and the surface
-  `FLOAT_SPEED` are doubled speed, so rising to the surface is ~2x as fast; holding Shift while swimming
-  sprints at `SPRINT` like on land), LAVA
+   surface (`headInWater` full-AABB WATER/LAVA, non-solid so you can wade from any direction; damped entry `vel.y*=0.3`, barely dips; deep ascent `SWIM_ACCEL` 2.0 blocks/s² capped at `SWIM_MAX` 64 via `waterSurfaceTop`; shallow hold at 65% immersed (`targetY = surface-1.17`, `err*4` spring with `SWIM_BRAKE*2`, `SWIM_AREA` 10) — floats waist-chest deep, not feet-on-surface; Shift sprints at `SPRINT`), LAVA
   is placeable only onto another LAVA cell or directly on the fire above one,
   can't be removed, and TNT blasts never destroy
   LAVA. The Nether's auto-built return portal (`buildNetherPortal`, an obsidian

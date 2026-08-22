@@ -1999,15 +1999,14 @@ function tryStep(bx, by, bz) {
     stepUpClearY = by + 1;
     vel.y = STEP_UP;
   } else {
-    if (by !== Math.floor(pos.y) && by !== Math.floor(pos.y) + 1) return false;
+    const fy = Math.floor(pos.y);
+    if (by < fy || by > fy + 2) return false;
     if (isSolid(bx, by + 1, bz)) return false;
-    if (by === Math.floor(pos.y)) {
-      // Same-level shore climb: smooth glide up onto the block, no hop.
+    if (by === fy) {
       stepUp = true;
       stepUpClearY = by + 1;
       vel.y = STEP_UP;
     } else {
-      // One-block-higher shore in water: keep the small hop.
       vel.y = Math.max(AUTO_JUMP, Math.sqrt(2 * GRAVITY * Math.max(0.1, by + 1.05 - pos.y)));
       stepHop = true;
     }
@@ -2341,18 +2340,20 @@ function updatePlayer(dt) {
     } else if (stepHop) {
       vel.y -= GRAVITY * dt;
       if (vel.y <= 0 || onGround) stepHop = false;
-    } else {
-      const surface = waterSurfaceTop();
-      if (surface === -Infinity) {
-        vel.y -= GRAVITY * dt;
       } else {
-        const depth = Math.max(0, surface - (pos.y + 0.3));
-        if (depth <= SWIM_AREA) {
-          vel.y += (FLOAT_SPEED - vel.y) * Math.min(1, dt * SWIM_BRAKE);
+        const surface = waterSurfaceTop();
+        if (surface === -Infinity) {
+          vel.y -= GRAVITY * dt;
         } else {
-          vel.y += SWIM_ACCEL * dt;
+          const targetY = surface - 1.17;
+          const err = targetY - pos.y;
+          if (err > SWIM_AREA) {
+            vel.y += SWIM_ACCEL * dt;
+          } else {
+            const want = err * 4;
+            vel.y += (want - vel.y) * Math.min(1, dt * SWIM_BRAKE * 2);
+          }
         }
-      }
       vel.y = Math.min(Math.max(vel.y, -SWIM_MAX), SWIM_MAX);
     }
   } else {
@@ -2505,12 +2506,12 @@ function exitFreeCam() {
 
 function headInWater() {
   const hw = PLAYER_HW;
-  for (let i = 0; i < 2; i++) {
-    const py = pos.y + (i === 0 ? 0.3 : PLAYER_H - 0.4);
+  const y0 = Math.floor(pos.y + 0.01);
+  const y1 = Math.floor(pos.y + PLAYER_H - 0.01);
+  for (let y = y0; y <= y1; y++)
     for (let bx = Math.floor(pos.x - hw); bx <= Math.floor(pos.x + hw); bx++)
       for (let bz = Math.floor(pos.z - hw); bz <= Math.floor(pos.z + hw); bz++)
-        if (getBlock(bx, Math.floor(py), bz) === WATER || getBlock(bx, Math.floor(py), bz) === LAVA) return true;
-  }
+        if (getBlock(bx, y, bz) === WATER || getBlock(bx, y, bz) === LAVA) return true;
   return false;
 }
 
