@@ -3,7 +3,7 @@ import * as THREE from "three";
 // ---------------------------------------------------------------------------
 // Block definitions
 // ---------------------------------------------------------------------------
-const AIR = 0, GRASS = 1, DIRT = 2, STONE = 3, SAND = 4, LOG = 5, LEAVES = 6, WATER = 7, PLANKS = 8, GLASS = 9, TNT = 10, FLOWER = 11, PORTAL = 12, ENDSTONE = 13, CLOUD = 14, OBSIDIAN = 15, LAVA = 16, NETHERRACK = 17, SOULSAND = 18, GLOWSTONE = 20;
+const AIR = 0, GRASS = 1, DIRT = 2, STONE = 3, SAND = 4, LOG = 5, LEAVES = 6, WATER = 7, PLANKS = 8, GLASS = 9, TNT = 10, FLOWER = 11, PORTAL = 12, ENDSTONE = 13, CLOUD = 14, OBSIDIAN = 15, LAVA = 16, NETHERRACK = 17, SOULSAND = 18, MOON = 19, GLOWSTONE = 20, MOON_WATER = 21;
 
 const BLOCK_INFO = {
   [GRASS]:   { name: "Grass",    solid: true,  opaque: true,  placeable: true },
@@ -24,6 +24,8 @@ const BLOCK_INFO = {
   [LAVA]:{ name: "Lava", solid: false, opaque: false, placeable: true },
   [NETHERRACK]:{ name: "Netherrack", solid: true, opaque: true, placeable: true },
   [SOULSAND]:  { name: "Soul Sand",   solid: true, opaque: true, placeable: false },
+  [MOON]:     { name: "Moon",     solid: true,  opaque: true,  placeable: false },
+  [MOON_WATER]:{ name: "Moon Water", solid: false, opaque: false, placeable: false },
   [GLOWSTONE]:{ name: "Glowstone",  solid: true, opaque: true, placeable: true },
 };
 
@@ -256,6 +258,67 @@ const TEX = {
     ctx.fillStyle = "rgba(30,30,36,0.5)";
     for (let i = 0; i < 4; i++) ctx.fillRect(Math.random() * 14, Math.random() * 14, 3, 1);
   }),
+  moon: canvasTex((ctx) => {
+    ctx.fillStyle = "#7a7e82"; ctx.fillRect(0, 0, 16, 16);
+    for (let y = 0; y < 16; y++) for (let x = 0; x < 16; x++) {
+      const n = (Math.random() * 2 - 1) * 16 + (Math.random() * 2 - 1) * 8;
+      const v = 122 + n;
+      ctx.fillStyle = `rgb(${v | 0},${(v + 1) | 0},${(v + 2) | 0})`;
+      if (Math.random() < 0.58) ctx.fillRect(x, y, 1, 1);
+    }
+    const crater = (x, y, r, shade) => {
+      const g = ctx.createRadialGradient(x - r * 0.32, y - r * 0.32, r * 0.12, x, y, r);
+      g.addColorStop(0, `rgba(${shade[0] + 14},${shade[1] + 14},${shade[2] + 14},0.92)`);
+      g.addColorStop(0.30, `rgba(${shade[0]},${shade[1]},${shade[2]},0.95)`);
+      g.addColorStop(0.62, `rgba(${shade[0] - 16},${shade[1] - 16},${shade[2] - 16},0.96)`);
+      g.addColorStop(0.85, `rgba(${shade[0] - 28},${shade[1] - 28},${shade[2] - 28},0.97)`);
+      g.addColorStop(1, `rgba(${shade[0] + 8},${shade[1] + 8},${shade[2] + 8},0.88)`);
+      ctx.fillStyle = g; ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = "rgba(0,0,0,0.22)"; ctx.beginPath(); ctx.arc(x + r * 0.20, y + r * 0.22, r * 0.48, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = "rgba(255,255,255,0.06)"; ctx.beginPath(); ctx.arc(x - r * 0.26, y - r * 0.28, r * 0.16, 0, Math.PI * 2); ctx.fill();
+      ctx.strokeStyle = "rgba(70,72,74,0.42)"; ctx.lineWidth = 0.8; ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.stroke();
+    };
+    const shades = [[110,112,114],[104,106,108],[116,118,120],[98,100,102]];
+    crater(4.4, 4.7, 3.2, shades[0]);
+    crater(12.0, 5.1, 2.7, shades[1]);
+    crater(8.6, 11.0, 3.5, shades[2]);
+    crater(3.0, 12.4, 2.0, shades[3]);
+    crater(13.4, 11.8, 1.8, shades[0]);
+    crater(6.4, 8.4, 1.5, shades[1]);
+    crater(9.2, 3.4, 1.2, shades[2]);
+    for (let i = 0; i < 22; i++) {
+      const x = Math.random() * 16, y = Math.random() * 16;
+      const v = 86 + Math.random() * 32;
+      ctx.fillStyle = `rgba(${v | 0},${v | 0},${(v + 1) | 0},${0.14 + Math.random() * 0.16})`;
+      ctx.fillRect(x | 0, y | 0, 1, 1);
+    }
+  }),
+  moonwater: canvasTex((ctx) => {
+    ctx.fillStyle = "#7a7e82"; ctx.fillRect(0, 0, 16, 16);
+    for (let y = 0; y < 16; y++) for (let x = 0; x < 16; x++) {
+      const n = (Math.random() * 2 - 1) * 9;
+      const v = 122 + n;
+      ctx.fillStyle = `rgb(${v | 0},${(v + 1) | 0},${(v + 2) | 0})`;
+      if (Math.random() < 0.54) ctx.fillRect(x, y, 1, 1);
+    }
+    const craterLake = (x, y, r, s) => {
+      const g = ctx.createRadialGradient(x - r * 0.28, y - r * 0.28, r * 0.10, x, y, r);
+      g.addColorStop(0, `rgba(${s[0] - 8},${s[1] - 8},${s[2] - 6},0.95)`);
+      g.addColorStop(0.45, `rgba(${s[0] - 14},${s[1] - 14},${s[2] - 12},0.96)`);
+      g.addColorStop(0.78, `rgba(${s[0] + 6},${s[1] + 6},${s[2] + 8},0.96)`);
+      g.addColorStop(1, `rgba(${s[0] + 12},${s[1] + 12},${s[2] + 14},0.92)`);
+      ctx.fillStyle = g; ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fill();
+      ctx.strokeStyle = "rgba(88,92,98,0.38)"; ctx.lineWidth = 0.7; ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.stroke();
+    };
+    craterLake(8, 8, 4.2, [110, 112, 114]);
+    craterLake(4.5, 12.5, 2.0, [104, 106, 108]);
+    craterLake(12.8, 4.2, 1.7, [112, 114, 116]);
+    for (let i = 0; i < 12; i++) {
+      const v = 108 + Math.random() * 20;
+      ctx.fillStyle = `rgba(${v | 0},${v | 0},${(v + 1) | 0},0.13)`;
+      ctx.fillRect(Math.random() * 16 | 0, Math.random() * 16 | 0, 1, 1);
+    }
+  }),
   glowstone: canvasTex((ctx) => drawGlowMesh(ctx, GLOW_PALETTES[3])),
   flower: canvasTex((ctx) => {
     const petals = ["rgb(232,30,52)", "rgb(56,106,252)", "rgb(248,188,16)", "rgb(16,204,186)", "rgb(244,132,34)", "rgb(160,80,224)", "rgb(232,30,52)", "rgb(56,106,252)"];
@@ -314,6 +377,8 @@ function materialsFor(id) {
     case LAVA: return basicFace(TEX.lava, { fog: false });
     case NETHERRACK: return faceTex(TEX.netherrack);
     case SOULSAND: return faceTex(TEX.soulsand);
+    case MOON: return basicFace(TEX.moon, { fog: false });
+    case MOON_WATER: return basicFace(TEX.moonwater, { fog: false });
     case GLOWSTONE: return basicFace(TEX.glowstone, { fog: false });
     case PORTAL: return faceTex(TEX.portal);
     default: return faceTex(TEX.dirt);
@@ -337,7 +402,14 @@ const CLOUD_LAYER = 2.4 * MAX_TREE_H;
 const CLOUD_LAYERS = 3;
 const CLOUD_TOP = CLOUD_BASE + CLOUD_LAYERS * CLOUD_LAYER;
 const CLOUD_SPAN = CLOUD_TOP - CLOUD_BASE;
-const MOON_VIS_START = CLOUD_BASE + CLOUD_SPAN * 0.5;
+const MOON_THICK = 5;
+const MOON_Y = Math.min(MAX_Y - 1, CLOUD_TOP + CLOUD_SPAN);
+const MOON_R = WORLD_RADIUS;
+const MOON_FADE_START = CLOUD_BASE + CLOUD_SPAN * 5 / 8;
+const MOON_FADE_END = CLOUD_BASE + CLOUD_SPAN * 7 / 8;
+const MOON_BOTTOM = MOON_Y - MOON_R;
+const LAKES_FADE_START = MOON_FADE_END;
+const LAKES_FADE_END = MOON_Y;
 const LAND_RAISE = 20.0;
 const BASIN_SHORE = 1.5;
 const BASIN_DEPTH = 2.2;
@@ -843,6 +915,7 @@ function generateWorld() {
   carveRooms();
   stairEntrances();
   generateClouds();
+  generateMoon();
 }
 
 // Scatter solid white clouds you can climb on, made of a few overlapping 3D
@@ -884,6 +957,113 @@ function generateClouds() {
       }
     }
   }
+}
+
+let moonLakesGenerated = false;
+function generateMoon() {
+  const R = MOON_R;
+  const base = MOON_Y;
+  const R2 = R * R;
+  const inner = (R - MOON_THICK) * (R - MOON_THICK);
+  for (let x = -R; x <= R; x++) for (let z = -R; z <= R; z++) {
+    const d2 = x * x + z * z;
+    if (d2 > R2) continue;
+    const h = Math.floor(Math.sqrt(R2 - d2));
+    for (let y = base - MOON_THICK + 1; y <= base; y++) {
+      if (y < 0 || y > MAX_Y) continue;
+      setBlock(x, y, z, MOON);
+    }
+    for (let y = base - h; y < base - MOON_THICK + 1; y++) {
+      const dy = base - y;
+      const dist2 = d2 + dy * dy;
+      if (dist2 <= R2 && dist2 >= inner) {
+        if (y < 0 || y > MAX_Y) continue;
+        setBlock(x, y, z, MOON);
+      }
+    }
+  }
+  moonLakesGenerated = false;
+}
+function generateMoonLakes() {
+  if (moonLakesGenerated) return;
+  const R = MOON_R;
+  const base = MOON_Y;
+  const R2 = R * R;
+  const lakeN = 6;
+  const w = worlds.over;
+  const ct = colTops.over;
+  moonLakesChunkSet.clear();
+  for (let i = 0; i < lakeN; i++) {
+    const a = hash2(i, 11, seed + 9211) * Math.PI * 2;
+    const r = Math.sqrt(hash2(i, 12, seed + 9212)) * (R * 0.66);
+    const cx = Math.round(Math.cos(a) * r);
+    const cz = Math.round(Math.sin(a) * r);
+    const cr = 4 + Math.floor(hash2(i, 13, seed + 9213) * 4);
+    for (let dx = -cr - 1; dx <= cr + 1; dx++) for (let dz = -cr - 1; dz <= cr + 1; dz++) {
+      const ang = Math.atan2(dz, dx);
+      const noise = (hash2(cx + dx, cz + dz, seed + 9220) - 0.5) * 1.8;
+      const rr = cr + noise + Math.sin(ang * 3 + i) * 0.7;
+      if (dx * dx + dz * dz > rr * rr) continue;
+      const x = cx + dx, z = cz + dz;
+      const d2 = x * x + z * z;
+      if (d2 > R2) continue;
+      const h = Math.floor(Math.sqrt(R2 - d2));
+      if (h === 0) continue;
+      const bottom = base - h;
+      const ci = colTopIdx(x, z);
+      if (base > ct[ci]) ct[ci] = base;
+      moonLakesChunkSet.add(chunkOf(x) + "_" + chunkOf(z));
+      for (let y = bottom; y <= base; y++) {
+        if (y < 0 || y > MAX_Y) continue;
+        w.set(key(x, y, z), MOON_WATER);
+      }
+    }
+  }
+  portalDirty = true;
+  worldDirty = true;
+  moonLakesGenerated = true;
+}
+function removeMoonLakes() {
+  if (!moonLakesGenerated) return;
+  const R = MOON_R;
+  const base = MOON_Y;
+  const R2 = R * R;
+  const inner = (R - MOON_THICK) * (R - MOON_THICK);
+  const w = worlds.over;
+  for (let i = 0; i < 6; i++) {
+    const a = hash2(i, 11, seed + 9211) * Math.PI * 2;
+    const r = Math.sqrt(hash2(i, 12, seed + 9212)) * (R * 0.66);
+    const cx = Math.round(Math.cos(a) * r);
+    const cz = Math.round(Math.sin(a) * r);
+    const cr = 4 + Math.floor(hash2(i, 13, seed + 9213) * 4);
+    for (let dx = -cr - 1; dx <= cr + 1; dx++) for (let dz = -cr - 1; dz <= cr + 1; dz++) {
+      const ang = Math.atan2(dz, dx);
+      const noise = (hash2(cx + dx, cz + dz, seed + 9220) - 0.5) * 1.8;
+      const rr = cr + noise + Math.sin(ang * 3 + i) * 0.7;
+      if (dx * dx + dz * dz > rr * rr) continue;
+      const x = cx + dx, z = cz + dz;
+      const d2 = x * x + z * z;
+      if (d2 > R2) continue;
+      const h = Math.floor(Math.sqrt(R2 - d2));
+      if (h === 0) continue;
+      const bottom = base - h;
+      for (let y = bottom; y <= base; y++) {
+        if (y < 0 || y > MAX_Y) continue;
+        const k = key(x, y, z);
+        if (y >= base - MOON_THICK + 1) w.set(k, MOON);
+        else {
+          const dy = base - y;
+          const dist2 = d2 + dy * dy;
+          if (dist2 <= R2 && dist2 >= inner) w.set(k, MOON);
+          else w.delete(k);
+        }
+      }
+    }
+  }
+  portalDirty = true;
+  worldDirty = true;
+  rebuildColTops("over");
+  moonLakesGenerated = false;
 }
 
 function generateEnd() {
@@ -1359,7 +1539,7 @@ const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x87ceeb);
 scene.fog = new THREE.Fog(0x87ceeb, 60, 160);
 
-const camera = new THREE.PerspectiveCamera(75, innerWidth / innerHeight, 0.1, 900);
+  const camera = new THREE.PerspectiveCamera(75, innerWidth / innerHeight, 0.1, 1500);
 camera.rotation.order = "YXZ";
 
 const renderer = new THREE.WebGLRenderer({ antialias: true });
@@ -1802,7 +1982,14 @@ function rebuildChunk(cx, cz) {
   for (let x = x0; x <= x1; x++)
     for (let z = z0; z <= z1; z++) {
       const ct = colTops[dim][colTopIdx(x, z)];
-      for (let y = 0; y <= ct; y++) {
+      if (ct === 0 && getBlock(x, 0, z) === AIR) continue;
+      const yRanges = dim !== "over" ? [[0, ct]] : (() => {
+        const rs = [[0, Math.min(ct, 120)]];
+        if (ct >= CLOUD_BASE) rs.push([Math.max(121, CLOUD_BASE), Math.min(ct, CLOUD_TOP)]);
+        if (ct >= MOON_BOTTOM) rs.push([Math.max(CLOUD_TOP + 1, MOON_BOTTOM), ct]);
+        return rs;
+      })();
+      for (const [y0r, y1r] of yRanges) for (let y = y0r; y <= y1r; y++) {
         const id = getBlock(x, y, z);
         if (id === AIR || !BLOCK_INFO[id]) continue;
         if (id === FLOWER) { flowers.push([x, y, z]); continue; }
@@ -1902,6 +2089,23 @@ function streamChunks() {
       if (wz * CHUNK > WORLD_RADIUS || wz * CHUNK + CHUNK - 1 < -WORLD_RADIUS) continue;
       keep.add(wx + "_" + wz);
     }
+  const ax = freeCam ? camPos.x : pos.x, ay = freeCam ? camPos.y : pos.y, az = freeCam ? camPos.z : pos.z;
+  const nearMoon = dim === "over" && (() => {
+    const dx = ax, dy = ay - MOON_Y, dz = az;
+    return dx * dx + dy * dy + dz * dz < (MOON_R + 120) * (MOON_R + 120);
+  })();
+  if (nearMoon) {
+    const minC = Math.floor(-WORLD_RADIUS / CHUNK), maxC = Math.floor(WORLD_RADIUS / CHUNK);
+    for (let wx = minC; wx <= maxC; wx++) for (let wz = minC; wz <= maxC; wz++) {
+      if (wx * CHUNK > WORLD_RADIUS || wx * CHUNK + CHUNK - 1 < -WORLD_RADIUS) continue;
+      if (wz * CHUNK > WORLD_RADIUS || wz * CHUNK + CHUNK - 1 < -WORLD_RADIUS) continue;
+      const x0 = wx * CHUNK, x1 = x0 + CHUNK - 1, z0 = wz * CHUNK, z1 = z0 + CHUNK - 1;
+      const cx0 = x0 <= 0 && 0 <= x1 ? 0 : (x0 > 0 ? x0 : x1);
+      const cz0 = z0 <= 0 && 0 <= z1 ? 0 : (z0 > 0 ? z0 : z1);
+      if (cx0 * cx0 + cz0 * cz0 > MOON_R * MOON_R) continue;
+      keep.add(wx + "_" + wz);
+    }
+  }
   for (const [ck, meshes] of [...chunkMeshes]) {
     if (!keep.has(ck)) { disposeChunkMeshes(meshes); chunkMeshes.delete(ck); }
   }
@@ -1969,6 +2173,9 @@ function refreshBlocks(coords) {
   }
 }
 
+let moonLakesVisible = false;
+let moonLakesRebuildQueue = [];
+let moonLakesChunkSet = new Set();
 function isExposed(x, y, z) {
   const id = getBlock(x, y, z);
   const info = BLOCK_INFO[id];
@@ -1976,6 +2183,9 @@ function isExposed(x, y, z) {
   const dirs = [[1,0,0],[-1,0,0],[0,1,0],[0,-1,0],[0,0,1],[0,0,-1]];
   for (const [dx, dy, dz] of dirs) {
     const n = getBlock(x + dx, y + dy, z + dz);
+    if ((id === MOON && n === MOON_WATER) || (id === MOON_WATER && n === MOON)) {
+      if (!moonLakesVisible) continue;
+    }
     const ninfo = BLOCK_INFO[n];
     if (!ninfo) return true;
     if (!ninfo.opaque) return true;
@@ -2058,7 +2268,8 @@ const keys = {};
 
 function spawnPlayer() {
   for (let y = MAX_Y; y > 0; y--) {
-    if (getBlock(0, y, 0) === CLOUD) continue;
+    const b = getBlock(0, y, 0);
+    if (b === CLOUD || b === MOON) continue;
     if (isSolid(0, y, 0)) {
       pos.set(0.5, y + 1.01, 0.5);
       break;
@@ -2086,16 +2297,11 @@ function tryStep(bx, by, bz) {
     vel.y = STEP_UP;
   } else {
     const fy = Math.floor(pos.y);
-    if (by < fy || by > fy + 2) return false;
+    if (by !== fy && by !== fy + 1) return false;
     if (isSolid(bx, by + 1, bz)) return false;
-    if (by === fy) {
-      stepUp = true;
-      stepUpClearY = by + 1;
-      vel.y = STEP_UP;
-    } else {
-      vel.y = Math.max(AUTO_JUMP, Math.sqrt(2 * GRAVITY * Math.max(0.1, by + 1.05 - pos.y)));
-      stepHop = true;
-    }
+    stepUp = true;
+    stepUpClearY = by + 1;
+    vel.y = STEP_UP;
   }
   onGround = false;
   stepDown = false;
@@ -2108,7 +2314,7 @@ function moveAxisX(dx) {
   const dir = dx > 0 ? 1 : -1;
   const edge = dir > 0 ? pos.x + PLAYER_HW : pos.x - PLAYER_HW;
   const cellX = Math.floor(edge);
-  for (let by = Math.floor(pos.y); by <= Math.floor(pos.y + PLAYER_H); by++)
+  for (let by = Math.floor(pos.y + PLAYER_H); by >= Math.floor(pos.y); by--)
     for (let bz = Math.floor(pos.z - PLAYER_HW); bz <= Math.floor(pos.z + PLAYER_HW); bz++) {
       if (!isSolid(cellX, by, bz)) continue;
       if (dir > 0 && edge > cellX) {
@@ -2127,7 +2333,7 @@ function moveAxisZ(dz) {
   const dir = dz > 0 ? 1 : -1;
   const edge = dir > 0 ? pos.z + PLAYER_HW : pos.z - PLAYER_HW;
   const cellZ = Math.floor(edge);
-  for (let by = Math.floor(pos.y); by <= Math.floor(pos.y + PLAYER_H); by++)
+  for (let by = Math.floor(pos.y + PLAYER_H); by >= Math.floor(pos.y); by--)
     for (let bx = Math.floor(pos.x - PLAYER_HW); bx <= Math.floor(pos.x + PLAYER_HW); bx++) {
       if (!isSolid(bx, by, cellZ)) continue;
       if (dir > 0 && edge > cellZ) {
@@ -2176,6 +2382,7 @@ function fireGrapple() {
   camera.getWorldDirection(dir);
   const b = pickBlock(camera.position, dir, true);
   if (!b) return;
+  if ((b.id === MOON || b.id === MOON_WATER) && camera.position.y < MOON_FADE_START) return;
   const tx = b.x + 0.5, ty = b.y + 1.001, tz = b.z + 0.5;
   const sx = pos.x, sy = pos.y + 0.3, sz = pos.z;
   const distEye = Math.hypot(tx - sx, ty - sy, tz - sz);
@@ -2377,7 +2584,7 @@ function updatePlayer(dt) {
     for (let bx = Math.floor(pos.x - PLAYER_HW); bx <= Math.floor(pos.x + PLAYER_HW); bx++)
       for (let bz = Math.floor(pos.z - PLAYER_HW); bz <= Math.floor(pos.z + PLAYER_HW); bz++) {
         const lid = getBlock(bx, surface - 1, bz);
-        if (lid === WATER || lid === LAVA) isLiquid = true;
+        if (lid === WATER || lid === LAVA || lid === MOON_WATER) isLiquid = true;
       }
     if (isLiquid && surface !== -Infinity) {
       let target = null;
@@ -2628,8 +2835,10 @@ function headInWater() {
   const y1 = Math.floor(pos.y + PLAYER_H - 0.01);
   for (let y = y0; y <= y1; y++)
     for (let bx = Math.floor(pos.x - hw); bx <= Math.floor(pos.x + hw); bx++)
-      for (let bz = Math.floor(pos.z - hw); bz <= Math.floor(pos.z + hw); bz++)
-        if (getBlock(bx, y, bz) === WATER || getBlock(bx, y, bz) === LAVA) return true;
+      for (let bz = Math.floor(pos.z - hw); bz <= Math.floor(pos.z + hw); bz++) {
+        const id = getBlock(bx, y, bz);
+        if (id === WATER || id === LAVA || id === MOON_WATER) return true;
+      }
   return false;
 }
 
@@ -2640,7 +2849,7 @@ function waterSurfaceTop() {
       const ct = colTops[dim][colTopIdx(bx, bz)];
       for (let y = ct; y >= 0; y--) {
         const id = getBlock(bx, y, bz);
-        if (id === WATER || id === LAVA) {
+        if (id === WATER || id === LAVA || id === MOON_WATER) {
           if (y + 1 > top) top = y + 1;
           break;
         }
@@ -2667,7 +2876,7 @@ function pickBlock(origin, dir, skipLiquid) {
   for (let i = 0; i < 1024; i++) {
     if (x < -WORLD_RADIUS || x > WORLD_RADIUS || z < -WORLD_RADIUS || z > WORLD_RADIUS || y < 0 || y > MAX_Y) break;
     const id = getBlock(x, y, z);
-    if (id !== AIR && !(skipLiquid && (id === WATER || id === LAVA))) return { x, y, z, id, face };
+    if (id !== AIR && !(skipLiquid && (id === WATER || id === LAVA || id === MOON_WATER))) return { x, y, z, id, face };
     if (tMaxX < tMaxY && tMaxX < tMaxZ) {
       x += stepX; tMaxX += tDeltaX; face = [-stepX, 0, 0];
     } else if (tMaxY < tMaxZ) {
@@ -4209,7 +4418,8 @@ function resolveSpawn(sx, sy, sz) {
   }
   for (let y = MAX_Y; y > 0; y--) {
     const fx = Math.floor(sx), fz = Math.floor(sz);
-    if (getBlock(fx, y, fz) === CLOUD) continue;
+    const bb = getBlock(fx, y, fz);
+    if (bb === CLOUD || bb === MOON) continue;
     if (isSolid(fx, y, fz) && bodyClear(fx + 0.5, y + 1.01, fz + 0.5) && !inPortalBody(fx + 0.5, y + 1.01, fz + 0.5))
       return { x: fx + 0.5, y: y + 1.01, z: fz + 0.5 };
   }
@@ -5176,6 +5386,14 @@ function deserialize(buf) {
   rebuildHotbar();
   recomputeGlowClusters();
   syncGlowLights();
+  moonLakesGenerated = false;
+  moonLakesChunkSet.clear();
+  for (const [k, id] of worlds.over) if (id === MOON_WATER) {
+    moonLakesGenerated = true;
+    const [x, , z] = keyXYZ(k);
+    moonLakesChunkSet.add(chunkOf(x) + "_" + chunkOf(z));
+  }
+  moonLakesVisible = false;
 }
 
 function canSave() {
@@ -6046,6 +6264,58 @@ function loop(now) {
       skyStars.material.opacity = s;
       skyStars.position.copy(camera.position);
       skyStars.visible = s > 0.01;
+      const moonSpan = MOON_FADE_END - MOON_FADE_START;
+      let ms = (y - MOON_FADE_START) / (moonSpan * 0.9);
+      ms = Math.max(0, Math.min(1, ms));
+      ms = ms * ms * (3 - 2 * ms);
+      if (typeMats.has(MOON)) for (const mm of typeMats.get(MOON)) { mm.opacity = ms; mm.transparent = ms < 0.99; mm.depthWrite = ms >= 0.99; }
+      if (!moonLakesGenerated && y >= MOON_FADE_END) {
+        generateMoonLakes();
+        for (const ck of moonLakesChunkSet) {
+          if (chunkMeshes.has(ck)) {
+            const [cx, cz] = ck.split("_").map(Number);
+            moonLakesRebuildQueue.push([cx, cz]);
+          }
+        }
+      } else if (moonLakesGenerated && y < MOON_FADE_END) {
+        const toRebuild = new Set(moonLakesChunkSet);
+        removeMoonLakes();
+        moonLakesVisible = false;
+        moonLakesRebuildQueue = [];
+        for (const ck of toRebuild) {
+          if (chunkMeshes.has(ck)) {
+            const [cx, cz] = ck.split("_").map(Number);
+            moonLakesRebuildQueue.push([cx, cz]);
+          }
+        }
+      }
+      if (typeMats.has(MOON_WATER)) {
+        let ls = (y - LAKES_FADE_START) / (LAKES_FADE_END - LAKES_FADE_START);
+        ls = Math.max(0, Math.min(1, ls));
+        ls = ls * ls * (3 - 2 * ls);
+        const wantLakes = ls >= 0.01;
+        if (wantLakes !== moonLakesVisible) {
+          moonLakesVisible = wantLakes;
+          for (const ck of moonLakesChunkSet) {
+            if (chunkMeshes.has(ck)) {
+              const [cx, cz] = ck.split("_").map(Number);
+              moonLakesRebuildQueue.push([cx, cz]);
+            }
+          }
+        }
+        const useMoon = !wantLakes;
+        for (const mm of typeMats.get(MOON_WATER)) {
+          if (mm.map !== (useMoon ? TEX.moon : TEX.moonwater)) { mm.map = useMoon ? TEX.moon : TEX.moonwater; mm.needsUpdate = true; }
+          const o = useMoon ? ms : ls;
+          mm.opacity = o; mm.transparent = o < 0.99; mm.depthWrite = o >= 0.99;
+        }
+      }
+      if (moonLakesRebuildQueue.length) {
+        for (let i = 0; i < 4 && moonLakesRebuildQueue.length; i++) {
+          const [cx, cz] = moonLakesRebuildQueue.shift();
+          rebuildChunk(cx, cz);
+        }
+      }
     }
 
     // Gentle water shimmer
