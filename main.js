@@ -2543,6 +2543,7 @@ function updateGrapple(dt) {
 function updatePlayer(dt) {
   if (grappleActive && updateGrapple(dt)) return;
   if (dim === "end") flying = false;
+  const g = (dim === "over" && pos.y >= MOON_Y - MOON_R) ? GRAVITY * 0.5 : GRAVITY;
   const fwd = new THREE.Vector3(-Math.sin(yaw), 0, -Math.cos(yaw));
   const right = new THREE.Vector3(Math.cos(yaw), 0, -Math.sin(yaw));
   const move = new THREE.Vector3();
@@ -2653,12 +2654,12 @@ function updatePlayer(dt) {
         onGround = true;
       }
     } else if (stepHop) {
-      vel.y -= GRAVITY * dt;
+      vel.y -= g * dt;
       if (vel.y <= 0 || onGround) stepHop = false;
       } else {
         const surface = waterSurfaceTop();
         if (surface === -Infinity) {
-          vel.y -= GRAVITY * dt;
+          vel.y -= g * dt;
         } else {
           const targetY = surface - 1.17;
           const err = targetY - pos.y;
@@ -2719,18 +2720,18 @@ function updatePlayer(dt) {
         onGround = true;
       }
     } else if (stepDown) {
-      if (flingActive) { stepDown = false; vel.y -= GRAVITY * dt; }
+      if (flingActive) { stepDown = false; vel.y -= g * dt; }
       else {
         const fy = Math.floor(pos.y) - 1;
         let supp = false;
         for (let bx = Math.floor(pos.x - PLAYER_HW); bx <= Math.floor(pos.x + PLAYER_HW) && !supp; bx++)
           for (let bz = Math.floor(pos.z - PLAYER_HW); bz <= Math.floor(pos.z + PLAYER_HW); bz++)
             if (isSolid(bx, fy, bz)) supp = true;
-        if (!supp) { stepDown = false; vel.y -= GRAVITY * dt; }
+        if (!supp) { stepDown = false; vel.y -= g * dt; }
         else vel.y = -STEP_SPEED;
       }
     } else {
-      vel.y -= GRAVITY * dt;
+      vel.y -= g * dt;
       // Hold Space to keep climbing: the thrust fades in smoothly from takeoff
       // (no hard threshold), so a quick tap barely climbs while a hold engages
       // immediately instead of after a dead delay.

@@ -220,7 +220,9 @@ stays bright at distance, `placeable: true` so it
   appear (`onMoon`, `pos.y >= MOON_FADE_START`, tracked by `hotbarMoon`) the
   Water slot holds MOON_WATER and the Flower slot holds GLOWSTONE; the hotbar
   is rebuilt on every dimension change, load and new world.)
-- **Player**: AABB collision, gravity (`GRAVITY = 37.44`, +20% twice), jump, walk/sprint, fly mode, swimming,
+- **Player**: AABB collision, gravity (`GRAVITY = 37.44`, +20% twice; halved
+  in the Overworld once the player rises to the bottom of the Moon sphere,
+  `pos.y >= MOON_Y - MOON_R`), jump, walk/sprint, fly mode, swimming,
   free-cam (spectator). Third-person-style first-person camera, yaw/pitch.
   While flying (F), the build anchor tracks the camera position, so placing and
   breaking blocks works from the air just like on the ground and the hold-left
