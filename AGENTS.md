@@ -129,7 +129,7 @@ small Python server for saving/loading worlds.
   (non-solid, animated opacity; WATER and LAVA are placeable only
   onto a cell already holding the same liquid — water on water, lava
   on lava — and nothing else can be placed into a liquid cell
-  or stacked directly on a liquid surface;
+  (but any block may be stacked directly on a liquid surface);
   they cannot be removed — breaking one does nothing), TNT, FLOWER (decorative non-solid, built from
   1/30-size cubes in a 30×30×30 grid filling exactly one block cell, geometry
   centered on the cell so it sits on the ground — a thin green stem with two
@@ -260,7 +260,10 @@ stays bright at distance, `placeable: true` so it
   (`stepDown` triggers only when the ground was solid the previous frame and is
   exactly one block below — jumps and tall drops keep normal gravity).
 - **Editing**: pointer-raycast block pick (DDA), infinite reach (`REACH`), white
-  `highlight` box on the targeted block. Left click places, right click breaks (both work while flying — build anchor tracks camera). Holding left click is two-phase: while the mouse moves, it paints — each movement event places one block where the cursor aims, but only onto a block of a different kind than the selected one, and only within `CHAIN_RANGE` (4) blocks of any block already placed during this hold (`clickAnchors`, reset per press). If the mouse never moved during the hold, after 1s without moving (`leftTimer`) the hold latches into bridge mode (`leftStairs`): the staircase builder below starts immediately and keeps building until release — mouse movement mid-bridge is ignored, and once the mouse has moved during a hold (`leftEverMoved`) the bridge can never engage for that hold. Holding right
+  `highlight` box on the targeted block. The pick skips liquids (`pickBlock(..., skipLiquid)`)
+  so aiming at water/lava/moon water targets the solid block behind it, and placing
+  replaces the liquid cell in front of that block (any placeable block; a solid is
+  refused inside the player's body). Left click places, right click breaks (both work while flying — build anchor tracks camera). Holding left click is two-phase: while the mouse moves, it paints — each movement event places one block where the cursor aims, but only onto a block of a different kind than the selected one, and only within `CHAIN_RANGE` (4) blocks of any block already placed during this hold (`clickAnchors`, reset per press). If the mouse never moved during the hold, after 1s without moving (`leftTimer`) the hold latches into bridge mode (`leftStairs`): the staircase builder below starts immediately and keeps building until release — mouse movement mid-bridge is ignored, and once the mouse has moved during a hold (`leftEverMoved`) the bridge can never engage for that hold. Holding right
   digs a straight tunnel: each repeat breaks the live raycast `currentBlock`, so
   removing one block exposes the next one behind it; moving the mouse while holding right starts the dig immediately (skipping the 1s gate), and chained breaks are limited to `CHAIN_RANGE` (4) blocks of any block already removed during this hold (`clickAnchors`). Holding either button chains the action after 1s
   (`CHAIN_HOLD`) at `CHAIN_RATE` (10/s):

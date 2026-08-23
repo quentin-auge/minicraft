@@ -2894,9 +2894,10 @@ function pickBlock(origin, dir, skipLiquid) {
 // ---------------------------------------------------------------------------
 const highlight = new THREE.LineSegments(
   new THREE.EdgesGeometry(new THREE.BoxGeometry(1.002, 1.002, 1.002)),
-  new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 1 })
+  new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 1, fog: false })
 );
 highlight.visible = false;
+highlight.renderOrder = 999;
 scene.add(highlight);
 
 const ropeA = new THREE.Vector3(), ropeB = new THREE.Vector3();
@@ -2916,7 +2917,8 @@ let currentBlock = null;
 function updateTarget() {
   const dir = new THREE.Vector3();
   camera.getWorldDirection(dir);
-  currentBlock = pickBlock(camera.position, dir);
+  const sel = hotbarList()[selected];
+  currentBlock = pickBlock(camera.position, dir, sel !== WATER && sel !== LAVA);
   if (currentBlock) {
     highlight.visible = true;
     highlight.position.set(currentBlock.x + 0.5, currentBlock.y + 0.5, currentBlock.z + 0.5);
@@ -2952,12 +2954,12 @@ function placeBlock(id) {
 function tryPlace(id, px, py, pz) {
   if (!BLOCK_INFO[id] || !BLOCK_INFO[id].placeable) return false;
   const target = getBlock(px, py, pz);
-  if (target !== AIR && !(target === id && (id === WATER || id === LAVA))) return false;
-  if (target === AIR) {
+  const liquid = target === WATER || target === LAVA || target === MOON_WATER;
+  if (liquid) {
+    if (BLOCK_INFO[id].solid && intersectsPlayer(px, py, pz)) return false;
+  } else if (target === AIR) {
     if (intersectsPlayer(px, py, pz)) return false;
-    const under = getBlock(px, py - 1, pz);
-    if ((under === WATER || under === LAVA) && id !== under) return false;
-  }
+  } else if (!(target === id && (id === WATER || id === LAVA))) return false;
   if (id === FLOWER) placedFlowers.set(key(px, py, pz), { v: randomFlowerVariant(), a: Math.random() * Math.PI * 2 });
   if (id === GLOWSTONE) worldGlowVariants.get(world).set(key(px, py, pz), glowVariantNear(px, py, pz));
   setBlock(px, py, pz, id);
@@ -3002,16 +3004,17 @@ const CHAIN_RANGE = 4;
 // The landing cell for the chain staircase: the grid cell exactly one step
 // ahead of the player at feet level. Over a cliff edge that prolongs the
 // terrain straight out at foot level instead of diving after the ground below.
-// If that cell is solid, no build (the terrain is already there); if it's
-// water, no build (cannot bridge over liquid from below). The cell always
-// lands one block in front of the player's feet, on the ground.
+// If that cell is solid, no build (the terrain is already there); liquids are
+// free cells, so the flight builds through water/lava/moon water too. The
+// cell always lands one block in front of the player's feet, on the ground.
 function feetDest() {
   const dx = -Math.sin(yaw), dz = -Math.cos(yaw);
   const cx = Math.round(pos.x + dx);
   const cz = Math.round(pos.z + dz);
   if (Math.abs(cx) > WORLD_RADIUS || Math.abs(cz) > WORLD_RADIUS) return null;
   const fy = Math.floor(pos.y);
-  if (getBlock(cx, fy, cz) !== AIR) return null;
+  const c = getBlock(cx, fy, cz);
+  if (c !== AIR && c !== WATER && c !== LAVA && c !== MOON_WATER) return null;
   return [cx, fy - 1, cz];
 }
 // Next grid cell along the straight ray from cell (fx,fy,fz) toward (dx,dy,dz).
