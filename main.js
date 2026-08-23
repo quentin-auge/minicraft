@@ -2262,10 +2262,20 @@ function grappleMoveY(dy) {
   return false;
 }
 
+function grappleVertBoost(y) {
+  const lo = CLOUD_BASE, hi = CLOUD_BASE + CLOUD_SPAN * 0.5, e = 18;
+  if (y < lo - e || y > hi + e) return 1;
+  if (y < lo) return 1 + smoothstep((y - (lo - e)) / e);
+  if (y > hi) return 1 + smoothstep((hi + e - y) / e);
+  return 2;
+}
 function updateGrapple(dt) {
   if (grappleArrived) { grapplePulling = false; return false; }
   if (!grappleHooked) {
-    grappleFly += (GRAPPLE_THROW * dt) / grapplingDist;
+    const b = grappleVertBoost(pos.y);
+    const isVert = Math.abs(grappleTarget.y - grappleStart.y) > 2 * Math.abs(grappleTarget.x - grappleStart.x);
+    const tb = isVert ? b : 1;
+    grappleFly += (GRAPPLE_THROW * tb * dt) / grapplingDist;
     if (grappleFly >= 1) {
       grappleFly = 1;
       grappleHooked = true;
