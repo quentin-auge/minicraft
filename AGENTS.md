@@ -216,8 +216,10 @@ stays bright at distance, `placeable: true` so it
   (`volcanoAir`).)
   The **hotbar is dimension-aware** (`hotbarList`/`rebuildHotbar`): in the
   Nether and the End the Flower slot holds GLOWSTONE and the Water slot holds
-  LAVA, while the Overworld keeps flowers and water; the hotbar is rebuilt
-  on every dimension change, load and new world.)
+  LAVA, while the Overworld keeps flowers and water; once the Moon starts to
+  appear (`onMoon`, `pos.y >= MOON_FADE_START`, tracked by `hotbarMoon`) the
+  Water slot holds MOON_WATER and the Flower slot holds GLOWSTONE; the hotbar
+  is rebuilt on every dimension change, load and new world.)
 - **Player**: AABB collision, gravity (`GRAVITY = 37.44`, +20% twice), jump, walk/sprint, fly mode, swimming,
   free-cam (spectator). Third-person-style first-person camera, yaw/pitch.
   While flying (F), the build anchor tracks the camera position, so placing and

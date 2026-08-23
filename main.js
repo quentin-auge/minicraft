@@ -25,7 +25,7 @@ const BLOCK_INFO = {
   [NETHERRACK]:{ name: "Netherrack", solid: true, opaque: true, placeable: true },
   [SOULSAND]:  { name: "Soul Sand",   solid: true, opaque: true, placeable: false },
   [MOON]:     { name: "Moon",     solid: true,  opaque: true,  placeable: false },
-  [MOON_WATER]:{ name: "Moon Water", solid: false, opaque: false, placeable: false },
+  [MOON_WATER]:{ name: "Moon Water", solid: false, opaque: false, placeable: true },
   [GLOWSTONE]:{ name: "Glowstone",  solid: true, opaque: true, placeable: true },
 };
 
@@ -2918,7 +2918,7 @@ function updateTarget() {
   const dir = new THREE.Vector3();
   camera.getWorldDirection(dir);
   const sel = hotbarList()[selected];
-  currentBlock = pickBlock(camera.position, dir, sel !== WATER && sel !== LAVA);
+  currentBlock = pickBlock(camera.position, dir, sel !== WATER && sel !== LAVA && sel !== MOON_WATER);
   if (currentBlock) {
     highlight.visible = true;
     highlight.position.set(currentBlock.x + 0.5, currentBlock.y + 0.5, currentBlock.z + 0.5);
@@ -2936,7 +2936,8 @@ function breakBlock() {
   if (protectedBlocks.has(key(x, y, z))) return;
   if (getBlock(x, y, z) === STONE && y === 0) return;
   if (getBlock(x, y, z) === TNT) { igniteTNT(x, y, z); return; }
-  if (getBlock(x, y, z) === WATER || getBlock(x, y, z) === LAVA) return;
+  const bid = getBlock(x, y, z);
+  if (bid === WATER || bid === LAVA || bid === MOON_WATER) return;
   setBlock(x, y, z, AIR);
   if (placeBatch) placeBatch.push([x, y, z]);
   else { refreshBlocks([[x, y, z]]); queueSave(); }
@@ -5834,10 +5835,18 @@ const hotbarEl = document.getElementById("hotbar");
 
 // The hotbar is dimension-aware: in the Nether and the End the Flower slot
 // holds GLOWSTONE and the Water slot holds lava; the Overworld keeps
-// flowers and water.
+// flowers and water — unless the player climbs high enough for the Moon to
+// start appearing, where the Water slot swaps to moon water and the Flower
+// slot to glowstone (back to water and flowers below).
+let hotbarMoon = false;
+function onMoon() {
+  return dim === "over" && pos.y >= MOON_FADE_START;
+}
 function hotbarList() {
   if (dim === "nether" || dim === "end")
     return [GRASS, DIRT, STONE, SAND, LOG, PLANKS, GLASS, LEAVES, LAVA, GLOWSTONE, TNT, PORTAL, OBSIDIAN];
+  if (hotbarMoon)
+    return [GRASS, DIRT, STONE, SAND, LOG, PLANKS, GLASS, LEAVES, MOON_WATER, GLOWSTONE, TNT, PORTAL, OBSIDIAN];
   return HOTBAR;
 }
 function rebuildHotbar() {
@@ -6108,6 +6117,8 @@ function loop(now) {
       if (pos.y < -20) { vel.set(0, 0, 0); spawnPlayer(); }
     }
     camera.rotation.set(pitch, yaw, 0);
+    const moon = onMoon();
+    if (moon !== hotbarMoon) { hotbarMoon = moon; rebuildHotbar(); }
     updateTarget();
     if (hudEnabled && jumpBoost > 1.01) { boostEl.textContent = "Speed x" + jumpBoost.toFixed(1); boostEl.style.display = "block"; }
     else boostEl.style.display = "none";
