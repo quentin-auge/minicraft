@@ -1985,8 +1985,8 @@ function rebuildChunk(cx, cz) {
       if (ct === 0 && getBlock(x, 0, z) === AIR) continue;
       const yRanges = dim !== "over" ? [[0, ct]] : (() => {
         const rs = [[0, Math.min(ct, 120)]];
-        if (ct >= CLOUD_BASE) rs.push([Math.max(121, CLOUD_BASE), Math.min(ct, CLOUD_TOP)]);
-        if (ct >= MOON_BOTTOM) rs.push([Math.max(CLOUD_TOP + 1, MOON_BOTTOM), ct]);
+        if (ct > 120) rs.push([121, Math.min(ct, MOON_BOTTOM - 1)]);
+        if (ct >= MOON_BOTTOM) rs.push([MOON_BOTTOM, ct]);
         return rs;
       })();
       for (const [y0r, y1r] of yRanges) for (let y = y0r; y <= y1r; y++) {
