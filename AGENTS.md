@@ -587,7 +587,10 @@ stays bright at distance, `placeable: true` so it
     resetting dims; spawned fresh every End entry.
 - **Save/load**: binary format (`SAVE_MAGIC`, version 8) capturing world
   blocks (over/end/nether), dim, seeds (over/end/nether), player pos/yaw/pitch,
-  fly state, hotbar selection,
+  fly state (the free-cam `freeCam` flag — restored on Load Save only when it
+  was enabled upon save, so you resume flying where you saved;
+  new worlds always start grounded (New World resets `freeCam`); saves from the old
+  dead `flying` variable read as false), hotbar selection,
   placed-flowers' stored color/rotation (`placedFlowers`) and per-glowstone
   colour entries (`glowVariants`, one per dimension, in v7); extra per-entry byte
   pair for flowers in v3, the nether dim/seed/blocks added in v4; older v1/v2/v3

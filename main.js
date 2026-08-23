@@ -5223,7 +5223,7 @@ function serialize() {
   dv.setFloat64(o, pos.z, true); o += 8;
   dv.setFloat64(o, yaw, true); o += 8;
   dv.setFloat64(o, pitch, true); o += 8;
-  dv.setUint8(o++, flying ? 1 : 0);
+  dv.setUint8(o++, freeCam ? 1 : 0);
   dv.setUint8(o++, selected);
   dv.setFloat64(o, overPortalSpawn.x, true); o += 8;
   dv.setFloat64(o, overPortalSpawn.y, true); o += 8;
@@ -5295,7 +5295,7 @@ function deserialize(buf) {
   pos.z = dv.getFloat64(o, true); o += 8;
   yaw = dv.getFloat64(o, true); o += 8;
   pitch = dv.getFloat64(o, true); o += 8;
-  flying = dv.getUint8(o++) === 1;
+  const flyFlag = dv.getUint8(o++) === 1;
   selected = dv.getUint8(o++);
   overPortalSpawn = { x: dv.getFloat64(o, true), y: dv.getFloat64(o, true), z: dv.getFloat64(o, true) };
   o += 24;
@@ -5384,6 +5384,8 @@ function deserialize(buf) {
   }
   dim = dimFlag === 2 ? "nether" : dimFlag === 1 ? "end" : "over";
   world = worlds[dim];
+  freeCam = flyFlag && dim !== "end";
+  if (freeCam) camPos.copy(pos);
   worldDirty = true;
   rebuildColTops();
   rebuildPortalBlocks();
@@ -5768,7 +5770,9 @@ async function buildWorld() {
     placedFlowers.clear();
     generateWorld();
     flying = false;
+    freeCam = false;
     spawnPlayer();
+    camPos.copy(pos);
     scanWorldPortals();
     rebuildMeshes();
     rebuildHotbar();
