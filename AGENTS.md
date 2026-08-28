@@ -222,14 +222,14 @@ stays bright at distance, `placeable: true` so it
   is rebuilt on every dimension change, load and new world.)
 - **Player**: AABB collision, gravity (`GRAVITY = 37.44`, +20% twice; halved
   in the Overworld once the player rises to the bottom of the Moon sphere,
-  `pos.y >= MOON_Y - MOON_R`), jump, walk/sprint, fly mode, swimming,
+  `pos.y >= MOON_Y - MOON_R`), jump (Shift/Space), walk/sprint (/), fly mode, swimming,
   free-cam (spectator). Third-person-style first-person camera, yaw/pitch.
   While flying (F), the build anchor tracks the camera position, so placing and
   breaking blocks works from the air just like on the ground and the hold-left
   chain builds toward your airborne position instead of a stale ground spot.
   Jumping is hold-powered, no charging:
-  a Space press while grounded is a plain regular jump (`JUMP_MIN` = 8.2), so a
-  quick tap is the same hop as always. Holding Space adds upward thrust
+  a Shift/Space press while grounded is a plain regular jump (`JUMP_MIN` = 8.2), so a
+  quick tap is the same hop as always. Holding Shift/Space adds upward thrust
   (`JUMP_THRUST` = 45) that fades in smoothly from takeoff
   (ramped over `JUMP_RAMP` 0.25 s, so a quick tap barely climbs while a hold
   engages immediately — no hard threshold, no dead delay) plus a takeoff
@@ -240,11 +240,11 @@ stays bright at distance, `placeable: true` so it
   hold the higher you climb — a full hold reaches ~14 blocks, a tap barely
   leaves the ground. The thrust never works while falling, in water or flying.
   While airborne you can steer
-  gently toward the held movement keys — holding Shift steers toward a sprint
+  gently toward the held movement keys — holding / steers toward a sprint
   air speed (`SPRINT × AIR_SPRINT`, so sprinting jumps travel further), walking
   stays at `WALK`, blended via `AIR_STEER` = 2.5, and with no input the
   horizontal momentum coasts with a
-   slow `JUMP_FLING_DAMP` (6) decay until you land (jump inertia `jumpBoost` stacks on consecutive sprint jumps, `jumpIdle` resets when stalled or idle 0.12s). Jumping requires a fresh press — holding Space on the ground does not auto-repeat (`spaceJustPressed` sets `jumpBuffer` `JUMP_BUFFER` 0.2s, consumed only when `onGround`; `spaceJustReleased` halves upward velocity for variable height, the 200ms buffer keeps fast bunny-hops/`jumpBoost` responsive around landing time). Rebound on water/lava: falling into water/lava while holding Space while a recent jump is tracked (`jumpOriginY`/`jumpPeakY`/`lastSpaceDownY`/`jumpHoldContinuous`) bounces back to that height (`waterSurfaceTop` delta → `sqrt(2*GRAVITY*delta)`, sprint-boosted, `bounced` flag) instead of damping. Swimming: full-AABB water detection (`headInWater` checks `pos.y+0.01` to `pos.y+PLAYER_H-0.01` for WATER/LAVA), deep ascent `SWIM_ACCEL` 2.0, shallow hold at 65% immersed (`targetY = surface-1.17`, `err*4` spring with `SWIM_BRAKE*2`, `SWIM_AREA` 10) — player floats waist-chest deep, not feet-on-surface. Debug HUD (`#debugHud`) shows pos/vel/onGround.
+   slow `JUMP_FLING_DAMP` (6) decay until you land (jump inertia `jumpBoost` stacks on consecutive sprint jumps, `jumpIdle` resets when stalled or idle 0.12s). Jumping requires a fresh press — holding Shift/Space on the ground does not auto-repeat (`spaceJustPressed` sets `jumpBuffer` `JUMP_BUFFER` 0.2s, consumed only when `onGround`; `spaceJustReleased` halves upward velocity for variable height, the 200ms buffer keeps fast bunny-hops/`jumpBoost` responsive around landing time). Rebound on water/lava: falling into water/lava while holding Shift/Space while a recent jump is tracked (`jumpOriginY`/`jumpPeakY`/`lastSpaceDownY`/`jumpHoldContinuous`) bounces back to that height (`waterSurfaceTop` delta → `sqrt(2*GRAVITY*delta)`, sprint-boosted, `bounced` flag) instead of damping. Swimming: full-AABB water detection (`headInWater` checks `pos.y+0.01` to `pos.y+PLAYER_H-0.01` for WATER/LAVA), deep ascent `SWIM_ACCEL` 2.0, shallow hold at 65% immersed (`targetY = surface-1.17`, `err*4` spring with `SWIM_BRAKE*2`, `SWIM_AREA` 10) — player floats waist-chest deep, not feet-on-surface. Debug HUD (`#debugHud`, toggled with =/+) shows pos/vel/onGround.
   Respawn (`spawnPlayer`, used for new worlds, void falls and flying out of the
   level) scans the spawn column from `MAX_Y` down (skipping CLOUD/MOON) and stands
   on the top solid found, so the player never settles inside hills, mesas or
@@ -525,7 +525,7 @@ stays bright at distance, `placeable: true` so it
   and respawning every ~2–5 s; torn down on leaving the Nether) float up off
   the lava sea all around you. LAVA behaves like water: you auto-float
   to the
-   surface (`headInWater` full-AABB WATER/LAVA, non-solid so you can wade from any direction; damped entry `vel.y*=0.3`, barely dips; deep ascent `SWIM_ACCEL` 2.0 blocks/s² capped at `SWIM_MAX` 64 via `waterSurfaceTop`; shallow hold at 65% immersed (`targetY = surface-1.17`, `err*4` spring with `SWIM_BRAKE*2`, `SWIM_AREA` 10) — floats waist-chest deep, not feet-on-surface; Shift sprints at `SPRINT`), LAVA
+   surface (`headInWater` full-AABB WATER/LAVA, non-solid so you can wade from any direction; damped entry `vel.y*=0.3`, barely dips; deep ascent `SWIM_ACCEL` 2.0 blocks/s² capped at `SWIM_MAX` 64 via `waterSurfaceTop`; shallow hold at 65% immersed (`targetY = surface-1.17`, `err*4` spring with `SWIM_BRAKE*2`, `SWIM_AREA` 10) — floats waist-chest deep, not feet-on-surface; / sprints at `SPRINT`), LAVA
   is placeable only onto another LAVA cell or directly on the fire above one,
   can't be removed, and TNT blasts never destroy
   LAVA. The Nether's auto-built return portal (`buildNetherPortal`, an obsidian

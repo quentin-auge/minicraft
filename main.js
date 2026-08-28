@@ -2551,7 +2551,7 @@ function updatePlayer(dt) {
   const s = keys["KeyS"] || keys["ArrowDown"];
   const d = keys["KeyD"] || keys["ArrowRight"];
   const a = keys["KeyA"] || keys["ArrowLeft"];
-  const sprintKey = keys["ShiftLeft"] || keys["ShiftRight"];
+  const sprintKey = !!(keys["Slash"] || keys["/"]);
 
   if (w) move.add(fwd);
   if (s) move.sub(fwd);
@@ -2560,7 +2560,7 @@ function updatePlayer(dt) {
 
   let inWater = headInWater();
   const enteredWater = inWater && !wasInWater;
-  const spaceNow = !!keys["Space"];
+  const spaceNow = !!(keys["ShiftLeft"] || keys["ShiftRight"] || keys["Space"] || keys[" "]);
   const spaceJustPressed = spaceNow && !prevSpace;
   const spaceJustReleased = !spaceNow && prevSpace;
   jumpBuffer = Math.max(0, jumpBuffer - dt);
@@ -2628,7 +2628,7 @@ function updatePlayer(dt) {
     const speed = FLY;
     if (move.lengthSq() > 0) move.normalize().multiplyScalar(speed);
     vel.x = move.x; vel.z = move.z;
-    vel.y = (keys["Space"] ? speed : 0) - (sprintKey ? speed : 0);
+    vel.y = (spaceNow ? speed : 0) - (sprintKey ? speed : 0);
     flingActive = false;
   } else if (bounced) {
   } else if (inWater) {
@@ -2639,7 +2639,7 @@ function updatePlayer(dt) {
     // building the whole way up, then SWIM_AREA blocks before the surface a
     // steady deceleration (SWIM_BRAKE) settles you back to a calm FLOAT_SPEED
     // drift. Both the deep accel and the surface drift are doubled speed.
-    // Space does nothing in water.
+    // Shift does nothing in water.
     const speed = (sprintKey && move.lengthSq() > 0) ? SPRINT : 4.2;
     if (move.lengthSq() > 0) move.normalize().multiplyScalar(speed);
     vel.x += (move.x - vel.x) * Math.min(1, dt * 8);
@@ -2732,7 +2732,7 @@ function updatePlayer(dt) {
       }
     } else {
       vel.y -= g * dt;
-      // Hold Space to keep climbing: the thrust fades in smoothly from takeoff
+      // Hold Shift to keep climbing: the thrust fades in smoothly from takeoff
       // (no hard threshold), so a quick tap barely climbs while a hold engages
       // immediately instead of after a dead delay.
       if (!onGround && spaceNow && airT < JUMP_HOLD_TIME && vel.y > 0) {
@@ -2797,7 +2797,7 @@ function updateFreeCam(dt) {
   if (keys["KeyS"] || keys["ArrowDown"]) move.sub(fwd);
   if (keys["KeyD"] || keys["ArrowRight"]) move.add(right);
   if (keys["KeyA"] || keys["ArrowLeft"]) move.sub(right);
-  const sprint = keys["ShiftLeft"] || keys["ShiftRight"];
+  const sprint = !!(keys["Slash"] || keys["/"]);
   if (move.lengthSq() > 0) move.normalize().multiplyScalar(FLY * (sprint ? 3 : 1) * dt);
   const r = 0.3;
   const tryAxis = (axis, v) => {
@@ -6034,14 +6034,15 @@ document.addEventListener("keydown", (e) => {
     return;
   }
   if (e.code === "KeyH" && !keys[e.code]) { openHelp(); e.preventDefault(); return; }
-  if (e.key === "?" && !isTyping(e)) {
+  if (e.code === "Equal" && !isTyping(e)) {
     hudEnabled = !hudEnabled;
     if (!hudEnabled) boostEl.style.display = "none";
     e.preventDefault();
   }
-  if (keys[e.code]) { e.preventDefault(); return; }
+  if (keys[e.code] || keys[e.key]) { e.preventDefault(); return; }
   keys[e.code] = true;
-  if (e.code === "Space") jumpBuffer = Math.max(jumpBuffer, JUMP_BUFFER + 0.02);
+  keys[e.key] = true;
+  if (e.code === "ShiftLeft" || e.code === "ShiftRight" || e.code === "Space" || e.key === " ") jumpBuffer = Math.max(jumpBuffer, JUMP_BUFFER + 0.02);
   if (e.code === "KeyK" && !loading) select(selected - 1);
   if (e.code === "KeyL" && !loading) select(selected + 1);
   if (e.code === "KeyF" && dim !== "end") { freeCam = !freeCam; if (freeCam) camPos.copy(camera.position); else exitFreeCam(); }
@@ -6051,9 +6052,9 @@ document.addEventListener("keydown", (e) => {
       if (!locked && !loading) resumeLockAfterEscape();
     }
   }
-  if (["Space", "Tab", "ArrowUp", "ArrowDown"].includes(e.code)) e.preventDefault();
+  if (["Space", "Slash", "Tab", "ArrowUp", "ArrowDown"].includes(e.code) || ["/", "?", " "].includes(e.key)) e.preventDefault();
 });
-document.addEventListener("keyup", (e) => { keys[e.code] = false; });
+document.addEventListener("keyup", (e) => { keys[e.code] = false; keys[e.key] = false; });
 document.addEventListener("contextmenu", (e) => e.preventDefault());
 
 document.getElementById("btnNew").addEventListener("click", async (e) => {
