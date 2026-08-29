@@ -21,9 +21,9 @@ small Python server for saving/loading worlds.
   help panel (with portal diagram), HUD (crosshair, hotbar, dimension label,
   boss bar, toast), the Three.js import map.
 - `main.js` — all game logic in one ES module, organized in sections:
-  block definitions → procedural textures → world gen → renderer →
+  block definitions → procedural textures → world gen (incl. village) → renderer →
   instanced meshing → player physics → raycast/highlight → editing →
-  TNT → portal/dimensions → Ender Dragon → save/load → HUD → hotbar →
+  TNT → portal/dimensions → Ender Dragon → villagers → save/load → HUD → hotbar →
   input/menus → main loop.
 - `server.py` — static file server + world-save REST API.
 - `save/` — `.sav` world files (written by the server API).
@@ -564,8 +564,9 @@ stays bright at distance, `placeable: true` so it
   1s (`dragon.dying`/`deathFlash`/`deathIdx`, driven inside `updateDragon` via
   `paintDragonPalette`; `damageDragon` now only starts the countdown instead of
   killing outright), then death triggers a huge double-layer purple
-  explosion, opens the return portal and removes the dragon. Resources are
+   explosion, opens the return portal and removes the dragon. Resources are
   disposed when leaving the End.
+- **Villagers**: 24 villagers (8 houses ×3: 2 adults+1 baby, `VILLAGE_RADIUS 28` stone plaza at `villageCenter.y` integrated in `generateWorld` via `computeVillageLayout` before terrain — override `h=villageCenter.y`, `intersectsVillage` skips tunnels/rooms/stairs/trees, `placeVillageHouses` `7×7×5` seeded `hash2` with `|dx|<9&&|dz|<9` veto). Houses enterable (2-wide door facing centre, window opposite, flat roof, palette variance). Villagers use same AABB/gravity as player (`aabbCollidesWorld`/`moveMobAxisX/Z/Y`/`mobPhysicsStep` `GRAVITY 37.44`, moon gravity `*0.5` at `MOON_Y-MOON_R`, `hw 0.27/0.16` `h 1.82/0.98`, `villageBound` clamp, `WALK/2` `2.2`, liquid float `WATER/LAVA/MOON_WATER` `vel*0.96`). Collisions: monde + joueur (`pushMobsFromPlayer`/`moveAxisX/Z` push via `nearbyMobsFor` grid) + entre eux (`separateMobs`/`mobCollidesOther` via `MOB_GRID 8` `mobGrid` `mobById` `buildMobGrid`, `separate` throttled `1/2` frames). Materials cached (`villagerMatCache`/`villagerHeadMatCache`, `villagerGeo` reused) and spawn snapped to block centers `floor+0.5` with `usedBlocks` no overlap. Trous = murs via `hasMobGround`/`mobBlockedAt` (`>0.02` overlap, `!isSolid y-1` but `WATER/LAVA/MOON_WATER` counts as ground, `MOVE_X/Z` auto-step `±1` `hasMobGround`/`!aabb`) — `mobProbeFree` et `findVillagePath` (BFS 4-N `0.5`, `pyHint`, `intersectsVillage`/`isInsideAnyHouse` hors cible) l’évitent; `updateMobs` `mobTick` + `addVisit`/`visitGrid` `VISIT_CELL 8` `wanderGoalFor` least-visited `v*10 - d*0.15` `30` tries `2` skip `lastTarget<4`, 12-dir scoring `free*(0.55+0.45*dot)` + BFS `>1.8` ou `probe<0.55`, hysteresis `steerX/Z/Cooldown 0.45/0.35` avoids jitter, failsafe `want==0&&dist>0.6` 8 dirs `free>0.5`, anti-blocage `_stuckT>0.55` `bestF>0.35` `1.5-2.5` `canStand` `hasMobGround y/y±1` + pivot `probe<0.15`. TNT: `handleMobExplosion` grid (`R+1.2`) tombe `0.6s` `smoothstep` (`_fallStart/Target` → `PI/2` + `yOff hw*0.9`), reste `3s` couché puis fade `1s` (clonés) et `isMobStandingOn`/`intersectsMob` via `nearbyMobsFor` protège le bloc sous mob et `breakBlock` refuse `isMobStandingOn||intersectsMob`. `generateWorld`/`removeVillagers` clear `visitGrid`/`mobGrid`/`mobById`. Nether/End sans village ; `removeVillagers`/`spawnVillagers` sur `buildWorld`/`restoreSave`/`resetDims`/`goToDimension` (regen à chaque load), `mobStats` throttled.
 - **Endermen**: ambient teleporters that spawn on the End platform alongside
   the dragon — `ENDERMEN_COUNT` (10) of them, all sharing one unit box
   geometry and body material (`spawnEndermen`/`removeEndermen`, one glowing

@@ -709,9 +709,11 @@ function generateTunnels() {
 
 function carveTube(cx, cy, cz, topCap) {
   const ix = Math.round(cx), iy = Math.round(cy), iz = Math.round(cz);
+  if (villageHouses.length && intersectsVillage(ix, iz)) return;
   for (let dx = -1; dx <= 1; dx++)
     for (let dy = -1; dy <= 1; dy++)
       for (let dz = -1; dz <= 1; dz++) {
+        if (villageHouses.length && intersectsVillage(ix + dx, iz + dz)) continue;
         const y = iy + dy;
         if (y < 1 || y >= topCap) continue;
         setBlock(ix + dx, y, iz + dz, AIR);
@@ -747,6 +749,7 @@ function carveTunnels() {
       for (let s = 0; s <= steps; s++) {
         const cx = ax + (bx - ax) * (s / steps);
         const cz = az + (bz - az) * (s / steps);
+        if (villageHouses.length && intersectsVillage(Math.round(cx), Math.round(cz))) { if (s < steps) pos += segLen / steps; continue; }
         const h = heightAt(Math.round(cx), Math.round(cz));
         if (h > WATER_LEVEL + 1) {
           const depth = tubeDepth(pos, totalLen, cx, cz);
@@ -783,15 +786,18 @@ function carveRooms() {
         }
         pos += segLen;
       }
+      if (villageHouses.length && intersectsVillage(Math.round(cx), Math.round(cz))) continue;
       const h = heightAt(Math.round(cx), Math.round(cz));
       if (h <= WATER_LEVEL + 1) continue;
       const cy = Math.max(rh + 1, Math.min(h - rh - 1, h - tubeDepth(target, totalLen, cx, cz)));
       const iy = Math.round(cy);
       const ix = Math.round(cx), iz = Math.round(cz);
+      if (villageHouses.length && intersectsVillage(ix, iz)) continue;
       for (let dx = -rw; dx <= rw; dx++)
         for (let dz = -rw; dz <= rw; dz++)
           for (let dy = -rh; dy <= rh; dy++) {
             if (Math.abs(dx) === 3 && Math.abs(dz) === 3) continue;
+            if (villageHouses.length && intersectsVillage(ix + dx, iz + dz)) continue;
             const y = iy + dy;
             if (y < 1 || y >= h) continue;
             setBlock(ix + dx, y, iz + dz, AIR);
@@ -821,6 +827,7 @@ function stairEntrances() {
       }
       if (pi < 0 || pi >= pts.length) continue;
       const ax = pts[pi][0], az = pts[pi][1];
+      if (villageHouses.length && intersectsVillage(Math.round(ax), Math.round(az))) continue;
       if (Math.abs(ax) > WORLD_RADIUS || Math.abs(az) > WORLD_RADIUS) continue;
       const nx = Math.max(0, Math.min(pts.length - 1, dir === 0 ? pi + 1 : pi - 1));
       const bx = pts[nx][0], bz = pts[nx][1];
@@ -861,10 +868,936 @@ function stairEntrances() {
     }
   }
   for (const cells of flights)
-    for (const c of cells)
+    for (const c of cells) {
+      if (villageHouses.length && intersectsVillage(c.x, c.z)) continue;
       for (let y = c.h; y > c.floor; y--) setBlock(c.x, y, c.z, AIR);
+    }
   for (const cells of flights)
-    for (const c of cells) setBlock(c.x, c.floor, c.z, PLANKS);
+    for (const c of cells) {
+      if (villageHouses.length && intersectsVillage(c.x, c.z)) continue;
+      setBlock(c.x, c.floor, c.z, PLANKS);
+    }
+}
+
+const VILLAGE_RADIUS = 28;
+const VILLAGE_HOUSES = 8;
+let villageCenter = { x: 0, z: 0, y: 0 };
+let villageHouses = [];
+let villageMinX = 0, villageMaxX = 0, villageMinZ = 0, villageMaxZ = 0;
+function computeVillageLayout() {
+  villageHouses = [];
+  const ang = hash2(0, 0, seed + 7001) * Math.PI * 2;
+  const rad = 36 + hash2(0, 0, seed + 7002) * 18;
+  let vx = Math.round(Math.cos(ang) * rad);
+  let vz = Math.round(Math.sin(ang) * rad);
+  vx = Math.max(-WORLD_RADIUS + VILLAGE_RADIUS + 4, Math.min(WORLD_RADIUS - VILLAGE_RADIUS - 4, vx));
+  vz = Math.max(-WORLD_RADIUS + VILLAGE_RADIUS + 4, Math.min(WORLD_RADIUS - VILLAGE_RADIUS - 4, vz));
+  let vy = heightAt(vx, vz);
+  let bestVar = Infinity;
+  for (let dx = -8; dx <= 8; dx += 4) for (let dz = -8; dz <= 8; dz += 4) {
+    const cx = vx + dx, cz = vz + dz;
+    let sum = 0, n = 0, mn = 99, mx = -99;
+    for (let x = cx - VILLAGE_RADIUS; x <= cx + VILLAGE_RADIUS; x += 2) for (let z = cz - VILLAGE_RADIUS; z <= cz + VILLAGE_RADIUS; z += 2) {
+      const h = heightAt(x, z);
+      sum += h; n++; if (h < mn) mn = h; if (h > mx) mx = h;
+    }
+    const v = mx - mn;
+    if (v < bestVar) { bestVar = v; vx = cx; vz = cz; vy = Math.round(sum / n); }
+  }
+  vy = Math.max(WATER_LEVEL + 2, vy);
+  villageCenter = { x: vx, z: vz, y: vy };
+  villageMinX = vx - VILLAGE_RADIUS; villageMaxX = vx + VILLAGE_RADIUS;
+  villageMinZ = vz - VILLAGE_RADIUS; villageMaxZ = vz + VILLAGE_RADIUS;
+  let tries = 0;
+  for (let i = 0; i < VILLAGE_HOUSES; ) {
+    const rx = (hash2(tries, 0, seed + 7200 + i * 997) * 2 - 1) * (VILLAGE_RADIUS - 7);
+    const rz = (hash2(tries, 1, seed + 7200 + i * 997) * 2 - 1) * (VILLAGE_RADIUS - 7);
+    const cx = Math.round(vx + rx), cz = Math.round(vz + rz);
+    tries++;
+    if (Math.hypot(cx - vx, cz - vz) + 4 > VILLAGE_RADIUS) { if (tries > 800) break; continue; }
+    let ok = true;
+    for (const h of villageHouses) if (Math.abs(h.cx - cx) < 9 && Math.abs(h.cz - cz) < 9) { ok = false; break; }
+    if (!ok) { if (tries > 800) break; continue; }
+    const w = 7, d = 7;
+    const minX = cx - Math.floor(w / 2), maxX = minX + w - 1;
+    const minZ = cz - Math.floor(d / 2), maxZ = minZ + d - 1;
+    const toC = Math.atan2(vz - cz, vx - cx);
+    const a = ((toC * 180 / Math.PI) + 360) % 360;
+    let side = 0;
+    if (a >= 45 && a < 135) side = 1;
+    else if (a >= 135 && a < 225) side = 2;
+    else if (a >= 225 && a < 315) side = 3;
+    let doorX = cx, doorZ = minZ, doorNx = 0, doorNz = -1;
+    if (side === 1) { doorX = maxX; doorZ = cz; doorNx = 1; doorNz = 0; }
+    else if (side === 2) { doorX = cx; doorZ = maxZ; doorNx = 0; doorNz = 1; }
+    else if (side === 3) { doorX = minX; doorZ = cz; doorNx = -1; doorNz = 0; }
+    let d0x = doorX, d0z = doorZ, d1x = doorX, d1z = doorZ;
+    if (doorNz !== 0) { d0x = doorX; d1x = doorX + 1; }
+    else { d0z = doorZ; d1z = doorZ + 1; }
+    const doorCx = (d0x + d1x) / 2 + 0.5;
+    const doorCz = (d0z + d1z) / 2 + 0.5;
+    const apronX = doorCx + doorNx * 1.6;
+    const apronZ = doorCz + doorNz * 1.6;
+    const padOff = 1.2;
+    const padX = doorCx - doorNx * padOff;
+    const padZ = doorCz - doorNz * padOff;
+    const varId = 1 + Math.floor(hash2(i, 9, seed + 7150) * 3);
+    const beamMask = Math.floor(hash2(i, 20, seed + 7330) * 16);
+    const roofIsPlank = hash2(i, 21, seed + 7340) > 0.5;
+    villageHouses.push({ id: i, cx, cz, vy, minX, maxX, minZ, maxZ, doorX, doorZ, doorNx, doorNz, d0x, d0z, d1x, d1z, doorCx, doorCz, apronX, apronZ, padX, padZ, ix: cx, iz: cz, varId, beamMask, roofIsPlank, doorQueue: [], doorLock: null, lockUntil: 0 });
+    i++;
+  }
+}
+function intersectsVillage(x, z) {
+  return x >= villageMinX - 2 && x <= villageMaxX + 2 && z >= villageMinZ - 2 && z <= villageMaxZ + 2;
+}
+function isInsideAnyHouse(x, z) {
+  for (const h of villageHouses) if (x > h.minX && x < h.maxX && z > h.minZ && z < h.maxZ) return h;
+  return null;
+}
+function placeVillageHouses() {
+  for (const h of villageHouses) {
+    const w = 7, d = 7, hh = 5;
+    const minX = h.minX, maxX = h.maxX, minZ = h.minZ, maxZ = h.maxZ;
+    const vy = h.vy;
+    for (let y = vy + 1; y <= vy + hh; y++) {
+      for (let x = minX; x <= maxX; x++) for (let z = minZ; z <= maxZ; z++) {
+        const wall = x === minX || x === maxX || z === minZ || z === maxZ;
+        if (!wall) { if (y <= vy + 4) setBlock(x, y, z, AIR); continue; }
+        const isDoor = (x === h.d0x && z === h.d0z) || (x === h.d1x && z === h.d1z);
+        const isWin = (h.doorNz !== 0 ? (z === (h.doorNz === -1 ? maxZ : minZ) && x === h.cx && y === vy + 2) : (x === (h.doorNx === 1 ? minX : maxX) && z === h.cz && y === vy + 2));
+        if (y <= vy + 3 && isDoor) continue;
+        if (isWin) { setBlock(x, y, z, GLASS); continue; }
+        let mat = STONE;
+        const isCorner = (x === minX && z === minZ) || (x === minX && z === maxZ) || (x === maxX && z === minZ) || (x === maxX && z === maxZ);
+        if (isCorner && y <= vy + 4) mat = LOG;
+        else if (y === vy + 3 && !isDoor && !isWin) {
+          let onBeamWall = false;
+          if (x === minX && (h.beamMask & 8)) onBeamWall = true;
+          else if (x === maxX && (h.beamMask & 4)) onBeamWall = true;
+          else if (z === minZ && (h.beamMask & 2)) onBeamWall = true;
+          else if (z === maxZ && (h.beamMask & 1)) onBeamWall = true;
+          if (onBeamWall) mat = PLANKS;
+          else if (h.varId === 2) mat = PLANKS;
+        } else if (y === vy + hh && isCorner) mat = LOG;
+        setBlock(x, y, z, mat);
+      }
+    }
+    for (let x = minX; x <= maxX; x++) for (let z = minZ; z <= maxZ; z++) {
+      const isRoofEdge = x === minX || x === maxX || z === minZ || z === maxZ;
+      let roofMat = STONE;
+      if (isRoofEdge) roofMat = LOG;
+      else roofMat = h.roofIsPlank ? PLANKS : STONE;
+      if (h.varId === 1) roofMat = PLANKS;
+      setBlock(x, vy + hh, z, roofMat);
+    }
+    for (let x = minX + 1; x <= maxX - 1; x++) for (let z = minZ + 1; z <= maxZ - 1; z++) setBlock(x, vy + 1, z, AIR);
+    setBlock(h.d0x, vy + 1, h.d0z, AIR); setBlock(h.d1x, vy + 1, h.d1z, AIR);
+    setBlock(h.d0x, vy + 2, h.d0z, AIR); setBlock(h.d1x, vy + 2, h.d1z, AIR);
+    setBlock(h.d0x, vy + 3, h.d0z, AIR); setBlock(h.d1x, vy + 3, h.d1z, AIR);
+    const ax = Math.round(h.apronX), az = Math.round(h.apronZ);
+    for (let dx = -1; dx <= 0; dx++) for (let dz = -1; dz <= 0; dz++) setBlock(ax + dx, vy, az + dz, STONE);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Village mobs (villagers) — vraie physique AABB comme joueur sans montée
+// ---------------------------------------------------------------------------
+let mobs = [];
+const mobById = new Map();
+const MOB_GRID = 8;
+const mobGrid = new Map();
+let mobTick = 0;
+const VISIT_CELL = 8;
+const visitGrid = new Map();
+function visitKey(x, z){ return (Math.floor(x/VISIT_CELL)+512)*1024 + Math.floor(z/VISIT_CELL)+512; }
+function addVisit(x, z){ const k=visitKey(x,z); visitGrid.set(k, (visitGrid.get(k)||0)+1); }
+function getVisit(x, z){ return visitGrid.get(visitKey(x,z))||0; }
+function buildMobGrid() {
+  mobGrid.clear();
+  for (const m of mobs) {
+    const k = (Math.floor(m.pos.x / MOB_GRID) + 512) * 1024 + Math.floor(m.pos.z / MOB_GRID) + 512;
+    let arr = mobGrid.get(k);
+    if (!arr) { arr = []; mobGrid.set(k, arr); }
+    arr.push(m);
+  }
+}
+function nearbyMobsFor(x, z, rCells = 1) {
+  const cx = Math.floor(x / MOB_GRID), cz = Math.floor(z / MOB_GRID);
+  const out = [];
+  for (let dx = -rCells; dx <= rCells; dx++) for (let dz = -rCells; dz <= rCells; dz++) {
+    const arr = mobGrid.get((cx + dx + 512) * 1024 + cz + dz + 512);
+    if (arr) for (let i = 0; i < arr.length; i++) out.push(arr[i]);
+  }
+  return out;
+}
+let villagerGeo = null;
+let _villagerFace = null;
+let mobStats = { worldCol: 0, mobCol: 0, playerCol: 0, stuck: 0, falls: 0, frames: 0, invariants: 0 };
+let mobInvariantsViolated = 0;
+const VILLAGER_PALETTES = [
+  { robe: 0x8b5e3c, dark: 0x5a3b26 },
+  { robe: 0x824a6e, dark: 0x4e2e42 },
+  { robe: 0xf0ece2, dark: 0x9e9e9e },
+  { robe: 0x6e4e36, dark: 0x4a3324, apron: 0xd9d9d9 },
+  { robe: 0x3d3d3d, dark: 0x252525 },
+  { robe: 0x5b7d3a, dark: 0x3b5426 },
+];
+const villagerMatCache = VILLAGER_PALETTES.map(p => ({
+  robe: new THREE.MeshStandardMaterial({ color: p.robe, roughness: 0.9 }),
+  dark: new THREE.MeshStandardMaterial({ color: p.dark, roughness: 0.9 }),
+  apron: p.apron ? new THREE.MeshStandardMaterial({ color: p.apron, roughness: 0.9 }) : null,
+  skin: new THREE.MeshStandardMaterial({ color: 0xc19a78 }),
+  nose: new THREE.MeshStandardMaterial({ color: 0xb0805a }),
+  shoe: new THREE.MeshStandardMaterial({ color: 0x6b4a33, roughness: 0.9 }),
+}));
+let villagerHeadMatCache = null;
+function villagerFaceTex() {
+  const c = document.createElement("canvas");
+  c.width = c.height = 16;
+  const ctx = c.getContext("2d");
+  ctx.fillStyle = "#c19a78"; ctx.fillRect(0, 0, 16, 16);
+  ctx.fillStyle = "#3e2a1a"; ctx.fillRect(2, 4, 12, 2);
+  ctx.fillStyle = "#ffffff"; ctx.fillRect(3, 7, 4, 3); ctx.fillRect(9, 7, 4, 3);
+  ctx.fillStyle = "#1a8a1a"; ctx.fillRect(4, 8, 2, 2); ctx.fillRect(10, 8, 2, 2);
+  ctx.fillStyle = "#0f2f0f"; ctx.fillRect(5, 9, 1, 1); ctx.fillRect(11, 9, 1, 1);
+  ctx.fillStyle = "#a67c52"; ctx.fillRect(7, 10, 2, 3);
+  ctx.fillStyle = "#8a5f3d"; ctx.fillRect(7, 13, 2, 1);
+  const t = new THREE.CanvasTexture(c);
+  t.magFilter = THREE.NearestFilter; t.minFilter = THREE.NearestFilter; t.colorSpace = THREE.SRGBColorSpace;
+  return t;
+}
+function villagerHeadMats(tex) {
+  if (!villagerHeadMatCache) {
+    const skin = new THREE.MeshStandardMaterial({ color: 0xc19a78 });
+    const faceMat = new THREE.MeshStandardMaterial({ map: tex });
+    villagerHeadMatCache = [skin, skin, skin, skin, faceMat, skin];
+  }
+  return villagerHeadMatCache;
+}
+function makeVillagerMesh(isBaby) {
+  const g = new THREE.Group();
+  const sc = isBaby ? 0.52 : 1;
+  if (!_villagerFace) _villagerFace = villagerFaceTex();
+  if (!villagerHeadMatCache) villagerHeadMats(_villagerFace);
+  const headMats = villagerHeadMatCache;
+  const palIdx = Math.floor(Math.random() * VILLAGER_PALETTES.length);
+  const pal = VILLAGER_PALETTES[palIdx];
+  const cache = villagerMatCache[palIdx];
+  const robeMat = cache.robe;
+  const robeDarkMat = cache.dark;
+  const noseMat = cache.nose;
+  const shoeMat = cache.shoe;
+  const skinMat = cache.skin;
+  if (!villagerGeo) villagerGeo = new THREE.BoxGeometry(1, 1, 1);
+  else if (villagerGeo.attributes.position.getY(0) > -0.4) {
+    villagerGeo.dispose();
+    villagerGeo = new THREE.BoxGeometry(1, 1, 1);
+  }
+  const body = new THREE.Mesh(villagerGeo, robeMat);
+  body.scale.set(0.64 * sc, 1.12 * sc, 0.38 * sc);
+  body.position.set(0, 0.74 * sc, 0);
+  g.add(body);
+  if (pal.apron != null) {
+    const apron = new THREE.Mesh(villagerGeo, cache.apron);
+    apron.scale.set(0.40 * sc, 0.62 * sc, 0.02 * sc);
+    apron.position.set(0, 0.68 * sc, 0.20 * sc);
+    g.add(apron);
+  }
+  const collar = new THREE.Mesh(villagerGeo, robeDarkMat);
+  collar.scale.set(0.36 * sc, 0.10 * sc, 0.02 * sc);
+  collar.position.set(0, 1.32 * sc, 0.20 * sc);
+  g.add(collar);
+  const neck = new THREE.Mesh(villagerGeo, skinMat);
+  neck.scale.set(0.24 * sc, 0.12 * sc, 0.24 * sc);
+  neck.position.set(0, 1.40 * sc, 0);
+  g.add(neck);
+  const head = new THREE.Mesh(villagerGeo, headMats);
+  head.scale.set(0.66 * sc, 0.62 * sc, 0.66 * sc);
+  head.position.set(0, 1.79 * sc, 0);
+  g.add(head);
+  const nose = new THREE.Mesh(villagerGeo, noseMat);
+  nose.scale.set(0.20 * sc, 0.22 * sc, 0.32 * sc);
+  nose.position.set(0, 1.70 * sc, 0.49 * sc);
+  g.add(nose);
+  const armGeo = villagerGeo;
+  const armGroup = new THREE.Group();
+  const armL = new THREE.Mesh(armGeo, robeDarkMat);
+  armL.scale.set(0.14 * sc, 0.42 * sc, 0.14 * sc);
+  armL.position.set(-0.31 * sc, 0, 0);
+  armGroup.add(armL);
+  const armR = new THREE.Mesh(armGeo, robeDarkMat);
+  armR.scale.set(0.14 * sc, 0.42 * sc, 0.14 * sc);
+  armR.position.set(0.31 * sc, 0, 0);
+  armGroup.add(armR);
+  const armBottom = new THREE.Mesh(armGeo, robeDarkMat);
+  armBottom.scale.set(0.76 * sc, 0.13 * sc, 0.14 * sc);
+  armBottom.position.set(0, -0.21 * sc, 0);
+  armGroup.add(armBottom);
+  armGroup.position.set(0, 1.12 * sc, 0.18 * sc);
+  armGroup.rotation.x = -0.47;
+  g.add(armGroup);
+  const legL = new THREE.Mesh(armGeo, shoeMat);
+  legL.scale.set(0.22 * sc, 0.16 * sc, 0.24 * sc);
+  legL.position.set(-0.15 * sc, 0.08 * sc, 0);
+  g.add(legL);
+  const legR = new THREE.Mesh(armGeo, shoeMat);
+  legR.scale.set(0.22 * sc, 0.16 * sc, 0.24 * sc);
+  legR.position.set(0.15 * sc, 0.08 * sc, 0);
+  g.add(legR);
+  g.userData = { isBaby, sc, legL, legR, armL, armR, body, head, palette: pal };
+  return g;
+}
+function villagerHW(m) { return m.isBaby ? 0.16 : 0.27; }
+function villagerH(m) { return m.isBaby ? 0.98 : 1.82; }
+function doorBlocked(h) {
+  const y = h.vy;
+  return isSolid(h.d0x, y + 1, h.d0z) || isSolid(h.d0x, y + 2, h.d0z) || isSolid(h.d1x, y + 1, h.d1z) || isSolid(h.d1x, y + 2, h.d1z);
+}
+function isInsideHome(mob) {
+  const h = villageHouses[mob.homeId];
+  if (!h) return false;
+  const x = mob.pos.x, z = mob.pos.z;
+  return x > h.minX + 0.2 && x < h.maxX - 0.2 && z > h.minZ + 0.2 && z < h.maxZ - 0.2;
+}
+function randomVillagePoint() {
+  for (let t = 0; t < 30; t++) {
+    const x = villageMinX + 2 + Math.random() * (villageMaxX - villageMinX - 4);
+    const z = villageMinZ + 2 + Math.random() * (villageMaxZ - villageMinZ - 4);
+    if (isInsideAnyHouse(x, z)) continue;
+    if (mobBlockedAt(x, z, 0.27, villageCenter.y + 1)) continue;
+    if (x < villageMinX + 1 || x > villageMaxX - 1 || z < villageMinZ + 1 || z > villageMaxZ - 1) continue;
+    return { x, z };
+  }
+  return { x: villageCenter.x, z: villageCenter.z };
+}
+function randomInsidePoint(homeId) {
+  const h = villageHouses[homeId];
+  if (!h) return randomVillagePoint();
+  for (let t = 0; t < 30; t++) {
+    const x = h.minX + 1.2 + Math.random() * (h.maxX - h.minX - 2.4);
+    const z = h.minZ + 1.2 + Math.random() * (h.maxZ - h.minZ - 2.4);
+    if (mobBlockedAt(x, z, 0.27, villageCenter.y + 1)) continue;
+    return { x, z };
+  }
+  return { x: h.cx, z: h.cz };
+}
+function wanderGoalFor(m) {
+  let best = null, bestScore = Infinity;
+  for (let t = 0; t < 30; t++) {
+    const x = villageMinX + 2 + Math.random() * (villageMaxX - villageMinX - 4);
+    const z = villageMinZ + 2 + Math.random() * (villageMaxZ - villageMinZ - 4);
+    if (isInsideAnyHouse(x, z)) continue;
+    if (x < villageMinX + 1 || x > villageMaxX - 1 || z < villageMinZ + 1 || z > villageMaxZ - 1) continue;
+    if (mobBlockedAt(x, z, m.hw, villageCenter.y + 1)) continue;
+    if (aabbCollidesWorld(x, villageCenter.y + 1, z, m.hw, m.h)) continue;
+    const ix = Math.floor(x), iz = Math.floor(z);
+    const dCur = Math.hypot(ix - m.pos.x, iz - m.pos.z);
+    if (dCur < 2) continue;
+    if (m.lastTarget && Math.hypot(ix - m.lastTarget.x, iz - m.lastTarget.z) < 4) continue;
+    const v = getVisit(ix, iz);
+    const score = v * 10 - dCur * 0.15;
+    if (score < bestScore) { bestScore = score; best = { x, z }; }
+  }
+  if (best) { m.lastTarget = { x: best.x, z: best.z }; return best; }
+  for (let t = 0; t < 30; t++) {
+    const x = villageMinX + 2 + Math.random() * (villageMaxX - villageMinX - 4);
+    const z = villageMinZ + 2 + Math.random() * (villageMaxZ - villageMinZ - 4);
+    if (isInsideAnyHouse(x, z)) continue;
+    if (mobBlockedAt(x, z, 0.27, villageCenter.y + 1)) continue;
+    return { x, z };
+  }
+  return { x: villageCenter.x, z: villageCenter.z };
+}
+function hasMobGround(x, z, hw, y) {
+  const py = y != null ? y : villageCenter.y + 1;
+  const gy = Math.floor(py) - 1;
+  if (gy < 0) return false;
+  const x0 = Math.floor(x - hw), x1 = Math.floor(x + hw);
+  const z0 = Math.floor(z - hw), z1 = Math.floor(z + hw);
+  for (let bx = x0; bx <= x1; bx++) for (let bz = z0; bz <= z1; bz++) {
+    const ox0 = Math.max(x - hw, bx), ox1 = Math.min(x + hw, bx + 1);
+    const oz0 = Math.max(z - hw, bz), oz1 = Math.min(z + hw, bz + 1);
+    if (ox1 - ox0 > 0.02 && oz1 - oz0 > 0.02) {
+      if (isSolid(bx, gy, bz)) continue;
+      const lid = getBlock(bx, gy, bz);
+      if (lid === WATER || lid === LAVA || lid === MOON_WATER) continue;
+      return false;
+    }
+  }
+  return true;
+}
+function mobBlockedAt(x, z, hw, y) {
+  const py = y != null ? y : villageCenter.y + 1;
+  const hh = hw <= 0.18 ? 0.98 : 1.82;
+  if (aabbCollidesWorld(x, py, z, hw, hh)) return true;
+  if (!hasMobGround(x, z, hw, py)) return true;
+  return false;
+}
+function mobProbeFree(x, z, dirX, dirZ, maxDist, hw, y) {
+  const py = y != null ? y : villageCenter.y + 1;
+  const h = hw <= 0.18 ? 0.98 : 1.82;
+  const steps = Math.ceil(maxDist / 0.28);
+  for (let s = 1; s <= steps; s++) {
+    const t = s / steps * maxDist;
+    const px = x + dirX * t, pz = z + dirZ * t;
+    if (aabbCollidesWorld(px, py, pz, hw, h)) return (s - 1) / steps * maxDist;
+    if (!hasMobGround(px, pz, hw, py)) return (s - 1) / steps * maxDist;
+    if (px < villageMinX + 0.7 || px > villageMaxX - 0.7 || pz < villageMinZ + 0.7 || pz > villageMaxZ - 0.7) return (s - 1) / steps * maxDist;
+  }
+  return maxDist;
+}
+function findVillagePath(sx, sz, tx, tz, hw, pyHint) {
+  if (hw == null) hw = 0.27;
+  const py = pyHint != null ? pyHint : villageCenter.y + 1;
+  const hh = hw <= 0.18 ? 0.98 : 1.82;
+  const toKey = (x, z) => x + "," + z;
+  const s = [Math.floor(sx), Math.floor(sz)], g = [Math.floor(tx), Math.floor(tz)];
+  if (s[0] === g[0] && s[1] === g[1]) return [[tx, tz]];
+  const isOutsideGoal = !isInsideAnyHouse(tx, tz);
+  const q = [s], came = new Map([[toKey(s[0], s[1]), null]]);
+  const dirs = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+  let found = false;
+  while (q.length) {
+    const [cx, cz] = q.shift();
+    if (cx === g[0] && cz === g[1]) { found = true; break; }
+    for (const [dx, dz] of dirs) {
+      const nx = cx + dx, nz = cz + dz;
+      if (nx < villageMinX + 1 || nx > villageMaxX - 1 || nz < villageMinZ + 1 || nz > villageMaxZ - 1) continue;
+      const k = toKey(nx, nz);
+      if (came.has(k)) continue;
+      if (isOutsideGoal && isInsideAnyHouse(nx + 0.5, nz + 0.5)) continue;
+      if (mobBlockedAt(nx + 0.5, nz + 0.5, hw, py)) continue;
+      came.set(k, [cx, cz]);
+      q.push([nx, nz]);
+    }
+    if (came.size > 4000) break;
+  }
+  if (!found) return null;
+  const path = [];
+  let cur = g;
+  while (cur) { path.push([cur[0] + 0.5, cur[1] + 0.5]); cur = came.get(toKey(cur[0], cur[1])); }
+  path.reverse();
+  // simplify collinear
+  const out = [path[0]];
+  for (let i = 1; i < path.length; i++) if (Math.hypot(path[i][0]-out[out.length-1][0], path[i][1]-out[out.length-1][1]) > 0.9) out.push(path[i]);
+  if (out.length) out[out.length-1] = [tx, tz];
+  return out;
+}
+function mobCollidesOther(mob, nx, nz) {
+  const hw = villagerHW(mob);
+  const y = mob.pos.y;
+  const nearby = nearbyMobsFor(nx, nz, 1);
+  for (const o of nearby) {
+    if (o === mob || o.fallen) continue;
+    if (mob.isBaby && o.id === mob.parentId) continue;
+    if (o.isBaby && o.parentId === mob.id) continue;
+    if (Math.abs(y - o.pos.y) > 1.2) continue;
+    const dx = nx - o.pos.x, dz = nz - o.pos.z;
+    const need = hw + villagerHW(o) + 0.04;
+    if (dx * dx + dz * dz < need * need) return o;
+  }
+  return null;
+}
+function mobHitsPlayer(nx, nz, hw, y) {
+  if (Math.abs(y - pos.y) > 1.5) return false;
+  const dx = pos.x - nx, dz = pos.z - nz;
+  return dx * dx + dz * dz < (hw + PLAYER_HW + 0.04) * (hw + PLAYER_HW + 0.04);
+}
+function spawnVillagers() {
+  if (mobs.length) return;
+  if (!villageHouses.length) computeVillageLayout();
+  if (!villagerGeo) villagerGeo = new THREE.BoxGeometry(1, 1, 1);
+  else if (villagerGeo.attributes.position.getY(0) > -0.4) { villagerGeo.dispose(); villagerGeo = new THREE.BoxGeometry(1, 1, 1); }
+  let gid = 0;
+  const used = [];
+  const usedBlocks = new Set();
+  for (const h of villageHouses) {
+    for (let k = 0; k < 3; k++) {
+      const isBaby = k === 2;
+      const mesh = makeVillagerMesh(isBaby);
+      let sx, sz, tries = 0;
+      const hw = isBaby ? 0.16 : 0.27, hh = isBaby ? 0.98 : 1.82;
+      do {
+        const ang = Math.random() * Math.PI * 2, rad = Math.random() * 7 + 2;
+        sx = h.cx + Math.cos(ang) * rad;
+        sz = h.cz + Math.sin(ang) * rad;
+        sx = Math.max(villageMinX + 1.5, Math.min(villageMaxX - 1.5, sx));
+        sz = Math.max(villageMinZ + 1.5, Math.min(villageMaxZ - 1.5, sz));
+        sx = Math.floor(sx) + 0.5;
+        sz = Math.floor(sz) + 0.5;
+        const blockKey = `${Math.floor(sx)},${villageCenter.y + 1},${Math.floor(sz)}`;
+        if (usedBlocks.has(blockKey)) { tries++; continue; }
+        if (isInsideAnyHouse(sx, sz) || mobBlockedAt(sx, sz, hw, villageCenter.y + 1) || used.some((u) => (u[0] - sx) ** 2 + (u[1] - sz) ** 2 < 1.6)) { tries++; continue; }
+        break;
+      } while (tries < 30);
+      // final snap center
+      sx = Math.floor(sx) + 0.5; sz = Math.floor(sz) + 0.5;
+      const blockKey = `${Math.floor(sx)},${villageCenter.y + 1},${Math.floor(sz)}`;
+      if (usedBlocks.has(blockKey)) {
+        // fallback to random village point centered
+        let alt = wanderGoalFor({ pos: new THREE.Vector3(sx, villageCenter.y+1, sz), hw, h: hh, lastTarget: null });
+        if (alt) { sx = Math.floor(alt.x)+0.5; sz = Math.floor(alt.z)+0.5; }
+      }
+      used.push([sx, sz]);
+      usedBlocks.add(`${Math.floor(sx)},${villageCenter.y + 1},${Math.floor(sz)}`);
+      mesh.position.set(sx, villageCenter.y + 1, sz);
+      const yaw = Math.random() * Math.PI * 2;
+      mesh.rotation.y = yaw;
+      scene.add(mesh);
+      const m = {
+        id: gid++, homeId: h.id, isBaby, parentId: -1,
+        pos: new THREE.Vector3(sx, villageCenter.y + 1, sz),
+        vel: new THREE.Vector3(0, 0, 0),
+        hw, h: hh, mesh, onGround: false, fallen: false, fallTime: 0,
+        target: null, mode: "wander", wanderT: 2 + Math.random() * 3, insideT: 0,
+        legPhase: Math.random() * Math.PI * 2, speed: WALK / 2,
+        blockedT: 0, yaw, yawTarget: yaw, villageBound: true,
+        _stuckT: 0, _prevX: sx, _prevZ: sz, _fallY: villageCenter.y + 1,
+        path: null, pathIdx: 0, pathKey: null, sc: isBaby ? 0.52 : 1, steerX: 0, steerZ: 0, steerCooldown: 0, lastTarget: null
+      };
+      mobs.push(m);
+      mobById.set(m.id, m);
+    }
+  }
+  for (const m of mobs) if (m.isBaby) {
+    const sibs = mobs.filter((o) => o.homeId === m.homeId && !o.isBaby);
+    if (sibs.length) m.parentId = sibs[Math.floor(Math.random() * sibs.length)].id;
+  }
+  for (const m of mobs) {
+    if (m.isBaby) {
+      const p = mobById.get(m.parentId);
+      if (p) m.target = { x: p.pos.x, z: p.pos.z };
+      else m.target = randomVillagePoint();
+    } else {
+      m.target = randomVillagePoint();
+    }
+    m.mode = "wander";
+    m.wanderT = 3 + Math.random() * 4;
+  }
+}
+function removeVillagers() {
+  for (const m of mobs) {
+    if (m.mesh) scene.remove(m.mesh);
+    if (m.fallMesh) scene.remove(m.fallMesh);
+  }
+  mobs.length = 0;
+  mobById.clear();
+  mobGrid.clear();
+  visitGrid.clear();
+  for (const h of villageHouses) { h.doorQueue = []; h.doorLock = null; h.lockUntil = 0; }
+  if (villagerGeo) { /* keep geo for reuse */ }
+  mobStats = { worldCol: 0, mobCol: 0, playerCol: 0, stuck: 0, falls: 0, frames: 0, invariants: 0 };
+}
+function intersectsMob(bx, by, bz) {
+  const nearby = nearbyMobsFor(bx + 0.5, bz + 0.5, 1);
+  for (const m of nearby) {
+    const hw = villagerHW(m) + 0.05, hh = villagerH(m);
+    const mx = m.pos.x, my = m.pos.y, mz = m.pos.z;
+    if (bx + 1 > mx - hw && bx < mx + hw && by + 1 > my && by < my + hh && bz + 1 > mz - hw && bz < mz + hw) return true;
+  }
+  return false;
+}
+function isMobStandingOn(bx, by, bz) {
+  const nearby = nearbyMobsFor(bx + 0.5, bz + 0.5, 1);
+  for (const m of nearby) {
+    const hw = villagerHW(m);
+    const mx = m.pos.x, my = m.pos.y, mz = m.pos.z;
+    const ox0 = Math.max(mx - hw, bx), ox1 = Math.min(mx + hw, bx + 1);
+    const oz0 = Math.max(mz - hw, bz), oz1 = Math.min(mz + hw, bz + 1);
+    if (ox1 - ox0 <= 0.02 || oz1 - oz0 <= 0.02) continue;
+    if (Math.abs(my - (by + 1)) < 0.35) return true;
+  }
+  return false;
+}
+function separateMobs() {
+  for (const m of mobs) {
+    if (m.fallen) continue;
+    let sx = 0, sz = 0, cnt = 0;
+    const nearby = nearbyMobsFor(m.pos.x, m.pos.z, 1);
+    for (const o of nearby) {
+      if (o === m || o.fallen) continue;
+      if (m.isBaby && o.id === m.parentId) continue;
+      if (o.isBaby && o.parentId === m.id) continue;
+      const dx = m.pos.x - o.pos.x, dz = m.pos.z - o.pos.z;
+      const d2 = dx * dx + dz * dz;
+      const need = villagerHW(m) + villagerHW(o) + 0.04;
+      if (d2 < need * need && d2 > 0.0001) {
+        const d = Math.sqrt(d2);
+        const push = (need - d) * 0.08;
+        sx += (dx / d) * push; sz += (dz / d) * push; cnt++;
+      }
+    }
+    if (cnt) {
+      let nx = m.pos.x + sx, nz = m.pos.z + sz;
+      if (!aabbCollidesWorld(nx, m.pos.y, nz, m.hw, m.h) && !mobCollidesOther(m, nx, nz) && hasMobGround(nx, nz, m.hw, m.pos.y)) {
+        m.pos.x += (nx - m.pos.x) * 0.25;
+        m.pos.z += (nz - m.pos.z) * 0.25;
+        if (mobStats) mobStats.mobCol++;
+      }
+    }
+  }
+}
+function pushMobsFromPlayer() {
+  const y = villageCenter.y + 1;
+  if (Math.abs(pos.y - y) > 1.8) return;
+  const nearby = nearbyMobsFor(pos.x, pos.z, 2);
+  for (const m of nearby) {
+    if (m.fallen) continue;
+    const dx = m.pos.x - pos.x, dz = m.pos.z - pos.z;
+    const d2 = dx * dx + dz * dz;
+    const need = (PLAYER_HW + villagerHW(m) + 0.08);
+    if (d2 < need * need && d2 > 0.0001) {
+      const d = Math.sqrt(d2);
+      const push = (need - d) * 0.30;
+      const nx = m.pos.x + (dx / d) * push, nz = m.pos.z + (dz / d) * push;
+      if (!aabbCollidesWorld(nx, m.pos.y, nz, m.hw, m.h) && !mobCollidesOther(m, nx, nz) && hasMobGround(nx, nz, m.hw, m.pos.y)) {
+        m.pos.x += (nx - m.pos.x) * 0.50;
+        m.pos.z += (nz - m.pos.z) * 0.50;
+        if (mobStats) mobStats.playerCol++;
+      }
+      const pPush = (need - d) * 0.15;
+      const px = pos.x - (dx / d) * pPush, pz = pos.z - (dz / d) * pPush;
+      if (!aabbCollidesWorld(px, pos.y, pz, PLAYER_HW, PLAYER_H)) { pos.x = px; pos.z = pz; }
+    }
+  }
+}
+function updateMobs(dt) {
+  if (dim !== "over" || !villageHouses.length || !mobs.length) return;
+  mobTick++;
+  buildMobGrid();
+  if ((mobTick & 1) === 0) separateMobs(); else { /* keep push every frame */ }
+  pushMobsFromPlayer();
+  if (mobStats) mobStats.frames++;
+  const g = GRAVITY;
+  for (let idx = mobs.length - 1; idx >= 0; idx--) {
+    const m = mobs[idx];
+    const wasFallen = m.fallen;
+    // TNT : tombe progressivement sur le côté (~0.6s), reste 3s, fade 1s — couchés SUR le sol
+    if (m.fallen) {
+      m.fallTime += dt;
+      const FALL_DUR = 0.6;
+      if (m.fallTime < FALL_DUR) {
+        const t = m.fallTime / FALL_DUR;
+        const k = t * t * (3 - 2 * t);
+        m.mesh.rotation.z = (m._fallStartZ || 0) + ((m._fallTargetZ ?? Math.PI/2) - (m._fallStartZ || 0)) * k;
+        m.mesh.rotation.x = (m._fallStartX || 0) + ((m._fallTargetX ?? 0) - (m._fallStartX || 0)) * k;
+        m.mesh.rotation.y = (m._fallStartY || m.mesh.rotation.y) + ((m._fallTargetY ?? m.mesh.rotation.y) - (m._fallStartY || m.mesh.rotation.y)) * k;
+        // soulève progressivement pour que le flanc repose sur le sol, pas à moitié dedans
+        const yOff = m.hw * k * 0.9;
+        m.mesh.position.set(m.pos.x, m.pos.y + yOff, m.pos.z);
+      } else {
+        if (m.fallTime < FALL_DUR + 0.02) {
+          m.mesh.rotation.z = m._fallTargetZ ?? Math.PI/2;
+          m.mesh.rotation.x = m._fallTargetX ?? 0;
+          m.mesh.rotation.y = m._fallTargetY ?? m.mesh.rotation.y;
+        }
+        m.mesh.position.set(m.pos.x, m.pos.y + m.hw * 0.9, m.pos.z);
+      }
+      if (m.fallTime < 3) {
+        // couchés, immobiles
+      } else if (m.fallTime < 4) {
+        const t = (m.fallTime - 3) / 1;
+        m.mesh.traverse((ch) => {
+          if (ch.isMesh && ch.material) {
+            const mats = Array.isArray(ch.material) ? ch.material : [ch.material];
+            mats.forEach(mat=>{ mat.transparent = true; mat.opacity = Math.max(0, 1 - t); });
+          }
+        });
+      } else {
+        scene.remove(m.mesh);
+        m.mesh.traverse((ch) => { if (ch.isMesh) { if (ch.geometry) ch.geometry.dispose(); } });
+        mobById.delete(m.id);
+        mobs.splice(idx, 1);
+        if (mobStats) mobStats.falls++;
+        continue;
+      }
+      continue;
+    }
+    if (m.pos.y < -15) {
+      scene.remove(m.mesh);
+      mobById.delete(m.id);
+      mobs.splice(idx, 1);
+      if (mobStats) mobStats.falls++;
+      continue;
+    }
+    // Physics step will be done after AI sets vel
+    const prevX = m.pos.x, prevZ = m.pos.z;
+    addVisit(m.pos.x, m.pos.z);
+    if (aabbCollidesWorld(m.pos.x, m.pos.y, m.pos.z, m.hw, m.h)) { mobInvariantsViolated++; if (mobStats) mobStats.invariants++; }
+    // Simple AI
+    if (m.mode === "inside") {
+      m.insideT -= dt;
+      if (m.insideT <= 0) {
+        m.mode = "goOut";
+        m.target = { x: villageHouses[m.homeId].apronX, z: villageHouses[m.homeId].apronZ };
+      } else {
+        if (!m.target || Math.hypot(m.target.x - m.pos.x, m.target.z - m.pos.z) < 0.5) {
+          m.target = randomInsidePoint(m.homeId);
+        }
+      }
+    } else if (m.mode === "goOut" || m.mode === "goHome") {
+      const house = villageHouses[m.homeId];
+      const isOut = m.mode === "goOut";
+      const dest = isOut ? { x: house.apronX, z: house.apronZ } : { x: house.padX, z: house.padZ };
+      if (Math.hypot(dest.x - m.pos.x, dest.z - m.pos.z) < 0.6) {
+        if (isOut) { m.mode = "wander"; m.wanderT = 3 + Math.random() * 3; m.target = wanderGoalFor(m); }
+        else { m.mode = "inside"; m.insideT = 8 + Math.random() * 8; m.target = randomInsidePoint(m.homeId); }
+      } else {
+        m.target = dest;
+      }
+    } else {
+      // wander / follow
+      if (m.isBaby) {
+        const p = mobById.get(m.parentId);
+        if (p) {
+          const pd = Math.hypot(p.pos.x - m.pos.x, p.pos.z - m.pos.z);
+          const pInside = (()=>{ const h=villageHouses[p.homeId]; return p.pos.x>h.minX&&p.pos.x<h.maxX&&p.pos.z>h.minZ&&p.pos.z<h.maxZ; })();
+          const meInside = (()=>{ const h=villageHouses[m.homeId]; return m.pos.x>h.minX&&m.pos.x<h.maxX&&m.pos.z>h.minZ&&m.pos.z<h.maxZ; })();
+          if (pInside !== meInside) {
+            const house = pInside ? villageHouses[p.homeId] : villageHouses[m.homeId];
+            m.mode = pInside ? "goHome" : "goOut";
+            m.target = pInside ? { x: house.padX, z: house.padZ } : { x: house.apronX, z: house.apronZ };
+          } else if (pd > 3.0) {
+            m.target = { x: p.pos.x, z: p.pos.z };
+          } else if (pd < 1.2 && m.target && Math.hypot(m.target.x - p.pos.x, m.target.z - p.pos.z) < 1) {
+            // stay near parent
+          } else if (m.wanderT <= 0) {
+            m.target = { x: p.pos.x + (Math.random()-0.5)*2, z: p.pos.z + (Math.random()-0.5)*2 };
+          }
+        }
+      }
+      m.wanderT -= dt;
+      if (!m.isBaby && m.wanderT <= 0 && m.mode === "wander") {
+        if (Math.random() < 0.25) {
+          m.mode = "goHome";
+          m.target = { x: villageHouses[m.homeId].apronX, z: villageHouses[m.homeId].apronZ };
+        } else {
+          m.target = wanderGoalFor(m);
+          m.wanderT = 3 + Math.random() * 4;
+        }
+      }
+      if (m.target && Math.hypot(m.target.x - m.pos.x, m.target.z - m.pos.z) < 0.6) {
+        if (m.mode === "wander") { m.target = wanderGoalFor(m); m.wanderT = 3 + Math.random() * 3; }
+      }
+    }
+    // Steering towards target — BFS path for 1-block corridors + smart wall avoidance
+    let tx = m.target ? m.target.x : m.pos.x;
+    let tz = m.target ? m.target.z : m.pos.z;
+    let hasPath = false;
+    const toTarOverall = Math.hypot(tx - m.pos.x, tz - m.pos.z);
+    const insideNow = (()=>{ const h=villageHouses[m.homeId]; return m.pos.x>h.minX&&m.pos.x<h.maxX&&m.pos.z>h.minZ&&m.pos.z<h.maxZ; })();
+    const needPath = !insideNow && m.mode !== "inside" && (toTarOverall > 1.8 || mobProbeFree(m.pos.x, m.pos.z, (tx - m.pos.x)/(toTarOverall||1), (tz - m.pos.z)/(toTarOverall||1), Math.min(1.2, toTarOverall), m.hw, m.pos.y) < 0.55);
+    if (needPath) {
+      const pk = Math.round(tx) + "," + Math.round(tz);
+      if (!m.path || m.pathKey !== pk) {
+        const p = findVillagePath(m.pos.x, m.pos.z, tx, tz, m.hw, m.pos.y);
+        if (p && p.length > 1) { m.path = p; m.pathIdx = 1; m.pathKey = pk; hasPath = true; tx = p[1][0]; tz = p[1][1]; }
+        else { m.path = null; m.pathKey = null; }
+      } else if (m.path && m.pathIdx < m.path.length) {
+        hasPath = true;
+        tx = m.path[m.pathIdx][0]; tz = m.path[m.pathIdx][1];
+        if (Math.hypot(m.pos.x - tx, m.pos.z - tz) < 0.45) {
+          m.pathIdx++; if (m.pathIdx < m.path.length) { tx = m.path[m.pathIdx][0]; tz = m.path[m.pathIdx][1]; }
+          else { m.path = null; m.pathKey = null; hasPath = false; }
+        }
+      }
+      if (hasPath && mobProbeFree(m.pos.x, m.pos.z, (tx - m.pos.x)/Math.hypot(tx - m.pos.x, tz - m.pos.z || 1), (tz - m.pos.z)/Math.hypot(tx - m.pos.x, tz - m.pos.z || 1), 0.6, m.hw, m.pos.y) < 0.15) {
+        m.path = null; m.pathKey = null; hasPath = false; tx = m.target.x; tz = m.target.z;
+      }
+    } else {
+      m.path = null; m.pathKey = null;
+    }
+    const toTx = tx - m.pos.x, toTz = tz - m.pos.z;
+    const dist = Math.hypot(toTx, toTz);
+    let wantX = 0, wantZ = 0;
+    if (dist > 0.05) {
+      wantX = (toTx / dist) * m.speed;
+      wantZ = (toTz / dist) * m.speed;
+      if (!hasPath) {
+        if (m.steerCooldown > 0) {
+          m.steerCooldown -= dt;
+          const sx = m.steerX / (m.speed || 1), sz = m.steerZ / (m.speed || 1);
+          const steerFree = (Math.abs(sx) > 0.01 || Math.abs(sz) > 0.01) ? mobProbeFree(m.pos.x, m.pos.z, sx, sz, 1.4, m.hw, m.pos.y) : 0;
+          if (steerFree > 0.6) {
+            wantX = m.steerX; wantZ = m.steerZ;
+          } else {
+            m.steerCooldown = 0;
+          }
+        }
+        if (m.steerCooldown <= 0) {
+          const dirX = wantX / m.speed, dirZ = wantZ / m.speed;
+          const probe = mobProbeFree(m.pos.x, m.pos.z, dirX, dirZ, 1.4, m.hw, m.pos.y);
+          if (probe < 0.7) {
+            let bestScore = -1, bx = wantX, bz = wantZ, bestFree = probe;
+            const angles = probe < 0.35 ? [0,30,-30,60,-60,90,-90,120,-120,150,-150,180] : [0,35,-35,70,-70,110,-110];
+            for (const a of angles) {
+              const rad = a * Math.PI / 180;
+              const cx = Math.cos(rad) * dirX - Math.sin(rad) * dirZ;
+              const cz = Math.sin(rad) * dirX + Math.cos(rad) * dirZ;
+              const free = mobProbeFree(m.pos.x, m.pos.z, cx, cz, 1.4, m.hw, m.pos.y);
+              const dot = cx * dirX + cz * dirZ;
+              const score = free * (0.55 + 0.45 * Math.max(0, dot));
+              if (free < 0.25) continue;
+              if (score > bestScore) { bestScore = score; bestFree = free; bx = cx * m.speed; bz = cz * m.speed; }
+            }
+            if (bestScore >= 0 && bestFree > probe + 0.05) { wantX = bx; wantZ = bz; m.steerX = wantX; m.steerZ = wantZ; m.steerCooldown = 0.45; }
+            else if (probe < 0.25) { wantX *= 0.3; wantZ *= 0.3; m.steerX = wantX; m.steerZ = wantZ; m.steerCooldown = 0.35; }
+            else { m.steerX = wantX; m.steerZ = wantZ; m.steerCooldown = 0.25; }
+          } else {
+            m.steerX = wantX; m.steerZ = wantZ; m.steerCooldown = 0.3;
+          }
+        }
+      } else {
+        m.steerX = wantX; m.steerZ = wantZ; m.steerCooldown = 0.2;
+      }
+    }
+    if (wantX === 0 && wantZ === 0 && dist > 0.6) {
+      for (const [dx, dz] of [[1,0],[-1,0],[0,1],[0,-1],[1,1],[-1,-1],[1,-1],[-1,1]]) {
+        const free = mobProbeFree(m.pos.x, m.pos.z, dx, dz, 1.4, m.hw, m.pos.y);
+        if (free > 0.5) {
+          const nx = m.pos.x + dx, nz = m.pos.z + dz;
+          const canStand = hasMobGround(nx, nz, m.hw, m.pos.y) || hasMobGround(nx, nz, m.hw, m.pos.y+1) || hasMobGround(nx, nz, m.hw, m.pos.y-1);
+          if (canStand && !aabbCollidesWorld(nx, m.pos.y, nz, m.hw, m.h) && !aabbCollidesWorld(nx, m.pos.y+1, nz, m.hw, m.h)) {
+            wantX = dx * m.speed * 0.6;
+            wantZ = dz * m.speed * 0.6;
+            m.steerX = wantX; m.steerZ = wantZ; m.steerCooldown = 0.6;
+            break;
+          }
+        }
+      }
+    }
+    // lerp vel towards want (like player)
+    m.vel.x += (wantX - m.vel.x) * Math.min(1, dt * 6);
+    m.vel.z += (wantZ - m.vel.z) * Math.min(1, dt * 6);
+    if (dist < 0.1) { m.vel.x *= 0.85; m.vel.z *= 0.85; }
+    // handle inside house wall clamp: if trying to go out of house interior via wall, pick new inside point
+    if (m.mode === "inside") {
+      const h = villageHouses[m.homeId];
+      const nx = m.pos.x + m.vel.x * dt, nz = m.pos.z + m.vel.z * dt;
+      const hitWall = nx <= h.minX + 0.4 || nx >= h.maxX - 0.4 || nz <= h.minZ + 0.4 || nz >= h.maxZ - 0.4;
+      // allow door gap
+      const nearDoor = (Math.abs(nx - (h.d0x+0.5))<1 || Math.abs(nx - (h.d1x+0.5))<1) && (Math.abs(nz - (h.d0z+0.5))<1 || Math.abs(nz - (h.d1z+0.5))<1);
+      if (hitWall && !nearDoor && aabbCollidesWorld(nx, m.pos.y, nz, m.hw, m.h)) {
+        m.target = randomInsidePoint(m.homeId);
+        m.vel.x *= 0.5; m.vel.z *= 0.5;
+      }
+    }
+    // physics step
+    mobPhysicsStep(m, dt, g);
+    // mob-mob / player already in separate/push, but also check immediate collision after move
+    // stuck detection — coin 1-block : on ne reste jamais bloqué
+    const moved = Math.hypot(m.pos.x - prevX, m.pos.z - prevZ);
+    const wantMove = Math.hypot(wantX, wantZ) * dt;
+    if (wantMove > 0.05 && moved < wantMove * 0.20) m._stuckT += dt; else m._stuckT = Math.max(0, m._stuckT - dt * 2);
+    if (m._stuckT > 0.55) {
+      if (m.mode === "inside") {
+        m.target = randomInsidePoint(m.homeId);
+      } else {
+        let bestF = -1, bx = 0, bz = 0;
+        for (let a = 0; a < 360; a += 45) {
+          const rad = a * Math.PI / 180;
+          const cx = Math.cos(rad), cz = Math.sin(rad);
+          const free = mobProbeFree(m.pos.x, m.pos.z, cx, cz, 2.2, m.hw, m.pos.y);
+          if (free > bestF) { bestF = free; bx = cx; bz = cz; }
+        }
+        if (bestF > 0.35) {
+          const tx2 = m.pos.x + bx * (1.5 + Math.random()*2.5);
+          const tz2 = m.pos.z + bz * (1.5 + Math.random()*2.5);
+          const cx = Math.max(villageMinX+1, Math.min(villageMaxX-1, tx2));
+          const cz = Math.max(villageMinZ+1, Math.min(villageMaxZ-1, tz2));
+          const canStand = (!aabbCollidesWorld(cx, m.pos.y, cz, m.hw, m.h) && hasMobGround(cx, cz, m.hw, m.pos.y)) || (!aabbCollidesWorld(cx, m.pos.y+1, cz, m.hw, m.h) && hasMobGround(cx, cz, m.hw, m.pos.y+1)) || (!aabbCollidesWorld(cx, m.pos.y-1, cz, m.hw, m.h) && hasMobGround(cx, cz, m.hw, m.pos.y-1));
+          if (canStand && !isInsideAnyHouse(cx, cz)) {
+            m.target = { x: cx, z: cz };
+            m.lastTarget = { x: cx, z: cz };
+          } else {
+            m.target = wanderGoalFor(m);
+          }
+          m.path = null; m.pathKey = null;
+          m.vel.x = bx * (WALK/2) * 0.7; m.vel.z = bz * (WALK/2) * 0.7;
+          m.steerX = m.vel.x; m.steerZ = m.vel.z; m.steerCooldown = 0.5;
+        } else {
+          m.target = wanderGoalFor(m);
+          m.path = null; m.pathKey = null;
+          const ang = Math.random()*Math.PI*2;
+          m.vel.x = Math.cos(ang)*(WALK/2)*0.5; m.vel.z = Math.sin(ang)*(WALK/2)*0.5;
+          m.steerX = m.vel.x; m.steerZ = m.vel.z; m.steerCooldown = 0.5;
+        }
+      }
+      m.wanderT = 2 + Math.random() * 2;
+      m._stuckT = 0;
+      if (mobStats) mobStats.stuck++;
+    } else if (wantMove > 0.05 && moved < 0.02 && mobProbeFree(m.pos.x, m.pos.z, wantX/(m.speed||1), wantZ/(m.speed||1), 0.5, m.hw, m.pos.y) < 0.15) {
+      let bestF = -1, bx = 0, bz = 0;
+      for (let a = 0; a < 360; a += 45) {
+        const rad = a * Math.PI / 180;
+        const cx = Math.cos(rad), cz = Math.sin(rad);
+        const free = mobProbeFree(m.pos.x, m.pos.z, cx, cz, 1.4, m.hw, m.pos.y);
+        if (free > bestF) { bestF = free; bx = cx; bz = cz; }
+      }
+      if (bestF > 0.35) {
+        m.vel.x = bx * (WALK/2) * 0.5; m.vel.z = bz * (WALK/2) * 0.5;
+        m.mesh.rotation.y = Math.atan2(bx, bz);
+        m.steerX = m.vel.x; m.steerZ = m.vel.z; m.steerCooldown = 0.5;
+      }
+    }
+    // sync mesh
+    m.mesh.position.copy(m.pos);
+    // yaw
+    if (Math.hypot(m.vel.x, m.vel.z) > 0.1) {
+      const yawWant = Math.atan2(m.vel.x, m.vel.z);
+      let dd = yawWant - m.mesh.rotation.y; while (dd > Math.PI) dd -= Math.PI*2; while (dd < -Math.PI) dd += Math.PI*2;
+      m.mesh.rotation.y += dd * Math.min(1, dt * 7);
+    }
+    // leg anim
+    const moving = Math.hypot(m.vel.x, m.vel.z) > 0.15 && m.onGround;
+    if (moving) m.legPhase += dt * 9;
+    else m.legPhase += dt * 2;
+    if (m.mesh.userData.legL) {
+      m.mesh.userData.legL.rotation.x = Math.sin(m.legPhase) * 0.55;
+      m.mesh.userData.legR.rotation.x = Math.sin(m.legPhase + Math.PI) * 0.55;
+    }
+    // ensure not embedded
+    if (aabbCollidesWorld(m.pos.x, m.pos.y, m.pos.z, m.hw, m.h)) {
+      // nudge out: try small random
+      for (let k=0;k<4;k++){ const nx=m.pos.x + (Math.random()-0.5)*0.6, nz=m.pos.z + (Math.random()-0.5)*0.6; if(!aabbCollidesWorld(nx,m.pos.y,nz,m.hw,m.h)){ m.pos.x=nx; m.pos.z=nz; break; } }
+    }
+  }
+}
+function handleMobExplosion(cx, cy, cz) {
+  const R = BLAST_RADIUS + 1.2;
+  const R2 = R*R;
+  const cand = mobGrid.size ? nearbyMobsFor(cx, cz, 1) : mobs;
+  for (const m of cand) {
+    if (m.fallen) continue;
+    const dx = m.pos.x - cx, dy = (m.pos.y + m.h*0.5) - cy, dz = m.pos.z - cz;
+    if (dx*dx + dy*dy + dz*dz > R2) continue;
+    m.fallen = true; m.fallTime = 0;
+    m.vel.set(0, 0, 0);
+    m.onGround = true;
+    // chute progressive sur place : on mémorise la rotation de départ et la cible
+    m._fallStartZ = m.mesh.rotation.z;
+    m._fallStartX = m.mesh.rotation.x;
+    m._fallStartY = m.mesh.rotation.y;
+    const side = Math.random() < 0.5 ? 1 : -1;
+    m._fallTargetZ = side * Math.PI / 2;
+    m._fallTargetX = (Math.random() - 0.5) * 0.3;
+    m._fallTargetY = m.mesh.rotation.y + (Math.random() - 0.5) * 0.5;
+    // rendre les matériaux clonés pour pouvoir fader sans affecter les autres
+    m.mesh.traverse((ch)=>{
+      if(ch.isMesh && ch.material){
+        if(Array.isArray(ch.material)){
+          ch.material = ch.material.map(mat=>{ const nm=mat.clone(); nm.transparent=true; nm.opacity=1; nm.needsUpdate=true; return nm; });
+        } else {
+          const nm = ch.material.clone(); nm.transparent=true; nm.opacity=1; nm.needsUpdate=true; ch.material=nm;
+        }
+      }
+    });
+  }
+}
+function transparentClone(mat){
+  if(mat._cloned) return mat;
+  mat.transparent = true; mat.opacity = 1; mat.needsUpdate = true; return mat;
 }
 
 function generateWorld() {
@@ -874,6 +1807,7 @@ function generateWorld() {
   portalBlockSets.over.clear();
   glowstoneBlockSets.over.clear();
   glowVariants.over.clear();
+  visitGrid.clear();
   waterScale = 1 + (hash2(0, 0, seed + 333) * 4 | 0);
   waterDepth = 1 + (hash2(0, 0, seed + 444) * 3 | 0);
   basinFreq = 0.007 / Math.sqrt(waterScale);
@@ -892,17 +1826,21 @@ function generateWorld() {
       fvals.push(fbm(x * 0.01 + 500, z * 0.01 + 500, seed + 888));
   fvals.sort((a, b) => a - b);
   forestThresh = fvals[(fvals.length * 0.5) | 0];
+  computeVillageLayout();
   for (let x = -WORLD_RADIUS; x <= WORLD_RADIUS; x++) {
     for (let z = -WORLD_RADIUS; z <= WORLD_RADIUS; z++) {
-      const h = heightAt(x, z);
+      const inVillage = x >= villageMinX && x <= villageMaxX && z >= villageMinZ && z <= villageMaxZ;
+      let h = heightAt(x, z);
+      if (inVillage) h = villageCenter.y;
       for (let y = 0; y <= h; y++) {
         let id = STONE;
-        if (y === h) id = h <= WATER_LEVEL + 1 ? SAND : GRASS;
+        if (y === h) id = inVillage ? STONE : (h <= WATER_LEVEL + 1 ? SAND : GRASS);
         else if (y >= h - 2) id = DIRT;
         else if (y >= h - 5 && Math.random() < 0.3) id = STONE;
         setBlock(x, y, z, id);
       }
-      if (h < WATER_LEVEL) for (let y = h + 1; y <= WATER_LEVEL; y++) setBlock(x, y, z, WATER);
+      if (!inVillage && h < WATER_LEVEL) for (let y = h + 1; y <= WATER_LEVEL; y++) setBlock(x, y, z, WATER);
+      if (inVillage) continue;
       const forest = fbm(x * 0.01 + 500, z * 0.01 + 500, seed + 888);
       if (getBlock(x, h, z) === GRASS && hash2(x, z, seed + 555) < (forest > forestThresh ? 0.006 : 0.002)) {
         growTree(x, h + 1, z);
@@ -914,6 +1852,7 @@ function generateWorld() {
   carveTunnels();
   carveRooms();
   stairEntrances();
+  placeVillageHouses();
   generateClouds();
   generateMoon();
 }
@@ -2286,6 +3225,138 @@ function isSolid(x, y, z) {
   return !!info && info.solid;
 }
 
+// Generic AABB vs world, same as player but parameterized
+function aabbCollidesWorld(px, py, pz, hw, h) {
+  const y0 = Math.floor(py + 0.001);
+  const y1 = Math.floor(py + h - 0.001);
+  for (let by = y0; by <= y1; by++)
+    for (let bx = Math.floor(px - hw + 0.001); bx <= Math.floor(px + hw - 0.001); bx++)
+      for (let bz = Math.floor(pz - hw + 0.001); bz <= Math.floor(pz + hw - 0.001); bz++)
+        if (isSolid(bx, by, bz)) return true;
+  return false;
+}
+function aabbOverlaps(ax, ay, az, ahw, ah, bx, by, bz, bhw, bh) {
+  return ax + ahw > bx - bhw && ax - ahw < bx + bhw &&
+         az + ahw > bz - bhw && az - ahw < bz + bhw &&
+         ay + ah > by && ay < by + bh;
+}
+
+// Mob physics: same gravity/collision as player but no tryStep (no montée)
+function moveMobAxisX(mob, dx) {
+  mob.pos.x += dx;
+  if (dx === 0) return false;
+  const dir = dx > 0 ? 1 : -1;
+  const edge = dir > 0 ? mob.pos.x + mob.hw : mob.pos.x - mob.hw;
+  const cellX = Math.floor(edge);
+  for (let by = Math.floor(mob.pos.y + mob.h); by >= Math.floor(mob.pos.y); by--)
+    for (let bz = Math.floor(mob.pos.z - mob.hw); bz <= Math.floor(mob.pos.z + mob.hw); bz++) {
+      if (!isSolid(cellX, by, bz)) continue;
+      if (dir > 0 && edge > cellX) {
+        if (!aabbCollidesWorld(mob.pos.x, mob.pos.y+1, mob.pos.z, mob.hw, mob.h) && hasMobGround(mob.pos.x, mob.pos.z, mob.hw, mob.pos.y+1)) {
+          mob.pos.y += 1;
+          mob.onGround = true;
+          return false;
+        }
+        mob.pos.x = cellX - mob.hw - 0.001; mob.vel.x = 0; if (mobStats) mobStats.worldCol++; return true;
+      }
+      if (dir < 0 && edge < cellX + 0.999) {
+        if (!aabbCollidesWorld(mob.pos.x, mob.pos.y+1, mob.pos.z, mob.hw, mob.h) && hasMobGround(mob.pos.x, mob.pos.z, mob.hw, mob.pos.y+1)) {
+          mob.pos.y += 1;
+          mob.onGround = true;
+          return false;
+        }
+        mob.pos.x = cellX + 1 + mob.hw + 0.001; mob.vel.x = 0; if (mobStats) mobStats.worldCol++; return true;
+      }
+    }
+  if (!hasMobGround(mob.pos.x, mob.pos.z, mob.hw, mob.pos.y)) {
+    if (hasMobGround(mob.pos.x, mob.pos.z, mob.hw, mob.pos.y-1) && !aabbCollidesWorld(mob.pos.x, mob.pos.y-1, mob.pos.z, mob.hw, mob.h)) {
+      mob.pos.y -= 1;
+      return false;
+    }
+    mob.pos.x -= dx; mob.vel.x = 0; return true;
+  }
+  return false;
+}
+function moveMobAxisZ(mob, dz) {
+  mob.pos.z += dz;
+  if (dz === 0) return false;
+  const dir = dz > 0 ? 1 : -1;
+  const edge = dir > 0 ? mob.pos.z + mob.hw : mob.pos.z - mob.hw;
+  const cellZ = Math.floor(edge);
+  for (let by = Math.floor(mob.pos.y + mob.h); by >= Math.floor(mob.pos.y); by--)
+    for (let bx = Math.floor(mob.pos.x - mob.hw); bx <= Math.floor(mob.pos.x + mob.hw); bx++) {
+      if (!isSolid(bx, by, cellZ)) continue;
+      if (dir > 0 && edge > cellZ) {
+        if (!aabbCollidesWorld(mob.pos.x, mob.pos.y+1, mob.pos.z, mob.hw, mob.h) && hasMobGround(mob.pos.x, mob.pos.z, mob.hw, mob.pos.y+1)) {
+          mob.pos.y += 1;
+          mob.onGround = true;
+          return false;
+        }
+        mob.pos.z = cellZ - mob.hw - 0.001; mob.vel.z = 0; if (mobStats) mobStats.worldCol++; return true;
+      }
+      if (dir < 0 && edge < cellZ + 0.999) {
+        if (!aabbCollidesWorld(mob.pos.x, mob.pos.y+1, mob.pos.z, mob.hw, mob.h) && hasMobGround(mob.pos.x, mob.pos.z, mob.hw, mob.pos.y+1)) {
+          mob.pos.y += 1;
+          mob.onGround = true;
+          return false;
+        }
+        mob.pos.z = cellZ + 1 + mob.hw + 0.001; mob.vel.z = 0; if (mobStats) mobStats.worldCol++; return true;
+      }
+    }
+  if (!hasMobGround(mob.pos.x, mob.pos.z, mob.hw, mob.pos.y)) {
+    if (hasMobGround(mob.pos.x, mob.pos.z, mob.hw, mob.pos.y-1) && !aabbCollidesWorld(mob.pos.x, mob.pos.y-1, mob.pos.z, mob.hw, mob.h)) {
+      mob.pos.y -= 1;
+      return false;
+    }
+    mob.pos.z -= dz; mob.vel.z = 0; return true;
+  }
+  return false;
+}
+function moveMobAxisY(mob, dy) {
+  mob.pos.y += dy;
+  mob.onGround = false;
+  const top = mob.pos.y + mob.h, feet = mob.pos.y;
+  for (let bx = Math.floor(mob.pos.x - mob.hw); bx <= Math.floor(mob.pos.x + mob.hw); bx++)
+    for (let bz = Math.floor(mob.pos.z - mob.hw); bz <= Math.floor(mob.pos.z + mob.hw); bz++) {
+      if (mob.vel.y > 0 && isSolid(bx, Math.floor(top), bz) && top > Math.floor(top)) { mob.pos.y = Math.floor(top) - mob.h - 0.001; mob.vel.y = 0; return true; }
+      if (mob.vel.y <= 0 && isSolid(bx, Math.floor(feet), bz)) { mob.pos.y = Math.floor(feet) + 1 + 0.001; mob.vel.y = 0; mob.onGround = true; return true; }
+    }
+  return false;
+}
+function mobPhysicsStep(mob, dt, g) {
+  const grav = g != null ? g : GRAVITY;
+  const useGrav = mob.pos.y >= MOON_Y - MOON_R ? grav * 0.5 : grav;
+  if (!mob.onGround) mob.vel.y -= useGrav * dt;
+  if (mob.vel.y < -40) mob.vel.y = -40;
+  moveMobAxisY(mob, mob.vel.y * dt);
+  moveMobAxisX(mob, mob.vel.x * dt);
+  moveMobAxisZ(mob, mob.vel.z * dt);
+  if (mob.villageBound) {
+    const minX = villageMinX + mob.hw + 0.5, maxX = villageMaxX - mob.hw - 0.5;
+    const minZ = villageMinZ + mob.hw + 0.5, maxZ = villageMaxZ - mob.hw - 0.5;
+    if (mob.pos.x < minX) { mob.pos.x = minX; mob.vel.x = 0; }
+    if (mob.pos.x > maxX) { mob.pos.x = maxX; mob.vel.x = 0; }
+    if (mob.pos.z < minZ) { mob.pos.z = minZ; mob.vel.z = 0; }
+    if (mob.pos.z > maxZ) { mob.pos.z = maxZ; mob.vel.z = 0; }
+  }
+  let inLiquid = false;
+  for (let by = Math.floor(mob.pos.y); by <= Math.floor(mob.pos.y + mob.h); by++) {
+    for (let bx = Math.floor(mob.pos.x - mob.hw); bx <= Math.floor(mob.pos.x + mob.hw); bx++) {
+      for (let bz = Math.floor(mob.pos.z - mob.hw); bz <= Math.floor(mob.pos.z + mob.hw); bz++) {
+        const lid = getBlock(bx, by, bz);
+        if (lid === WATER || lid === LAVA || lid === MOON_WATER) { inLiquid = true; break; }
+      }
+      if (inLiquid) break;
+    }
+    if (inLiquid) break;
+  }
+  if (inLiquid) {
+    mob.vel.y *= 0.96;
+    if (mob.vel.y < 0.6) mob.vel.y = 0.6;
+    mob.onGround = false;
+  }
+}
+
 function tryStep(bx, by, bz) {
   if (stepDown) return false;
   if (!stepFromWater) {
@@ -2326,6 +3397,26 @@ function moveAxisX(dx) {
         pos.x = cellX + 1 + PLAYER_HW + 0.001; return;
       }
     }
+  const nearX = mobGrid.size ? nearbyMobsFor(pos.x, pos.z, 1) : mobs;
+  for (const m of nearX) {
+    if (m.fallen) continue;
+    const hw = villagerHW(m), hh = villagerH(m);
+    if (pos.y + PLAYER_H <= m.pos.y || pos.y >= m.pos.y + hh) continue;
+    if (pos.z + PLAYER_HW <= m.pos.z - hw || pos.z - PLAYER_HW >= m.pos.z + hw) continue;
+    const mx = m.pos.x;
+    if (dir > 0 && pos.x + PLAYER_HW > mx - hw && pos.x + PLAYER_HW - dx <= mx - hw) {
+      const push = (pos.x + PLAYER_HW) - (mx - hw) + 0.02;
+      const nx = m.pos.x + push * 0.6;
+      if (!aabbCollidesWorld(nx, m.pos.y, m.pos.z, hw, hh) && !mobCollidesOther(m, nx, m.pos.z) && hasMobGround(nx, m.pos.z, hw, m.pos.y)) m.pos.x = nx;
+      pos.x = mx - hw - PLAYER_HW - 0.002; vel.x = Math.min(vel.x, 0); if (mobStats) mobStats.playerCol++; return;
+    }
+    if (dir < 0 && pos.x - PLAYER_HW < mx + hw && pos.x - PLAYER_HW - dx >= mx + hw) {
+      const push = (mx + hw) - (pos.x - PLAYER_HW) + 0.02;
+      const nx = m.pos.x - push * 0.6;
+      if (!aabbCollidesWorld(nx, m.pos.y, m.pos.z, hw, hh) && !mobCollidesOther(m, nx, m.pos.z) && hasMobGround(nx, m.pos.z, hw, m.pos.y)) m.pos.x = nx;
+      pos.x = mx + hw + PLAYER_HW + 0.002; vel.x = Math.max(vel.x, 0); if (mobStats) mobStats.playerCol++; return;
+    }
+  }
 }
 function moveAxisZ(dz) {
   pos.z += dz;
@@ -2345,6 +3436,26 @@ function moveAxisZ(dz) {
         pos.z = cellZ + 1 + PLAYER_HW + 0.001; return;
       }
     }
+  const nearZ = mobGrid.size ? nearbyMobsFor(pos.x, pos.z, 1) : mobs;
+  for (const m of nearZ) {
+    if (m.fallen) continue;
+    const hw = villagerHW(m), hh = villagerH(m);
+    if (pos.y + PLAYER_H <= m.pos.y || pos.y >= m.pos.y + hh) continue;
+    if (pos.x + PLAYER_HW <= m.pos.x - hw || pos.x - PLAYER_HW >= m.pos.x + hw) continue;
+    const mz = m.pos.z;
+    if (dir > 0 && pos.z + PLAYER_HW > mz - hw && pos.z + PLAYER_HW - dz <= mz - hw) {
+      const push = (pos.z + PLAYER_HW) - (mz - hw) + 0.02;
+      const nz = m.pos.z + push * 0.6;
+      if (!aabbCollidesWorld(m.pos.x, m.pos.y, nz, hw, hh) && !mobCollidesOther(m, m.pos.x, nz) && hasMobGround(m.pos.x, nz, hw, m.pos.y)) m.pos.z = nz;
+      pos.z = mz - hw - PLAYER_HW - 0.002; vel.z = Math.min(vel.z, 0); if (mobStats) mobStats.playerCol++; return;
+    }
+    if (dir < 0 && pos.z - PLAYER_HW < mz + hw && pos.z - PLAYER_HW - dz >= mz + hw) {
+      const push = (mz + hw) - (pos.z - PLAYER_HW) + 0.02;
+      const nz = m.pos.z - push * 0.6;
+      if (!aabbCollidesWorld(m.pos.x, m.pos.y, nz, hw, hh) && !mobCollidesOther(m, m.pos.x, nz) && hasMobGround(m.pos.x, nz, hw, m.pos.y)) m.pos.z = nz;
+      pos.z = mz + hw + PLAYER_HW + 0.002; vel.z = Math.max(vel.z, 0); if (mobStats) mobStats.playerCol++; return;
+    }
+  }
 }
 function moveAxisY(dy) {
   pos.y += dy;
@@ -2936,6 +4047,7 @@ function breakBlock() {
   const { x, y, z } = currentBlock;
   if (protectedBlocks.has(key(x, y, z))) return;
   if (getBlock(x, y, z) === STONE && y === 0) return;
+  if (isMobStandingOn(x, y, z) || intersectsMob(x, y, z)) return;
   if (getBlock(x, y, z) === TNT) { igniteTNT(x, y, z); return; }
   const bid = getBlock(x, y, z);
   if (bid === WATER || bid === LAVA || bid === MOON_WATER) return;
@@ -2959,8 +4071,10 @@ function tryPlace(id, px, py, pz) {
   const liquid = target === WATER || target === LAVA || target === MOON_WATER;
   if (liquid) {
     if (BLOCK_INFO[id].solid && intersectsPlayer(px, py, pz)) return false;
+    if (BLOCK_INFO[id].solid && intersectsMob(px, py, pz)) return false;
   } else if (target === AIR) {
     if (intersectsPlayer(px, py, pz)) return false;
+    if (intersectsMob(px, py, pz)) return false;
   } else if (!(target === id && (id === WATER || id === LAVA))) return false;
   if (id === FLOWER) placedFlowers.set(key(px, py, pz), { v: randomFlowerVariant(), a: Math.random() * Math.PI * 2 });
   if (id === GLOWSTONE) worldGlowVariants.get(world).set(key(px, py, pz), glowVariantNear(px, py, pz));
@@ -3317,6 +4431,7 @@ function processExplosionQueue() {
     const cx = x + 0.5, cy = y + 0.5, cz = z + 0.5;
     if (pointBlank) spawnDragonBurst(cx, cy, cz);
     else spawnExplosion(cx, cy, cz);
+    if (mobs.length) handleMobExplosion(cx, cy, cz);
     if (dim === "end" && dragon.mesh) {
       const cd = Math.hypot(dragon.mesh.position.x - cx, dragon.mesh.position.y - cy, dragon.mesh.position.z - cz);
       damageDragon(dragonBlastDamage(cd, pointBlank));
@@ -3326,10 +4441,12 @@ function processExplosionQueue() {
     const k0 = key(bx, by, bz);
     if (!protectedBlocks.has(k0) && !batchKeys.has(k0)) {
       const id0 = getBlock(bx, by, bz);
-      if (id0 !== WATER && id0 !== LAVA && !(id0 === STONE && by === 0)) {
-        batchKeys.add(k0);
-        setBlock(bx, by, bz, AIR);
-        refreshDefer.push([bx, by, bz]);
+      if (id0 === TNT || (!isMobStandingOn(bx, by, bz) && !intersectsMob(bx, by, bz))) {
+        if (id0 !== WATER && id0 !== LAVA && !(id0 === STONE && by === 0)) {
+          batchKeys.add(k0);
+          setBlock(bx, by, bz, AIR);
+          refreshDefer.push([bx, by, bz]);
+        }
       }
     }
     const R = BLAST_RADIUS, R2 = R * R;
@@ -3341,6 +4458,7 @@ function processExplosionQueue() {
       const kk = key(gx, gy, gz);
       if (batchKeys.has(kk)) continue;
       const id = getBlock(gx, gy, gz);
+      if (id !== TNT && (isMobStandingOn(gx, gy, gz) || intersectsMob(gx, gy, gz))) continue;
       if (id === AIR || id === WATER || id === LAVA) continue;
       if (id === STONE && gy === 0) continue;
       if (protectedBlocks.has(kk)) continue;
@@ -3811,6 +4929,8 @@ function goToDimension(name, sx, sy, sz) {
   worldDirty = true;
   clearPortalFills();
   removeEndEntities();
+  if (dim !== "over") removeVillagers();
+  else if (!mobs.length) { if (!villageHouses.length) computeVillageLayout(); spawnVillagers(); }
   if (name === "end") {
     generateEnd();
     endReturnWin = null;
@@ -5657,8 +6777,10 @@ async function restoreSave(buf) {
     updateDimLabel();
     clearPortalFills();
     removeEndEntities();
+    removeVillagers();
     if (dim === "end") { endCleared = false; buildReturnPortal(); spawnDragon(); spawnEndermen(); }
     if (dim === "nether") { netReturnWin = null; buildNetherPortal(); }
+    if (dim === "over") { if (!villageHouses.length) computeVillageLayout(); spawnVillagers(); }
     scanWorldPortals();
     lastManualSave = Date.now();
     return true;
@@ -5755,6 +6877,7 @@ function resetDims() {
   netReturnWin = null;
   protectedBlocks.clear();
   removeEndEntities();
+  removeVillagers();
   setDimensionEnv();
   updateDimLabel();
 }
@@ -5779,6 +6902,7 @@ async function buildWorld() {
     rebuildHotbar();
     recomputeGlowClusters();
     syncGlowLights();
+    removeVillagers(); spawnVillagers();
     select(0);
     updateCamera();
   } finally {
@@ -6270,6 +7394,7 @@ function loop(now) {
     checkPortal();
     if (dim === "end") updateDragon(dt);
     if (dim === "end") updateEndermen(dt);
+    updateMobs(dt);
     if (toastTimer > 0) { toastTimer -= dt; if (toastTimer <= 0) toastEl.style.opacity = "0"; }
 
     if (dim === "over") {
@@ -6371,6 +7496,14 @@ buildPortalArt();
 buildNetherPortalArt();
 buildPortalSpiral();
 requestAnimationFrame(loop);
+if (location.search.includes('test')) {
+  window._test = {
+    get world(){ return world; }, get worlds(){ return worlds; }, get mobs(){ return mobs; },
+    getBlock, setBlock, handleMobExplosion, processExplosionQueue, isMobStandingOn, intersectsMob, key, BLAST_RADIUS, TNT, STONE, AIR,
+    get villageCenter(){ return villageCenter; }, get villageHouses(){ return villageHouses; },
+    getTypeMats, get typeMats(){ return typeMats; }, buildWorld, generateWorld, computeVillageLayout, spawnVillagers, refreshBlocks, get boxGeo(){ return boxGeo; }, THREE
+  };
+}
 
 function buildPortalArt() {
   const host = document.getElementById("portalArt");
