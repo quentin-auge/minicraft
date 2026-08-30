@@ -1947,10 +1947,9 @@ function hasMobGround(x, z, hw, y) {
     const ox0 = Math.max(x - hw, bx), ox1 = Math.min(x + hw, bx + 1);
     const oz0 = Math.max(z - hw, bz), oz1 = Math.min(z + hw, bz + 1);
     if (ox1 - ox0 > 0.02 && oz1 - oz0 > 0.02) {
-      if (isSolid(bx, gy, bz)) continue;
-      const lid = getBlock(bx, gy, bz);
-      if (lid === WATER || lid === LAVA || lid === MOON_WATER) continue;
-      return false;
+      if (isSolid(bx, gy, bz)) {} else return false;
+      const b = getBlock(bx, Math.floor(py), bz);
+      if (b === WATER || b === LAVA || b === MOON_WATER) return false;
     }
   }
   return true;
@@ -1966,12 +1965,15 @@ function mobProbeFree(x, z, dirX, dirZ, maxDist, hw, y) {
   const py = y != null ? y : villageCenter.y + 1;
   const h = hw <= 0.18 ? 0.98 : 1.82;
   const startInside = x >= villageMinX && x <= villageMaxX && z >= villageMinZ && z <= villageMaxZ;
+  const startHasGround = hasMobGround(x, z, hw, py);
   const steps = Math.ceil(maxDist / 0.28);
   for (let s = 1; s <= steps; s++) {
     const t = s / steps * maxDist;
     const px = x + dirX * t, pz = z + dirZ * t;
     if (aabbCollidesWorld(px, py, pz, hw, h)) return (s - 1) / steps * maxDist;
-    if (!hasMobGround(px, pz, hw, py)) return (s - 1) / steps * maxDist;
+    if (!hasMobGround(px, pz, hw, py)) {
+      if (startHasGround) return (s - 1) / steps * maxDist;
+    }
     if (startInside && (px < villageMinX + 0.7 || px > villageMaxX - 0.7 || pz < villageMinZ + 0.7 || pz > villageMaxZ - 0.7)) return (s - 1) / steps * maxDist;
   }
   return maxDist;
