@@ -881,8 +881,13 @@ function stairEntrances() {
 
 const VILLAGE_RADIUS = 28;
 const VILLAGE_HOUSES = 8;
+const VILLAGE_PEN_W = 12;
+const VILLAGE_PEN_D = 10;
+const PIG_COUNT = 4;
+const COW_COUNT = 4;
 let villageCenter = { x: 0, z: 0, y: 0 };
 let villageHouses = [];
+let villagePen = null;
 let villageMinX = 0, villageMaxX = 0, villageMinZ = 0, villageMaxZ = 0;
 function computeVillageLayout() {
   villageHouses = [];
@@ -908,6 +913,25 @@ function computeVillageLayout() {
   villageCenter = { x: vx, z: vz, y: vy };
   villageMinX = vx - VILLAGE_RADIUS; villageMaxX = vx + VILLAGE_RADIUS;
   villageMinZ = vz - VILLAGE_RADIUS; villageMaxZ = vz + VILLAGE_RADIUS;
+  // — enclos à cochons/vaches d'abord pour garantir une place (12×10) —
+  villagePen = null;
+  let _penTries = 0;
+  for (let _pt = 0; _pt < 1200 && !villagePen; _pt++) {
+    _penTries++;
+    const rx = (hash2(_penTries, 10, seed + 7250) * 2 - 1) * (VILLAGE_RADIUS - Math.max(VILLAGE_PEN_W, VILLAGE_PEN_D) / 2 - 4);
+    const rz = (hash2(_penTries, 11, seed + 7251) * 2 - 1) * (VILLAGE_RADIUS - Math.max(VILLAGE_PEN_W, VILLAGE_PEN_D) / 2 - 4);
+    const cx = Math.round(vx + rx), cz = Math.round(vz + rz);
+    const minX = cx - Math.floor(VILLAGE_PEN_W / 2), maxX = minX + VILLAGE_PEN_W - 1;
+    const minZ = cz - Math.floor(VILLAGE_PEN_D / 2), maxZ = minZ + VILLAGE_PEN_D - 1;
+    if (Math.hypot(cx - vx, cz - vz) + Math.max(VILLAGE_PEN_W, VILLAGE_PEN_D) / 2 + 1 > VILLAGE_RADIUS) continue;
+    const _toC = Math.atan2(vz - cz, vx - cx);
+    const _a = ((_toC * 180 / Math.PI) + 360) % 360;
+    let _gateSide = 0;
+    if (_a >= 45 && _a < 135) _gateSide = 1;
+    else if (_a >= 135 && _a < 225) _gateSide = 2;
+    else if (_a >= 225 && _a < 315) _gateSide = 3;
+    villagePen = { cx, cz, vy, minX, maxX, minZ, maxZ, gateSide: _gateSide };
+  }
   let tries = 0;
   for (let i = 0; i < VILLAGE_HOUSES; ) {
     const rx = (hash2(tries, 0, seed + 7200 + i * 997) * 2 - 1) * (VILLAGE_RADIUS - 7);
@@ -921,6 +945,8 @@ function computeVillageLayout() {
     const w = 7, d = 7;
     const minX = cx - Math.floor(w / 2), maxX = minX + w - 1;
     const minZ = cz - Math.floor(d / 2), maxZ = minZ + d - 1;
+    // éviter l'enclos
+    if (villagePen && !(maxX + 2 < villagePen.minX || minX - 2 > villagePen.maxX || maxZ + 2 < villagePen.minZ || minZ - 2 > villagePen.maxZ)) { if (tries > 800) break; continue; }
     const toC = Math.atan2(vz - cz, vx - cx);
     const a = ((toC * 180 / Math.PI) + 360) % 360;
     let side = 0;
@@ -954,6 +980,26 @@ function intersectsVillage(x, z) {
 function isInsideAnyHouse(x, z) {
   for (const h of villageHouses) if (x > h.minX && x < h.maxX && z > h.minZ && z < h.maxZ) return h;
   return null;
+}
+function isInsidePen(x, z) {
+  if (!villagePen) return false;
+  return x >= villagePen.minX && x <= villagePen.maxX && z >= villagePen.minZ && z <= villagePen.maxZ;
+}
+function placeVillagePen() {
+  if (!villagePen) return;
+  const p = villagePen, vy = p.vy;
+  // sol de l'enclos en herbe (au lieu de stone) et vide intérieur à hauteur 1
+  for (let x = p.minX + 1; x <= p.maxX - 1; x++) for (let z = p.minZ + 1; z <= p.maxZ - 1; z++) {
+    setBlock(x, vy, z, GRASS);
+    for (let y = vy + 1; y <= vy + 2; y++) setBlock(x, y, z, AIR);
+  }
+  // clôture en LOG — 1 bloc haut, fermée (physique seule bloque les mobs cochons/vaches)
+  for (let x = p.minX; x <= p.maxX; x++) for (let z = p.minZ; z <= p.maxZ; z++) {
+    const onEdge = x === p.minX || x === p.maxX || z === p.minZ || z === p.maxZ;
+    if (!onEdge) continue;
+    setBlock(x, vy + 1, z, LOG);
+    if (getBlock(x, vy + 2, z) !== AIR) setBlock(x, vy + 2, z, AIR);
+  }
 }
 function placeVillageHouses() {
   for (const h of villageHouses) {
@@ -1148,8 +1194,141 @@ function makeVillagerMesh(isBaby) {
   g.userData = { isBaby, sc, legL, legR, armL, armR, body, head, palette: pal };
   return g;
 }
-function villagerHW(m) { return m.isBaby ? 0.16 : 0.27; }
-function villagerH(m) { return m.isBaby ? 0.98 : 1.82; }
+// — Cochons et vaches — même physique que villageois, mesh boxy —
+const pigMat = new THREE.MeshStandardMaterial({ color: 0xf2aeb2, roughness: 0.9 });
+const pigDarkMat = new THREE.MeshStandardMaterial({ color: 0x8f5a5e, roughness: 0.9 });
+const pigNoseMat = new THREE.MeshStandardMaterial({ color: 0xd98286, roughness: 0.9 });
+const cowMat = new THREE.MeshStandardMaterial({ color: 0xf5f0eb, roughness: 0.9 });
+const cowSpotMat = new THREE.MeshStandardMaterial({ color: 0x3b342f, roughness: 0.9 });
+const cowDarkMat = new THREE.MeshStandardMaterial({ color: 0x6b5a48, roughness: 0.9 });
+const cowPinkMat = new THREE.MeshStandardMaterial({ color: 0xde9aa0, roughness: 0.9 });
+function makePigMesh() {
+  const g = new THREE.Group();
+  const sc = 1;
+  if (!villagerGeo) villagerGeo = new THREE.BoxGeometry(1, 1, 1);
+  const geo = villagerGeo;
+  const body = new THREE.Mesh(geo, pigMat);
+  body.scale.set(0.86 * sc, 0.62 * sc, 1.16 * sc);
+  body.position.set(0, 0.60 * sc, 0);
+  g.add(body);
+  const head = new THREE.Mesh(geo, pigMat);
+  head.scale.set(0.52 * sc, 0.52 * sc, 0.46 * sc);
+  head.position.set(0, 0.76 * sc, 0.68 * sc);
+  g.add(head);
+  const snout = new THREE.Mesh(geo, pigNoseMat);
+  snout.scale.set(0.30 * sc, 0.20 * sc, 0.14 * sc);
+  snout.position.set(0, 0.68 * sc, 0.94 * sc);
+  g.add(snout);
+  const eyeMat = new THREE.MeshStandardMaterial({ color: 0x111111 });
+  const eyeL = new THREE.Mesh(geo, eyeMat);
+  eyeL.scale.set(0.08 * sc, 0.08 * sc, 0.02 * sc);
+  eyeL.position.set(-0.16 * sc, 0.86 * sc, 0.92 * sc);
+  g.add(eyeL);
+  const eyeR = new THREE.Mesh(geo, eyeMat);
+  eyeR.scale.set(0.08 * sc, 0.08 * sc, 0.02 * sc);
+  eyeR.position.set(0.16 * sc, 0.86 * sc, 0.92 * sc);
+  g.add(eyeR);
+  const legGeo = geo;
+  const legBL = new THREE.Mesh(legGeo, pigDarkMat);
+  legBL.scale.set(0.22 * sc, 0.34 * sc, 0.22 * sc);
+  legBL.position.set(-0.30 * sc, 0.17 * sc, -0.38 * sc);
+  g.add(legBL);
+  const legBR = new THREE.Mesh(legGeo, pigDarkMat);
+  legBR.scale.set(0.22 * sc, 0.34 * sc, 0.22 * sc);
+  legBR.position.set(0.30 * sc, 0.17 * sc, -0.38 * sc);
+  g.add(legBR);
+  const legFL = new THREE.Mesh(legGeo, pigDarkMat);
+  legFL.scale.set(0.22 * sc, 0.34 * sc, 0.22 * sc);
+  legFL.position.set(-0.30 * sc, 0.17 * sc, 0.38 * sc);
+  g.add(legFL);
+  const legFR = new THREE.Mesh(legGeo, pigDarkMat);
+  legFR.scale.set(0.22 * sc, 0.34 * sc, 0.22 * sc);
+  legFR.position.set(0.30 * sc, 0.17 * sc, 0.38 * sc);
+  g.add(legFR);
+  g.userData = { sc, legBL, legBR, legFL, legFR, body, head, kind: "pig" };
+  return g;
+}
+function makeCowMesh() {
+  const g = new THREE.Group();
+  const sc = 1;
+  if (!villagerGeo) villagerGeo = new THREE.BoxGeometry(1, 1, 1);
+  const geo = villagerGeo;
+  const body = new THREE.Mesh(geo, cowMat);
+  body.scale.set(0.90 * sc, 0.72 * sc, 1.26 * sc);
+  body.position.set(0, 0.78 * sc, 0);
+  g.add(body);
+  // taches
+  const spot1 = new THREE.Mesh(geo, cowSpotMat);
+  spot1.scale.set(0.28 * sc, 0.02 * sc, 0.32 * sc);
+  spot1.position.set(0.12 * sc, 1.15 * sc, -0.18 * sc);
+  g.add(spot1);
+  const spot2 = new THREE.Mesh(geo, cowSpotMat);
+  spot2.scale.set(0.22 * sc, 0.02 * sc, 0.26 * sc);
+  spot2.position.set(-0.18 * sc, 1.15 * sc, 0.24 * sc);
+  g.add(spot2);
+  const head = new THREE.Mesh(geo, cowMat);
+  head.scale.set(0.56 * sc, 0.56 * sc, 0.48 * sc);
+  head.position.set(0, 0.96 * sc, 0.74 * sc);
+  g.add(head);
+  const snout = new THREE.Mesh(geo, cowPinkMat);
+  snout.scale.set(0.32 * sc, 0.18 * sc, 0.14 * sc);
+  snout.position.set(0, 0.84 * sc, 1.00 * sc);
+  g.add(snout);
+  const nostMat = new THREE.MeshStandardMaterial({ color: 0x111111 });
+  const nostL = new THREE.Mesh(geo, nostMat);
+  nostL.scale.set(0.06 * sc, 0.06 * sc, 0.02 * sc);
+  nostL.position.set(-0.08 * sc, 0.84 * sc, 1.08 * sc);
+  g.add(nostL);
+  const nostR = new THREE.Mesh(geo, nostMat);
+  nostR.scale.set(0.06 * sc, 0.06 * sc, 0.02 * sc);
+  nostR.position.set(0.08 * sc, 0.84 * sc, 1.08 * sc);
+  g.add(nostR);
+  const hornMat = new THREE.MeshStandardMaterial({ color: 0xd8d0c6 });
+  const hornL = new THREE.Mesh(geo, hornMat);
+  hornL.scale.set(0.08 * sc, 0.14 * sc, 0.08 * sc);
+  hornL.position.set(-0.28 * sc, 1.18 * sc, 0.68 * sc);
+  g.add(hornL);
+  const hornR = new THREE.Mesh(geo, hornMat);
+  hornR.scale.set(0.08 * sc, 0.14 * sc, 0.08 * sc);
+  hornR.position.set(0.28 * sc, 1.18 * sc, 0.68 * sc);
+  g.add(hornR);
+  const eyeMat = new THREE.MeshStandardMaterial({ color: 0x111111 });
+  const eyeL = new THREE.Mesh(geo, eyeMat);
+  eyeL.scale.set(0.08 * sc, 0.08 * sc, 0.02 * sc);
+  eyeL.position.set(-0.18 * sc, 1.04 * sc, 0.99 * sc);
+  g.add(eyeL);
+  const eyeR = new THREE.Mesh(geo, eyeMat);
+  eyeR.scale.set(0.08 * sc, 0.08 * sc, 0.02 * sc);
+  eyeR.position.set(0.18 * sc, 1.04 * sc, 0.99 * sc);
+  g.add(eyeR);
+  const legBL = new THREE.Mesh(geo, cowDarkMat);
+  legBL.scale.set(0.24 * sc, 0.46 * sc, 0.24 * sc);
+  legBL.position.set(-0.32 * sc, 0.23 * sc, -0.42 * sc);
+  g.add(legBL);
+  const legBR = new THREE.Mesh(geo, cowDarkMat);
+  legBR.scale.set(0.24 * sc, 0.46 * sc, 0.24 * sc);
+  legBR.position.set(0.32 * sc, 0.23 * sc, -0.42 * sc);
+  g.add(legBR);
+  const legFL = new THREE.Mesh(geo, cowDarkMat);
+  legFL.scale.set(0.24 * sc, 0.46 * sc, 0.24 * sc);
+  legFL.position.set(-0.32 * sc, 0.23 * sc, 0.42 * sc);
+  g.add(legFL);
+  const legFR = new THREE.Mesh(geo, cowDarkMat);
+  legFR.scale.set(0.24 * sc, 0.46 * sc, 0.24 * sc);
+  legFR.position.set(0.32 * sc, 0.23 * sc, 0.42 * sc);
+  g.add(legFR);
+  g.userData = { sc, legBL, legBR, legFL, legFR, body, head, kind: "cow" };
+  return g;
+}
+function villagerHW(m) {
+  if (m.kind === "pig" || m.kind === "cow") return 0.32;
+  return m.isBaby ? 0.16 : 0.27;
+}
+function villagerH(m) {
+  if (m.kind === "pig") return 0.92;
+  if (m.kind === "cow") return 1.30;
+  return m.isBaby ? 0.98 : 1.82;
+}
 function doorBlocked(h) {
   const y = h.vy;
   return isSolid(h.d0x, y + 1, h.d0z) || isSolid(h.d0x, y + 2, h.d0z) || isSolid(h.d1x, y + 1, h.d1z) || isSolid(h.d1x, y + 2, h.d1z);
@@ -1237,7 +1416,6 @@ const carryGrappleTarget = new THREE.Vector3();
 let carryGrappleDist = 1;
 let carryGrappleMob = null;
 let carryGrappleBlock = null;
-let carryGrappleOrigBlock = null;
 const carryGrappleHookPos = new THREE.Vector3();
 let carryGrappleRetracting = false;
 let carryGrappleRetractTime = 0;
@@ -1391,7 +1569,6 @@ function startCarryReleaseGrapple() {
     px = b.x + b.face[0]; py = b.y + b.face[1]; pz = b.z + b.face[2];
     tx = px + 0.5; ty = py + 0.5; tz = pz + 0.5;
   }
-  carryGrappleOrigBlock = { x: b.x, y: b.y, z: b.z };
   carryGrappleBlock = { x: px, y: py, z: pz };
   carryGrappleMode = "release";
   carryGrappleStart.copy(eye);
@@ -1542,18 +1719,6 @@ function updateCarryGrapple(dt) {
         setMobTransparent(mob, alpha);
       }
     } else {
-      if (carryGrappleOrigBlock) {
-        let h2 = 0;
-        while (isSolid(carryGrappleOrigBlock.x, carryGrappleOrigBlock.y + h2 + 1, carryGrappleOrigBlock.z)) h2++;
-        if (h2 <= 1) {
-          const topY = carryGrappleOrigBlock.y + h2;
-          const ntY = topY + 1.5;
-          if (Math.abs(carryGrappleTarget.y - ntY) > 0.01 || carryGrappleTarget.x !== carryGrappleOrigBlock.x + 0.5 || carryGrappleTarget.z !== carryGrappleOrigBlock.z + 0.5) {
-            carryGrappleTarget.set(carryGrappleOrigBlock.x + 0.5, ntY, carryGrappleOrigBlock.z + 0.5);
-            carryGrappleBlock = { x: carryGrappleOrigBlock.x, y: topY + 1, z: carryGrappleOrigBlock.z };
-          }
-        }
-      }
       const tx = carryGrappleTarget.x, ty = carryGrappleTarget.y, tz = carryGrappleTarget.z;
       const dx = tx - mob.pos.x, dy = ty - mob.pos.y, dz = tz - mob.pos.z;
       const dist = Math.hypot(dx, dy, dz);
@@ -1567,11 +1732,9 @@ function updateCarryGrapple(dt) {
         setMobTransparent(mob, 1);
         if (b) {
           carryGrappleBlock = null;
-          carryGrappleOrigBlock = null;
           carryGrappleHookPos.copy(carryGrappleTarget);
           releaseCarriedMobAt(b.x, b.y, b.z);
         } else {
-          carryGrappleOrigBlock = null;
           mob.pos.set(tx, ty - mob.h * 0.5, tz);
           mob.mesh.position.copy(mob.pos);
           setMobTransparent(mob, 1);
@@ -1663,6 +1826,116 @@ function wanderGoalFor(m) {
     return { x, z };
   }
   return { x: villageCenter.x, z: villageCenter.z };
+}
+function randomPenPoint() {
+  if (!villagePen) return randomVillagePoint();
+  const p = villagePen;
+  for (let t = 0; t < 30; t++) {
+    const x = p.minX + 1.5 + Math.random() * (p.maxX - p.minX - 3);
+    const z = p.minZ + 1.5 + Math.random() * (p.maxZ - p.minZ - 3);
+    const cx = Math.floor(x) + 0.5, cz = Math.floor(z) + 0.5;
+    if (isInsidePen(cx, cz) && !mobBlockedAt(cx, cz, 0.32, villageCenter.y + 1) && !aabbCollidesWorld(cx, villageCenter.y + 1, cz, 0.32, 1.1)) return { x: cx, z: cz };
+  }
+  return { x: villagePen.cx + 0.5, z: villagePen.cz + 0.5 };
+}
+function wanderGoalForPen(m) {
+  if (!villagePen) return wanderGoalFor(m);
+  const p = villagePen;
+  let best = null, bestScore = Infinity;
+  for (let t = 0; t < 30; t++) {
+    const x = p.minX + 1.5 + Math.random() * (p.maxX - p.minX - 3);
+    const z = p.minZ + 1.5 + Math.random() * (p.maxZ - p.minZ - 3);
+    const cx = Math.floor(x) + 0.5, cz = Math.floor(z) + 0.5;
+    if (isInsidePen(cx, cz) && mobBlockedAt(cx, cz, m.hw, villageCenter.y + 1)) continue;
+    if (aabbCollidesWorld(cx, villageCenter.y + 1, cz, m.hw, m.h)) continue;
+    // keep strictly inside fence interior (1 block inset)
+    if (cx <= p.minX + 0.7 || cx >= p.maxX - 0.7 || cz <= p.minZ + 0.7 || cz >= p.maxZ - 0.7) continue;
+    const dCur = Math.hypot(cx - m.pos.x, cz - m.pos.z);
+    if (dCur < 1.2) continue;
+    if (m.lastTarget && Math.hypot(cx - m.lastTarget.x, cz - m.lastTarget.z) < 2) continue;
+    const v = getVisit(cx | 0, cz | 0);
+    const score = v * 10 - dCur * 0.15;
+    if (score < bestScore) { bestScore = score; best = { x: cx, z: cz }; }
+  }
+  if (best) { m.lastTarget = { x: best.x, z: best.z }; return best; }
+  for (let t = 0; t < 20; t++) {
+    const x = p.minX + 1.5 + Math.random() * (p.maxX - p.minX - 3);
+    const z = p.minZ + 1.5 + Math.random() * (p.maxZ - p.minZ - 3);
+    const cx = Math.floor(x) + 0.5, cz = Math.floor(z) + 0.5;
+    if (mobBlockedAt(cx, cz, m.hw, villageCenter.y + 1)) continue;
+    if (aabbCollidesWorld(cx, villageCenter.y + 1, cz, m.hw, m.h)) continue;
+    return { x: cx, z: cz };
+  }
+  return { x: p.cx + 0.5, z: p.cz + 0.5 };
+}
+function findPenGaps() {
+  if (!villagePen) return [];
+  const p = villagePen, vy = p.vy, gaps = [];
+  for (let x = p.minX; x <= p.maxX; x++) for (let z = p.minZ; z <= p.maxZ; z++) {
+    const onEdge = x === p.minX || x === p.maxX || z === p.minZ || z === p.maxZ;
+    if (!onEdge) continue;
+    if (getBlock(x, vy + 1, z) === AIR) gaps.push({ x, z });
+  }
+  return gaps;
+}
+function nearestPenGap(x, z) {
+  const gaps = findPenGaps();
+  if (!gaps.length) return null;
+  let best = null, bestD2 = Infinity;
+  for (const g of gaps) {
+    const dx = g.x + 0.5 - x, dz = g.z + 0.5 - z;
+    const d2 = dx*dx + dz*dz;
+    if (d2 < bestD2) { bestD2 = d2; best = g; }
+  }
+  return best;
+}
+function penGapInside(gap) {
+  if (!gap || !villagePen) return null;
+  const p = villagePen;
+  // un bloc à l'intérieur de l'enclos juste derrière le trou
+  let ix = gap.x, iz = gap.z;
+  if (gap.x === p.minX) ix = gap.x + 1;
+  else if (gap.x === p.maxX) ix = gap.x - 1;
+  else if (gap.z === p.minZ) iz = gap.z + 1;
+  else if (gap.z === p.maxZ) iz = gap.z - 1;
+  return { x: ix + 0.5, z: iz + 0.5 };
+}
+function penGapOutside(gap) {
+  if (!gap || !villagePen) return null;
+  const p = villagePen;
+  let ox = gap.x, oz = gap.z;
+  if (gap.x === p.minX) ox = gap.x - 1;
+  else if (gap.x === p.maxX) ox = gap.x + 1;
+  else if (gap.z === p.minZ) oz = gap.z - 1;
+  else if (gap.z === p.maxZ) oz = gap.z + 1;
+  return { x: ox + 0.5, z: oz + 0.5 };
+}
+function randomAroundPenPoint(m) {
+  if (!villagePen) return wanderGoalFor(m);
+  const p = villagePen;
+  for (let t = 0; t < 24; t++) {
+    const ang = Math.random() * Math.PI * 2;
+    const rad = Math.max(VILLAGE_PEN_W, VILLAGE_PEN_D) / 2 + 2.5 + Math.random() * 3;
+    const cx = p.cx + 0.5 + Math.cos(ang) * rad;
+    const cz = p.cz + 0.5 + Math.sin(ang) * rad;
+    const x = Math.floor(cx) + 0.5, z = Math.floor(cz) + 0.5;
+    if (x < villageMinX + 1 || x > villageMaxX - 1 || z < villageMinZ + 1 || z > villageMaxZ - 1) continue;
+    if (isInsidePen(x, z)) continue;
+    if (isInsideAnyHouse(x, z)) continue;
+    if (mobBlockedAt(x, z, m ? m.hw : 0.32, villageCenter.y + 1)) continue;
+    if (aabbCollidesWorld(x, villageCenter.y + 1, z, m ? m.hw : 0.32, m ? m.h : 1.0)) continue;
+    return { x, z };
+  }
+  // fallback : point aléatoire hors enclos mais proche
+  for (let t = 0; t < 16; t++) {
+    const x = p.minX - 3 + Math.random() * (p.maxX - p.minX + 6);
+    const z = p.minZ - 3 + Math.random() * (p.maxZ - p.minZ + 6);
+    const cx = Math.floor(x) + 0.5, cz = Math.floor(z) + 0.5;
+    if (isInsidePen(cx, cz)) continue;
+    if (mobBlockedAt(cx, cz, 0.32, villageCenter.y + 1)) continue;
+    return { x: cx, z: cz };
+  }
+  return wanderGoalFor(m);
 }
 function hasMobGround(x, z, hw, y) {
   const py = y != null ? y : villageCenter.y + 1;
@@ -1770,9 +2043,12 @@ function mobHitsPlayer(nx, nz, hw, y) {
   return dx * dx + dz * dz < (hw + PLAYER_HW + 0.04) * (hw + PLAYER_HW + 0.04);
 }
 function spawnVillagers() {
-  const target = VILLAGE_HOUSES * 3;
+  const villagerTarget = VILLAGE_HOUSES * 3;
+  const livestockTarget = (PIG_COUNT + COW_COUNT);
+  const villagerCount = () => mobs.filter((m) => (m.dim === "over" || m.dim === undefined) && (!m.kind || m.kind === "villager")).length;
+  const livestockCount = () => mobs.filter((m) => (m.dim === "over" || m.dim === undefined) && (m.kind === "pig" || m.kind === "cow")).length;
   const overCount = () => mobs.filter((m) => m.dim === "over" || m.dim === undefined).length;
-  if (overCount() >= target) return;
+  if (villagerCount() >= villagerTarget && (!villagePen || livestockCount() >= livestockTarget)) return;
   if (!villageHouses.length) computeVillageLayout();
   if (!villagerGeo) villagerGeo = new THREE.BoxGeometry(1, 1, 1);
   else if (villagerGeo.attributes.position.getY(0) > -0.4) { villagerGeo.dispose(); villagerGeo = new THREE.BoxGeometry(1, 1, 1); }
@@ -1780,9 +2056,9 @@ function spawnVillagers() {
   const used = mobs.filter((m) => m.dim === "over" || m.dim === undefined).map((m) => [m.pos.x, m.pos.z]);
   const usedBlocks = new Set(mobs.filter((m) => m.dim === "over" || m.dim === undefined).map((m) => `${Math.floor(m.pos.x)},${Math.floor(m.pos.y)},${Math.floor(m.pos.z)}`));
   for (const h of villageHouses) {
-    if (overCount() >= target) break;
+    if (villagerCount() >= villagerTarget) break;
     for (let k = 0; k < 3; k++) {
-      if (overCount() >= target) break;
+      if (villagerCount() >= villagerTarget) break;
       const isBaby = k === 2;
       const mesh = makeVillagerMesh(isBaby);
       let sx, sz, tries = 0;
@@ -1815,7 +2091,7 @@ function spawnVillagers() {
       mesh.rotation.y = yaw;
       scene.add(mesh);
       const m = {
-        id: gid++, homeId: h.id, isBaby, parentId: -1, dim: "over",
+        id: gid++, kind: "villager", homeId: h.id, isBaby, parentId: -1, dim: "over",
         pos: new THREE.Vector3(sx, villageCenter.y + 1, sz),
         vel: new THREE.Vector3(0, 0, 0),
         hw, h: hh, mesh, onGround: false, fallen: false, fallTime: 0,
@@ -1838,11 +2114,63 @@ function spawnVillagers() {
       const p = mobById.get(m.parentId);
       if (p) m.target = { x: p.pos.x, z: p.pos.z };
       else m.target = randomVillagePoint();
-    } else {
+    } else if (!m.kind || m.kind === "villager") {
       m.target = randomVillagePoint();
     }
     m.mode = "wander";
     m.wanderT = 3 + Math.random() * 4;
+  }
+  // — cochons et vaches dans l'enclos (même physique que villageois) —
+  if (villagePen) {
+    const curPig = mobs.filter((m) => m.kind === "pig" && (m.dim === "over" || m.dim === undefined)).length;
+    const curCow = mobs.filter((m) => m.kind === "cow" && (m.dim === "over" || m.dim === undefined)).length;
+    const needPig = Math.max(0, PIG_COUNT - curPig);
+    const needCow = Math.max(0, COW_COUNT - curCow);
+    const penMobsToSpawn = [];
+    for (let i = 0; i < needPig; i++) penMobsToSpawn.push("pig");
+    for (let i = 0; i < needCow; i++) penMobsToSpawn.push("cow");
+    for (const kind of penMobsToSpawn) {
+      const mesh = kind === "pig" ? makePigMesh() : makeCowMesh();
+      const hw = 0.32, hh = kind === "pig" ? 0.92 : 1.30;
+      let sx, sz, tries = 0;
+      do {
+        const rx = (Math.random() * (villagePen.maxX - villagePen.minX - 3)) + villagePen.minX + 1.5;
+        const rz = (Math.random() * (villagePen.maxZ - villagePen.minZ - 3)) + villagePen.minZ + 1.5;
+        sx = Math.floor(rx) + 0.5; sz = Math.floor(rz) + 0.5;
+        const blockKey = `${Math.floor(sx)},${villageCenter.y + 1},${Math.floor(sz)}`;
+        if (usedBlocks.has(blockKey)) { tries++; continue; }
+        if (mobBlockedAt(sx, sz, hw, villageCenter.y + 1) || aabbCollidesWorld(sx, villageCenter.y + 1, sz, hw, hh)) { tries++; continue; }
+        // keep strictly inside fence interior
+        if (sx <= villagePen.minX + 0.7 || sx >= villagePen.maxX - 0.7 || sz <= villagePen.minZ + 0.7 || sz >= villagePen.maxZ - 0.7) { tries++; continue; }
+        if (used.some((u) => (u[0] - sx) ** 2 + (u[1] - sz) ** 2 < 1.5)) { tries++; continue; }
+        break;
+      } while (tries < 30);
+      sx = Math.floor(sx) + 0.5; sz = Math.floor(sz) + 0.5;
+      const blockKey = `${Math.floor(sx)},${villageCenter.y + 1},${Math.floor(sz)}`;
+      if (usedBlocks.has(blockKey)) {
+        const alt = randomPenPoint();
+        sx = Math.floor(alt.x) + 0.5; sz = Math.floor(alt.z) + 0.5;
+      }
+      used.push([sx, sz]);
+      usedBlocks.add(`${Math.floor(sx)},${villageCenter.y + 1},${Math.floor(sz)}`);
+      mesh.position.set(sx, villageCenter.y + 1, sz);
+      const yaw = Math.random() * Math.PI * 2;
+      mesh.rotation.y = yaw;
+      scene.add(mesh);
+      const m = {
+        id: gid++, kind, homeId: -1, isBaby: false, parentId: -1, dim: "over",
+        pos: new THREE.Vector3(sx, villageCenter.y + 1, sz),
+        vel: new THREE.Vector3(0, 0, 0),
+        hw, h: hh, mesh, onGround: false, fallen: false, fallTime: 0,
+        target: randomPenPoint(), mode: "wander", wanderT: 3 + Math.random() * 4, insideT: 0,
+        legPhase: Math.random() * Math.PI * 2, speed: WALK / 2.2,
+        blockedT: 0, yaw, yawTarget: yaw, villageBound: false, penBound: true, penId: 0,
+        _stuckT: 0, _prevX: sx, _prevZ: sz, _fallY: villageCenter.y + 1,
+        path: null, pathIdx: 0, pathKey: null, sc: 1, steerX: 0, steerZ: 0, steerCooldown: 0, lastTarget: null
+      };
+      mobs.push(m);
+      mobById.set(m.id, m);
+    }
   }
 }
 function removeVillagers() {
@@ -2086,8 +2414,90 @@ function updateMobs(dt) {
     const prevX = m.pos.x, prevZ = m.pos.z;
     addVisit(m.pos.x, m.pos.z);
     if (aabbCollidesWorld(m.pos.x, m.pos.y, m.pos.z, m.hw, m.h)) { mobInvariantsViolated++; if (mobStats) mobStats.invariants++; }
-    // Simple AI
-    if (m.mode === "inside") {
+    // Simple AI — cochons/vaches : physique générale bloque via clôture LOG
+    if (m.kind === "pig" || m.kind === "cow") {
+      if (m.target && !isInsidePen(m.target.x, m.target.z)) {
+        // debug
+        // console.log("pig outside target", m.id, m.pos.x.toFixed(2), m.pos.z.toFixed(2), m.target.x.toFixed(2), m.target.z.toFixed(2), m.vel.x.toFixed(2), m.onGround);
+      }
+      const insidePen = isInsidePen(m.pos.x, m.pos.z);
+      if (m.fleeUntil != null && now < m.fleeUntil) {
+        m.speed = WALK * 2;
+        if (!insidePen) {
+          // hors enclos : cherchent l'entrée (trou dans la clôture LOG)
+          const gap = nearestPenGap(m.pos.x, m.pos.z);
+          if (gap) {
+            const inside = penGapInside(gap);
+            if (!m.target || Math.hypot(m.target.x - inside.x, m.target.z - inside.z) > 0.5) {
+              // tester si l'entrée est atteignable, sinon courir autour
+              const d = Math.hypot(inside.x - m.pos.x, inside.z - m.pos.z);
+              const probe = mobProbeFree(m.pos.x, m.pos.z, (inside.x - m.pos.x)/(d||1), (inside.z - m.pos.z)/(d||1), Math.min(d, 8), m.hw, m.pos.y);
+              if (probe < d * 0.4) {
+                // entrée bloquée ou trop loin → courir autour de l'enclos immédiatement
+                if (!m.target || m._aroundT === undefined || m.wanderT <= 0 || Math.hypot(m.target.x - m.pos.x, m.target.z - m.pos.z) < 0.8) {
+                  m.target = randomAroundPenPoint(m); m.wanderT = 0.35 + Math.random()*0.35; m.steerCooldown = 0; m._aroundT = (m._aroundT||0)+1;
+                }
+              } else {
+                m.target = inside; m.wanderT = 2 + Math.random()*1; m.steerCooldown = 0; m.path = null; m.pathKey = null;
+              }
+            }
+          } else {
+            // pas d'ouverture → courent partout autour de l'enclos immédiatement
+            m.wanderT -= dt;
+            if (!m.target || Math.hypot(m.target.x - m.pos.x, m.target.z - m.pos.z) < 0.8 || m.wanderT <= 0) {
+              m.target = randomAroundPenPoint(m); m.wanderT = 0.35 + Math.random()*0.35; m.steerCooldown = 0; m.path = null; m.pathKey = null;
+            }
+          }
+        } else {
+          // à l'intérieur et en fuite : s'agitent immédiatement dans l'enclos
+          m.wanderT -= dt;
+          if (!m.target || Math.hypot(m.target.x - m.pos.x, m.target.z - m.pos.z) < 0.6 || m.wanderT <= 0) { m.target = wanderGoalForPen(m); m.wanderT = 0.3 + Math.random()*0.3; m.steerCooldown = 0; m.path=null; m.pathKey=null; }
+        }
+        } else {
+          if (m.fleeUntil) { m.fleeUntil = 0; m.speed = WALK / 2.2; } else m.speed = WALK / 2.2;
+          // hors panique : 1.5% par frame de sortir librement si trou existe
+          if (insidePen && findPenGaps().length && Math.random() < 0.015) {
+            const gap = nearestPenGap(m.pos.x, m.pos.z);
+            if (gap) {
+              m.target = penGapOutside(gap);
+              m.wanderT = 3 + Math.random()*4; m.steerCooldown = 0; m.path = null; m.pathKey = null;
+            }
+          }
+          m.wanderT -= dt;
+          // dedans → rester dedans sauf si trou → 45% chance de sortir librement (panique reste dedans)
+          let wantsPen = insidePen;
+          let wantsExit = false;
+          if (insidePen) {
+            const gaps = findPenGaps();
+            if (gaps.length && Math.random() < 0.45) wantsExit = true;
+            if (wantsExit) wantsPen = false;
+          }
+          if (wantsPen && m.target && !isInsidePen(m.target.x, m.target.z)) {
+            const isGapOutside = findPenGaps().some(g=> { const o=penGapOutside(g); return o && Math.abs(o.x - m.target.x)<0.1 && Math.abs(o.z - m.target.z)<0.1; });
+            if (!isGapOutside) m.target = null;
+          }
+          if (!wantsPen && m.target && isInsidePen(m.target.x, m.target.z)) m.target = null;
+          if (!m.target || Math.hypot(m.target.x - m.pos.x, m.target.z - m.pos.z) < 0.6 || m.wanderT <= 0) {
+            if (wantsExit) {
+              const gap = nearestPenGap(m.pos.x, m.pos.z);
+              if (gap) {
+                const inside = penGapInside(gap);
+                const dInside = Math.hypot(inside.x - m.pos.x, inside.z - m.pos.z);
+                if (dInside < 1.2) {
+                  m.target = penGapOutside(gap);
+                } else {
+                  m.target = inside;
+                }
+              } else {
+                m.target = randomAroundPenPoint(m);
+              }
+            } else {
+              m.target = wantsPen ? wanderGoalForPen(m) : wanderGoalFor(m);
+            }
+            m.wanderT = 3 + Math.random() * 4; m.path = null; m.pathKey = null; m.steerCooldown = 0;
+          }
+        }
+    } else if (m.mode === "inside") {
       m.insideT -= dt;
       if (m.insideT <= 0) {
         m.mode = "goOut";
@@ -2177,7 +2587,7 @@ function updateMobs(dt) {
     }
     // TNT panic override — fleeing takes precedence over mode dispatch
     // Hardcoded: fleeing villagers hard-converge to the CENTRE of their house
-    if (m.fleeUntil != null && now < m.fleeUntil) {
+    if ((!m.kind || m.kind === "villager") && m.fleeUntil != null && now < m.fleeUntil) {
       m.speed = WALK * 2;
       const house = villageHouses[m.homeId];
       const inHome = house && m.pos.x > house.minX && m.pos.x < house.maxX && m.pos.z > house.minZ && m.pos.z < house.maxZ;
@@ -2192,14 +2602,14 @@ function updateMobs(dt) {
         m.target = centre;
         m.path = null; m.pathKey = null; m.wanderT = 99;
       }
-    } else if (m.fleeUntil) { m.fleeUntil = 0; m.speed = WALK / 2; }
+    } else if ((!m.kind || m.kind === "villager") && m.fleeUntil) { m.fleeUntil = 0; m.speed = WALK / 2; }
 
     // Steering towards target — BFS path for 1-block corridors + smart wall avoidance
     let tx = m.target ? m.target.x : m.pos.x;
     let tz = m.target ? m.target.z : m.pos.z;
     let hasPath = false;
     const toTarOverall = Math.hypot(tx - m.pos.x, tz - m.pos.z);
-    const insideNow = (()=>{ const h=villageHouses[m.homeId]; return m.pos.x>h.minX&&m.pos.x<h.maxX&&m.pos.z>h.minZ&&m.pos.z<h.maxZ; })();
+    const insideNow = (()=>{ if (m.kind === "pig" || m.kind === "cow") return isInsidePen(m.pos.x, m.pos.z); const h=villageHouses[m.homeId]; return h && m.pos.x>h.minX&&m.pos.x<h.maxX&&m.pos.z>h.minZ&&m.pos.z<h.maxZ; })();
     const needPath = !insideNow && m.mode !== "inside" && (toTarOverall > 1.8 || mobProbeFree(m.pos.x, m.pos.z, (tx - m.pos.x)/(toTarOverall||1), (tz - m.pos.z)/(toTarOverall||1), Math.min(1.2, toTarOverall), m.hw, m.pos.y) < 0.55);
     if (needPath) {
       const pk = Math.round(tx) + "," + Math.round(tz);
@@ -2374,6 +2784,12 @@ function updateMobs(dt) {
       m.mesh.userData.legL.rotation.x = Math.sin(m.legPhase) * 0.55;
       m.mesh.userData.legR.rotation.x = Math.sin(m.legPhase + Math.PI) * 0.55;
     }
+    if (m.mesh.userData.legBL) {
+      m.mesh.userData.legBL.rotation.x = Math.sin(m.legPhase) * 0.65;
+      m.mesh.userData.legBR.rotation.x = Math.sin(m.legPhase + Math.PI) * 0.65;
+      m.mesh.userData.legFL.rotation.x = Math.sin(m.legPhase + Math.PI) * 0.65;
+      m.mesh.userData.legFR.rotation.x = Math.sin(m.legPhase) * 0.65;
+    }
     // ensure not embedded
     if (aabbCollidesWorld(m.pos.x, m.pos.y, m.pos.z, m.hw, m.h)) {
       // nudge out: try small random
@@ -2403,6 +2819,42 @@ function panicVillagers(cx, cy, cz) {
       m.mode = "goOut";
       m.target = centre;
       m.path = null; m.pathKey = null; m.wanderT = 99;
+    }
+  }
+}
+function panicPenMobs(cx, cy, cz) {
+  if (!villagePen || !mobs.length) return;
+  if (dim === "over" && ((cx - villageCenter.x) ** 2 + (cz - villageCenter.z) ** 2 > (VILLAGE_RADIUS + 15) ** 2)) return;
+  if (Math.abs(cy - villageCenter.y) > CLOUD_BASE / 2) return;
+  const now = performance.now() / 1000;
+  for (const m of mobs) {
+    if (m === carryMob || m === carryGrappleMob) continue;
+    if (m.dim !== undefined && m.dim !== dim) continue;
+    if (m.kind !== "pig" && m.kind !== "cow") continue;
+    const stagger = Math.random() * 3;
+    m.fleeUntil = Math.max(m.fleeUntil || 0, now + 10 + stagger);
+    m.speed = WALK * 2;
+    // s'agitent immédiatement et cherchent l'entrée si un trou existe, sinon courent autour
+    const insidePen = isInsidePen(m.pos.x, m.pos.z);
+    if (insidePen) {
+      m.target = wanderGoalForPen(m);
+      m.wanderT = 0.25 + Math.random()*0.25; m.steerCooldown = 0; m.path = null; m.pathKey = null;
+    } else {
+      const gap = nearestPenGap(m.pos.x, m.pos.z);
+      if (gap) {
+        const inside = penGapInside(gap);
+        // tester si le trou est atteignable (pas bloqué par un mur)
+        const d = Math.hypot(inside.x - m.pos.x, inside.z - m.pos.z);
+        const probe = mobProbeFree(m.pos.x, m.pos.z, (inside.x - m.pos.x)/(d||1), (inside.z - m.pos.z)/(d||1), Math.min(d, 6), m.hw, m.pos.y);
+        if (probe > d * 0.6 || d < 3) {
+          m.target = inside; m.wanderT = 1.2 + Math.random()*0.6; m.steerCooldown = 0;
+        } else {
+          m.target = randomAroundPenPoint(m); m.wanderT = 0.35 + Math.random()*0.35; m.steerCooldown = 0;
+        }
+      } else {
+        m.target = randomAroundPenPoint(m); m.wanderT = 0.35 + Math.random()*0.35; m.steerCooldown = 0;
+      }
+      m.path = null; m.pathKey = null;
     }
   }
 }
@@ -2438,7 +2890,7 @@ function handleMobExplosion(cx, cy, cz) {
       }
     });
   }
-  if (dim === "over") panicVillagers(cx, cy, cz);
+  if (dim === "over") { panicVillagers(cx, cy, cz); panicPenMobs(cx, cy, cz); }
 }
 function transparentClone(mat){
   if(mat._cloned) return mat;
@@ -2498,6 +2950,7 @@ function generateWorld() {
   carveRooms();
   stairEntrances();
   placeVillageHouses();
+  placeVillagePen();
   generateClouds();
   generateMoon();
 }
@@ -3933,7 +4386,8 @@ function moveMobAxisX(mob, dx) {
     for (let bz = Math.floor(mob.pos.z - mob.hw); bz <= Math.floor(mob.pos.z + mob.hw); bz++) {
       if (!isSolid(cellX, by, bz)) continue;
       if (dir > 0 && edge > cellX) {
-        if (!aabbCollidesWorld(mob.pos.x, mob.pos.y+1, mob.pos.z, mob.hw, mob.h) && hasMobGround(mob.pos.x, mob.pos.z, mob.hw, mob.pos.y+1)) {
+        const canStep = mob.kind !== "pig" && mob.kind !== "cow" && !aabbCollidesWorld(mob.pos.x, mob.pos.y+1, mob.pos.z, mob.hw, mob.h) && hasMobGround(mob.pos.x, mob.pos.z, mob.hw, mob.pos.y+1);
+        if (canStep) {
           mob.pos.y += 1;
           mob.onGround = true;
           return false;
@@ -3941,7 +4395,8 @@ function moveMobAxisX(mob, dx) {
         mob.pos.x = cellX - mob.hw - 0.001; mob.vel.x = 0; if (mobStats) mobStats.worldCol++; return true;
       }
       if (dir < 0 && edge < cellX + 0.999) {
-        if (!aabbCollidesWorld(mob.pos.x, mob.pos.y+1, mob.pos.z, mob.hw, mob.h) && hasMobGround(mob.pos.x, mob.pos.z, mob.hw, mob.pos.y+1)) {
+        const canStep = mob.kind !== "pig" && mob.kind !== "cow" && !aabbCollidesWorld(mob.pos.x, mob.pos.y+1, mob.pos.z, mob.hw, mob.h) && hasMobGround(mob.pos.x, mob.pos.z, mob.hw, mob.pos.y+1);
+        if (canStep) {
           mob.pos.y += 1;
           mob.onGround = true;
           return false;
@@ -3968,7 +4423,8 @@ function moveMobAxisZ(mob, dz) {
     for (let bx = Math.floor(mob.pos.x - mob.hw); bx <= Math.floor(mob.pos.x + mob.hw); bx++) {
       if (!isSolid(bx, by, cellZ)) continue;
       if (dir > 0 && edge > cellZ) {
-        if (!aabbCollidesWorld(mob.pos.x, mob.pos.y+1, mob.pos.z, mob.hw, mob.h) && hasMobGround(mob.pos.x, mob.pos.z, mob.hw, mob.pos.y+1)) {
+        const canStep = mob.kind !== "pig" && mob.kind !== "cow" && !aabbCollidesWorld(mob.pos.x, mob.pos.y+1, mob.pos.z, mob.hw, mob.h) && hasMobGround(mob.pos.x, mob.pos.z, mob.hw, mob.pos.y+1);
+        if (canStep) {
           mob.pos.y += 1;
           mob.onGround = true;
           return false;
@@ -3976,7 +4432,8 @@ function moveMobAxisZ(mob, dz) {
         mob.pos.z = cellZ - mob.hw - 0.001; mob.vel.z = 0; if (mobStats) mobStats.worldCol++; return true;
       }
       if (dir < 0 && edge < cellZ + 0.999) {
-        if (!aabbCollidesWorld(mob.pos.x, mob.pos.y+1, mob.pos.z, mob.hw, mob.h) && hasMobGround(mob.pos.x, mob.pos.z, mob.hw, mob.pos.y+1)) {
+        const canStep = mob.kind !== "pig" && mob.kind !== "cow" && !aabbCollidesWorld(mob.pos.x, mob.pos.y+1, mob.pos.z, mob.hw, mob.h) && hasMobGround(mob.pos.x, mob.pos.z, mob.hw, mob.pos.y+1);
+        if (canStep) {
           mob.pos.y += 1;
           mob.onGround = true;
           return false;
@@ -4020,6 +4477,8 @@ function mobPhysicsStep(mob, dt, g) {
     if (mob.pos.z < minZ) { mob.pos.z = minZ; mob.vel.z = 0; }
     if (mob.pos.z > maxZ) { mob.pos.z = maxZ; mob.vel.z = 0; }
   }
+  // penBound : pas de clamp artificiel — la clôture en LOG bloque via aabbCollidesWorld/hasMobGround
+  // si un bloc de clôture est détruit, le trou laisse passer (physique générale)
   let inLiquid = false;
   for (let by = Math.floor(mob.pos.y); by <= Math.floor(mob.pos.y + mob.h); by++) {
     for (let bx = Math.floor(mob.pos.x - mob.hw); bx <= Math.floor(mob.pos.x + mob.hw); bx++) {
@@ -8260,7 +8719,7 @@ if (location.search.includes('test')) {
   window._test = {
     get world(){ return world; }, get worlds(){ return worlds; }, get mobs(){ return mobs; },
     getBlock, setBlock, handleMobExplosion, processExplosionQueue, isMobStandingOn, intersectsMob, key, BLAST_RADIUS, TNT, STONE, AIR,
-    get villageCenter(){ return villageCenter; }, get villageHouses(){ return villageHouses; },
+    get villageCenter(){ return villageCenter; }, get villageHouses(){ return villageHouses; }, get villagePen(){ return villagePen; }, get isInsidePen(){ return isInsidePen; }, get LOG(){ return LOG; }, findPenGaps, nearestPenGap, penGapInside, penGapOutside, hasMobGround, mobBlockedAt, aabbCollidesWorld, mobProbeFree, randomPenPoint, randomAroundPenPoint,
     getTypeMats, get typeMats(){ return typeMats; }, buildWorld, generateWorld, computeVillageLayout, spawnVillagers, refreshBlocks, get boxGeo(){ return boxGeo; }, THREE,
     get pos(){ return pos; }, get camera(){ return camera; }, get yaw(){ return yaw; }, set yaw(v){ yaw=v; }, get pitch(){ return pitch; }, set pitch(v){ pitch=v; },
     get carryMob(){ return carryMob; }, handleCarryEnterDown, handleCarryEnterUp, pickMob, get carryGrappleActive(){ return carryGrappleActive; }, get carryGrappleMob(){ return carryGrappleMob; }, get carryGrappleBlock(){ return carryGrappleBlock; }, updateCarryGrapple, get currentBlock(){ return currentBlock; }, updateTarget, toggleCarry: handleCarryEnterDown, findNearestMobForGrab: (...a)=>{ const d=new THREE.Vector3(); camera.getWorldDirection(d); return pickMob(d); }, get playerArms(){ return playerArms; }, get started(){ return started; }, set started(v){ started=v; }, get loading(){ return loading; }, get freeCam(){ return freeCam; }, set freeCam(v){ freeCam=v; }, get helpOpen(){ return helpOpen; }
