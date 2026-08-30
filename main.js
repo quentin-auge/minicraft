@@ -1288,10 +1288,16 @@ function mobCollidesOther(mob, nx, nz) {
   const hw = villagerHW(mob);
   const y = mob.pos.y;
   const nearby = nearbyMobsFor(nx, nz, 1);
+  const fleeing = mob.fleeUntil && performance.now() / 1000 < mob.fleeUntil;
   for (const o of nearby) {
     if (o === mob || o.fallen) continue;
-    if (mob.isBaby && o.id === mob.parentId) continue;
-    if (o.isBaby && o.parentId === mob.id) continue;
+    if (!fleeing) {
+      const oflee = o.fleeUntil && performance.now() / 1000 < o.fleeUntil;
+      if (!oflee) {
+        if (mob.isBaby && o.id === mob.parentId) continue;
+        if (o.isBaby && o.parentId === mob.id) continue;
+      }
+    }
     if (Math.abs(y - o.pos.y) > 1.2) continue;
     const dx = nx - o.pos.x, dz = nz - o.pos.z;
     const need = hw + villagerHW(o) + 0.04;
@@ -1415,22 +1421,37 @@ function separateMobs() {
     if (m.fallen) continue;
     let sx = 0, sz = 0, cnt = 0;
     const nearby = nearbyMobsFor(m.pos.x, m.pos.z, 1);
+    const fleeingSelf = m.fleeUntil && performance.now() / 1000 < m.fleeUntil;
     for (const o of nearby) {
       if (o === m || o.fallen) continue;
-      if (m.isBaby && o.id === m.parentId) continue;
-      if (o.isBaby && o.parentId === m.id) continue;
+      if (!fleeingSelf) {
+        const oflee = o.fleeUntil && performance.now() / 1000 < o.fleeUntil;
+        if (!oflee) {
+          if (m.isBaby && o.id === m.parentId) continue;
+          if (o.isBaby && o.parentId === m.id) continue;
+        }
+      }
       const dx = m.pos.x - o.pos.x, dz = m.pos.z - o.pos.z;
       const d2 = dx * dx + dz * dz;
       const need = villagerHW(m) + villagerHW(o) + 0.04;
       if (d2 < need * need && d2 > 0.0001) {
         const d = Math.sqrt(d2);
-        const push = (need - d) * 0.08;
+        const push = (need - d) * (fleeingSelf ? 0.22 : 0.08);
         sx += (dx / d) * push; sz += (dz / d) * push; cnt++;
       }
     }
     if (cnt) {
       let nx = m.pos.x + sx, nz = m.pos.z + sz;
-      if (!aabbCollidesWorld(nx, m.pos.y, nz, m.hw, m.h) && !mobCollidesOther(m, nx, nz) && hasMobGround(nx, nz, m.hw, m.pos.y)) {
+      if (fleeingSelf) {
+        if (!aabbCollidesWorld(nx, m.pos.y, nz, m.hw, m.h) && !mobCollidesOther(m, nx, nz) && hasMobGround(nx, nz, m.hw, m.pos.y)) {
+          m.pos.x += (nx - m.pos.x) * 0.55; m.pos.z += (nz - m.pos.z) * 0.55;
+        } else {
+          const tryX = m.pos.x + Math.sign(sx) * 0.12, tryZ = m.pos.z + Math.sign(sz) * 0.12;
+          if (!aabbCollidesWorld(tryX, m.pos.y, tryZ, m.hw, m.h) && !mobCollidesOther(m, tryX, tryZ) && hasMobGround(tryX, tryZ, m.hw, m.pos.y)) m.pos.x = tryX;
+          else if (!aabbCollidesWorld(m.pos.x, m.pos.y, tryZ, m.hw, m.h) && !mobCollidesOther(m, m.pos.x, tryZ) && hasMobGround(m.pos.x, tryZ, m.hw, m.pos.y)) m.pos.z = tryZ;
+        }
+        if (mobStats) mobStats.mobCol++;
+      } else if (!aabbCollidesWorld(nx, m.pos.y, nz, m.hw, m.h) && !mobCollidesOther(m, nx, nz) && hasMobGround(nx, nz, m.hw, m.pos.y)) {
         m.pos.x += (nx - m.pos.x) * 0.25;
         m.pos.z += (nz - m.pos.z) * 0.25;
         if (mobStats) mobStats.mobCol++;
@@ -1444,16 +1465,17 @@ function pushMobsFromPlayer() {
   const nearby = nearbyMobsFor(pos.x, pos.z, 2);
   for (const m of nearby) {
     if (m.fallen) continue;
+    const fleeing = m.fleeUntil && performance.now() / 1000 < m.fleeUntil;
     const dx = m.pos.x - pos.x, dz = m.pos.z - pos.z;
     const d2 = dx * dx + dz * dz;
     const need = (PLAYER_HW + villagerHW(m) + 0.08);
     if (d2 < need * need && d2 > 0.0001) {
       const d = Math.sqrt(d2);
-      const push = (need - d) * 0.30;
+      const push = (need - d) * (fleeing ? 0.22 : 0.30);
       const nx = m.pos.x + (dx / d) * push, nz = m.pos.z + (dz / d) * push;
       if (!aabbCollidesWorld(nx, m.pos.y, nz, m.hw, m.h) && !mobCollidesOther(m, nx, nz) && hasMobGround(nx, nz, m.hw, m.pos.y)) {
-        m.pos.x += (nx - m.pos.x) * 0.50;
-        m.pos.z += (nz - m.pos.z) * 0.50;
+        m.pos.x += (nx - m.pos.x) * (fleeing ? 0.55 : 0.50);
+        m.pos.z += (nz - m.pos.z) * (fleeing ? 0.55 : 0.50);
         if (mobStats) mobStats.playerCol++;
       }
       const pPush = (need - d) * 0.15;
@@ -1473,7 +1495,8 @@ function updateMobs(dt) {
   for (let idx = mobs.length - 1; idx >= 0; idx--) {
     const m = mobs[idx];
     const wasFallen = m.fallen;
-    // TNT : tombe progressivement sur le côté (~0.6s), reste 3s, fade 1s — couchés SUR le sol
+    const now = performance.now() / 1000;
+    if (m.fleeUntil != null && now < m.fleeUntil) { m.fallen = false; m.fallTime = 0; }
     if (m.fallen) {
       m.fallTime += dt;
       const FALL_DUR = 0.6;
@@ -1539,8 +1562,12 @@ function updateMobs(dt) {
     } else if (m.mode === "goOut" || m.mode === "goHome") {
       const house = villageHouses[m.homeId];
       const isOut = m.mode === "goOut";
+      const fleeing = m.fleeUntil != null && now < m.fleeUntil;
       const dest = isOut ? { x: house.apronX, z: house.apronZ } : { x: house.padX, z: house.padZ };
-      if (Math.hypot(dest.x - m.pos.x, dest.z - m.pos.z) < 0.6) {
+      if (fleeing) {
+        const centre = { x: house.cx + 0.5, z: house.cz + 0.5 };
+        m.target = centre;
+      } else if (Math.hypot(dest.x - m.pos.x, dest.z - m.pos.z) < 0.6) {
         if (isOut) { m.mode = "wander"; m.wanderT = 3 + Math.random() * 3; m.target = wanderGoalFor(m); }
         else { m.mode = "inside"; m.insideT = 8 + Math.random() * 8; m.target = randomInsidePoint(m.homeId); }
       } else {
@@ -1548,7 +1575,7 @@ function updateMobs(dt) {
       }
     } else {
       // wander / follow
-      if (m.isBaby) {
+      if (m.isBaby && now >= (m.fleeUntil || 0)) {
         const p = mobById.get(m.parentId);
         if (p) {
           const pd = Math.hypot(p.pos.x - m.pos.x, p.pos.z - m.pos.z);
@@ -1581,6 +1608,25 @@ function updateMobs(dt) {
         if (m.mode === "wander") { m.target = wanderGoalFor(m); m.wanderT = 3 + Math.random() * 3; }
       }
     }
+    // TNT panic override — fleeing takes precedence over mode dispatch
+    // Hardcoded: fleeing villagers hard-converge to the CENTRE of their house
+    if (m.fleeUntil != null && now < m.fleeUntil) {
+      m.speed = WALK * 2;
+      const house = villageHouses[m.homeId];
+      const inHome = house && m.pos.x > house.minX && m.pos.x < house.maxX && m.pos.z > house.minZ && m.pos.z < house.maxZ;
+      const centre = { x: house.cx + 0.5, z: house.cz + 0.5 };
+      if (inHome) {
+        m.insideT = Math.max(m.insideT, m.fleeUntil - now);
+        if (m.mode !== "inside") m.mode = "inside";
+        m.target = centre;
+      } else {
+        // Outside: dash straight to centre (BFS through door)
+        m.mode = "goOut";
+        m.target = centre;
+        m.path = null; m.pathKey = null; m.wanderT = 99;
+      }
+    } else if (m.fleeUntil) { m.fleeUntil = 0; m.speed = WALK / 2; }
+
     // Steering towards target — BFS path for 1-block corridors + smart wall avoidance
     let tx = m.target ? m.target.x : m.pos.x;
     let tz = m.target ? m.target.z : m.pos.z;
@@ -1764,6 +1810,29 @@ function updateMobs(dt) {
     }
   }
 }
+function panicVillagers(cx, cy, cz) {
+  if (dim !== "over" || !villageHouses.length || !mobs.length) return;
+  if ((cx - villageCenter.x) ** 2 + (cz - villageCenter.z) ** 2 > (VILLAGE_RADIUS + 15) ** 2) return;
+  if (Math.abs(cy - villageCenter.y) > CLOUD_BASE / 2) return;
+  const now = performance.now() / 1000;
+  for (const m of mobs) {
+    if (m.homeId < 0) continue;
+    const stagger = Math.random() * 3;
+    m.fleeUntil = Math.max(m.fleeUntil || 0, now + 10 + stagger);
+    const house = villageHouses[m.homeId];
+    const centre = { x: house.cx + 0.5, z: house.cz + 0.5 };
+    const inHome = m.pos.x > house.minX && m.pos.x < house.maxX && m.pos.z > house.minZ && m.pos.z < house.maxZ;
+    if (inHome) {
+      m.insideT = Math.max(m.insideT, 10 + stagger);
+      m.mode = "inside";
+      m.target = centre;
+    } else {
+      m.mode = "goOut";
+      m.target = centre;
+      m.path = null; m.pathKey = null; m.wanderT = 99;
+    }
+  }
+}
 function handleMobExplosion(cx, cy, cz) {
   const R = BLAST_RADIUS + 1.2;
   const R2 = R*R;
@@ -1794,6 +1863,7 @@ function handleMobExplosion(cx, cy, cz) {
       }
     });
   }
+  if (dim === "over") panicVillagers(cx, cy, cz);
 }
 function transparentClone(mat){
   if(mat._cloned) return mat;
