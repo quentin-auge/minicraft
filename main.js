@@ -1160,6 +1160,461 @@ function isInsideHome(mob) {
   const x = mob.pos.x, z = mob.pos.z;
   return x > h.minX + 0.2 && x < h.maxX - 0.2 && z > h.minZ + 0.2 && z < h.maxZ - 0.2;
 }
+function groundYForMob(x, z, hintY, hw) {
+  for (let y = Math.floor(hintY) + 4; y >= Math.floor(hintY) - 24; y--) {
+    if (y < 0 || y > MAX_Y) continue;
+    if (!mobBlockedAt(x, z, hw, y)) return y;
+  }
+  for (let y = MAX_Y; y >= 0; y--) if (!mobBlockedAt(x, z, hw, y)) return y;
+  return Math.floor(hintY);
+}
+
+function setMobTransparent(m, alpha) {
+  const trans = alpha < 1;
+  const a = alpha;
+  m.mesh.traverse((obj) => {
+    if (obj.isMesh && obj.material) {
+      const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
+      mats.forEach((mat) => {
+        mat.transparent = trans;
+        mat.opacity = a;
+        mat.depthWrite = !trans;
+        mat.needsUpdate = true;
+      });
+    }
+  });
+}
+
+function pickMob(dir, maxDist = 1000) {
+  const eye = camera.position;
+  let best = null, bestT = Infinity;
+  for (const m of mobs) {
+    if (m.dim !== undefined && m.dim !== dim) continue;
+    if (m.fallen) continue;
+    if (m === carryMob || m === carryGrappleMob) continue;
+    const minX = m.pos.x - m.hw, maxX = m.pos.x + m.hw;
+    const minY = m.pos.y, maxY = m.pos.y + m.h;
+    const minZ = m.pos.z - m.hw, maxZ = m.pos.z + m.hw;
+    let tmin = -Infinity, tmax = Infinity;
+    if (Math.abs(dir.x) < 1e-6) {
+      if (eye.x < minX || eye.x > maxX) continue;
+    } else {
+      const tx1 = (minX - eye.x) / dir.x, tx2 = (maxX - eye.x) / dir.x;
+      const t1 = Math.min(tx1, tx2), t2 = Math.max(tx1, tx2);
+      tmin = Math.max(tmin, t1); tmax = Math.min(tmax, t2);
+      if (tmin > tmax) continue;
+    }
+    if (Math.abs(dir.y) < 1e-6) {
+      if (eye.y < minY || eye.y > maxY) continue;
+    } else {
+      const ty1 = (minY - eye.y) / dir.y, ty2 = (maxY - eye.y) / dir.y;
+      const t1 = Math.min(ty1, ty2), t2 = Math.max(ty1, ty2);
+      tmin = Math.max(tmin, t1); tmax = Math.min(tmax, t2);
+      if (tmin > tmax) continue;
+    }
+    if (Math.abs(dir.z) < 1e-6) {
+      if (eye.z < minZ || eye.z > maxZ) continue;
+    } else {
+      const tz1 = (minZ - eye.z) / dir.z, tz2 = (maxZ - eye.z) / dir.z;
+      const t1 = Math.min(tz1, tz2), t2 = Math.max(tz1, tz2);
+      tmin = Math.max(tmin, t1); tmax = Math.min(tmax, t2);
+      if (tmin > tmax) continue;
+    }
+    if (tmax < 0) continue;
+    const t = tmin >= 0 ? tmin : tmax;
+    if (t < 0 || t > maxDist) continue;
+    if (t < bestT) { bestT = t; best = m; }
+  }
+  return best;
+}
+
+// Carry grapple (red) — from scratch, inspired by normal grapple
+let carryGrappleActive = false;
+let carryGrappleMode = null;
+let carryGrappleFly = 0;
+const carryGrappleStart = new THREE.Vector3();
+const carryGrappleTarget = new THREE.Vector3();
+let carryGrappleDist = 1;
+let carryGrappleMob = null;
+let carryGrappleBlock = null;
+let carryGrappleOrigBlock = null;
+const carryGrappleHookPos = new THREE.Vector3();
+let carryGrappleRetracting = false;
+let carryGrappleRetractTime = 0;
+let carryGrapplePulling = false;
+let carryGrapplePullDist = 1;
+
+function releaseCarriedMobAt(px, py, pz) {
+  if (!carryMob) return;
+  const m = carryMob;
+  const hw = m.hw;
+  const fwdX = -Math.sin(yaw), fwdZ = -Math.cos(yaw);
+  let nx = px + 0.5, nz = pz + 0.5, hintY = py;
+  const insideVillagePre = nx >= villageMinX && nx <= villageMaxX && nz >= villageMinZ && nz <= villageMaxZ;
+  if (aabbCollidesWorld(nx, hintY, nz, hw, m.h) || mobCollidesOther(m, nx, nz)) {
+    let found = false;
+    for (let r = 1; r <= 2 && !found; r++) for (let dx = -r; dx <= r && !found; dx++) for (let dz = -r; dz <= r && !found; dz++) {
+      if (Math.abs(dx) !== r && Math.abs(dz) !== r) continue;
+      const tx = nx + dx * 0.9, tz = nz + dz * 0.9;
+      const th = insideVillagePre ? hintY : groundYForMob(tx, tz, hintY, hw);
+      if (!aabbCollidesWorld(tx, th, tz, hw, m.h) && !mobCollidesOther(m, tx, tz)) { nx = tx; nz = tz; hintY = th; found = true; }
+    }
+    if (!found) hintY += 1;
+  }
+  m.pos.set(nx, hintY, nz);
+  m.mesh.position.copy(m.pos);
+  m.mesh.rotation.z = 0;
+  m.mesh.rotation.x = 0;
+  if (m.dim !== undefined) m.dim = dim;
+  m.vel.set(0, 0, 0);
+  m.onGround = false;
+  m.fallen = false; m.fallTime = 0;
+  const insideVillage = nx >= villageMinX && nx <= villageMaxX && nz >= villageMinZ && nz <= villageMaxZ;
+  m.villageBound = insideVillage;
+  m.speed = WALK / 2;
+  if (insideVillage) {
+    m.mode = "wander";
+    let sx = nx + fwdX * 6, sz = nz + fwdZ * 6;
+    sx = Math.max(villageMinX + 1, Math.min(villageMaxX - 1, sx));
+    sz = Math.max(villageMinZ + 1, Math.min(villageMaxZ - 1, sz));
+    const py2 = villageCenter.y + 1;
+    if (mobBlockedAt(sx, sz, hw, py2) || aabbCollidesWorld(sx, py2, sz, hw, m.h)) {
+      let ox = nx - fwdX * 6, oz = nz - fwdZ * 6;
+      ox = Math.max(villageMinX + 1, Math.min(villageMaxX - 1, ox));
+      oz = Math.max(villageMinZ + 1, Math.min(villageMaxZ - 1, oz));
+      if (!mobBlockedAt(ox, oz, hw, py2) && !aabbCollidesWorld(ox, py2, oz, hw, m.h)) { sx = ox; sz = oz; }
+    }
+    m.target = { x: sx, z: sz };
+  } else {
+    m.mode = "wander";
+    let sx = nx + fwdX * 6, sz = nz + fwdZ * 6;
+    let gy = groundYForMob(sx, sz, hintY, hw);
+    if (aabbCollidesWorld(sx, gy, sz, hw, m.h) || !hasMobGround(sx, sz, hw, gy)) {
+      let ox = nx - fwdX * 6, oz = nz - fwdZ * 6;
+      let gy2 = groundYForMob(ox, oz, hintY, hw);
+      if (!aabbCollidesWorld(ox, gy2, oz, hw, m.h) && hasMobGround(ox, oz, hw, gy2)) { sx = ox; sz = oz; }
+    }
+    m.target = { x: sx, z: sz };
+  }
+  m.wanderT = 3 + Math.random() * 3;
+  m.path = null; m.pathKey = null; m.blockedT = 0; m._stuckT = 0;
+  if (m.isBaby) m._followDetourUntil = 0;
+  m.mesh.visible = true;
+  setMobTransparent(m, 1);
+  carryMob = null;
+}
+
+function releaseCarriedMob() {
+  if (!carryMob || !currentBlock) return;
+  const px = currentBlock.x + currentBlock.face[0];
+  const py = currentBlock.y + currentBlock.face[1];
+  const pz = currentBlock.z + currentBlock.face[2];
+  releaseCarriedMobAt(px, py, pz);
+}
+
+function updateCarry(dt) {
+  const canHold = started && !loading && !helpOpen;
+  const holding = !!carryMob;
+  playerArms.visible = holding && canHold;
+  if (playerArms.visible) {
+    const left = playerArms.getObjectByName("leftArm");
+    const right = playerArms.getObjectByName("rightArm");
+    if (left && right) {
+      left.position.set(-0.22, -0.30, -0.48);
+      right.position.set(0.22, -0.30, -0.48);
+      left.rotation.set(-0.35, 0.35, -0.25);
+      right.rotation.set(-0.35, -0.35, 0.25);
+    }
+  }
+  if (!canHold) {
+    if (carryMob) releaseCarriedMob();
+    return;
+  }
+  if (holding && carryMob) {
+    const fwd = new THREE.Vector3();
+    camera.getWorldDirection(fwd);
+    const eye = camera.position;
+    const hh = carryMob.h * 0.5;
+    const cx = eye.x + fwd.x * CARRY_DIST;
+    const cy = eye.y + fwd.y * CARRY_DIST - CARRY_DOWN;
+    const cz = eye.z + fwd.z * CARRY_DIST;
+    carryMob.pos.set(cx, cy - hh, cz);
+    carryMob.mesh.position.copy(carryMob.pos);
+    carryMob.mesh.rotation.y = yaw + Math.PI;
+    carryMob.mesh.rotation.z = 0;
+    carryMob.mesh.rotation.x = 0;
+    if (carryMob.mesh.userData.legL) {
+      carryMob.mesh.userData.legL.rotation.x = 0;
+      carryMob.mesh.userData.legR.rotation.x = 0;
+    }
+  }
+}
+
+function startCarryGrabGrapple() {
+  if (carryGrappleActive || carryGrappleRetracting || carryGrapplePulling) return false;
+  if (carryMob) return false;
+  if (!started || loading || helpOpen) return false;
+  const dir = new THREE.Vector3();
+  camera.getWorldDirection(dir);
+  const mob = pickMob(dir);
+  if (!mob) return false;
+  const eye = camera.position;
+  const mx = mob.pos.x, my = mob.pos.y + mob.h * 0.5, mz = mob.pos.z;
+  carryGrappleMob = mob;
+  carryGrappleMode = "grab";
+  carryGrappleStart.copy(eye);
+  carryGrappleTarget.set(mx, my, mz);
+  carryGrappleDist = Math.hypot(mx - eye.x, my - eye.y, mz - eye.z);
+  if (carryGrappleDist < 0.3) { carryGrappleMob = null; return false; }
+  carryGrappleFly = 0;
+  carryGrappleHookPos.copy(eye);
+  carryGrappleActive = true;
+  carryGrappleRetracting = false;
+  carryGrapplePulling = false;
+  return true;
+}
+
+function startCarryReleaseGrapple() {
+  if (carryGrappleActive || carryGrappleRetracting || carryGrapplePulling) return false;
+  if (!carryMob) return false;
+  if (!started || loading || helpOpen) return false;
+  if (!currentBlock) return false;
+  const b = currentBlock;
+  const eye = camera.position;
+  let px, py, pz, tx, ty, tz;
+  let h = 0;
+  while (isSolid(b.x, b.y + h + 1, b.z)) h++;
+  if (h <= 1) {
+    px = b.x; py = b.y + h + 1; pz = b.z;
+    tx = b.x + 0.5; ty = b.y + h + 1.5; tz = b.z + 0.5;
+  } else {
+    px = b.x + b.face[0]; py = b.y + b.face[1]; pz = b.z + b.face[2];
+    tx = px + 0.5; ty = py + 0.5; tz = pz + 0.5;
+  }
+  carryGrappleOrigBlock = { x: b.x, y: b.y, z: b.z };
+  carryGrappleBlock = { x: px, y: py, z: pz };
+  carryGrappleMode = "release";
+  carryGrappleStart.copy(eye);
+  carryGrappleTarget.set(tx, ty, tz);
+  carryGrappleDist = Math.hypot(tx - eye.x, ty - eye.y, tz - eye.z);
+  if (carryGrappleDist < 0.3) return false;
+  carryGrappleFly = 1;
+  carryGrappleHookPos.copy(eye);
+  const mob = carryMob;
+  carryGrappleMob = mob;
+  carryMob = null;
+  carryGrappleActive = false;
+  carryGrapplePulling = true;
+  carryGrappleRetracting = false;
+  const mx = mob.pos.x, my = mob.pos.y + mob.h * 0.5, mz = mob.pos.z;
+  carryGrapplePullDist = Math.hypot(mx - tx, my - ty, mz - tz) || carryGrappleDist;
+  setMobTransparent(mob, 0.1);
+  return true;
+}
+
+function updateCarryGrapple(dt) {
+  if (carryGrappleRetracting) {
+    const eye = new THREE.Vector3(pos.x, pos.y + 0.3, pos.z);
+    const dx = eye.x - carryGrappleHookPos.x, dy = eye.y - carryGrappleHookPos.y, dz = eye.z - carryGrappleHookPos.z;
+    const d = Math.hypot(dx, dy, dz);
+    const grabRetract = carryGrappleMode === "grab";
+    const step = (grabRetract ? GRAPPLE_THROW * 0.15 : GRAPPLE_THROW * 0.75) * dt;
+    if (d <= step + 0.05 || carryGrappleRetractTime > 1.5) {
+      carryGrappleRetracting = false;
+      carryGrappleCubes.visible = false;
+      carryGrappleHead.visible = false;
+    } else {
+      carryGrappleHookPos.x += dx / d * step;
+      carryGrappleHookPos.y += dy / d * step;
+      carryGrappleHookPos.z += dz / d * step;
+      carryGrappleRetractTime += dt;
+    }
+    return;
+  }
+  if (!carryGrappleActive && !carryGrapplePulling) return;
+  if (!carryGrapplePulling) {
+    if (carryGrappleMode === "grab") {
+      const mob = carryGrappleMob;
+      if (!mob || mob.fallen || (mob.dim !== undefined && mob.dim !== dim)) {
+        carryGrappleActive = false;
+        carryGrappleRetracting = true;
+        carryGrappleHookPos.copy(carryGrappleTarget);
+        carryGrappleRetractTime = 0;
+        carryGrappleMob = null;
+        return;
+      }
+      const mx = mob.pos.x, my = mob.pos.y + mob.h * 0.5, mz = mob.pos.z;
+      carryGrappleTarget.set(mx, my, mz);
+      const dx = mx - carryGrappleHookPos.x, dy = my - carryGrappleHookPos.y, dz = mz - carryGrappleHookPos.z;
+      const dist = Math.hypot(dx, dy, dz);
+      const hitR = (mob.hw || 0.27) + 0.35;
+      const step = GRAPPLE_THROW * 1.125 * dt;
+      if (dist <= step + hitR) {
+        carryGrappleHookPos.set(mx, my, mz);
+        carryGrappleActive = false;
+        carryGrapplePulling = true;
+        carryGrapplePullDist = Math.hypot(mob.pos.x - pos.x, mob.pos.y - pos.y, mob.pos.z - pos.z) || carryGrappleDist;
+        setMobTransparent(mob, 1);
+      } else {
+        const s = step / dist;
+        carryGrappleHookPos.x += dx * s;
+        carryGrappleHookPos.y += dy * s;
+        carryGrappleHookPos.z += dz * s;
+      }
+      return;
+    }
+    const grabFly = false;
+    carryGrappleFly += ((grabFly ? GRAPPLE_THROW * 0.15 : GRAPPLE_THROW * 0.75) * dt) / carryGrappleDist;
+    if (carryGrappleFly >= 1) {
+      carryGrappleFly = 1;
+      if (carryGrappleMode === "grab") {
+        const mob = carryGrappleMob;
+        if (!mob || mob.fallen || (mob.dim !== undefined && mob.dim !== dim)) {
+          carryGrappleActive = false;
+          carryGrappleRetracting = true;
+          carryGrappleHookPos.copy(carryGrappleTarget);
+          carryGrappleRetractTime = 0;
+          carryGrappleMob = null;
+          return;
+        }
+        carryGrappleActive = false;
+        carryGrapplePulling = true;
+        carryGrapplePullDist = Math.hypot(mob.pos.x - pos.x, mob.pos.y - pos.y, mob.pos.z - pos.z) || carryGrappleDist;
+        setMobTransparent(mob, 1);
+      } else if (carryGrappleMode === "release") {
+        const mob = carryMob;
+        if (!mob || !carryGrappleBlock || mob.fallen || (mob.dim !== undefined && mob.dim !== dim)) {
+          carryGrappleActive = false;
+          carryGrappleRetracting = true;
+          carryGrappleHookPos.copy(carryGrappleTarget);
+          carryGrappleRetractTime = 0;
+          carryGrappleBlock = null;
+          return;
+        }
+        carryGrappleMob = mob;
+        carryMob = null;
+        carryGrappleActive = false;
+        carryGrapplePulling = true;
+        carryGrapplePullDist = Math.hypot(mob.pos.x - carryGrappleTarget.x, mob.pos.y - carryGrappleTarget.y, mob.pos.z - carryGrappleTarget.z) || carryGrappleDist;
+        setMobTransparent(mob, 0.1);
+      }
+    }
+  } else {
+    const mob = carryGrappleMob;
+    if (!mob) {
+      carryGrapplePulling = false;
+      carryGrappleActive = false;
+      carryGrappleRetracting = true;
+      carryGrappleHookPos.copy(carryGrappleTarget);
+      carryGrappleRetractTime = 0;
+      return;
+    }
+    if (carryGrappleMode === "grab") {
+      const eye = new THREE.Vector3(pos.x, pos.y + 0.3, pos.z);
+      const dx = eye.x - mob.pos.x, dy = eye.y - mob.pos.y, dz = eye.z - mob.pos.z;
+      const dist = Math.hypot(dx, dy, dz);
+      const step = GRAPPLE_THROW * 1.125 * dt;
+      if (dist <= step + 0.15) {
+        mob.pos.copy(eye);
+        mob.pos.y -= mob.h * 0.5 + 0.4;
+        mob.mesh.position.copy(mob.pos);
+        setMobTransparent(mob, 0.35);
+        carryMob = mob;
+        mob.mode = "carried";
+        mob.path = null; mob.target = null;
+        if (mob.vel) mob.vel.set(0, 0, 0);
+        mob.blockedT = 0; mob._stuckT = 0;
+        if (mob.isBaby) mob._followDetourUntil = 0;
+        carryGrapplePulling = false;
+        carryGrappleActive = false;
+        carryGrappleCubes.visible = false;
+        carryGrappleHead.visible = false;
+        carryGrappleMob = null;
+      } else {
+        const s = step / dist;
+        mob.pos.x += dx * s;
+        mob.pos.y += dy * s;
+        mob.pos.z += dz * s;
+        mob.mesh.position.copy(mob.pos);
+        mob.mesh.rotation.y = yaw + Math.PI;
+        const prog = dist / carryGrapplePullDist;
+        const alpha = 0.1 + 0.9 * prog;
+        setMobTransparent(mob, alpha);
+      }
+    } else {
+      if (carryGrappleOrigBlock) {
+        let h2 = 0;
+        while (isSolid(carryGrappleOrigBlock.x, carryGrappleOrigBlock.y + h2 + 1, carryGrappleOrigBlock.z)) h2++;
+        if (h2 <= 1) {
+          const topY = carryGrappleOrigBlock.y + h2;
+          const ntY = topY + 1.5;
+          if (Math.abs(carryGrappleTarget.y - ntY) > 0.01 || carryGrappleTarget.x !== carryGrappleOrigBlock.x + 0.5 || carryGrappleTarget.z !== carryGrappleOrigBlock.z + 0.5) {
+            carryGrappleTarget.set(carryGrappleOrigBlock.x + 0.5, ntY, carryGrappleOrigBlock.z + 0.5);
+            carryGrappleBlock = { x: carryGrappleOrigBlock.x, y: topY + 1, z: carryGrappleOrigBlock.z };
+          }
+        }
+      }
+      const tx = carryGrappleTarget.x, ty = carryGrappleTarget.y, tz = carryGrappleTarget.z;
+      const dx = tx - mob.pos.x, dy = ty - mob.pos.y, dz = tz - mob.pos.z;
+      const dist = Math.hypot(dx, dy, dz);
+      const step = GRAPPLE_THROW * 0.75 * dt;
+      if (dist <= step + 0.15) {
+        const b = carryGrappleBlock;
+        carryGrappleMob = null;
+        carryGrapplePulling = false;
+        carryGrappleActive = false;
+        carryMob = mob;
+        setMobTransparent(mob, 1);
+        if (b) {
+          carryGrappleBlock = null;
+          carryGrappleOrigBlock = null;
+          carryGrappleHookPos.copy(carryGrappleTarget);
+          releaseCarriedMobAt(b.x, b.y, b.z);
+        } else {
+          carryGrappleOrigBlock = null;
+          mob.pos.set(tx, ty - mob.h * 0.5, tz);
+          mob.mesh.position.copy(mob.pos);
+          setMobTransparent(mob, 1);
+        }
+        carryGrappleRetracting = true;
+        carryGrappleRetractTime = 0;
+      } else {
+        const s = step / dist;
+        mob.pos.x += dx * s;
+        mob.pos.y += dy * s;
+        mob.pos.z += dz * s;
+        mob.mesh.position.copy(mob.pos);
+        mob.mesh.rotation.y = yaw + Math.PI;
+        const prog = dist / carryGrapplePullDist;
+        const alpha = 1 - 0.9 * prog;
+        setMobTransparent(mob, alpha);
+      }
+    }
+  }
+}
+
+function handleCarryEnterDown() {
+  if (carryGrappleActive || carryGrapplePulling || carryGrappleRetracting) return;
+  if (carryMob) {
+    startCarryReleaseGrapple();
+  } else {
+    startCarryGrabGrapple();
+  }
+}
+
+function handleCarryEnterUp() {
+  if (carryGrappleActive && !carryGrapplePulling && carryGrappleFly < 1) {
+    if (carryGrappleMode === "grab") return;
+    carryGrappleActive = false;
+    const hook = new THREE.Vector3().copy(carryGrappleStart).lerp(carryGrappleTarget, carryGrappleFly);
+    carryGrappleHookPos.copy(hook);
+    carryGrappleRetracting = true;
+    carryGrappleRetractTime = 0;
+    carryGrappleMob = null;
+    carryGrappleBlock = null;
+  }
+}
+
 function randomVillagePoint() {
   for (let t = 0; t < 30; t++) {
     const x = villageMinX + 2 + Math.random() * (villageMaxX - villageMinX - 4);
@@ -1237,13 +1692,14 @@ function mobBlockedAt(x, z, hw, y) {
 function mobProbeFree(x, z, dirX, dirZ, maxDist, hw, y) {
   const py = y != null ? y : villageCenter.y + 1;
   const h = hw <= 0.18 ? 0.98 : 1.82;
+  const startInside = x >= villageMinX && x <= villageMaxX && z >= villageMinZ && z <= villageMaxZ;
   const steps = Math.ceil(maxDist / 0.28);
   for (let s = 1; s <= steps; s++) {
     const t = s / steps * maxDist;
     const px = x + dirX * t, pz = z + dirZ * t;
     if (aabbCollidesWorld(px, py, pz, hw, h)) return (s - 1) / steps * maxDist;
     if (!hasMobGround(px, pz, hw, py)) return (s - 1) / steps * maxDist;
-    if (px < villageMinX + 0.7 || px > villageMaxX - 0.7 || pz < villageMinZ + 0.7 || pz > villageMaxZ - 0.7) return (s - 1) / steps * maxDist;
+    if (startInside && (px < villageMinX + 0.7 || px > villageMaxX - 0.7 || pz < villageMinZ + 0.7 || pz > villageMaxZ - 0.7)) return (s - 1) / steps * maxDist;
   }
   return maxDist;
 }
@@ -1285,12 +1741,15 @@ function findVillagePath(sx, sz, tx, tz, hw, pyHint) {
   return out;
 }
 function mobCollidesOther(mob, nx, nz) {
+  if (mob === carryMob) return null;
+  if (mob.dim !== undefined && mob.dim !== dim) return null;
   const hw = villagerHW(mob);
   const y = mob.pos.y;
   const nearby = nearbyMobsFor(nx, nz, 1);
   const fleeing = mob.fleeUntil && performance.now() / 1000 < mob.fleeUntil;
   for (const o of nearby) {
-    if (o === mob || o.fallen) continue;
+    if (o === mob || o === carryMob || o === carryGrappleMob || o.fallen) continue;
+    if (o.dim !== undefined && o.dim !== dim) continue;
     if (!fleeing) {
       const oflee = o.fleeUntil && performance.now() / 1000 < o.fleeUntil;
       if (!oflee) {
@@ -1311,15 +1770,19 @@ function mobHitsPlayer(nx, nz, hw, y) {
   return dx * dx + dz * dz < (hw + PLAYER_HW + 0.04) * (hw + PLAYER_HW + 0.04);
 }
 function spawnVillagers() {
-  if (mobs.length) return;
+  const target = VILLAGE_HOUSES * 3;
+  const overCount = () => mobs.filter((m) => m.dim === "over" || m.dim === undefined).length;
+  if (overCount() >= target) return;
   if (!villageHouses.length) computeVillageLayout();
   if (!villagerGeo) villagerGeo = new THREE.BoxGeometry(1, 1, 1);
   else if (villagerGeo.attributes.position.getY(0) > -0.4) { villagerGeo.dispose(); villagerGeo = new THREE.BoxGeometry(1, 1, 1); }
-  let gid = 0;
-  const used = [];
-  const usedBlocks = new Set();
+  let gid = mobs.length ? Math.max(...mobs.map((m) => m.id)) + 1 : 0;
+  const used = mobs.filter((m) => m.dim === "over" || m.dim === undefined).map((m) => [m.pos.x, m.pos.z]);
+  const usedBlocks = new Set(mobs.filter((m) => m.dim === "over" || m.dim === undefined).map((m) => `${Math.floor(m.pos.x)},${Math.floor(m.pos.y)},${Math.floor(m.pos.z)}`));
   for (const h of villageHouses) {
+    if (overCount() >= target) break;
     for (let k = 0; k < 3; k++) {
+      if (overCount() >= target) break;
       const isBaby = k === 2;
       const mesh = makeVillagerMesh(isBaby);
       let sx, sz, tries = 0;
@@ -1352,7 +1815,7 @@ function spawnVillagers() {
       mesh.rotation.y = yaw;
       scene.add(mesh);
       const m = {
-        id: gid++, homeId: h.id, isBaby, parentId: -1,
+        id: gid++, homeId: h.id, isBaby, parentId: -1, dim: "over",
         pos: new THREE.Vector3(sx, villageCenter.y + 1, sz),
         vel: new THREE.Vector3(0, 0, 0),
         hw, h: hh, mesh, onGround: false, fallen: false, fallTime: 0,
@@ -1383,21 +1846,29 @@ function spawnVillagers() {
   }
 }
 function removeVillagers() {
+  const keepCarry = carryMob && mobs.includes(carryMob) ? carryMob : null;
+  const survivors = [];
   for (const m of mobs) {
+    if (m === keepCarry) { survivors.push(m); continue; }
+    if (m.dim !== undefined && m.dim !== "over") { survivors.push(m); continue; }
     if (m.mesh) scene.remove(m.mesh);
     if (m.fallMesh) scene.remove(m.fallMesh);
+    mobById.delete(m.id);
   }
   mobs.length = 0;
-  mobById.clear();
-  mobGrid.clear();
-  visitGrid.clear();
+  for (const s of survivors) { mobs.push(s); mobById.set(s.id, s); }
+  if (!mobs.length) { mobGrid.clear(); visitGrid.clear(); }
+  else { buildMobGrid(); }
   for (const h of villageHouses) { h.doorQueue = []; h.doorLock = null; h.lockUntil = 0; }
-  if (villagerGeo) { /* keep geo for reuse */ }
+  if (!mobs.length && villagerGeo) { /* keep geo for reuse */ }
   mobStats = { worldCol: 0, mobCol: 0, playerCol: 0, stuck: 0, falls: 0, frames: 0, invariants: 0 };
+  if (!keepCarry) playerArms.visible = false;
 }
 function intersectsMob(bx, by, bz) {
   const nearby = nearbyMobsFor(bx + 0.5, bz + 0.5, 1);
   for (const m of nearby) {
+    if (m === carryMob || m === carryGrappleMob) continue;
+    if (m.dim !== undefined && m.dim !== dim) continue;
     const hw = villagerHW(m) + 0.05, hh = villagerH(m);
     const mx = m.pos.x, my = m.pos.y, mz = m.pos.z;
     if (bx + 1 > mx - hw && bx < mx + hw && by + 1 > my && by < my + hh && bz + 1 > mz - hw && bz < mz + hw) return true;
@@ -1407,6 +1878,8 @@ function intersectsMob(bx, by, bz) {
 function isMobStandingOn(bx, by, bz) {
   const nearby = nearbyMobsFor(bx + 0.5, bz + 0.5, 1);
   for (const m of nearby) {
+    if (m === carryMob || m === carryGrappleMob) continue;
+    if (m.dim !== undefined && m.dim !== dim) continue;
     const hw = villagerHW(m);
     const mx = m.pos.x, my = m.pos.y, mz = m.pos.z;
     const ox0 = Math.max(mx - hw, bx), ox1 = Math.min(mx + hw, bx + 1);
@@ -1418,12 +1891,17 @@ function isMobStandingOn(bx, by, bz) {
 }
 function separateMobs() {
   for (const m of mobs) {
+    if (m === carryMob) continue;
+    if (m === carryGrappleMob && carryGrapplePulling) continue;
+    if (m.dim !== undefined && m.dim !== dim) continue;
     if (m.fallen) continue;
     let sx = 0, sz = 0, cnt = 0;
     const nearby = nearbyMobsFor(m.pos.x, m.pos.z, 1);
     const fleeingSelf = m.fleeUntil && performance.now() / 1000 < m.fleeUntil;
     for (const o of nearby) {
-      if (o === m || o.fallen) continue;
+      if (o === m || o === carryMob || o.fallen) continue;
+      if (o === carryGrappleMob && carryGrapplePulling) continue;
+      if (o.dim !== undefined && o.dim !== dim) continue;
       if (!fleeingSelf) {
         const oflee = o.fleeUntil && performance.now() / 1000 < o.fleeUntil;
         if (!oflee) {
@@ -1464,6 +1942,9 @@ function pushMobsFromPlayer() {
   if (Math.abs(pos.y - y) > 1.8) return;
   const nearby = nearbyMobsFor(pos.x, pos.z, 2);
   for (const m of nearby) {
+    if (m === carryMob) continue;
+    if (m === carryGrappleMob && carryGrapplePulling) continue;
+    if (m.dim !== undefined && m.dim !== dim) continue;
     if (m.fallen) continue;
     const fleeing = m.fleeUntil && performance.now() / 1000 < m.fleeUntil;
     const dx = m.pos.x - pos.x, dz = m.pos.z - pos.z;
@@ -1485,15 +1966,65 @@ function pushMobsFromPlayer() {
   }
 }
 function updateMobs(dt) {
-  if (dim !== "over" || !villageHouses.length || !mobs.length) return;
-  mobTick++;
-  buildMobGrid();
-  if ((mobTick & 1) === 0) separateMobs(); else { /* keep push every frame */ }
-  pushMobsFromPlayer();
+  if (!mobs.length) return;
+  const over = dim === "over" && villageHouses.length;
+  if (over) {
+    mobTick++;
+    buildMobGrid();
+    if ((mobTick & 1) === 0) separateMobs(); else { /* keep push every frame */ }
+    pushMobsFromPlayer();
+  } else {
+    buildMobGrid();
+  }
   if (mobStats) mobStats.frames++;
   const g = GRAVITY;
   for (let idx = mobs.length - 1; idx >= 0; idx--) {
     const m = mobs[idx];
+    if (m === carryMob) continue;
+    if (m === carryGrappleMob && carryGrapplePulling) continue;
+    if (m.dim !== undefined && m.dim !== dim) {
+      // generic falling in non-native dimension (like carried mob staying cross-dim)
+      if (m.fallen) {
+        m.fallTime += dt;
+        if (m.fallTime < 3) {}
+        else if (m.fallTime < 4) {
+          const t = (m.fallTime - 3) / 1;
+          m.mesh.traverse((ch) => {
+            if (ch.isMesh && ch.material) {
+              const mats = Array.isArray(ch.material) ? ch.material : [ch.material];
+              mats.forEach(mat=>{ mat.transparent = true; mat.opacity = Math.max(0, 1 - t); });
+            }
+          });
+        } else {
+          scene.remove(m.mesh);
+          mobById.delete(m.id);
+          mobs.splice(idx, 1);
+          continue;
+        }
+        continue;
+      }
+      // simple gravity when not over
+      if (m.pos.y < -15) { scene.remove(m.mesh); mobById.delete(m.id); mobs.splice(idx, 1); continue; }
+      if (m.vel == null) m.vel = new THREE.Vector3(0,0,0);
+      const footY2 = Math.floor(m.pos.y);
+      const hasG2 = isSolid(Math.floor(m.pos.x), footY2 - 1, Math.floor(m.pos.z));
+      if (!hasG2) {
+        m.vel.y -= GRAVITY * dt;
+        m.pos.y += m.vel.y * dt;
+        const nf = Math.floor(m.pos.y);
+        if (isSolid(Math.floor(m.pos.x), nf - 1, Math.floor(m.pos.z))) {
+          let gg = nf - 1;
+          while (gg > 0 && !isSolid(Math.floor(m.pos.x), gg, Math.floor(m.pos.z))) gg--;
+          m.pos.y = gg + 1;
+          m.vel.y = 0;
+        }
+        m.mesh.position.copy(m.pos);
+      } else {
+        m.vel.y = 0;
+        m.mesh.position.copy(m.pos);
+      }
+      continue;
+    }
     const wasFallen = m.fallen;
     const now = performance.now() / 1000;
     if (m.fleeUntil != null && now < m.fleeUntil) { m.fallen = false; m.fallTime = 0; }
@@ -1538,11 +2069,18 @@ function updateMobs(dt) {
       continue;
     }
     if (m.pos.y < -15) {
-      scene.remove(m.mesh);
-      mobById.delete(m.id);
-      mobs.splice(idx, 1);
-      if (mobStats) mobStats.falls++;
-      continue;
+      if (m.villageBound === false) {
+        const gy = groundYForMob(m.pos.x, m.pos.z, 30, m.hw);
+        m.pos.set(m.pos.x, gy, m.pos.z);
+        m.vel.set(0, 0, 0);
+        m.onGround = true;
+      } else {
+        scene.remove(m.mesh);
+        mobById.delete(m.id);
+        mobs.splice(idx, 1);
+        if (mobStats) mobStats.falls++;
+        continue;
+      }
     }
     // Physics step will be done after AI sets vel
     const prevX = m.pos.x, prevZ = m.pos.z;
@@ -1574,8 +2112,8 @@ function updateMobs(dt) {
         m.target = dest;
       }
     } else {
-      // wander / follow
-      if (m.isBaby && now >= (m.fleeUntil || 0)) {
+      // wander / follow — outside village babies behave like adults
+      if (m.isBaby && m.villageBound !== false && now >= (m.fleeUntil || 0)) {
         const p = mobById.get(m.parentId);
         if (p) {
           const pd = Math.hypot(p.pos.x - m.pos.x, p.pos.z - m.pos.z);
@@ -1595,8 +2133,21 @@ function updateMobs(dt) {
         }
       }
       m.wanderT -= dt;
-      if (!m.isBaby && m.wanderT <= 0 && m.mode === "wander") {
-        if (Math.random() < 0.25) {
+      if (m.wanderT <= 0 && m.mode === "wander" && (m.villageBound === false || !m.isBaby)) {
+        if (m.villageBound === false) {
+          // outside village: wander near current pos
+          let near = null;
+          for (let t = 0; t < 8; t++) {
+            const ax = m.pos.x + (Math.random() - 0.5) * 10;
+            const az = m.pos.z + (Math.random() - 0.5) * 10;
+            if (aabbCollidesWorld(ax, m.pos.y, az, m.hw, m.h)) continue;
+            if (!hasMobGround(ax, az, m.hw, m.pos.y)) continue;
+            near = { x: ax, z: az };
+            break;
+          }
+          m.target = near || { x: m.pos.x + (Math.random() - 0.5) * 4, z: m.pos.z + (Math.random() - 0.5) * 4 };
+          m.wanderT = 3 + Math.random() * 4;
+        } else if (Math.random() < 0.25) {
           m.mode = "goHome";
           m.target = { x: villageHouses[m.homeId].apronX, z: villageHouses[m.homeId].apronZ };
         } else {
@@ -1605,7 +2156,23 @@ function updateMobs(dt) {
         }
       }
       if (m.target && Math.hypot(m.target.x - m.pos.x, m.target.z - m.pos.z) < 0.6) {
-        if (m.mode === "wander") { m.target = wanderGoalFor(m); m.wanderT = 3 + Math.random() * 3; }
+        if (m.mode === "wander") {
+          if (m.villageBound === false) {
+            let near = null;
+            for (let t = 0; t < 8; t++) {
+              const ax = m.pos.x + (Math.random() - 0.5) * 10;
+              const az = m.pos.z + (Math.random() - 0.5) * 10;
+              if (aabbCollidesWorld(ax, m.pos.y, az, m.hw, m.h)) continue;
+              if (!hasMobGround(ax, az, m.hw, m.pos.y)) continue;
+              near = { x: ax, z: az };
+              break;
+            }
+            m.target = near || wanderGoalFor(m);
+          } else {
+            m.target = wanderGoalFor(m);
+          }
+          m.wanderT = 3 + Math.random() * 3;
+        }
       }
     }
     // TNT panic override — fleeing takes precedence over mode dispatch
@@ -1750,14 +2317,18 @@ function updateMobs(dt) {
         if (bestF > 0.35) {
           const tx2 = m.pos.x + bx * (1.5 + Math.random()*2.5);
           const tz2 = m.pos.z + bz * (1.5 + Math.random()*2.5);
-          const cx = Math.max(villageMinX+1, Math.min(villageMaxX-1, tx2));
-          const cz = Math.max(villageMinZ+1, Math.min(villageMaxZ-1, tz2));
+          const cx = m.villageBound === false ? tx2 : Math.max(villageMinX+1, Math.min(villageMaxX-1, tx2));
+          const cz = m.villageBound === false ? tz2 : Math.max(villageMinZ+1, Math.min(villageMaxZ-1, tz2));
           const canStand = (!aabbCollidesWorld(cx, m.pos.y, cz, m.hw, m.h) && hasMobGround(cx, cz, m.hw, m.pos.y)) || (!aabbCollidesWorld(cx, m.pos.y+1, cz, m.hw, m.h) && hasMobGround(cx, cz, m.hw, m.pos.y+1)) || (!aabbCollidesWorld(cx, m.pos.y-1, cz, m.hw, m.h) && hasMobGround(cx, cz, m.hw, m.pos.y-1));
           if (canStand && !isInsideAnyHouse(cx, cz)) {
             m.target = { x: cx, z: cz };
             m.lastTarget = { x: cx, z: cz };
           } else {
-            m.target = wanderGoalFor(m);
+            if (m.villageBound === false) {
+              m.target = { x: tx2, z: tz2 };
+            } else {
+              m.target = wanderGoalFor(m);
+            }
           }
           m.path = null; m.pathKey = null;
           m.vel.x = bx * (WALK/2) * 0.7; m.vel.z = bz * (WALK/2) * 0.7;
@@ -1811,11 +2382,13 @@ function updateMobs(dt) {
   }
 }
 function panicVillagers(cx, cy, cz) {
-  if (dim !== "over" || !villageHouses.length || !mobs.length) return;
-  if ((cx - villageCenter.x) ** 2 + (cz - villageCenter.z) ** 2 > (VILLAGE_RADIUS + 15) ** 2) return;
+  if (!villageHouses.length || !mobs.length) return;
+  if (dim === "over" && ((cx - villageCenter.x) ** 2 + (cz - villageCenter.z) ** 2 > (VILLAGE_RADIUS + 15) ** 2)) return;
   if (Math.abs(cy - villageCenter.y) > CLOUD_BASE / 2) return;
   const now = performance.now() / 1000;
   for (const m of mobs) {
+    if (m === carryMob || m === carryGrappleMob) continue;
+    if (m.dim !== undefined && m.dim !== dim) continue;
     if (m.homeId < 0) continue;
     const stagger = Math.random() * 3;
     m.fleeUntil = Math.max(m.fleeUntil || 0, now + 10 + stagger);
@@ -1838,6 +2411,8 @@ function handleMobExplosion(cx, cy, cz) {
   const R2 = R*R;
   const cand = mobGrid.size ? nearbyMobsFor(cx, cz, 1) : mobs;
   for (const m of cand) {
+    if (m === carryMob || m === carryGrappleMob) continue;
+    if (m.dim !== undefined && m.dim !== dim) continue;
     if (m.fallen) continue;
     const dx = m.pos.x - cx, dy = (m.pos.y + m.h*0.5) - cy, dz = m.pos.z - cz;
     if (dx*dx + dy*dy + dz*dz > R2) continue;
@@ -2550,6 +3125,42 @@ scene.fog = new THREE.Fog(0x87ceeb, 60, 160);
 
   const camera = new THREE.PerspectiveCamera(75, innerWidth / innerHeight, 0.1, 1500);
 camera.rotation.order = "YXZ";
+
+const playerArms = new THREE.Group();
+let carryMob = null;
+const CARRY_FWD = 1.0;
+const CARRY_SIDE = 1.0;
+const CARRY_DIST = 1.2;
+const CARRY_DOWN = 0.40;
+(function makePlayerArms() {
+  const armGeo = new THREE.BoxGeometry(0.13, 0.42, 0.13);
+  const skinMat = new THREE.MeshStandardMaterial({ color: 0xc19a78, roughness: 0.85 });
+  const sleeveMat = new THREE.MeshStandardMaterial({ color: 0x8b5e3c, roughness: 0.9 });
+  const handMat = new THREE.MeshStandardMaterial({ color: 0xc19a78, roughness: 0.85 });
+  function makeArm(side) {
+    const g = new THREE.Group();
+    const upper = new THREE.Mesh(armGeo, skinMat);
+    upper.position.set(0, -0.14, 0);
+    g.add(upper);
+    const sleeve = new THREE.Mesh(new THREE.BoxGeometry(0.15, 0.16, 0.15), sleeveMat);
+    sleeve.position.set(0, 0.08, 0);
+    g.add(sleeve);
+    const hand = new THREE.Mesh(new THREE.BoxGeometry(0.14, 0.14, 0.14), handMat);
+    hand.position.set(0, -0.36, 0);
+    g.add(hand);
+    g.position.set(side * 0.34, -0.32, -0.52);
+    g.rotation.set(-0.55, 0, side * 0.18);
+    return g;
+  }
+  const leftArm = makeArm(-1);
+  const rightArm = makeArm(1);
+  leftArm.name = "leftArm";
+  rightArm.name = "rightArm";
+  playerArms.add(leftArm);
+  playerArms.add(rightArm);
+  playerArms.visible = false;
+  camera.add(playerArms);
+})();
 
 const renderer = new THREE.WebGLRenderer({ antialias: true });
 renderer.setSize(innerWidth, innerHeight);
@@ -3338,7 +3949,7 @@ function moveMobAxisX(mob, dx) {
         mob.pos.x = cellX + 1 + mob.hw + 0.001; mob.vel.x = 0; if (mobStats) mobStats.worldCol++; return true;
       }
     }
-  if (!hasMobGround(mob.pos.x, mob.pos.z, mob.hw, mob.pos.y)) {
+  if (mob.onGround && !hasMobGround(mob.pos.x, mob.pos.z, mob.hw, mob.pos.y)) {
     if (hasMobGround(mob.pos.x, mob.pos.z, mob.hw, mob.pos.y-1) && !aabbCollidesWorld(mob.pos.x, mob.pos.y-1, mob.pos.z, mob.hw, mob.h)) {
       mob.pos.y -= 1;
       return false;
@@ -3373,7 +3984,7 @@ function moveMobAxisZ(mob, dz) {
         mob.pos.z = cellZ + 1 + mob.hw + 0.001; mob.vel.z = 0; if (mobStats) mobStats.worldCol++; return true;
       }
     }
-  if (!hasMobGround(mob.pos.x, mob.pos.z, mob.hw, mob.pos.y)) {
+  if (mob.onGround && !hasMobGround(mob.pos.x, mob.pos.z, mob.hw, mob.pos.y)) {
     if (hasMobGround(mob.pos.x, mob.pos.z, mob.hw, mob.pos.y-1) && !aabbCollidesWorld(mob.pos.x, mob.pos.y-1, mob.pos.z, mob.hw, mob.h)) {
       mob.pos.y -= 1;
       return false;
@@ -3469,6 +4080,9 @@ function moveAxisX(dx) {
     }
   const nearX = mobGrid.size ? nearbyMobsFor(pos.x, pos.z, 1) : mobs;
   for (const m of nearX) {
+    if (m === carryMob) continue;
+    if (m === carryGrappleMob && carryGrapplePulling) continue;
+    if (m.dim !== undefined && m.dim !== dim) continue;
     if (m.fallen) continue;
     const hw = villagerHW(m), hh = villagerH(m);
     if (pos.y + PLAYER_H <= m.pos.y || pos.y >= m.pos.y + hh) continue;
@@ -3508,6 +4122,9 @@ function moveAxisZ(dz) {
     }
   const nearZ = mobGrid.size ? nearbyMobsFor(pos.x, pos.z, 1) : mobs;
   for (const m of nearZ) {
+    if (m === carryMob) continue;
+    if (m === carryGrappleMob && carryGrapplePulling) continue;
+    if (m.dim !== undefined && m.dim !== dim) continue;
     if (m.fallen) continue;
     const hw = villagerHW(m), hh = villagerH(m);
     if (pos.y + PLAYER_H <= m.pos.y || pos.y >= m.pos.y + hh) continue;
@@ -4094,6 +4711,17 @@ const grappleCubeMatrix = new THREE.Matrix4();
 const grappleHead = new THREE.Mesh(new THREE.BoxGeometry(0.17, 0.17, 0.17), new THREE.MeshBasicMaterial({ color: 0x4a3a1e }));
 grappleHead.visible = false;
 scene.add(grappleHead);
+const carryGrappleCubeGeo = new THREE.BoxGeometry(0.1, 0.1, 0.1);
+const carryGrappleCubeMat = new THREE.MeshBasicMaterial({ color: 0x870000, transparent: true, opacity: 1 });
+const CARRY_GRAPPLE_CUBES = 2600;
+const carryGrappleCubes = new THREE.InstancedMesh(carryGrappleCubeGeo, carryGrappleCubeMat, CARRY_GRAPPLE_CUBES);
+carryGrappleCubes.frustumCulled = false;
+carryGrappleCubes.visible = false;
+scene.add(carryGrappleCubes);
+const carryGrappleHead = new THREE.Mesh(new THREE.BoxGeometry(0.17, 0.17, 0.17), new THREE.MeshBasicMaterial({ color: 0x5a0000, transparent: true, opacity: 1 }));
+carryGrappleHead.visible = false;
+scene.add(carryGrappleHead);
+const carryGrappleCubeMatrix = new THREE.Matrix4();
 
 let currentBlock = null;
 function updateTarget() {
@@ -5000,7 +5628,8 @@ function goToDimension(name, sx, sy, sz) {
   clearPortalFills();
   removeEndEntities();
   if (dim !== "over") removeVillagers();
-  else if (!mobs.length) { if (!villageHouses.length) computeVillageLayout(); spawnVillagers(); }
+  else if (!mobs.filter((m) => m.dim === "over" || m.dim === undefined).length) { if (!villageHouses.length) computeVillageLayout(); spawnVillagers(); }
+  for (const m of mobs) m.mesh.visible = (m.dim === dim || m.dim === undefined) || m === carryMob || m === carryGrappleMob;
   if (name === "end") {
     generateEnd();
     endReturnWin = null;
@@ -7233,6 +7862,13 @@ document.addEventListener("keydown", (e) => {
     if (!hudEnabled) boostEl.style.display = "none";
     e.preventDefault();
   }
+  if (e.code === "Enter" || e.code === "NumpadEnter" || e.key === "Enter") {
+    if (e.repeat) { e.preventDefault(); return; }
+    handleCarryEnterDown();
+    keys[e.code] = true; keys[e.key] = true;
+    e.preventDefault();
+    return;
+  }
   if (keys[e.code] || keys[e.key]) { e.preventDefault(); return; }
   keys[e.code] = true;
   keys[e.key] = true;
@@ -7248,7 +7884,10 @@ document.addEventListener("keydown", (e) => {
   }
   if (["Space", "Slash", "Tab", "ArrowUp", "ArrowDown"].includes(e.code) || ["/", "?", " "].includes(e.key)) e.preventDefault();
 });
-document.addEventListener("keyup", (e) => { keys[e.code] = false; keys[e.key] = false; });
+document.addEventListener("keyup", (e) => {
+  keys[e.code] = false; keys[e.key] = false;
+  if (e.code === "Enter" || e.code === "NumpadEnter" || e.key === "Enter") handleCarryEnterUp();
+});
 document.addEventListener("contextmenu", (e) => e.preventDefault());
 
 document.getElementById("btnNew").addEventListener("click", async (e) => {
@@ -7320,6 +7959,8 @@ function loop(now) {
     const moon = onMoon();
     if (moon !== hotbarMoon) { hotbarMoon = moon; rebuildHotbar(); }
     updateTarget();
+    updateCarry(dt);
+    updateCarryGrapple(dt);
     if (hudEnabled && jumpBoost > 1.01) { boostEl.textContent = "Speed x" + jumpBoost.toFixed(1); boostEl.style.display = "block"; }
     else boostEl.style.display = "none";
     if (locked) {
@@ -7455,6 +8096,55 @@ function loop(now) {
       grappleCubes.visible = false;
       grappleHead.visible = false;
     }
+    // Carry grapple (red) — same animation as grapple, red rope
+    let showCarryRope = false;
+    const carryRopeA = new THREE.Vector3(), carryRopeB = new THREE.Vector3();
+    if (carryGrappleActive) {
+      showCarryRope = true;
+      carryRopeA.set(pos.x, pos.y + 0.3, pos.z);
+      carryRopeB.copy(carryGrappleHookPos);
+    } else if (carryGrapplePulling) {
+      showCarryRope = true;
+      carryRopeA.set(pos.x, pos.y + 0.3, pos.z);
+      if (carryGrappleMob) carryRopeB.set(carryGrappleMob.pos.x, carryGrappleMob.pos.y + carryGrappleMob.h * 0.5, carryGrappleMob.pos.z);
+      else carryRopeB.copy(carryGrappleTarget);
+    } else if (carryGrappleRetracting) {
+      showCarryRope = true;
+      carryRopeA.set(pos.x, pos.y + 0.3, pos.z);
+      carryRopeB.copy(carryGrappleHookPos);
+    }
+    if (showCarryRope) {
+      carryGrappleCubeMat.opacity = 0.3;
+      carryGrappleCubeMat.transparent = true;
+      carryGrappleHead.material.opacity = 0.3;
+      carryGrappleHead.material.transparent = true;
+      carryGrappleCubes.visible = true;
+      carryGrappleHead.visible = true;
+      const cdx = carryRopeB.x - carryRopeA.x, cdy = carryRopeB.y - carryRopeA.y, cdz = carryRopeB.z - carryRopeA.z;
+      const cdist = Math.hypot(cdx, cdy, cdz) || 0.001;
+      const cn = Math.max(4, Math.min(CARRY_GRAPPLE_CUBES, Math.round(cdist / 0.15)));
+      carryGrappleCubes.count = cn;
+      const cux = cdx / cdist, cuy = cdy / cdist, cuz = cdz / cdist;
+      let cvx = Math.abs(cuy) < 0.99 ? cuz : 1, cvy = Math.abs(cuy) < 0.99 ? 0 : 0, cvz = Math.abs(cuy) < 0.99 ? -cux : 0;
+      const cvl = Math.hypot(cvx, cvy, cvz) || 1;
+      cvx /= cvl; cvy /= cvl; cvz /= cvl;
+      const cwx = cuy * cvz - cuz * cvy, cwy = cuz * cvx - cux * cvz, cwz = cux * cvy - cuy * cvx;
+      for (let i = 0; i < cn; i++) {
+        const f = (i + 0.5) / cn;
+        const ax = Math.sin(f * Math.PI * 4), ay = Math.sin(f * Math.PI * 2);
+        carryGrappleCubeMatrix.setPosition(
+          carryRopeA.x + cdx * f + cvx * ax * 0.15 + cwx * ay * 0.15,
+          carryRopeA.y + cdy * f + cvy * ax * 0.15 + cwy * ay * 0.15,
+          carryRopeA.z + cdz * f + cvz * ax * 0.15 + cwz * ay * 0.15
+        );
+        carryGrappleCubes.setMatrixAt(i, carryGrappleCubeMatrix);
+      }
+      carryGrappleCubes.instanceMatrix.needsUpdate = true;
+      carryGrappleHead.position.copy(carryRopeB);
+    } else if (carryGrappleCubes.visible) {
+      carryGrappleCubes.visible = false;
+      carryGrappleHead.visible = false;
+    }
     tickTNT(dt);
     processExplosionQueue();
     tickEffects(dt);
@@ -7571,7 +8261,9 @@ if (location.search.includes('test')) {
     get world(){ return world; }, get worlds(){ return worlds; }, get mobs(){ return mobs; },
     getBlock, setBlock, handleMobExplosion, processExplosionQueue, isMobStandingOn, intersectsMob, key, BLAST_RADIUS, TNT, STONE, AIR,
     get villageCenter(){ return villageCenter; }, get villageHouses(){ return villageHouses; },
-    getTypeMats, get typeMats(){ return typeMats; }, buildWorld, generateWorld, computeVillageLayout, spawnVillagers, refreshBlocks, get boxGeo(){ return boxGeo; }, THREE
+    getTypeMats, get typeMats(){ return typeMats; }, buildWorld, generateWorld, computeVillageLayout, spawnVillagers, refreshBlocks, get boxGeo(){ return boxGeo; }, THREE,
+    get pos(){ return pos; }, get camera(){ return camera; }, get yaw(){ return yaw; }, set yaw(v){ yaw=v; }, get pitch(){ return pitch; }, set pitch(v){ pitch=v; },
+    get carryMob(){ return carryMob; }, handleCarryEnterDown, handleCarryEnterUp, pickMob, get carryGrappleActive(){ return carryGrappleActive; }, get carryGrappleMob(){ return carryGrappleMob; }, get carryGrappleBlock(){ return carryGrappleBlock; }, updateCarryGrapple, get currentBlock(){ return currentBlock; }, updateTarget, toggleCarry: handleCarryEnterDown, findNearestMobForGrab: (...a)=>{ const d=new THREE.Vector3(); camera.getWorldDirection(d); return pickMob(d); }, get playerArms(){ return playerArms; }, get started(){ return started; }, set started(v){ started=v; }, get loading(){ return loading; }, get freeCam(){ return freeCam; }, set freeCam(v){ freeCam=v; }, get helpOpen(){ return helpOpen; }
   };
 }
 
