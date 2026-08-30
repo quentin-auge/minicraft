@@ -645,3 +645,4 @@ stays bright at distance, `placeable: true` so it
 - Always commit changes after completing a task; amend the last commit when
   fixing something just made.
 - Always keep AGENTS.md up to date with the project structure and features.
+- Instrumentation (puppeteer): Only when the user asks to instrument. Launches `python3 server.py` on 8383, opens `http://127.0.0.1:8383/?test` headless (`headless:'shell'` + `--no-sandbox --disable-gpu`, `NODE_PATH=/Users/q.auge/projects/tech/minicraft/node_modules`), then drives `window._test` (`buildWorld`, `mobs`, `villageHouses`, `villageCenter`, `handleMobExplosion`, etc.) to assert behavior (positions/targets/modes, `fleeUntil` spread, no `PAGEERROR`).
