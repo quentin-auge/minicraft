@@ -1369,7 +1369,6 @@ function pickMob(dir, maxDist = 1000) {
   let best = null, bestT = Infinity;
   for (const m of mobs) {
     if (m.dim !== undefined && m.dim !== dim) continue;
-    if (m.fallen) continue;
     if (m === carryMob || m === carryGrappleMob) continue;
     const minX = m.pos.x - m.hw, maxX = m.pos.x + m.hw;
     const minY = m.pos.y, maxY = m.pos.y + m.h;
@@ -1446,7 +1445,6 @@ function releaseCarriedMobAt(px, py, pz) {
   if (m.dim !== undefined) m.dim = dim;
   m.vel.set(0, 0, 0);
   m.onGround = false;
-  m.fallen = false; m.fallTime = 0;
   const insideVillage = nx >= villageMinX && nx <= villageMaxX && nz >= villageMinZ && nz <= villageMaxZ;
   m.villageBound = insideVillage;
   m.speed = WALK / 2;
@@ -1612,7 +1610,7 @@ function updateCarryGrapple(dt) {
   if (!carryGrapplePulling) {
     if (carryGrappleMode === "grab") {
       const mob = carryGrappleMob;
-      if (!mob || mob.fallen || (mob.dim !== undefined && mob.dim !== dim)) {
+      if (!mob || (mob.dim !== undefined && mob.dim !== dim)) {
         carryGrappleActive = false;
         carryGrappleRetracting = true;
         carryGrappleHookPos.copy(carryGrappleTarget);
@@ -1646,7 +1644,7 @@ function updateCarryGrapple(dt) {
       carryGrappleFly = 1;
       if (carryGrappleMode === "grab") {
         const mob = carryGrappleMob;
-        if (!mob || mob.fallen || (mob.dim !== undefined && mob.dim !== dim)) {
+        if (!mob || (mob.dim !== undefined && mob.dim !== dim)) {
           carryGrappleActive = false;
           carryGrappleRetracting = true;
           carryGrappleHookPos.copy(carryGrappleTarget);
@@ -1660,7 +1658,7 @@ function updateCarryGrapple(dt) {
         setMobTransparent(mob, 1);
       } else if (carryGrappleMode === "release") {
         const mob = carryMob;
-        if (!mob || !carryGrappleBlock || mob.fallen || (mob.dim !== undefined && mob.dim !== dim)) {
+        if (!mob || !carryGrappleBlock || (mob.dim !== undefined && mob.dim !== dim)) {
           carryGrappleActive = false;
           carryGrappleRetracting = true;
           carryGrappleHookPos.copy(carryGrappleTarget);
@@ -2023,7 +2021,7 @@ function mobCollidesOther(mob, nx, nz) {
   const nearby = nearbyMobsFor(nx, nz, 1);
   const fleeing = mob.fleeUntil && performance.now() / 1000 < mob.fleeUntil;
   for (const o of nearby) {
-    if (o === mob || o === carryMob || o === carryGrappleMob || o.fallen) continue;
+    if (o === mob || o === carryMob || o === carryGrappleMob) continue;
     if (o.dim !== undefined && o.dim !== dim) continue;
     if (!fleeing) {
       const oflee = o.fleeUntil && performance.now() / 1000 < o.fleeUntil;
@@ -2096,11 +2094,11 @@ function spawnVillagers() {
         id: gid++, kind: "villager", homeId: h.id, isBaby, parentId: -1, dim: "over",
         pos: new THREE.Vector3(sx, villageCenter.y + 1, sz),
         vel: new THREE.Vector3(0, 0, 0),
-        hw, h: hh, mesh, onGround: false, fallen: false, fallTime: 0,
+        hw, h: hh, mesh, onGround: false,
         target: null, mode: "wander", wanderT: 2 + Math.random() * 3, insideT: 0,
         legPhase: Math.random() * Math.PI * 2, speed: WALK / 2,
         blockedT: 0, yaw, yawTarget: yaw, villageBound: true,
-        _stuckT: 0, _prevX: sx, _prevZ: sz, _fallY: villageCenter.y + 1,
+        _stuckT: 0, _prevX: sx, _prevZ: sz,
         path: null, pathIdx: 0, pathKey: null, sc: isBaby ? 0.52 : 1, steerX: 0, steerZ: 0, steerCooldown: 0, lastTarget: null
       };
       mobs.push(m);
@@ -2163,11 +2161,11 @@ function spawnVillagers() {
         id: gid++, kind, homeId: -1, isBaby: false, parentId: -1, dim: "over",
         pos: new THREE.Vector3(sx, villageCenter.y + 1, sz),
         vel: new THREE.Vector3(0, 0, 0),
-        hw, h: hh, mesh, onGround: false, fallen: false, fallTime: 0,
+        hw, h: hh, mesh, onGround: false,
         target: randomPenPoint(), mode: "wander", wanderT: 3 + Math.random() * 4, insideT: 0,
         legPhase: Math.random() * Math.PI * 2, speed: WALK / 2.2,
         blockedT: 0, yaw, yawTarget: yaw, villageBound: false, penBound: true, penId: 0,
-        _stuckT: 0, _prevX: sx, _prevZ: sz, _fallY: villageCenter.y + 1,
+        _stuckT: 0, _prevX: sx, _prevZ: sz,
         path: null, pathIdx: 0, pathKey: null, sc: 1, steerX: 0, steerZ: 0, steerCooldown: 0, lastTarget: null
       };
       mobs.push(m);
@@ -2224,12 +2222,11 @@ function separateMobs() {
     if (m === carryMob) continue;
     if (m === carryGrappleMob && carryGrapplePulling) continue;
     if (m.dim !== undefined && m.dim !== dim) continue;
-    if (m.fallen) continue;
     let sx = 0, sz = 0, cnt = 0;
     const nearby = nearbyMobsFor(m.pos.x, m.pos.z, 1);
     const fleeingSelf = m.fleeUntil && performance.now() / 1000 < m.fleeUntil;
     for (const o of nearby) {
-      if (o === m || o === carryMob || o.fallen) continue;
+      if (o === m || o === carryMob) continue;
       if (o === carryGrappleMob && carryGrapplePulling) continue;
       if (o.dim !== undefined && o.dim !== dim) continue;
       if (!fleeingSelf) {
@@ -2275,7 +2272,6 @@ function pushMobsFromPlayer() {
     if (m === carryMob) continue;
     if (m === carryGrappleMob && carryGrapplePulling) continue;
     if (m.dim !== undefined && m.dim !== dim) continue;
-    if (m.fallen) continue;
     const fleeing = m.fleeUntil && performance.now() / 1000 < m.fleeUntil;
     const dx = m.pos.x - pos.x, dz = m.pos.z - pos.z;
     const d2 = dx * dx + dz * dz;
@@ -2313,27 +2309,6 @@ function updateMobs(dt) {
     if (m === carryMob) continue;
     if (m === carryGrappleMob && carryGrapplePulling) continue;
     if (m.dim !== undefined && m.dim !== dim) {
-      // generic falling in non-native dimension (like carried mob staying cross-dim)
-      if (m.fallen) {
-        m.fallTime += dt;
-        if (m.fallTime < 3) {}
-        else if (m.fallTime < 4) {
-          const t = (m.fallTime - 3) / 1;
-          m.mesh.traverse((ch) => {
-            if (ch.isMesh && ch.material) {
-              const mats = Array.isArray(ch.material) ? ch.material : [ch.material];
-              mats.forEach(mat=>{ mat.transparent = true; mat.opacity = Math.max(0, 1 - t); });
-            }
-          });
-        } else {
-          scene.remove(m.mesh);
-          mobById.delete(m.id);
-          mobs.splice(idx, 1);
-          continue;
-        }
-        continue;
-      }
-      // simple gravity when not over
       if (m.pos.y < -15) { scene.remove(m.mesh); mobById.delete(m.id); mobs.splice(idx, 1); continue; }
       if (m.vel == null) m.vel = new THREE.Vector3(0,0,0);
       const footY2 = Math.floor(m.pos.y);
@@ -2355,49 +2330,7 @@ function updateMobs(dt) {
       }
       continue;
     }
-    const wasFallen = m.fallen;
     const now = performance.now() / 1000;
-    if (m.fleeUntil != null && now < m.fleeUntil) { m.fallen = false; m.fallTime = 0; }
-    if (m.fallen) {
-      m.fallTime += dt;
-      const FALL_DUR = 0.6;
-      if (m.fallTime < FALL_DUR) {
-        const t = m.fallTime / FALL_DUR;
-        const k = t * t * (3 - 2 * t);
-        m.mesh.rotation.z = (m._fallStartZ || 0) + ((m._fallTargetZ ?? Math.PI/2) - (m._fallStartZ || 0)) * k;
-        m.mesh.rotation.x = (m._fallStartX || 0) + ((m._fallTargetX ?? 0) - (m._fallStartX || 0)) * k;
-        m.mesh.rotation.y = (m._fallStartY || m.mesh.rotation.y) + ((m._fallTargetY ?? m.mesh.rotation.y) - (m._fallStartY || m.mesh.rotation.y)) * k;
-        // gradually lift so the side rests on the ground, not half inside it
-        const yOff = m.hw * k * 0.9;
-        m.mesh.position.set(m.pos.x, m.pos.y + yOff, m.pos.z);
-      } else {
-        if (m.fallTime < FALL_DUR + 0.02) {
-          m.mesh.rotation.z = m._fallTargetZ ?? Math.PI/2;
-          m.mesh.rotation.x = m._fallTargetX ?? 0;
-          m.mesh.rotation.y = m._fallTargetY ?? m.mesh.rotation.y;
-        }
-        m.mesh.position.set(m.pos.x, m.pos.y + m.hw * 0.9, m.pos.z);
-      }
-      if (m.fallTime < 3) {
-        // lying down, motionless
-      } else if (m.fallTime < 4) {
-        const t = (m.fallTime - 3) / 1;
-        m.mesh.traverse((ch) => {
-          if (ch.isMesh && ch.material) {
-            const mats = Array.isArray(ch.material) ? ch.material : [ch.material];
-            mats.forEach(mat=>{ mat.transparent = true; mat.opacity = Math.max(0, 1 - t); });
-          }
-        });
-      } else {
-        scene.remove(m.mesh);
-        m.mesh.traverse((ch) => { if (ch.isMesh) { if (ch.geometry) ch.geometry.dispose(); } });
-        mobById.delete(m.id);
-        mobs.splice(idx, 1);
-        if (mobStats) mobStats.falls++;
-        continue;
-      }
-      continue;
-    }
     if (m.pos.y < -15) {
       if (m.villageBound === false) {
         const gy = groundYForMob(m.pos.x, m.pos.z, 30, m.hw);
@@ -2861,42 +2794,7 @@ function panicPenMobs(cx, cy, cz) {
   }
 }
 function handleMobExplosion(cx, cy, cz) {
-  const R = BLAST_RADIUS + 1.2;
-  const R2 = R*R;
-  const cand = mobGrid.size ? nearbyMobsFor(cx, cz, 1) : mobs;
-  for (const m of cand) {
-    if (m === carryMob || m === carryGrappleMob) continue;
-    if (m.dim !== undefined && m.dim !== dim) continue;
-    if (m.fallen) continue;
-    const dx = m.pos.x - cx, dy = (m.pos.y + m.h*0.5) - cy, dz = m.pos.z - cz;
-    if (dx*dx + dy*dy + dz*dz > R2) continue;
-    m.fallen = true; m.fallTime = 0;
-    m.vel.set(0, 0, 0);
-    m.onGround = true;
-    // gradual fall in place: store start rotation and target
-    m._fallStartZ = m.mesh.rotation.z;
-    m._fallStartX = m.mesh.rotation.x;
-    m._fallStartY = m.mesh.rotation.y;
-    const side = Math.random() < 0.5 ? 1 : -1;
-    m._fallTargetZ = side * Math.PI / 2;
-    m._fallTargetX = (Math.random() - 0.5) * 0.3;
-    m._fallTargetY = m.mesh.rotation.y + (Math.random() - 0.5) * 0.5;
-    // clone materials so fading does not affect the others
-    m.mesh.traverse((ch)=>{
-      if(ch.isMesh && ch.material){
-        if(Array.isArray(ch.material)){
-          ch.material = ch.material.map(mat=>{ const nm=mat.clone(); nm.transparent=true; nm.opacity=1; nm.needsUpdate=true; return nm; });
-        } else {
-          const nm = ch.material.clone(); nm.transparent=true; nm.opacity=1; nm.needsUpdate=true; ch.material=nm;
-        }
-      }
-    });
-  }
   if (dim === "over") { panicVillagers(cx, cy, cz); panicPenMobs(cx, cy, cz); }
-}
-function transparentClone(mat){
-  if(mat._cloned) return mat;
-  mat.transparent = true; mat.opacity = 1; mat.needsUpdate = true; return mat;
 }
 
 function generateWorld() {
@@ -4544,7 +4442,6 @@ function moveAxisX(dx) {
     if (m === carryMob) continue;
     if (m === carryGrappleMob && carryGrapplePulling) continue;
     if (m.dim !== undefined && m.dim !== dim) continue;
-    if (m.fallen) continue;
     const hw = villagerHW(m), hh = villagerH(m);
     if (pos.y + PLAYER_H <= m.pos.y || pos.y >= m.pos.y + hh) continue;
     if (pos.z + PLAYER_HW <= m.pos.z - hw || pos.z - PLAYER_HW >= m.pos.z + hw) continue;
@@ -4586,7 +4483,6 @@ function moveAxisZ(dz) {
     if (m === carryMob) continue;
     if (m === carryGrappleMob && carryGrapplePulling) continue;
     if (m.dim !== undefined && m.dim !== dim) continue;
-    if (m.fallen) continue;
     const hw = villagerHW(m), hh = villagerH(m);
     if (pos.y + PLAYER_H <= m.pos.y || pos.y >= m.pos.y + hh) continue;
     if (pos.x + PLAYER_HW <= m.pos.x - hw || pos.x - PLAYER_HW >= m.pos.x + hw) continue;
