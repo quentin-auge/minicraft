@@ -885,6 +885,9 @@ const VILLAGE_PEN_W = 12;
 const VILLAGE_PEN_D = 10;
 const PIG_COUNT = 4;
 const COW_COUNT = 4;
+const WOLF_COUNT = 5;
+const WOLF_FUR = 0xc8cdd2;
+const WOLF_COLLAR_COLORS = [0xe53935, 0x2ecc40, 0x246bff, 0xffd600, 0x00bfa5];
 let villageCenter = { x: 0, z: 0, y: 0 };
 let villageHouses = [];
 let villagePen = null;
@@ -1320,11 +1323,113 @@ function makeCowMesh() {
   g.userData = { sc, legBL, legBR, legFL, legFR, body, head, kind: "cow" };
   return g;
 }
+function makeWolfMesh(furHex, collarHex) {
+  const g = new THREE.Group();
+  const sc = 1;
+  if (!villagerGeo) villagerGeo = new THREE.BoxGeometry(1, 1, 1);
+  const geo = villagerGeo;
+  const hexToRgb = (h) => [(h>>16)&255,(h>>8)&255,h&255];
+  const rgbToHex = (r,g,b) => (r<<16)|(g<<8)|b;
+  const darken = (h, f) => { const [r,g,b]=hexToRgb(h); return rgbToHex(Math.round(r*f),Math.round(g*f),Math.round(b*f)); };
+  const fur = furHex != null ? furHex : 0xc8cdd2;
+  const furMat = new THREE.MeshStandardMaterial({ color: fur, roughness: 0.92 });
+  const furDarkMat = new THREE.MeshStandardMaterial({ color: darken(fur, 0.72), roughness: 0.92 });
+  const furDarkerMat = new THREE.MeshStandardMaterial({ color: darken(fur, 0.58), roughness: 0.92 });
+  const snoutMat = new THREE.MeshStandardMaterial({ color: 0xd9c1a5, roughness: 0.9 });
+  const snoutDarkMat = new THREE.MeshStandardMaterial({ color: 0xb89f84, roughness: 0.9 });
+  const noseMat = new THREE.MeshStandardMaterial({ color: 0x111111, roughness: 0.9 });
+  const earCol = fur === 0x1a1a1a ? 0x000000 : fur === 0xffffff ? 0x1a1a1a : 0x1a1a1a;
+  const earMat = new THREE.MeshStandardMaterial({ color: earCol, roughness: 0.9 });
+  const body = new THREE.Mesh(geo, furMat);
+  body.scale.set(0.92 * sc, 0.58 * sc, 1.18 * sc);
+  body.position.set(0, 0.62 * sc, 0);
+  g.add(body);
+  const belly = new THREE.Mesh(geo, furDarkMat);
+  belly.scale.set(0.72 * sc, 0.14 * sc, 0.82 * sc);
+  belly.position.set(0, 0.34 * sc, 0.05 * sc);
+  g.add(belly);
+  const head = new THREE.Mesh(geo, furMat);
+  head.scale.set(0.54 * sc, 0.52 * sc, 0.56 * sc);
+  head.position.set(0, 0.82 * sc, 0.74 * sc);
+  g.add(head);
+  const snout = new THREE.Mesh(geo, snoutMat);
+  snout.scale.set(0.34 * sc, 0.24 * sc, 0.44 * sc);
+  snout.position.set(0, 0.74 * sc, 1.08 * sc);
+  g.add(snout);
+  const snoutTip = new THREE.Mesh(geo, snoutDarkMat);
+  snoutTip.scale.set(0.22 * sc, 0.10 * sc, 0.06 * sc);
+  snoutTip.position.set(0, 0.68 * sc, 1.30 * sc);
+  g.add(snoutTip);
+  const nose = new THREE.Mesh(geo, noseMat);
+  nose.scale.set(0.14 * sc, 0.10 * sc, 0.08 * sc);
+  nose.position.set(0, 0.78 * sc, 1.30 * sc);
+  g.add(nose);
+  const eyeCol = fur === 0xffffff ? 0x222222 : 0x111111;
+  const eyeMat = new THREE.MeshStandardMaterial({ color: eyeCol });
+  const eyeL = new THREE.Mesh(geo, eyeMat);
+  eyeL.scale.set(0.08 * sc, 0.08 * sc, 0.02 * sc);
+  eyeL.position.set(-0.16 * sc, 0.92 * sc, 1.02 * sc);
+  g.add(eyeL);
+  const eyeR = new THREE.Mesh(geo, eyeMat);
+  eyeR.scale.set(0.08 * sc, 0.08 * sc, 0.02 * sc);
+  eyeR.position.set(0.16 * sc, 0.92 * sc, 1.02 * sc);
+  g.add(eyeR);
+  const earL = new THREE.Mesh(geo, earMat);
+  earL.scale.set(0.16 * sc, 0.20 * sc, 0.12 * sc);
+  earL.position.set(-0.18 * sc, 1.14 * sc, 0.72 * sc);
+  g.add(earL);
+  const earR = new THREE.Mesh(geo, earMat);
+  earR.scale.set(0.16 * sc, 0.20 * sc, 0.12 * sc);
+  earR.position.set(0.18 * sc, 1.14 * sc, 0.72 * sc);
+  g.add(earR);
+  const tail = new THREE.Mesh(geo, furDarkerMat);
+  tail.scale.set(0.20 * sc, 0.20 * sc, 0.42 * sc);
+  tail.position.set(0, 0.60 * sc, -0.72 * sc);
+  tail.rotation.x = 0.35;
+  g.add(tail);
+  const legBL = new THREE.Mesh(geo, furMat);
+  legBL.scale.set(0.18 * sc, 0.38 * sc, 0.18 * sc);
+  legBL.position.set(-0.28 * sc, 0.19 * sc, -0.40 * sc);
+  g.add(legBL);
+  const legBR = new THREE.Mesh(geo, furMat);
+  legBR.scale.set(0.18 * sc, 0.38 * sc, 0.18 * sc);
+  legBR.position.set(0.28 * sc, 0.19 * sc, -0.40 * sc);
+  g.add(legBR);
+  const legFL = new THREE.Mesh(geo, furMat);
+  legFL.scale.set(0.18 * sc, 0.38 * sc, 0.18 * sc);
+  legFL.position.set(-0.28 * sc, 0.19 * sc, 0.40 * sc);
+  g.add(legFL);
+  const legFR = new THREE.Mesh(geo, furMat);
+  legFR.scale.set(0.18 * sc, 0.38 * sc, 0.18 * sc);
+  legFR.position.set(0.28 * sc, 0.19 * sc, 0.40 * sc);
+  g.add(legFR);
+  const collar = collarHex != null ? collarHex : WOLF_COLLAR_COLORS[Math.floor(Math.random() * WOLF_COLLAR_COLORS.length)];
+  const collarMat = new THREE.MeshStandardMaterial({ color: collar, roughness: 0.75 });
+  const colW = 0.62 * sc, colH = 0.38 * sc, colT = 0.08 * sc, colY = 0.69 * sc, colZ = 0.64 * sc;
+  const cBot = new THREE.Mesh(geo, collarMat);
+  cBot.scale.set(colW, colT, colT);
+  cBot.position.set(0, colY - colH / 2 + colT / 2, colZ);
+  g.add(cBot);
+  const sideH = colH - colT;
+  const sideY = colY + colT / 2;
+  const cLeft = new THREE.Mesh(geo, collarMat);
+  cLeft.scale.set(colT, sideH, colT);
+  cLeft.position.set(-colW / 2 + colT / 2, sideY, colZ);
+  g.add(cLeft);
+  const cRight = new THREE.Mesh(geo, collarMat);
+  cRight.scale.set(colT, sideH, colT);
+  cRight.position.set(colW / 2 - colT / 2, sideY, colZ);
+  g.add(cRight);
+  g.userData = { sc, legBL, legBR, legFL, legFR, body, head, tail, furHex: fur, collarHex: collar, kind: "wolf" };
+  return g;
+}
 function villagerHW(m) {
+  if (m.kind === "wolf") return 0.30;
   if (m.kind === "pig" || m.kind === "cow") return 0.32;
   return m.isBaby ? 0.16 : 0.27;
 }
 function villagerH(m) {
+  if (m.kind === "wolf") return 0.90;
   if (m.kind === "pig") return 0.92;
   if (m.kind === "cow") return 1.30;
   return m.isBaby ? 0.98 : 1.82;
@@ -1346,6 +1451,26 @@ function groundYForMob(x, z, hintY, hw) {
   }
   for (let y = MAX_Y; y >= 0; y--) if (!mobBlockedAt(x, z, hw, y)) return y;
   return Math.floor(hintY);
+}
+function wolfInWater(m) {
+  const hw = m.hw, hh = m.h;
+  const y0 = Math.floor(m.pos.y + 0.01), y1 = Math.floor(m.pos.y + hh - 0.01);
+  for (let y = y0; y <= y1; y++) for (let bx = Math.floor(m.pos.x - hw); bx <= Math.floor(m.pos.x + hw); bx++) for (let bz = Math.floor(m.pos.z - hw); bz <= Math.floor(m.pos.z + hw); bz++) {
+    const id = getBlock(bx, y, bz);
+    if (id === WATER || id === LAVA || id === MOON_WATER) return true;
+  }
+  return false;
+}
+function waterSurfaceForMob(m) {
+  let top = -Infinity;
+  for (let bx = Math.floor(m.pos.x - m.hw); bx <= Math.floor(m.pos.x + m.hw); bx++) for (let bz = Math.floor(m.pos.z - m.hw); bz <= Math.floor(m.pos.z + m.hw); bz++) {
+    const ct = colTops[dim][colTopIdx(bx, bz)];
+    for (let y = ct; y >= 0; y--) {
+      const id = getBlock(bx, y, bz);
+      if (id === WATER || id === LAVA || id === MOON_WATER) { if (y + 1 > top) top = y + 1; break; }
+    }
+  }
+  return top;
 }
 
 function setMobTransparent(m, alpha) {
@@ -1976,6 +2101,118 @@ function mobProbeFree(x, z, dirX, dirZ, maxDist, hw, y) {
   }
   return maxDist;
 }
+function wolfHasMobGround(x, z, hw, y) {
+  const py = y != null ? y : villageCenter.y + 1;
+  const gy = Math.floor(py) - 1;
+  if (gy < 0) return false;
+  const x0 = Math.floor(x - hw), x1 = Math.floor(x + hw);
+  const z0 = Math.floor(z - hw), z1 = Math.floor(z + hw);
+  for (let bx = x0; bx <= x1; bx++) for (let bz = z0; bz <= z1; bz++) {
+    const ox0 = Math.max(x - hw, bx), ox1 = Math.min(x + hw, bx + 1);
+    const oz0 = Math.max(z - hw, bz), oz1 = Math.min(z + hw, bz + 1);
+    if (ox1 - ox0 > 0.02 && oz1 - oz0 > 0.02) {
+      if (isSolid(bx, gy, bz)) return true;
+    }
+  }
+  return false;
+}
+function wolfBlockedAt(x, z, hw, y) {
+  const py = y != null ? y : villageCenter.y + 1;
+  const hh = 0.90;
+  const blocked = aabbCollidesWorld(x, py, z, hw, hh);
+  const hasGround = wolfHasMobGround(x, z, hw, py);
+  if (!blocked && hasGround) return false;
+  if (blocked) {
+    if (!aabbCollidesWorld(x, py + 1, z, hw, hh) && wolfHasMobGround(x, z, hw, py + 1)) return false;
+    if (villagePen && py === villagePen.vy + 1) {
+      const bx = Math.floor(x), bz = Math.floor(z);
+      if (getBlock(bx, py, bz) === LOG) {
+        if (!aabbCollidesWorld(x, py + 1, z, hw, hh) && wolfHasMobGround(x, z, hw, py + 1)) return false;
+      }
+    }
+  } else if (!hasGround) {
+    if (wolfHasMobGround(x, z, hw, py - 1) && !aabbCollidesWorld(x, py - 1, z, hw, hh)) return false;
+  }
+  return true;
+}
+function wolfProbeFree(x, z, dirX, dirZ, maxDist, hw, y) {
+  const py = y != null ? y : villageCenter.y + 1;
+  const startInside = x >= villageMinX && x <= villageMaxX && z >= villageMinZ && z <= villageMaxZ;
+  const steps = Math.ceil(maxDist / 0.28);
+  for (let s = 1; s <= steps; s++) {
+    const t = s / steps * maxDist;
+    const px = x + dirX * t, pz = z + dirZ * t;
+    if (wolfBlockedAt(px, pz, hw, py)) return (s - 1) / steps * maxDist;
+    if (startInside && (px < villageMinX + 0.7 || px > villageMaxX - 0.7 || pz < villageMinZ + 0.7 || pz > villageMaxZ - 0.7)) return (s - 1) / steps * maxDist;
+  }
+  return maxDist;
+}
+function mobCanStep(m){ return !!m.canStep; }
+function mobHasGroundFor(m,x,z,hw,y){ return m.canStep ? wolfHasMobGround(x,z,hw,y) : hasMobGround(x,z,hw,y); }
+function mobBlockedAtFor(m,x,z,hw,y){ return m.canStep ? wolfBlockedAt(x,z,hw,y) : mobBlockedAt(x,z,hw,y); }
+function mobProbeFreeFor(m,x,z,dx,dz,d,hw,y){ return m.canStep ? wolfProbeFree(x,z,dx,dz,d,hw,y) : mobProbeFree(x,z,dx,dz,d,hw,y); }
+function wolfFindPath(sx, sz, tx, tz, hw, pyHint) {
+  if (hw == null) hw = 0.30;
+  const py = pyHint != null ? pyHint : villageCenter.y + 1;
+  const toKey = (x, z) => x + "," + z;
+  const s = [Math.floor(sx), Math.floor(sz)], g = [Math.floor(tx), Math.floor(tz)];
+  if (s[0] === g[0] && s[1] === g[1]) return [[tx, tz]];
+  const isOutsideGoal = !isInsideAnyHouse(tx, tz);
+  const q = [s], came = new Map([[toKey(s[0], s[1]), null]]);
+  const dirs = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+  let found = false;
+  while (q.length) {
+    const [cx, cz] = q.shift();
+    if (cx === g[0] && cz === g[1]) { found = true; break; }
+    for (const [dx, dz] of dirs) {
+      const nx = cx + dx, nz = cz + dz;
+      if (nx < villageMinX + 1 || nx > villageMaxX - 1 || nz < villageMinZ + 1 || nz > villageMaxZ - 1) continue;
+      const k = toKey(nx, nz);
+      if (came.has(k)) continue;
+      if (isOutsideGoal && isInsideAnyHouse(nx + 0.5, nz + 0.5)) continue;
+      if (wolfBlockedAt(nx + 0.5, nz + 0.5, hw, py)) continue;
+      came.set(k, [cx, cz]);
+      q.push([nx, nz]);
+    }
+    if (came.size > 4000) break;
+  }
+  if (!found) return null;
+  const path = [];
+  let cur = g;
+  while (cur) { path.push([cur[0] + 0.5, cur[1] + 0.5]); cur = came.get(toKey(cur[0], cur[1])); }
+  path.reverse();
+  const out = [path[0]];
+  for (let i = 1; i < path.length; i++) if (Math.hypot(path[i][0]-out[out.length-1][0], path[i][1]-out[out.length-1][1]) > 0.9) out.push(path[i]);
+  if (out.length) out[out.length-1] = [tx, tz];
+  return out;
+}
+function wanderGoalForWolf(m) {
+  let best = null, bestScore = Infinity;
+  for (let t = 0; t < 30; t++) {
+    const x = villageMinX + 2 + Math.random() * (villageMaxX - villageMinX - 4);
+    const z = villageMinZ + 2 + Math.random() * (villageMaxZ - villageMinZ - 4);
+    if (isInsideAnyHouse(x, z)) continue;
+    if (x < villageMinX + 1 || x > villageMaxX - 1 || z < villageMinZ + 1 || z > villageMaxZ - 1) continue;
+    if (wolfBlockedAt(x, z, m.hw, villageCenter.y + 1)) continue;
+    if (aabbCollidesWorld(x, villageCenter.y + 1, z, m.hw, m.h)) continue;
+    const ix = Math.floor(x), iz = Math.floor(z);
+    const dCur = Math.hypot(ix - m.pos.x, iz - m.pos.z);
+    if (dCur < 2) continue;
+    if (m.lastTarget && Math.hypot(ix - m.lastTarget.x, iz - m.lastTarget.z) < 4) continue;
+    const v = getVisit(ix, iz);
+    const score = v * 10 - dCur * 0.15;
+    if (score < bestScore) { bestScore = score; best = { x, z }; }
+  }
+  if (best) { m.lastTarget = { x: best.x, z: best.z }; return best; }
+  for (let t = 0; t < 30; t++) {
+    const x = villageMinX + 2 + Math.random() * (villageMaxX - villageMinX - 4);
+    const z = villageMinZ + 2 + Math.random() * (villageMaxZ - villageMinZ - 4);
+    if (isInsideAnyHouse(x, z)) continue;
+    if (wolfBlockedAt(x, z, 0.30, villageCenter.y + 1)) continue;
+    return { x, z };
+  }
+  return { x: villageCenter.x, z: villageCenter.z };
+}
 function findVillagePath(sx, sz, tx, tz, hw, pyHint) {
   if (hw == null) hw = 0.27;
   const py = pyHint != null ? pyHint : villageCenter.y + 1;
@@ -2047,8 +2284,9 @@ function spawnVillagers() {
   const livestockTarget = (PIG_COUNT + COW_COUNT);
   const villagerCount = () => mobs.filter((m) => (m.dim === "over" || m.dim === undefined) && (!m.kind || m.kind === "villager")).length;
   const livestockCount = () => mobs.filter((m) => (m.dim === "over" || m.dim === undefined) && (m.kind === "pig" || m.kind === "cow")).length;
+  const wolfCount = () => mobs.filter((m) => (m.dim === "over" || m.dim === undefined) && m.kind === "wolf").length;
   const overCount = () => mobs.filter((m) => m.dim === "over" || m.dim === undefined).length;
-  if (villagerCount() >= villagerTarget && (!villagePen || livestockCount() >= livestockTarget)) return;
+  if (villagerCount() >= villagerTarget && (!villagePen || livestockCount() >= livestockTarget) && wolfCount() >= WOLF_COUNT) return;
   if (!villageHouses.length) computeVillageLayout();
   if (!villagerGeo) villagerGeo = new THREE.BoxGeometry(1, 1, 1);
   else if (villagerGeo.attributes.position.getY(0) > -0.4) { villagerGeo.dispose(); villagerGeo = new THREE.BoxGeometry(1, 1, 1); }
@@ -2091,7 +2329,7 @@ function spawnVillagers() {
       mesh.rotation.y = yaw;
       scene.add(mesh);
       const m = {
-        id: gid++, kind: "villager", homeId: h.id, isBaby, parentId: -1, dim: "over",
+        id: gid++, kind: "villager", canStep: false, homeId: h.id, isBaby, parentId: -1, dim: "over",
         pos: new THREE.Vector3(sx, villageCenter.y + 1, sz),
         vel: new THREE.Vector3(0, 0, 0),
         hw, h: hh, mesh, onGround: false,
@@ -2158,7 +2396,7 @@ function spawnVillagers() {
       mesh.rotation.y = yaw;
       scene.add(mesh);
       const m = {
-        id: gid++, kind, homeId: -1, isBaby: false, parentId: -1, dim: "over",
+        id: gid++, kind, canStep: false, homeId: -1, isBaby: false, parentId: -1, dim: "over",
         pos: new THREE.Vector3(sx, villageCenter.y + 1, sz),
         vel: new THREE.Vector3(0, 0, 0),
         hw, h: hh, mesh, onGround: false,
@@ -2168,6 +2406,61 @@ function spawnVillagers() {
         _stuckT: 0, _prevX: sx, _prevZ: sz,
         path: null, pathIdx: 0, pathKey: null, sc: 1, steerX: 0, steerZ: 0, steerCooldown: 0, lastTarget: null
       };
+      mobs.push(m);
+      mobById.set(m.id, m);
+    }
+  }
+  // — 5 wolves (player-like step+swim, no jump) —
+  {
+    const curWolf = mobs.filter((m) => m.kind === "wolf" && (m.dim === "over" || m.dim === undefined)).length;
+    const needWolf = Math.max(0, WOLF_COUNT - curWolf);
+    const existingFurs = new Set(mobs.filter((m) => m.kind === "wolf").map((m) => m.mesh?.userData?.furHex));
+    for (let i = 0; i < needWolf; i++) {
+      const fur = WOLF_FUR;
+      existingFurs.add(fur);
+      const collar = WOLF_COLLAR_COLORS[Math.floor(Math.random() * WOLF_COLLAR_COLORS.length)];
+      const mesh = makeWolfMesh(fur, collar);
+      const hw = 0.30, hh = 0.90;
+      let sx, sz, tries = 0;
+      do {
+        const ang = Math.random() * Math.PI * 2, rad = Math.random() * (VILLAGE_RADIUS - 6) + 2;
+        sx = villageCenter.x + Math.cos(ang) * rad;
+        sz = villageCenter.z + Math.sin(ang) * rad;
+        sx = Math.max(villageMinX + 1.5, Math.min(villageMaxX - 1.5, sx));
+        sz = Math.max(villageMinZ + 1.5, Math.min(villageMaxZ - 1.5, sz));
+        sx = Math.floor(sx) + 0.5; sz = Math.floor(sz) + 0.5;
+        const blockKey = `${Math.floor(sx)},${villageCenter.y + 1},${Math.floor(sz)}`;
+        if (usedBlocks.has(blockKey)) { tries++; continue; }
+        if (isInsideAnyHouse(sx, sz) || wolfBlockedAt(sx, sz, hw, villageCenter.y + 1) || aabbCollidesWorld(sx, villageCenter.y + 1, sz, hw, hh)) { tries++; continue; }
+        if (isInsidePen(sx, sz)) { tries++; continue; }
+        if (used.some((u) => (u[0] - sx) ** 2 + (u[1] - sz) ** 2 < 1.4)) { tries++; continue; }
+        break;
+      } while (tries < 40);
+      sx = Math.floor(sx) + 0.5; sz = Math.floor(sz) + 0.5;
+      const blockKey = `${Math.floor(sx)},${villageCenter.y + 1},${Math.floor(sz)}`;
+      if (usedBlocks.has(blockKey)) {
+        const alt = wanderGoalForWolf({ pos: new THREE.Vector3(sx, villageCenter.y+1, sz), hw, h: hh, lastTarget: null });
+        if (alt) { sx = Math.floor(alt.x)+0.5; sz = Math.floor(alt.z)+0.5; }
+      }
+      used.push([sx, sz]);
+      usedBlocks.add(`${Math.floor(sx)},${villageCenter.y + 1},${Math.floor(sz)}`);
+      mesh.position.set(sx, villageCenter.y + 1, sz);
+      const yaw = Math.random() * Math.PI * 2;
+      mesh.rotation.y = yaw;
+      scene.add(mesh);
+      const m = {
+        id: gid++, kind: "wolf", canStep: true, fur, collar, homeId: -1, isBaby: false, parentId: -1, dim: "over",
+        pos: new THREE.Vector3(sx, villageCenter.y + 1, sz),
+        vel: new THREE.Vector3(0, 0, 0),
+        hw, h: hh, mesh, onGround: false,
+        target: null, mode: "wander", wanderT: 3 + Math.random() * 4, insideT: 0,
+        legPhase: Math.random() * Math.PI * 2, speed: WALK / 2,
+        blockedT: 0, yaw, yawTarget: yaw, villageBound: true,
+        _stuckT: 0, _prevX: sx, _prevZ: sz,
+        path: null, pathIdx: 0, pathKey: null, sc: 1, steerX: 0, steerZ: 0, steerCooldown: 0, lastTarget: null,
+        wolfStepUp: false, wolfStepUpClearY: 0, wolfInWater: false, wasOnGroundWolf: false
+      };
+      m.target = wanderGoalForWolf(m);
       mobs.push(m);
       mobById.set(m.id, m);
     }
@@ -2247,16 +2540,17 @@ function separateMobs() {
     }
     if (cnt) {
       let nx = m.pos.x + sx, nz = m.pos.z + sz;
+      const hg = m.canStep ? wolfHasMobGround : hasMobGround;
       if (fleeingSelf) {
-        if (!aabbCollidesWorld(nx, m.pos.y, nz, m.hw, m.h) && !mobCollidesOther(m, nx, nz) && hasMobGround(nx, nz, m.hw, m.pos.y)) {
+        if (!aabbCollidesWorld(nx, m.pos.y, nz, m.hw, m.h) && !mobCollidesOther(m, nx, nz) && hg(nx, nz, m.hw, m.pos.y)) {
           m.pos.x += (nx - m.pos.x) * 0.55; m.pos.z += (nz - m.pos.z) * 0.55;
         } else {
           const tryX = m.pos.x + Math.sign(sx) * 0.12, tryZ = m.pos.z + Math.sign(sz) * 0.12;
-          if (!aabbCollidesWorld(tryX, m.pos.y, tryZ, m.hw, m.h) && !mobCollidesOther(m, tryX, tryZ) && hasMobGround(tryX, tryZ, m.hw, m.pos.y)) m.pos.x = tryX;
-          else if (!aabbCollidesWorld(m.pos.x, m.pos.y, tryZ, m.hw, m.h) && !mobCollidesOther(m, m.pos.x, tryZ) && hasMobGround(m.pos.x, tryZ, m.hw, m.pos.y)) m.pos.z = tryZ;
+          if (!aabbCollidesWorld(tryX, m.pos.y, tryZ, m.hw, m.h) && !mobCollidesOther(m, tryX, tryZ) && hg(tryX, tryZ, m.hw, m.pos.y)) m.pos.x = tryX;
+          else if (!aabbCollidesWorld(m.pos.x, m.pos.y, tryZ, m.hw, m.h) && !mobCollidesOther(m, m.pos.x, tryZ) && hg(m.pos.x, tryZ, m.hw, m.pos.y)) m.pos.z = tryZ;
         }
         if (mobStats) mobStats.mobCol++;
-      } else if (!aabbCollidesWorld(nx, m.pos.y, nz, m.hw, m.h) && !mobCollidesOther(m, nx, nz) && hasMobGround(nx, nz, m.hw, m.pos.y)) {
+      } else if (!aabbCollidesWorld(nx, m.pos.y, nz, m.hw, m.h) && !mobCollidesOther(m, nx, nz) && hg(nx, nz, m.hw, m.pos.y)) {
         m.pos.x += (nx - m.pos.x) * 0.25;
         m.pos.z += (nz - m.pos.z) * 0.25;
         if (mobStats) mobStats.mobCol++;
@@ -2280,7 +2574,8 @@ function pushMobsFromPlayer() {
       const d = Math.sqrt(d2);
       const push = (need - d) * (fleeing ? 0.22 : 0.30);
       const nx = m.pos.x + (dx / d) * push, nz = m.pos.z + (dz / d) * push;
-      if (!aabbCollidesWorld(nx, m.pos.y, nz, m.hw, m.h) && !mobCollidesOther(m, nx, nz) && hasMobGround(nx, nz, m.hw, m.pos.y)) {
+      const hg2 = m.canStep ? wolfHasMobGround : hasMobGround;
+      if (!aabbCollidesWorld(nx, m.pos.y, nz, m.hw, m.h) && !mobCollidesOther(m, nx, nz) && hg2(nx, nz, m.hw, m.pos.y)) {
         m.pos.x += (nx - m.pos.x) * (fleeing ? 0.55 : 0.50);
         m.pos.z += (nz - m.pos.z) * (fleeing ? 0.55 : 0.50);
         if (mobStats) mobStats.playerCol++;
@@ -2349,8 +2644,28 @@ function updateMobs(dt) {
     const prevX = m.pos.x, prevZ = m.pos.z;
     addVisit(m.pos.x, m.pos.z);
     if (aabbCollidesWorld(m.pos.x, m.pos.y, m.pos.z, m.hw, m.h)) { mobInvariantsViolated++; if (mobStats) mobStats.invariants++; }
-    // Simple AI — pigs/cows: general physics blocks via LOG fence
-    if (m.kind === "pig" || m.kind === "cow") {
+    // Step-capable mobs (wolves) — instant step, no block feeling (converge to pen when panicking)
+    if (m.canStep) {
+      if (m.fleeUntil != null && now < m.fleeUntil) {
+        m.speed = WALK * 2;
+        m.wanderT -= dt;
+        if (!m.target || Math.hypot(m.target.x - m.pos.x, m.target.z - m.pos.z) < 0.6 || m.wanderT <= 0) {
+          if (villagePen) {
+            const jitter = () => (Math.random() - 0.5) * 2;
+            m.target = { x: villagePen.cx + 0.5 + jitter(), z: villagePen.cz + 0.5 + jitter() };
+          } else m.target = wanderGoalForWolf(m);
+          m.wanderT = 2 + Math.random() * 2;
+          m.steerCooldown = 0; m.path = null; m.pathKey = null;
+        }
+      } else {
+        if (m.fleeUntil) { m.fleeUntil = 0; m.speed = WALK / 2; } else m.speed = WALK / 2;
+        m.wanderT -= dt;
+        if (!m.target || Math.hypot(m.target.x - m.pos.x, m.target.z - m.pos.z) < 0.6 || m.wanderT <= 0) {
+          m.target = wanderGoalForWolf(m);
+          m.wanderT = 3 + Math.random() * 4; m.path = null; m.pathKey = null; m.steerCooldown = 0;
+        }
+      }
+    } else if (m.kind === "pig" || m.kind === "cow") {
       if (m.target && !isInsidePen(m.target.x, m.target.z)) {
         // debug
         // console.log("pig outside target", m.id, m.pos.x.toFixed(2), m.pos.z.toFixed(2), m.target.x.toFixed(2), m.target.z.toFixed(2), m.vel.x.toFixed(2), m.onGround);
@@ -2540,16 +2855,21 @@ function updateMobs(dt) {
     } else if ((!m.kind || m.kind === "villager") && m.fleeUntil) { m.fleeUntil = 0; m.speed = WALK / 2; }
 
     // Steering towards target — BFS path for 1-block corridors + smart wall avoidance
+    const canStep = !!m.canStep;
+    const probeFree = canStep ? wolfProbeFree : mobProbeFree;
+    const hasGround = canStep ? wolfHasMobGround : hasMobGround;
+    const findPath = canStep ? wolfFindPath : findVillagePath;
+    const goalFor = canStep ? wanderGoalForWolf : wanderGoalFor;
     let tx = m.target ? m.target.x : m.pos.x;
     let tz = m.target ? m.target.z : m.pos.z;
     let hasPath = false;
     const toTarOverall = Math.hypot(tx - m.pos.x, tz - m.pos.z);
-    const insideNow = (()=>{ if (m.kind === "pig" || m.kind === "cow") return isInsidePen(m.pos.x, m.pos.z); const h=villageHouses[m.homeId]; return h && m.pos.x>h.minX&&m.pos.x<h.maxX&&m.pos.z>h.minZ&&m.pos.z<h.maxZ; })();
-    const needPath = !insideNow && m.mode !== "inside" && (toTarOverall > 1.8 || mobProbeFree(m.pos.x, m.pos.z, (tx - m.pos.x)/(toTarOverall||1), (tz - m.pos.z)/(toTarOverall||1), Math.min(1.2, toTarOverall), m.hw, m.pos.y) < 0.55);
+    const insideNow = (()=>{ if (m.kind === "pig" || m.kind === "cow") return isInsidePen(m.pos.x, m.pos.z); if (canStep) return false; const h=villageHouses[m.homeId]; return h && m.pos.x>h.minX&&m.pos.x<h.maxX&&m.pos.z>h.minZ&&m.pos.z<h.maxZ; })();
+    const needPath = !insideNow && m.mode !== "inside" && (toTarOverall > 1.8 || probeFree(m.pos.x, m.pos.z, (tx - m.pos.x)/(toTarOverall||1), (tz - m.pos.z)/(toTarOverall||1), Math.min(1.2, toTarOverall), m.hw, m.pos.y) < 0.55);
     if (needPath) {
       const pk = Math.round(tx) + "," + Math.round(tz);
       if (!m.path || m.pathKey !== pk) {
-        const p = findVillagePath(m.pos.x, m.pos.z, tx, tz, m.hw, m.pos.y);
+        const p = findPath(m.pos.x, m.pos.z, tx, tz, m.hw, m.pos.y);
         if (p && p.length > 1) { m.path = p; m.pathIdx = 1; m.pathKey = pk; hasPath = true; tx = p[1][0]; tz = p[1][1]; }
         else { m.path = null; m.pathKey = null; }
       } else if (m.path && m.pathIdx < m.path.length) {
@@ -2560,7 +2880,7 @@ function updateMobs(dt) {
           else { m.path = null; m.pathKey = null; hasPath = false; }
         }
       }
-      if (hasPath && mobProbeFree(m.pos.x, m.pos.z, (tx - m.pos.x)/Math.hypot(tx - m.pos.x, tz - m.pos.z || 1), (tz - m.pos.z)/Math.hypot(tx - m.pos.x, tz - m.pos.z || 1), 0.6, m.hw, m.pos.y) < 0.15) {
+      if (hasPath && probeFree(m.pos.x, m.pos.z, (tx - m.pos.x)/Math.hypot(tx - m.pos.x, tz - m.pos.z || 1), (tz - m.pos.z)/Math.hypot(tx - m.pos.x, tz - m.pos.z || 1), 0.6, m.hw, m.pos.y) < 0.15) {
         m.path = null; m.pathKey = null; hasPath = false; tx = m.target.x; tz = m.target.z;
       }
     } else {
@@ -2576,7 +2896,7 @@ function updateMobs(dt) {
         if (m.steerCooldown > 0) {
           m.steerCooldown -= dt;
           const sx = m.steerX / (m.speed || 1), sz = m.steerZ / (m.speed || 1);
-          const steerFree = (Math.abs(sx) > 0.01 || Math.abs(sz) > 0.01) ? mobProbeFree(m.pos.x, m.pos.z, sx, sz, 1.4, m.hw, m.pos.y) : 0;
+          const steerFree = (Math.abs(sx) > 0.01 || Math.abs(sz) > 0.01) ? probeFree(m.pos.x, m.pos.z, sx, sz, 1.4, m.hw, m.pos.y) : 0;
           if (steerFree > 0.6) {
             wantX = m.steerX; wantZ = m.steerZ;
           } else {
@@ -2585,7 +2905,7 @@ function updateMobs(dt) {
         }
         if (m.steerCooldown <= 0) {
           const dirX = wantX / m.speed, dirZ = wantZ / m.speed;
-          const probe = mobProbeFree(m.pos.x, m.pos.z, dirX, dirZ, 1.4, m.hw, m.pos.y);
+          const probe = probeFree(m.pos.x, m.pos.z, dirX, dirZ, 1.4, m.hw, m.pos.y);
           if (probe < 0.7) {
             let bestScore = -1, bx = wantX, bz = wantZ, bestFree = probe;
             const angles = probe < 0.35 ? [0,30,-30,60,-60,90,-90,120,-120,150,-150,180] : [0,35,-35,70,-70,110,-110];
@@ -2593,7 +2913,7 @@ function updateMobs(dt) {
               const rad = a * Math.PI / 180;
               const cx = Math.cos(rad) * dirX - Math.sin(rad) * dirZ;
               const cz = Math.sin(rad) * dirX + Math.cos(rad) * dirZ;
-              const free = mobProbeFree(m.pos.x, m.pos.z, cx, cz, 1.4, m.hw, m.pos.y);
+              const free = probeFree(m.pos.x, m.pos.z, cx, cz, 1.4, m.hw, m.pos.y);
               const dot = cx * dirX + cz * dirZ;
               const score = free * (0.55 + 0.45 * Math.max(0, dot));
               if (free < 0.25) continue;
@@ -2612,10 +2932,10 @@ function updateMobs(dt) {
     }
     if (wantX === 0 && wantZ === 0 && dist > 0.6) {
       for (const [dx, dz] of [[1,0],[-1,0],[0,1],[0,-1],[1,1],[-1,-1],[1,-1],[-1,1]]) {
-        const free = mobProbeFree(m.pos.x, m.pos.z, dx, dz, 1.4, m.hw, m.pos.y);
+        const free = probeFree(m.pos.x, m.pos.z, dx, dz, 1.4, m.hw, m.pos.y);
         if (free > 0.5) {
           const nx = m.pos.x + dx, nz = m.pos.z + dz;
-          const canStand = hasMobGround(nx, nz, m.hw, m.pos.y) || hasMobGround(nx, nz, m.hw, m.pos.y+1) || hasMobGround(nx, nz, m.hw, m.pos.y-1);
+          const canStand = hasGround(nx, nz, m.hw, m.pos.y) || hasGround(nx, nz, m.hw, m.pos.y+1) || hasGround(nx, nz, m.hw, m.pos.y-1);
           if (canStand && !aabbCollidesWorld(nx, m.pos.y, nz, m.hw, m.h) && !aabbCollidesWorld(nx, m.pos.y+1, nz, m.hw, m.h)) {
             wantX = dx * m.speed * 0.6;
             wantZ = dz * m.speed * 0.6;
@@ -2641,8 +2961,9 @@ function updateMobs(dt) {
         m.vel.x *= 0.5; m.vel.z *= 0.5;
       }
     }
-    // physics step
-    mobPhysicsStep(m, dt, g);
+    // physics step — canStep (wolves) use player-like smooth step + swim, others classic
+    if (canStep) wolfPhysicsStep(m, dt, g);
+    else mobPhysicsStep(m, dt, g);
     // mob-mob / player already in separate/push, but also check immediate collision after move
     // stuck detection — 1-block corner: never stay stuck
     const moved = Math.hypot(m.pos.x - prevX, m.pos.z - prevZ);
@@ -2656,7 +2977,7 @@ function updateMobs(dt) {
         for (let a = 0; a < 360; a += 45) {
           const rad = a * Math.PI / 180;
           const cx = Math.cos(rad), cz = Math.sin(rad);
-          const free = mobProbeFree(m.pos.x, m.pos.z, cx, cz, 2.2, m.hw, m.pos.y);
+          const free = probeFree(m.pos.x, m.pos.z, cx, cz, 2.2, m.hw, m.pos.y);
           if (free > bestF) { bestF = free; bx = cx; bz = cz; }
         }
         if (bestF > 0.35) {
@@ -2664,7 +2985,7 @@ function updateMobs(dt) {
           const tz2 = m.pos.z + bz * (1.5 + Math.random()*2.5);
           const cx = m.villageBound === false ? tx2 : Math.max(villageMinX+1, Math.min(villageMaxX-1, tx2));
           const cz = m.villageBound === false ? tz2 : Math.max(villageMinZ+1, Math.min(villageMaxZ-1, tz2));
-          const canStand = (!aabbCollidesWorld(cx, m.pos.y, cz, m.hw, m.h) && hasMobGround(cx, cz, m.hw, m.pos.y)) || (!aabbCollidesWorld(cx, m.pos.y+1, cz, m.hw, m.h) && hasMobGround(cx, cz, m.hw, m.pos.y+1)) || (!aabbCollidesWorld(cx, m.pos.y-1, cz, m.hw, m.h) && hasMobGround(cx, cz, m.hw, m.pos.y-1));
+          const canStand = (!aabbCollidesWorld(cx, m.pos.y, cz, m.hw, m.h) && hasGround(cx, cz, m.hw, m.pos.y)) || (!aabbCollidesWorld(cx, m.pos.y+1, cz, m.hw, m.h) && hasGround(cx, cz, m.hw, m.pos.y+1)) || (!aabbCollidesWorld(cx, m.pos.y-1, cz, m.hw, m.h) && hasGround(cx, cz, m.hw, m.pos.y-1));
           if (canStand && !isInsideAnyHouse(cx, cz)) {
             m.target = { x: cx, z: cz };
             m.lastTarget = { x: cx, z: cz };
@@ -2672,14 +2993,14 @@ function updateMobs(dt) {
             if (m.villageBound === false) {
               m.target = { x: tx2, z: tz2 };
             } else {
-              m.target = wanderGoalFor(m);
+              m.target = goalFor(m);
             }
           }
           m.path = null; m.pathKey = null;
           m.vel.x = bx * (WALK/2) * 0.7; m.vel.z = bz * (WALK/2) * 0.7;
           m.steerX = m.vel.x; m.steerZ = m.vel.z; m.steerCooldown = 0.5;
         } else {
-          m.target = wanderGoalFor(m);
+          m.target = goalFor(m);
           m.path = null; m.pathKey = null;
           const ang = Math.random()*Math.PI*2;
           m.vel.x = Math.cos(ang)*(WALK/2)*0.5; m.vel.z = Math.sin(ang)*(WALK/2)*0.5;
@@ -2689,12 +3010,12 @@ function updateMobs(dt) {
       m.wanderT = 2 + Math.random() * 2;
       m._stuckT = 0;
       if (mobStats) mobStats.stuck++;
-    } else if (wantMove > 0.05 && moved < 0.02 && mobProbeFree(m.pos.x, m.pos.z, wantX/(m.speed||1), wantZ/(m.speed||1), 0.5, m.hw, m.pos.y) < 0.15) {
+    } else if (wantMove > 0.05 && moved < 0.02 && probeFree(m.pos.x, m.pos.z, wantX/(m.speed||1), wantZ/(m.speed||1), 0.5, m.hw, m.pos.y) < 0.15) {
       let bestF = -1, bx = 0, bz = 0;
       for (let a = 0; a < 360; a += 45) {
         const rad = a * Math.PI / 180;
         const cx = Math.cos(rad), cz = Math.sin(rad);
-        const free = mobProbeFree(m.pos.x, m.pos.z, cx, cz, 1.4, m.hw, m.pos.y);
+        const free = probeFree(m.pos.x, m.pos.z, cx, cz, 1.4, m.hw, m.pos.y);
         if (free > bestF) { bestF = free; bx = cx; bz = cz; }
       }
       if (bestF > 0.35) {
@@ -2793,8 +3114,46 @@ function panicPenMobs(cx, cy, cz) {
     }
   }
 }
+function panicWolves(cx, cy, cz) {
+  if (!mobs.length) return;
+  if (dim === "over" && ((cx - villageCenter.x) ** 2 + (cz - villageCenter.z) ** 2 > (VILLAGE_RADIUS + 15) ** 2)) return;
+  if (Math.abs(cy - villageCenter.y) > CLOUD_BASE / 2) return;
+  const now = performance.now() / 1000;
+  for (const m of mobs) {
+    if (m === carryMob || m === carryGrappleMob) continue;
+    if (m.dim !== undefined && m.dim !== dim) continue;
+    if (m.kind !== "wolf") continue;
+    const stagger = Math.random() * 3;
+    m.fleeUntil = Math.max(m.fleeUntil || 0, now + 10 + stagger);
+    m.speed = WALK * 2;
+    if (villagePen) {
+      const gaps = findPenGaps();
+      let tx, tz;
+      if (gaps.length) {
+        const gap = nearestPenGap(m.pos.x, m.pos.z);
+        if (gap) {
+          const inside = penGapInside(gap);
+          tx = inside.x + (Math.random() - 0.5) * 0.8;
+          tz = inside.z + (Math.random() - 0.5) * 0.8;
+        } else {
+          const p = randomPenPoint();
+          tx = p.x; tz = p.z;
+        }
+      } else {
+        const p = randomPenPoint();
+        tx = p.x + (Math.random() - 0.5) * 1.2;
+        tz = p.z + (Math.random() - 0.5) * 1.2;
+      }
+      m.target = { x: tx, z: tz };
+    } else {
+      m.target = wanderGoalForWolf(m);
+    }
+    m.wanderT = 1 + Math.random() * 1;
+    m.steerCooldown = 0; m.path = null; m.pathKey = null;
+  }
+}
 function handleMobExplosion(cx, cy, cz) {
-  if (dim === "over") { panicVillagers(cx, cy, cz); panicPenMobs(cx, cy, cz); }
+  if (dim === "over") { panicVillagers(cx, cy, cz); panicPenMobs(cx, cy, cz); panicWolves(cx, cy, cz); }
 }
 
 function generateWorld() {
@@ -4286,7 +4645,7 @@ function moveMobAxisX(mob, dx) {
     for (let bz = Math.floor(mob.pos.z - mob.hw); bz <= Math.floor(mob.pos.z + mob.hw); bz++) {
       if (!isSolid(cellX, by, bz)) continue;
       if (dir > 0 && edge > cellX) {
-        const canStep = mob.kind !== "pig" && mob.kind !== "cow" && !aabbCollidesWorld(mob.pos.x, mob.pos.y+1, mob.pos.z, mob.hw, mob.h) && hasMobGround(mob.pos.x, mob.pos.z, mob.hw, mob.pos.y+1);
+        const canStep = mob.canStep && !aabbCollidesWorld(mob.pos.x, mob.pos.y+1, mob.pos.z, mob.hw, mob.h) && mobHasGroundFor(mob, mob.pos.x, mob.pos.z, mob.hw, mob.pos.y+1);
         if (canStep) {
           mob.pos.y += 1;
           mob.onGround = true;
@@ -4295,7 +4654,7 @@ function moveMobAxisX(mob, dx) {
         mob.pos.x = cellX - mob.hw - 0.001; mob.vel.x = 0; if (mobStats) mobStats.worldCol++; return true;
       }
       if (dir < 0 && edge < cellX + 0.999) {
-        const canStep = mob.kind !== "pig" && mob.kind !== "cow" && !aabbCollidesWorld(mob.pos.x, mob.pos.y+1, mob.pos.z, mob.hw, mob.h) && hasMobGround(mob.pos.x, mob.pos.z, mob.hw, mob.pos.y+1);
+        const canStep = mob.canStep && !aabbCollidesWorld(mob.pos.x, mob.pos.y+1, mob.pos.z, mob.hw, mob.h) && mobHasGroundFor(mob, mob.pos.x, mob.pos.z, mob.hw, mob.pos.y+1);
         if (canStep) {
           mob.pos.y += 1;
           mob.onGround = true;
@@ -4304,8 +4663,8 @@ function moveMobAxisX(mob, dx) {
         mob.pos.x = cellX + 1 + mob.hw + 0.001; mob.vel.x = 0; if (mobStats) mobStats.worldCol++; return true;
       }
     }
-  if (mob.onGround && !hasMobGround(mob.pos.x, mob.pos.z, mob.hw, mob.pos.y)) {
-    if (hasMobGround(mob.pos.x, mob.pos.z, mob.hw, mob.pos.y-1) && !aabbCollidesWorld(mob.pos.x, mob.pos.y-1, mob.pos.z, mob.hw, mob.h)) {
+  if (mob.onGround && !mobHasGroundFor(mob, mob.pos.x, mob.pos.z, mob.hw, mob.pos.y)) {
+    if (mob.canStep && mobHasGroundFor(mob, mob.pos.x, mob.pos.z, mob.hw, mob.pos.y-1) && !aabbCollidesWorld(mob.pos.x, mob.pos.y-1, mob.pos.z, mob.hw, mob.h)) {
       mob.pos.y -= 1;
       return false;
     }
@@ -4323,7 +4682,7 @@ function moveMobAxisZ(mob, dz) {
     for (let bx = Math.floor(mob.pos.x - mob.hw); bx <= Math.floor(mob.pos.x + mob.hw); bx++) {
       if (!isSolid(bx, by, cellZ)) continue;
       if (dir > 0 && edge > cellZ) {
-        const canStep = mob.kind !== "pig" && mob.kind !== "cow" && !aabbCollidesWorld(mob.pos.x, mob.pos.y+1, mob.pos.z, mob.hw, mob.h) && hasMobGround(mob.pos.x, mob.pos.z, mob.hw, mob.pos.y+1);
+        const canStep = mob.canStep && !aabbCollidesWorld(mob.pos.x, mob.pos.y+1, mob.pos.z, mob.hw, mob.h) && mobHasGroundFor(mob, mob.pos.x, mob.pos.z, mob.hw, mob.pos.y+1);
         if (canStep) {
           mob.pos.y += 1;
           mob.onGround = true;
@@ -4332,7 +4691,7 @@ function moveMobAxisZ(mob, dz) {
         mob.pos.z = cellZ - mob.hw - 0.001; mob.vel.z = 0; if (mobStats) mobStats.worldCol++; return true;
       }
       if (dir < 0 && edge < cellZ + 0.999) {
-        const canStep = mob.kind !== "pig" && mob.kind !== "cow" && !aabbCollidesWorld(mob.pos.x, mob.pos.y+1, mob.pos.z, mob.hw, mob.h) && hasMobGround(mob.pos.x, mob.pos.z, mob.hw, mob.pos.y+1);
+        const canStep = mob.canStep && !aabbCollidesWorld(mob.pos.x, mob.pos.y+1, mob.pos.z, mob.hw, mob.h) && mobHasGroundFor(mob, mob.pos.x, mob.pos.z, mob.hw, mob.pos.y+1);
         if (canStep) {
           mob.pos.y += 1;
           mob.onGround = true;
@@ -4341,8 +4700,8 @@ function moveMobAxisZ(mob, dz) {
         mob.pos.z = cellZ + 1 + mob.hw + 0.001; mob.vel.z = 0; if (mobStats) mobStats.worldCol++; return true;
       }
     }
-  if (mob.onGround && !hasMobGround(mob.pos.x, mob.pos.z, mob.hw, mob.pos.y)) {
-    if (hasMobGround(mob.pos.x, mob.pos.z, mob.hw, mob.pos.y-1) && !aabbCollidesWorld(mob.pos.x, mob.pos.y-1, mob.pos.z, mob.hw, mob.h)) {
+  if (mob.onGround && !mobHasGroundFor(mob, mob.pos.x, mob.pos.z, mob.hw, mob.pos.y)) {
+    if (mob.canStep && mobHasGroundFor(mob, mob.pos.x, mob.pos.z, mob.hw, mob.pos.y-1) && !aabbCollidesWorld(mob.pos.x, mob.pos.y-1, mob.pos.z, mob.hw, mob.h)) {
       mob.pos.y -= 1;
       return false;
     }
@@ -4394,6 +4753,128 @@ function mobPhysicsStep(mob, dt, g) {
     mob.vel.y *= 0.96;
     if (mob.vel.y < 0.6) mob.vel.y = 0.6;
     mob.onGround = false;
+  }
+}
+function tryWolfStep(mob, bx, by, bz) {
+  if (mob.wolfInWater) {
+    const fy = Math.floor(mob.pos.y);
+    if (by !== fy && by !== fy + 1) return false;
+    if (isSolid(bx, by + 1, bz)) return false;
+    if (aabbCollidesWorld(mob.pos.x, by + 1 + 0.001, mob.pos.z, mob.hw, mob.h)) return false;
+    mob.vel.y = JUMP_MIN + 2.5;
+    mob.onGround = false;
+    mob.wolfStepUp = false;
+    return true;
+  } else {
+    if (!mob.onGround) return false;
+    if (by !== Math.floor(mob.pos.y)) return false;
+    if (isSolid(bx, by + 1, bz)) return false;
+    if (aabbCollidesWorld(mob.pos.x, by + 1 + 0.001, mob.pos.z, mob.hw, mob.h)) return false;
+    mob.vel.y = JUMP_MIN + 2.5;
+    mob.onGround = false;
+    mob.wolfStepUp = false;
+    return true;
+  }
+}
+function wolfMoveAxisY(mob, dy) {
+  mob.pos.y += dy;
+  mob.onGround = false;
+  const top = mob.pos.y + mob.h, feet = mob.pos.y;
+  for (let bx = Math.floor(mob.pos.x - mob.hw); bx <= Math.floor(mob.pos.x + mob.hw); bx++)
+    for (let bz = Math.floor(mob.pos.z - mob.hw); bz <= Math.floor(mob.pos.z + mob.hw); bz++) {
+      if (mob.vel.y > 0 && isSolid(bx, Math.floor(top), bz) && top > Math.floor(top)) { mob.pos.y = Math.floor(top) - mob.h - 0.001; mob.vel.y = 0; return true; }
+      if (mob.vel.y <= 0 && isSolid(bx, Math.floor(feet - 0.001), bz)) { mob.pos.y = Math.floor(feet - 0.001) + 1 + 0.001; mob.vel.y = 0; mob.onGround = true; mob.wolfStepUp = false; return true; }
+    }
+  if (!mob.onGround && (mob.pos.y % 1) < 0.05 && wolfHasMobGround(mob.pos.x, mob.pos.z, mob.hw, mob.pos.y) && !aabbCollidesWorld(mob.pos.x, mob.pos.y, mob.pos.z, mob.hw, mob.h)) mob.onGround = true;
+  return false;
+}
+function wolfMoveAxisX(mob, dx) {
+  mob.pos.x += dx;
+  if (dx === 0) return false;
+  const dir = dx > 0 ? 1 : -1;
+  const edge = dir > 0 ? mob.pos.x + mob.hw : mob.pos.x - mob.hw;
+  const cellX = Math.floor(edge);
+  for (let by = Math.floor(mob.pos.y + mob.h); by >= Math.floor(mob.pos.y); by--)
+    for (let bz = Math.floor(mob.pos.z - mob.hw); bz <= Math.floor(mob.pos.z + mob.hw); bz++) {
+      if (!isSolid(cellX, by, bz)) continue;
+      if (dir > 0 && edge > cellX) {
+        if (tryWolfStep(mob, cellX, by, bz)) return false;
+        mob.vel.x = 0;
+        mob.pos.x = cellX - mob.hw - 0.001; return true;
+      }
+      if (dir < 0 && edge < cellX + 0.999) {
+        if (tryWolfStep(mob, cellX, by, bz)) return false;
+        mob.vel.x = 0;
+        mob.pos.x = cellX + 1 + mob.hw + 0.001; return true;
+      }
+    }
+  return false;
+}
+function wolfMoveAxisZ(mob, dz) {
+  mob.pos.z += dz;
+  if (dz === 0) return false;
+  const dir = dz > 0 ? 1 : -1;
+  const edge = dir > 0 ? mob.pos.z + mob.hw : mob.pos.z - mob.hw;
+  const cellZ = Math.floor(edge);
+  for (let by = Math.floor(mob.pos.y + mob.h); by >= Math.floor(mob.pos.y); by--)
+    for (let bx = Math.floor(mob.pos.x - mob.hw); bx <= Math.floor(mob.pos.x + mob.hw); bx++) {
+      if (!isSolid(bx, by, cellZ)) continue;
+      if (dir > 0 && edge > cellZ) {
+        if (tryWolfStep(mob, bx, by, cellZ)) return false;
+        mob.vel.z = 0;
+        mob.pos.z = cellZ - mob.hw - 0.001; return true;
+      }
+      if (dir < 0 && edge < cellZ + 0.999) {
+        if (tryWolfStep(mob, bx, by, cellZ)) return false;
+        mob.vel.z = 0;
+        mob.pos.z = cellZ + 1 + mob.hw + 0.001; return true;
+      }
+    }
+  return false;
+}
+function wolfPhysicsStep(mob, dt, g) {
+  const grav = g != null ? g : GRAVITY;
+  const useGrav = mob.pos.y >= MOON_Y - MOON_R ? grav * 0.5 : grav;
+  const inWater = wolfInWater(mob);
+  mob.wolfInWater = inWater;
+  mob.wasOnGroundWolf = wolfHasMobGround(mob.pos.x, mob.pos.z, mob.hw, mob.pos.y) || mob.onGround;
+  if (mob.wolfStepUp) {
+    const glide = Math.max(STEP_UP_MIN, Math.min(STEP_UP, (mob.wolfStepUpClearY - mob.pos.y) / STEP_UP_EASE));
+    mob.vel.y = glide;
+    if (mob.pos.y + glide * dt >= mob.wolfStepUpClearY) {
+      mob.pos.y = mob.wolfStepUpClearY;
+      mob.vel.y = 0;
+      mob.wolfStepUp = false;
+      mob.onGround = true;
+    }
+  } else if (inWater) {
+    const surface = waterSurfaceForMob(mob);
+    if (surface === -Infinity) {
+      if (!mob.onGround) mob.vel.y -= useGrav * dt;
+    } else {
+      const targetY = surface - 1.17;
+      const err = targetY - mob.pos.y;
+      if (err > SWIM_AREA) mob.vel.y += SWIM_ACCEL * dt;
+      else {
+        const want = err * 4;
+        mob.vel.y += (want - mob.vel.y) * Math.min(1, dt * SWIM_BRAKE * 2);
+      }
+    }
+    mob.vel.y = Math.min(Math.max(mob.vel.y, -SWIM_MAX), SWIM_MAX);
+  } else {
+    if (!mob.onGround) mob.vel.y -= useGrav * dt;
+    if (mob.vel.y < -40) mob.vel.y = -40;
+  }
+  wolfMoveAxisY(mob, mob.vel.y * dt);
+  wolfMoveAxisX(mob, mob.vel.x * dt);
+  wolfMoveAxisZ(mob, mob.vel.z * dt);
+  if (mob.villageBound) {
+    const minX = villageMinX + mob.hw + 0.5, maxX = villageMaxX - mob.hw - 0.5;
+    const minZ = villageMinZ + mob.hw + 0.5, maxZ = villageMaxZ - mob.hw - 0.5;
+    if (mob.pos.x < minX) { mob.pos.x = minX; mob.vel.x = 0; }
+    if (mob.pos.x > maxX) { mob.pos.x = maxX; mob.vel.x = 0; }
+    if (mob.pos.z < minZ) { mob.pos.z = minZ; mob.vel.z = 0; }
+    if (mob.pos.z > maxZ) { mob.pos.z = maxZ; mob.vel.z = 0; }
   }
 }
 
@@ -4449,13 +4930,15 @@ function moveAxisX(dx) {
     if (dir > 0 && pos.x + PLAYER_HW > mx - hw && pos.x + PLAYER_HW - dx <= mx - hw) {
       const push = (pos.x + PLAYER_HW) - (mx - hw) + 0.02;
       const nx = m.pos.x + push * 0.6;
-      if (!aabbCollidesWorld(nx, m.pos.y, m.pos.z, hw, hh) && !mobCollidesOther(m, nx, m.pos.z) && hasMobGround(nx, m.pos.z, hw, m.pos.y)) m.pos.x = nx;
+      const hg = m.canStep ? wolfHasMobGround : hasMobGround;
+      if (!aabbCollidesWorld(nx, m.pos.y, m.pos.z, hw, hh) && !mobCollidesOther(m, nx, m.pos.z) && hg(nx, m.pos.z, hw, m.pos.y)) m.pos.x = nx;
       pos.x = mx - hw - PLAYER_HW - 0.002; vel.x = Math.min(vel.x, 0); if (mobStats) mobStats.playerCol++; return;
     }
     if (dir < 0 && pos.x - PLAYER_HW < mx + hw && pos.x - PLAYER_HW - dx >= mx + hw) {
       const push = (mx + hw) - (pos.x - PLAYER_HW) + 0.02;
       const nx = m.pos.x - push * 0.6;
-      if (!aabbCollidesWorld(nx, m.pos.y, m.pos.z, hw, hh) && !mobCollidesOther(m, nx, m.pos.z) && hasMobGround(nx, m.pos.z, hw, m.pos.y)) m.pos.x = nx;
+      const hg = m.canStep ? wolfHasMobGround : hasMobGround;
+      if (!aabbCollidesWorld(nx, m.pos.y, m.pos.z, hw, hh) && !mobCollidesOther(m, nx, m.pos.z) && hg(nx, m.pos.z, hw, m.pos.y)) m.pos.x = nx;
       pos.x = mx + hw + PLAYER_HW + 0.002; vel.x = Math.max(vel.x, 0); if (mobStats) mobStats.playerCol++; return;
     }
   }
@@ -4490,13 +4973,15 @@ function moveAxisZ(dz) {
     if (dir > 0 && pos.z + PLAYER_HW > mz - hw && pos.z + PLAYER_HW - dz <= mz - hw) {
       const push = (pos.z + PLAYER_HW) - (mz - hw) + 0.02;
       const nz = m.pos.z + push * 0.6;
-      if (!aabbCollidesWorld(m.pos.x, m.pos.y, nz, hw, hh) && !mobCollidesOther(m, m.pos.x, nz) && hasMobGround(m.pos.x, nz, hw, m.pos.y)) m.pos.z = nz;
+      const hg = m.canStep ? wolfHasMobGround : hasMobGround;
+      if (!aabbCollidesWorld(m.pos.x, m.pos.y, nz, hw, hh) && !mobCollidesOther(m, m.pos.x, nz) && hg(m.pos.x, nz, hw, m.pos.y)) m.pos.z = nz;
       pos.z = mz - hw - PLAYER_HW - 0.002; vel.z = Math.min(vel.z, 0); if (mobStats) mobStats.playerCol++; return;
     }
     if (dir < 0 && pos.z - PLAYER_HW < mz + hw && pos.z - PLAYER_HW - dz >= mz + hw) {
       const push = (mz + hw) - (pos.z - PLAYER_HW) + 0.02;
       const nz = m.pos.z - push * 0.6;
-      if (!aabbCollidesWorld(m.pos.x, m.pos.y, nz, hw, hh) && !mobCollidesOther(m, m.pos.x, nz) && hasMobGround(m.pos.x, nz, hw, m.pos.y)) m.pos.z = nz;
+      const hg = m.canStep ? wolfHasMobGround : hasMobGround;
+      if (!aabbCollidesWorld(m.pos.x, m.pos.y, nz, hw, hh) && !mobCollidesOther(m, m.pos.x, nz) && hg(m.pos.x, nz, hw, m.pos.y)) m.pos.z = nz;
       pos.z = mz + hw + PLAYER_HW + 0.002; vel.z = Math.max(vel.z, 0); if (mobStats) mobStats.playerCol++; return;
     }
   }
@@ -8620,7 +9105,8 @@ if (location.search.includes('test')) {
     get villageCenter(){ return villageCenter; }, get villageHouses(){ return villageHouses; }, get villagePen(){ return villagePen; }, get isInsidePen(){ return isInsidePen; }, get LOG(){ return LOG; }, findPenGaps, nearestPenGap, penGapInside, penGapOutside, hasMobGround, mobBlockedAt, aabbCollidesWorld, mobProbeFree, randomPenPoint, randomAroundPenPoint,
     getTypeMats, get typeMats(){ return typeMats; }, buildWorld, generateWorld, computeVillageLayout, spawnVillagers, refreshBlocks, get boxGeo(){ return boxGeo; }, THREE,
     get pos(){ return pos; }, get camera(){ return camera; }, get yaw(){ return yaw; }, set yaw(v){ yaw=v; }, get pitch(){ return pitch; }, set pitch(v){ pitch=v; },
-    get carryMob(){ return carryMob; }, handleCarryEnterDown, handleCarryEnterUp, pickMob, get carryGrappleActive(){ return carryGrappleActive; }, get carryGrappleMob(){ return carryGrappleMob; }, get carryGrappleBlock(){ return carryGrappleBlock; }, updateCarryGrapple, get currentBlock(){ return currentBlock; }, updateTarget, toggleCarry: handleCarryEnterDown, findNearestMobForGrab: (...a)=>{ const d=new THREE.Vector3(); camera.getWorldDirection(d); return pickMob(d); }, get playerArms(){ return playerArms; }, get started(){ return started; }, set started(v){ started=v; }, get loading(){ return loading; }, get freeCam(){ return freeCam; }, set freeCam(v){ freeCam=v; }, get helpOpen(){ return helpOpen; }
+    get carryMob(){ return carryMob; }, handleCarryEnterDown, handleCarryEnterUp, pickMob, get carryGrappleActive(){ return carryGrappleActive; }, get carryGrappleMob(){ return carryGrappleMob; }, get carryGrappleBlock(){ return carryGrappleBlock; }, updateCarryGrapple, get currentBlock(){ return currentBlock; }, updateTarget, toggleCarry: handleCarryEnterDown, findNearestMobForGrab: (...a)=>{ const d=new THREE.Vector3(); camera.getWorldDirection(d); return pickMob(d); }, get playerArms(){ return playerArms; }, get started(){ return started; }, set started(v){ started=v; }, get loading(){ return loading; }, get freeCam(){ return freeCam; }, set freeCam(v){ freeCam=v; }, get helpOpen(){ return helpOpen; },
+    get WOLF_COUNT(){ return WOLF_COUNT; }, makeWolfMesh, villagerHW, villagerH, wolfHasMobGround, wolfBlockedAt, wolfProbeFree, wanderGoalForWolf, wolfFindPath, wolfInWater, waterSurfaceForMob, wolfPhysicsStep, updateMobs
   };
 }
 
