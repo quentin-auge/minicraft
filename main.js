@@ -913,7 +913,7 @@ function computeVillageLayout() {
   villageCenter = { x: vx, z: vz, y: vy };
   villageMinX = vx - VILLAGE_RADIUS; villageMaxX = vx + VILLAGE_RADIUS;
   villageMinZ = vz - VILLAGE_RADIUS; villageMaxZ = vz + VILLAGE_RADIUS;
-  // — enclos à cochons/vaches d'abord pour garantir une place (12×10) —
+  // — pig/cow pen first to guarantee a slot (12×10) —
   villagePen = null;
   let _penTries = 0;
   for (let _pt = 0; _pt < 1200 && !villagePen; _pt++) {
@@ -945,7 +945,7 @@ function computeVillageLayout() {
     const w = 7, d = 7;
     const minX = cx - Math.floor(w / 2), maxX = minX + w - 1;
     const minZ = cz - Math.floor(d / 2), maxZ = minZ + d - 1;
-    // éviter l'enclos
+    // avoid the pen
     if (villagePen && !(maxX + 2 < villagePen.minX || minX - 2 > villagePen.maxX || maxZ + 2 < villagePen.minZ || minZ - 2 > villagePen.maxZ)) { if (tries > 800) break; continue; }
     const toC = Math.atan2(vz - cz, vx - cx);
     const a = ((toC * 180 / Math.PI) + 360) % 360;
@@ -988,12 +988,12 @@ function isInsidePen(x, z) {
 function placeVillagePen() {
   if (!villagePen) return;
   const p = villagePen, vy = p.vy;
-  // sol de l'enclos en herbe (au lieu de stone) et vide intérieur à hauteur 1
+  // pen floor in grass (instead of stone) and interior cleared to height 1
   for (let x = p.minX + 1; x <= p.maxX - 1; x++) for (let z = p.minZ + 1; z <= p.maxZ - 1; z++) {
     setBlock(x, vy, z, GRASS);
     for (let y = vy + 1; y <= vy + 2; y++) setBlock(x, y, z, AIR);
   }
-  // clôture en LOG — 1 bloc haut, fermée (physique seule bloque les mobs cochons/vaches)
+  // LOG fence — 1 block high, closed (physics alone blocks pig/cow mobs)
   for (let x = p.minX; x <= p.maxX; x++) for (let z = p.minZ; z <= p.maxZ; z++) {
     const onEdge = x === p.minX || x === p.maxX || z === p.minZ || z === p.maxZ;
     if (!onEdge) continue;
@@ -1047,7 +1047,7 @@ function placeVillageHouses() {
 }
 
 // ---------------------------------------------------------------------------
-// Village mobs (villagers) — vraie physique AABB comme joueur sans montée
+// Village mobs (villagers) — real AABB physics like player without stepping
 // ---------------------------------------------------------------------------
 let mobs = [];
 const mobById = new Map();
@@ -1194,7 +1194,7 @@ function makeVillagerMesh(isBaby) {
   g.userData = { isBaby, sc, legL, legR, armL, armR, body, head, palette: pal };
   return g;
 }
-// — Cochons et vaches — même physique que villageois, mesh boxy —
+// — Pigs and cows — same physics as villagers, boxy mesh —
 const pigMat = new THREE.MeshStandardMaterial({ color: 0xf2aeb2, roughness: 0.9 });
 const pigDarkMat = new THREE.MeshStandardMaterial({ color: 0x8f5a5e, roughness: 0.9 });
 const pigNoseMat = new THREE.MeshStandardMaterial({ color: 0xd98286, roughness: 0.9 });
@@ -1257,7 +1257,7 @@ function makeCowMesh() {
   body.scale.set(0.90 * sc, 0.72 * sc, 1.26 * sc);
   body.position.set(0, 0.78 * sc, 0);
   g.add(body);
-  // taches
+  // spots
   const spot1 = new THREE.Mesh(geo, cowSpotMat);
   spot1.scale.set(0.28 * sc, 0.02 * sc, 0.32 * sc);
   spot1.position.set(0.12 * sc, 1.15 * sc, -0.18 * sc);
@@ -1892,7 +1892,7 @@ function nearestPenGap(x, z) {
 function penGapInside(gap) {
   if (!gap || !villagePen) return null;
   const p = villagePen;
-  // un bloc à l'intérieur de l'enclos juste derrière le trou
+  // one block inside the pen just behind the gap
   let ix = gap.x, iz = gap.z;
   if (gap.x === p.minX) ix = gap.x + 1;
   else if (gap.x === p.maxX) ix = gap.x - 1;
@@ -1926,7 +1926,7 @@ function randomAroundPenPoint(m) {
     if (aabbCollidesWorld(x, villageCenter.y + 1, z, m ? m.hw : 0.32, m ? m.h : 1.0)) continue;
     return { x, z };
   }
-  // fallback : point aléatoire hors enclos mais proche
+  // fallback: random point outside pen but nearby
   for (let t = 0; t < 16; t++) {
     const x = p.minX - 3 + Math.random() * (p.maxX - p.minX + 6);
     const z = p.minZ - 3 + Math.random() * (p.maxZ - p.minZ + 6);
@@ -2122,7 +2122,7 @@ function spawnVillagers() {
     m.mode = "wander";
     m.wanderT = 3 + Math.random() * 4;
   }
-  // — cochons et vaches dans l'enclos (même physique que villageois) —
+  // — pigs and cows in the pen (same physics as villagers) —
   if (villagePen) {
     const curPig = mobs.filter((m) => m.kind === "pig" && (m.dim === "over" || m.dim === undefined)).length;
     const curCow = mobs.filter((m) => m.kind === "cow" && (m.dim === "over" || m.dim === undefined)).length;
@@ -2367,7 +2367,7 @@ function updateMobs(dt) {
         m.mesh.rotation.z = (m._fallStartZ || 0) + ((m._fallTargetZ ?? Math.PI/2) - (m._fallStartZ || 0)) * k;
         m.mesh.rotation.x = (m._fallStartX || 0) + ((m._fallTargetX ?? 0) - (m._fallStartX || 0)) * k;
         m.mesh.rotation.y = (m._fallStartY || m.mesh.rotation.y) + ((m._fallTargetY ?? m.mesh.rotation.y) - (m._fallStartY || m.mesh.rotation.y)) * k;
-        // soulève progressivement pour que le flanc repose sur le sol, pas à moitié dedans
+        // gradually lift so the side rests on the ground, not half inside it
         const yOff = m.hw * k * 0.9;
         m.mesh.position.set(m.pos.x, m.pos.y + yOff, m.pos.z);
       } else {
@@ -2379,7 +2379,7 @@ function updateMobs(dt) {
         m.mesh.position.set(m.pos.x, m.pos.y + m.hw * 0.9, m.pos.z);
       }
       if (m.fallTime < 3) {
-        // couchés, immobiles
+        // lying down, motionless
       } else if (m.fallTime < 4) {
         const t = (m.fallTime - 3) / 1;
         m.mesh.traverse((ch) => {
@@ -2416,7 +2416,7 @@ function updateMobs(dt) {
     const prevX = m.pos.x, prevZ = m.pos.z;
     addVisit(m.pos.x, m.pos.z);
     if (aabbCollidesWorld(m.pos.x, m.pos.y, m.pos.z, m.hw, m.h)) { mobInvariantsViolated++; if (mobStats) mobStats.invariants++; }
-    // Simple AI — cochons/vaches : physique générale bloque via clôture LOG
+    // Simple AI — pigs/cows: general physics blocks via LOG fence
     if (m.kind === "pig" || m.kind === "cow") {
       if (m.target && !isInsidePen(m.target.x, m.target.z)) {
         // debug
@@ -2426,16 +2426,16 @@ function updateMobs(dt) {
       if (m.fleeUntil != null && now < m.fleeUntil) {
         m.speed = WALK * 2;
         if (!insidePen) {
-          // hors enclos : cherchent l'entrée (trou dans la clôture LOG)
+          // outside pen: look for the entrance (gap in the LOG fence)
           const gap = nearestPenGap(m.pos.x, m.pos.z);
           if (gap) {
             const inside = penGapInside(gap);
             if (!m.target || Math.hypot(m.target.x - inside.x, m.target.z - inside.z) > 0.5) {
-              // tester si l'entrée est atteignable, sinon courir autour
+              // test if the entrance is reachable, otherwise run around
               const d = Math.hypot(inside.x - m.pos.x, inside.z - m.pos.z);
               const probe = mobProbeFree(m.pos.x, m.pos.z, (inside.x - m.pos.x)/(d||1), (inside.z - m.pos.z)/(d||1), Math.min(d, 8), m.hw, m.pos.y);
               if (probe < d * 0.4) {
-                // entrée bloquée ou trop loin → courir autour de l'enclos immédiatement
+                // entrance blocked or too far → run around the pen immediately
                 if (!m.target || m._aroundT === undefined || m.wanderT <= 0 || Math.hypot(m.target.x - m.pos.x, m.target.z - m.pos.z) < 0.8) {
                   m.target = randomAroundPenPoint(m); m.wanderT = 0.35 + Math.random()*0.35; m.steerCooldown = 0; m._aroundT = (m._aroundT||0)+1;
                 }
@@ -2444,20 +2444,20 @@ function updateMobs(dt) {
               }
             }
           } else {
-            // pas d'ouverture → courent partout autour de l'enclos immédiatement
+            // no opening → run all around the pen immediately
             m.wanderT -= dt;
             if (!m.target || Math.hypot(m.target.x - m.pos.x, m.target.z - m.pos.z) < 0.8 || m.wanderT <= 0) {
               m.target = randomAroundPenPoint(m); m.wanderT = 0.35 + Math.random()*0.35; m.steerCooldown = 0; m.path = null; m.pathKey = null;
             }
           }
         } else {
-          // à l'intérieur et en fuite : s'agitent immédiatement dans l'enclos
+          // inside and fleeing: mill around immediately inside the pen
           m.wanderT -= dt;
           if (!m.target || Math.hypot(m.target.x - m.pos.x, m.target.z - m.pos.z) < 0.6 || m.wanderT <= 0) { m.target = wanderGoalForPen(m); m.wanderT = 0.3 + Math.random()*0.3; m.steerCooldown = 0; m.path=null; m.pathKey=null; }
         }
         } else {
           if (m.fleeUntil) { m.fleeUntil = 0; m.speed = WALK / 2.2; } else m.speed = WALK / 2.2;
-          // hors panique : 1.5% par frame de sortir librement si trou existe
+          // when not panicking: 1.5% per frame to exit freely if a gap exists
           if (insidePen && findPenGaps().length && Math.random() < 0.015) {
             const gap = nearestPenGap(m.pos.x, m.pos.z);
             if (gap) {
@@ -2466,7 +2466,7 @@ function updateMobs(dt) {
             }
           }
           m.wanderT -= dt;
-          // dedans → rester dedans sauf si trou → 45% chance de sortir librement (panique reste dedans)
+          // inside → stay inside unless gap → 45% chance to exit freely (panic stays inside)
           let wantsPen = insidePen;
           let wantsExit = false;
           if (insidePen) {
@@ -2711,7 +2711,7 @@ function updateMobs(dt) {
     // physics step
     mobPhysicsStep(m, dt, g);
     // mob-mob / player already in separate/push, but also check immediate collision after move
-    // stuck detection — coin 1-block : on ne reste jamais bloqué
+    // stuck detection — 1-block corner: never stay stuck
     const moved = Math.hypot(m.pos.x - prevX, m.pos.z - prevZ);
     const wantMove = Math.hypot(wantX, wantZ) * dt;
     if (wantMove > 0.05 && moved < wantMove * 0.20) m._stuckT += dt; else m._stuckT = Math.max(0, m._stuckT - dt * 2);
@@ -2836,7 +2836,7 @@ function panicPenMobs(cx, cy, cz) {
     const stagger = Math.random() * 3;
     m.fleeUntil = Math.max(m.fleeUntil || 0, now + 10 + stagger);
     m.speed = WALK * 2;
-    // s'agitent immédiatement et cherchent l'entrée si un trou existe, sinon courent autour
+    // mill around immediately and look for the entrance if a gap exists, otherwise run around
     const insidePen = isInsidePen(m.pos.x, m.pos.z);
     if (insidePen) {
       m.target = wanderGoalForPen(m);
@@ -2845,7 +2845,7 @@ function panicPenMobs(cx, cy, cz) {
       const gap = nearestPenGap(m.pos.x, m.pos.z);
       if (gap) {
         const inside = penGapInside(gap);
-        // tester si le trou est atteignable (pas bloqué par un mur)
+        // test if the gap is reachable (not blocked by a wall)
         const d = Math.hypot(inside.x - m.pos.x, inside.z - m.pos.z);
         const probe = mobProbeFree(m.pos.x, m.pos.z, (inside.x - m.pos.x)/(d||1), (inside.z - m.pos.z)/(d||1), Math.min(d, 6), m.hw, m.pos.y);
         if (probe > d * 0.6 || d < 3) {
@@ -2873,7 +2873,7 @@ function handleMobExplosion(cx, cy, cz) {
     m.fallen = true; m.fallTime = 0;
     m.vel.set(0, 0, 0);
     m.onGround = true;
-    // chute progressive sur place : on mémorise la rotation de départ et la cible
+    // gradual fall in place: store start rotation and target
     m._fallStartZ = m.mesh.rotation.z;
     m._fallStartX = m.mesh.rotation.x;
     m._fallStartY = m.mesh.rotation.y;
@@ -2881,7 +2881,7 @@ function handleMobExplosion(cx, cy, cz) {
     m._fallTargetZ = side * Math.PI / 2;
     m._fallTargetX = (Math.random() - 0.5) * 0.3;
     m._fallTargetY = m.mesh.rotation.y + (Math.random() - 0.5) * 0.5;
-    // rendre les matériaux clonés pour pouvoir fader sans affecter les autres
+    // clone materials so fading does not affect the others
     m.mesh.traverse((ch)=>{
       if(ch.isMesh && ch.material){
         if(Array.isArray(ch.material)){
@@ -4377,7 +4377,7 @@ function aabbOverlaps(ax, ay, az, ahw, ah, bx, by, bz, bhw, bh) {
          ay + ah > by && ay < by + bh;
 }
 
-// Mob physics: same gravity/collision as player but no tryStep (no montée)
+// Mob physics: same gravity/collision as player but no tryStep (no stepping)
 function moveMobAxisX(mob, dx) {
   mob.pos.x += dx;
   if (dx === 0) return false;
@@ -4479,8 +4479,8 @@ function mobPhysicsStep(mob, dt, g) {
     if (mob.pos.z < minZ) { mob.pos.z = minZ; mob.vel.z = 0; }
     if (mob.pos.z > maxZ) { mob.pos.z = maxZ; mob.vel.z = 0; }
   }
-  // penBound : pas de clamp artificiel — la clôture en LOG bloque via aabbCollidesWorld/hasMobGround
-  // si un bloc de clôture est détruit, le trou laisse passer (physique générale)
+  // penBound: no artificial clamp — the LOG fence blocks via aabbCollidesWorld/hasMobGround
+  // if a fence block is destroyed, the gap lets them through (general physics)
   let inLiquid = false;
   for (let by = Math.floor(mob.pos.y); by <= Math.floor(mob.pos.y + mob.h); by++) {
     for (let bx = Math.floor(mob.pos.x - mob.hw); bx <= Math.floor(mob.pos.x + mob.hw); bx++) {
