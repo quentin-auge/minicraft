@@ -1495,9 +1495,11 @@ function pickMob(dir, maxDist = 1000) {
   for (const m of mobs) {
     if (m.dim !== undefined && m.dim !== dim) continue;
     if (m === carryMob || m === carryGrappleMob) continue;
-    const minX = m.pos.x - m.hw, maxX = m.pos.x + m.hw;
-    const minY = m.pos.y, maxY = m.pos.y + m.h;
-    const minZ = m.pos.z - m.hw, maxZ = m.pos.z + m.hw;
+    const falling = !m.onGround || (m.vel && Math.abs(m.vel.y) > 1);
+    const expand = falling ? 0.45 : 0;
+    const minX = m.pos.x - m.hw - expand, maxX = m.pos.x + m.hw + expand;
+    const minY = m.pos.y - expand, maxY = m.pos.y + m.h + expand;
+    const minZ = m.pos.z - m.hw - expand, maxZ = m.pos.z + m.hw + expand;
     let tmin = -Infinity, tmax = Infinity;
     if (Math.abs(dir.x) < 1e-6) {
       if (eye.x < minX || eye.x > maxX) continue;
@@ -1530,21 +1532,59 @@ function pickMob(dir, maxDist = 1000) {
   }
   return best;
 }
+function getMobHitOffset(eye, dir, mob) {
+  const minX = mob.pos.x - mob.hw, maxX = mob.pos.x + mob.hw;
+  const minY = mob.pos.y, maxY = mob.pos.y + mob.h;
+  const minZ = mob.pos.z - mob.hw, maxZ = mob.pos.z + mob.hw;
+  let tmin = -Infinity, tmax = Infinity;
+  if (Math.abs(dir.x) < 1e-6) {
+    if (eye.x < minX || eye.x > maxX) return null;
+  } else {
+    const tx1 = (minX - eye.x) / dir.x, tx2 = (maxX - eye.x) / dir.x;
+    const t1 = Math.min(tx1, tx2), t2 = Math.max(tx1, tx2);
+    tmin = Math.max(tmin, t1); tmax = Math.min(tmax, t2);
+    if (tmin > tmax) return null;
+  }
+  if (Math.abs(dir.y) < 1e-6) {
+    if (eye.y < minY || eye.y > maxY) return null;
+  } else {
+    const ty1 = (minY - eye.y) / dir.y, ty2 = (maxY - eye.y) / dir.y;
+    const t1 = Math.min(ty1, ty2), t2 = Math.max(ty1, ty2);
+    tmin = Math.max(tmin, t1); tmax = Math.min(tmax, t2);
+    if (tmin > tmax) return null;
+  }
+  if (Math.abs(dir.z) < 1e-6) {
+    if (eye.z < minZ || eye.z > maxZ) return null;
+  } else {
+    const tz1 = (minZ - eye.z) / dir.z, tz2 = (maxZ - eye.z) / dir.z;
+    const t1 = Math.min(tz1, tz2), t2 = Math.max(tz1, tz2);
+    tmin = Math.max(tmin, t1); tmax = Math.min(tmax, t2);
+    if (tmin > tmax) return null;
+  }
+  if (tmax < 0) return null;
+  const t = tmin >= 0 ? tmin : tmax;
+  if (t < 0) return null;
+  const hitX = eye.x + dir.x * t, hitY = eye.y + dir.y * t, hitZ = eye.z + dir.z * t;
+  return new THREE.Vector3(hitX - mob.pos.x, hitY - mob.pos.y, hitZ - mob.pos.z);
+}
 
 // Carry grapple (red) — from scratch, inspired by normal grapple
 let carryGrappleActive = false;
 let carryGrappleMode = null;
-let carryGrappleFly = 0;
 const carryGrappleStart = new THREE.Vector3();
 const carryGrappleTarget = new THREE.Vector3();
 let carryGrappleDist = 1;
 let carryGrappleMob = null;
 let carryGrappleBlock = null;
 const carryGrappleHookPos = new THREE.Vector3();
+const carryGrappleOffset = new THREE.Vector3();
 let carryGrappleRetracting = false;
-let carryGrappleRetractTime = 0;
 let carryGrapplePulling = false;
-let carryGrapplePullDist = 1;
+function isMobFrozenByGrapple(m) {
+  if (m !== carryGrappleMob) return false;
+  if (carryGrappleMode === "release") return carryGrappleActive || carryGrapplePulling || carryGrappleRetracting;
+  return carryGrapplePulling;
+}
 
 function releaseCarriedMobAt(px, py, pz) {
   if (!carryMob) return;
@@ -1660,14 +1700,18 @@ function startCarryGrabGrapple() {
   const mob = pickMob(dir);
   if (!mob) return false;
   const eye = camera.position;
-  const mx = mob.pos.x, my = mob.pos.y + mob.h * 0.5, mz = mob.pos.z;
+  const off = getMobHitOffset(eye, dir, mob);
+  const mx = off ? mob.pos.x + off.x : mob.pos.x;
+  const my = off ? mob.pos.y + off.y : mob.pos.y + mob.h * 0.5;
+  const mz = off ? mob.pos.z + off.z : mob.pos.z;
+  if (off) carryGrappleOffset.copy(off);
+  else carryGrappleOffset.set(0, mob.h * 0.5, 0);
   carryGrappleMob = mob;
   carryGrappleMode = "grab";
   carryGrappleStart.copy(eye);
   carryGrappleTarget.set(mx, my, mz);
   carryGrappleDist = Math.hypot(mx - eye.x, my - eye.y, mz - eye.z);
   if (carryGrappleDist < 0.3) { carryGrappleMob = null; return false; }
-  carryGrappleFly = 0;
   carryGrappleHookPos.copy(eye);
   carryGrappleActive = true;
   carryGrappleRetracting = false;
@@ -1698,28 +1742,57 @@ function startCarryReleaseGrapple() {
   carryGrappleTarget.set(tx, ty, tz);
   carryGrappleDist = Math.hypot(tx - eye.x, ty - eye.y, tz - eye.z);
   if (carryGrappleDist < 0.3) return false;
-  carryGrappleFly = 1;
   carryGrappleHookPos.copy(eye);
   const mob = carryMob;
   carryGrappleMob = mob;
   carryMob = null;
-  carryGrappleActive = false;
-  carryGrapplePulling = true;
+  carryGrappleActive = true;
+  carryGrapplePulling = false;
   carryGrappleRetracting = false;
-  const mx = mob.pos.x, my = mob.pos.y + mob.h * 0.5, mz = mob.pos.z;
-  carryGrapplePullDist = Math.hypot(mx - tx, my - ty, mz - tz) || carryGrappleDist;
-  setMobTransparent(mob, 0.1);
+  setMobTransparent(mob, 1);
   return true;
 }
 
 function updateCarryGrapple(dt) {
   if (carryGrappleRetracting) {
     const eye = new THREE.Vector3(pos.x, pos.y + 0.3, pos.z);
+    if (carryGrappleMode === "release" && carryGrappleMob) {
+      const mob = carryGrappleMob;
+      const dx = eye.x - carryGrappleHookPos.x, dy = eye.y - carryGrappleHookPos.y, dz = eye.z - carryGrappleHookPos.z;
+      const d = Math.hypot(dx, dy, dz);
+      const step = GRAPPLE_RETRACT * dt;
+      if (d <= step + 0.05) {
+        carryGrappleHookPos.copy(eye);
+        mob.pos.set(eye.x, eye.y - mob.h * 0.5 - 0.4, eye.z);
+        mob.mesh.position.copy(mob.pos);
+        mob.mesh.rotation.y = yaw + Math.PI;
+        setMobTransparent(mob, 0.35);
+        mob.mode = "carried";
+        mob.path = null; mob.target = null;
+        if (mob.vel) mob.vel.set(0, 0, 0);
+        mob.blockedT = 0; mob._stuckT = 0;
+        if (mob.isBaby) mob._followDetourUntil = 0;
+        carryGrappleMob = null;
+        carryMob = mob;
+        carryGrappleRetracting = false;
+        carryGrappleCubes.visible = false;
+        carryGrappleHead.visible = false;
+        carryGrappleBlock = null;
+      } else {
+        carryGrappleHookPos.x += dx / d * step;
+        carryGrappleHookPos.y += dy / d * step;
+        carryGrappleHookPos.z += dz / d * step;
+        mob.pos.set(carryGrappleHookPos.x - carryGrappleOffset.x, carryGrappleHookPos.y - carryGrappleOffset.y, carryGrappleHookPos.z - carryGrappleOffset.z);
+        mob.mesh.position.copy(mob.pos);
+        mob.mesh.rotation.y = yaw + Math.PI;
+        setMobTransparent(mob, 1);
+      }
+      return;
+    }
     const dx = eye.x - carryGrappleHookPos.x, dy = eye.y - carryGrappleHookPos.y, dz = eye.z - carryGrappleHookPos.z;
     const d = Math.hypot(dx, dy, dz);
-    const grabRetract = carryGrappleMode === "grab";
-    const step = (grabRetract ? GRAPPLE_THROW * 0.15 : GRAPPLE_THROW * 0.75) * dt;
-    if (d <= step + 0.05 || carryGrappleRetractTime > 1.5) {
+    const step = GRAPPLE_RETRACT * dt;
+    if (d <= step + 0.05) {
       carryGrappleRetracting = false;
       carryGrappleCubes.visible = false;
       carryGrappleHead.visible = false;
@@ -1727,7 +1800,6 @@ function updateCarryGrapple(dt) {
       carryGrappleHookPos.x += dx / d * step;
       carryGrappleHookPos.y += dy / d * step;
       carryGrappleHookPos.z += dz / d * step;
-      carryGrappleRetractTime += dt;
     }
     return;
   }
@@ -1739,65 +1811,72 @@ function updateCarryGrapple(dt) {
         carryGrappleActive = false;
         carryGrappleRetracting = true;
         carryGrappleHookPos.copy(carryGrappleTarget);
-        carryGrappleRetractTime = 0;
         carryGrappleMob = null;
         return;
       }
-      const mx = mob.pos.x, my = mob.pos.y + mob.h * 0.5, mz = mob.pos.z;
+      const mx = mob.pos.x + carryGrappleOffset.x, my = mob.pos.y + carryGrappleOffset.y, mz = mob.pos.z + carryGrappleOffset.z;
       carryGrappleTarget.set(mx, my, mz);
-      const dx = mx - carryGrappleHookPos.x, dy = my - carryGrappleHookPos.y, dz = mz - carryGrappleHookPos.z;
-      const dist = Math.hypot(dx, dy, dz);
+      const dx0 = mx - carryGrappleHookPos.x, dy0 = my - carryGrappleHookPos.y, dz0 = mz - carryGrappleHookPos.z;
+      const dist0 = Math.hypot(dx0, dy0, dz0);
       const hitR = (mob.hw || 0.27) + 0.35;
-      const step = GRAPPLE_THROW * 1.125 * dt;
-      if (dist <= step + hitR) {
+      const b = grappleVertBoost(pos.y);
+      const isVert = Math.abs(carryGrappleTarget.y - carryGrappleStart.y) > 2 * Math.abs(carryGrappleTarget.x - carryGrappleStart.x);
+      const tb = isVert ? b : 1;
+      const step = MOB_GRAPPLE_THROW * tb * dt;
+      if (dist0 <= hitR) {
         carryGrappleHookPos.set(mx, my, mz);
         carryGrappleActive = false;
         carryGrapplePulling = true;
-        carryGrapplePullDist = Math.hypot(mob.pos.x - pos.x, mob.pos.y - pos.y, mob.pos.z - pos.z) || carryGrappleDist;
         setMobTransparent(mob, 1);
+      } else {
+        const move = Math.min(step, dist0);
+        const s = move / dist0;
+        carryGrappleHookPos.x += dx0 * s;
+        carryGrappleHookPos.y += dy0 * s;
+        carryGrappleHookPos.z += dz0 * s;
+      }
+      return;
+    }
+    if (carryGrappleMode === "release") {
+      const mob = carryGrappleMob;
+      if (!mob || !carryGrappleBlock || (mob.dim !== undefined && mob.dim !== dim)) {
+        carryGrappleActive = false;
+        carryGrappleRetracting = true;
+        carryGrappleHookPos.copy(carryGrappleTarget);
+        if (mob) {
+          carryGrappleMob = null;
+          carryMob = mob;
+          setMobTransparent(mob, 0.35);
+        }
+        carryGrappleBlock = null;
+        return;
+      }
+      const tx = carryGrappleTarget.x, ty = carryGrappleTarget.y, tz = carryGrappleTarget.z;
+      const dx = tx - carryGrappleHookPos.x, dy = ty - carryGrappleHookPos.y, dz = tz - carryGrappleHookPos.z;
+      const dist = Math.hypot(dx, dy, dz);
+      const b2 = grappleVertBoost(pos.y);
+      const isVert2 = Math.abs(carryGrappleTarget.y - carryGrappleStart.y) > 2 * Math.abs(carryGrappleTarget.x - carryGrappleStart.x);
+      const tb2 = isVert2 ? b2 : 1;
+      const step = MOB_GRAPPLE_THROW * tb2 * dt;
+      if (dist <= step + 0.05) {
+        carryGrappleHookPos.set(tx, ty, tz);
+        mob.pos.set(tx, ty - mob.h * 0.5, tz);
+        mob.mesh.position.copy(mob.pos);
+        mob.mesh.rotation.y = yaw + Math.PI;
+        setMobTransparent(mob, 1);
+        carryGrappleActive = false;
+        carryGrapplePulling = true;
       } else {
         const s = step / dist;
         carryGrappleHookPos.x += dx * s;
         carryGrappleHookPos.y += dy * s;
         carryGrappleHookPos.z += dz * s;
+        mob.pos.set(carryGrappleHookPos.x - carryGrappleOffset.x, carryGrappleHookPos.y - carryGrappleOffset.y, carryGrappleHookPos.z - carryGrappleOffset.z);
+        mob.mesh.position.copy(mob.pos);
+        mob.mesh.rotation.y = yaw + Math.PI;
+        setMobTransparent(mob, 1);
       }
       return;
-    }
-    const grabFly = false;
-    carryGrappleFly += ((grabFly ? GRAPPLE_THROW * 0.15 : GRAPPLE_THROW * 0.75) * dt) / carryGrappleDist;
-    if (carryGrappleFly >= 1) {
-      carryGrappleFly = 1;
-      if (carryGrappleMode === "grab") {
-        const mob = carryGrappleMob;
-        if (!mob || (mob.dim !== undefined && mob.dim !== dim)) {
-          carryGrappleActive = false;
-          carryGrappleRetracting = true;
-          carryGrappleHookPos.copy(carryGrappleTarget);
-          carryGrappleRetractTime = 0;
-          carryGrappleMob = null;
-          return;
-        }
-        carryGrappleActive = false;
-        carryGrapplePulling = true;
-        carryGrapplePullDist = Math.hypot(mob.pos.x - pos.x, mob.pos.y - pos.y, mob.pos.z - pos.z) || carryGrappleDist;
-        setMobTransparent(mob, 1);
-      } else if (carryGrappleMode === "release") {
-        const mob = carryMob;
-        if (!mob || !carryGrappleBlock || (mob.dim !== undefined && mob.dim !== dim)) {
-          carryGrappleActive = false;
-          carryGrappleRetracting = true;
-          carryGrappleHookPos.copy(carryGrappleTarget);
-          carryGrappleRetractTime = 0;
-          carryGrappleBlock = null;
-          return;
-        }
-        carryGrappleMob = mob;
-        carryMob = null;
-        carryGrappleActive = false;
-        carryGrapplePulling = true;
-        carryGrapplePullDist = Math.hypot(mob.pos.x - carryGrappleTarget.x, mob.pos.y - carryGrappleTarget.y, mob.pos.z - carryGrappleTarget.z) || carryGrappleDist;
-        setMobTransparent(mob, 0.1);
-      }
     }
   } else {
     const mob = carryGrappleMob;
@@ -1806,14 +1885,13 @@ function updateCarryGrapple(dt) {
       carryGrappleActive = false;
       carryGrappleRetracting = true;
       carryGrappleHookPos.copy(carryGrappleTarget);
-      carryGrappleRetractTime = 0;
       return;
     }
     if (carryGrappleMode === "grab") {
       const eye = new THREE.Vector3(pos.x, pos.y + 0.3, pos.z);
       const dx = eye.x - mob.pos.x, dy = eye.y - mob.pos.y, dz = eye.z - mob.pos.z;
       const dist = Math.hypot(dx, dy, dz);
-      const step = GRAPPLE_THROW * 1.125 * dt;
+      const step = MOB_GRAPPLE_RETRACT * dt;
       if (dist <= step + 0.15) {
         mob.pos.copy(eye);
         mob.pos.y -= mob.h * 0.5 + 0.4;
@@ -1837,15 +1915,14 @@ function updateCarryGrapple(dt) {
         mob.pos.z += dz * s;
         mob.mesh.position.copy(mob.pos);
         mob.mesh.rotation.y = yaw + Math.PI;
-        const prog = dist / carryGrapplePullDist;
-        const alpha = 0.1 + 0.9 * prog;
-        setMobTransparent(mob, alpha);
+        setMobTransparent(mob, 1);
+        carryGrappleHookPos.set(mob.pos.x + carryGrappleOffset.x, mob.pos.y + carryGrappleOffset.y, mob.pos.z + carryGrappleOffset.z);
       }
     } else {
       const tx = carryGrappleTarget.x, ty = carryGrappleTarget.y, tz = carryGrappleTarget.z;
       const dx = tx - mob.pos.x, dy = ty - mob.pos.y, dz = tz - mob.pos.z;
       const dist = Math.hypot(dx, dy, dz);
-      const step = GRAPPLE_THROW * 0.75 * dt;
+      const step = MOB_GRAPPLE_RETRACT * dt;
       if (dist <= step + 0.15) {
         const b = carryGrappleBlock;
         carryGrappleMob = null;
@@ -1863,7 +1940,6 @@ function updateCarryGrapple(dt) {
           setMobTransparent(mob, 1);
         }
         carryGrappleRetracting = true;
-        carryGrappleRetractTime = 0;
       } else {
         const s = step / dist;
         mob.pos.x += dx * s;
@@ -1871,9 +1947,8 @@ function updateCarryGrapple(dt) {
         mob.pos.z += dz * s;
         mob.mesh.position.copy(mob.pos);
         mob.mesh.rotation.y = yaw + Math.PI;
-        const prog = dist / carryGrapplePullDist;
-        const alpha = 1 - 0.9 * prog;
-        setMobTransparent(mob, alpha);
+        setMobTransparent(mob, 1);
+        carryGrappleHookPos.set(mob.pos.x + carryGrappleOffset.x, mob.pos.y + carryGrappleOffset.y, mob.pos.z + carryGrappleOffset.z);
       }
     }
   }
@@ -1889,15 +1964,36 @@ function handleCarryEnterDown() {
 }
 
 function handleCarryEnterUp() {
-  if (carryGrappleActive && !carryGrapplePulling && carryGrappleFly < 1) {
-    if (carryGrappleMode === "grab") return;
-    carryGrappleActive = false;
-    const hook = new THREE.Vector3().copy(carryGrappleStart).lerp(carryGrappleTarget, carryGrappleFly);
-    carryGrappleHookPos.copy(hook);
-    carryGrappleRetracting = true;
-    carryGrappleRetractTime = 0;
-    carryGrappleMob = null;
-    carryGrappleBlock = null;
+  if (carryGrappleRetracting) return;
+  if (carryGrappleActive && !carryGrapplePulling) {
+    if (carryGrappleMode === "grab") {
+      carryGrappleActive = false;
+      carryGrappleRetracting = true;
+      carryGrappleMob = null;
+    } else if (carryGrappleMode === "release") {
+      carryGrappleActive = false;
+      carryGrappleRetracting = true;
+      carryGrappleBlock = null;
+      const mob = carryGrappleMob;
+      if (mob) setMobTransparent(mob, 1);
+    }
+  } else if (carryGrapplePulling) {
+    const mob = carryGrappleMob;
+    if (!mob) {
+      carryGrapplePulling = false;
+      carryGrappleRetracting = true;
+      return;
+    }
+    if (carryGrappleMode === "grab") {
+      return;
+    } else if (carryGrappleMode === "release") {
+      carryGrapplePulling = false;
+      carryGrappleActive = false;
+      carryGrappleRetracting = true;
+      carryGrappleHookPos.set(mob.pos.x + carryGrappleOffset.x, mob.pos.y + carryGrappleOffset.y, mob.pos.z + carryGrappleOffset.z);
+      carryGrappleBlock = null;
+      setMobTransparent(mob, 1);
+    }
   }
 }
 
@@ -2513,14 +2609,14 @@ function isMobStandingOn(bx, by, bz) {
 function separateMobs() {
   for (const m of mobs) {
     if (m === carryMob) continue;
-    if (m === carryGrappleMob && carryGrapplePulling) continue;
+    if (isMobFrozenByGrapple(m)) continue;
     if (m.dim !== undefined && m.dim !== dim) continue;
     let sx = 0, sz = 0, cnt = 0;
     const nearby = nearbyMobsFor(m.pos.x, m.pos.z, 1);
     const fleeingSelf = m.fleeUntil && performance.now() / 1000 < m.fleeUntil;
     for (const o of nearby) {
       if (o === m || o === carryMob) continue;
-      if (o === carryGrappleMob && carryGrapplePulling) continue;
+      if (isMobFrozenByGrapple(o)) continue;
       if (o.dim !== undefined && o.dim !== dim) continue;
       if (!fleeingSelf) {
         const oflee = o.fleeUntil && performance.now() / 1000 < o.fleeUntil;
@@ -2564,7 +2660,7 @@ function pushMobsFromPlayer() {
   const nearby = nearbyMobsFor(pos.x, pos.z, 2);
   for (const m of nearby) {
     if (m === carryMob) continue;
-    if (m === carryGrappleMob && carryGrapplePulling) continue;
+    if (isMobFrozenByGrapple(m)) continue;
     if (m.dim !== undefined && m.dim !== dim) continue;
     const fleeing = m.fleeUntil && performance.now() / 1000 < m.fleeUntil;
     const dx = m.pos.x - pos.x, dz = m.pos.z - pos.z;
@@ -2602,7 +2698,7 @@ function updateMobs(dt) {
   for (let idx = mobs.length - 1; idx >= 0; idx--) {
     const m = mobs[idx];
     if (m === carryMob) continue;
-    if (m === carryGrappleMob && carryGrapplePulling) continue;
+    if (isMobFrozenByGrapple(m)) continue;
     if (m.dim !== undefined && m.dim !== dim) {
       if (m.pos.y < -15) { scene.remove(m.mesh); mobById.delete(m.id); mobs.splice(idx, 1); continue; }
       if (m.vel == null) m.vel = new THREE.Vector3(0,0,0);
@@ -4553,6 +4649,8 @@ const GRAPPLE_SPEED = 26;
 const GRAPPLE_THROW = 70;
 const GRAPPLE_RETRACT = 275;
 const GRAPPLE_FLING = 34;
+const MOB_GRAPPLE_THROW = GRAPPLE_THROW * 1.25;
+const MOB_GRAPPLE_RETRACT = MOB_GRAPPLE_THROW * 1.25;
 const FLOAT_SPEED = 3.6;
 const SWIM_ACCEL = 2.0;
 const SWIM_AREA = 10;
@@ -4567,12 +4665,13 @@ let grapplingDist = 1;
 const grappleTarget = new THREE.Vector3();
 const grappleStart = new THREE.Vector3();
 let grappleBlock = null;
+let grappleMob = null;
+const grappleMobOffset = new THREE.Vector3();
 let grappleArrived = false;
 let grapplePulling = false;
 let grapplePass = true;
 let grappleTopY = 0;
 let grappleRetracting = false;
-let grappleRetractLife = 0;
 const grappleHookPos = new THREE.Vector3();
 let flingActive = false;
 const vel = new THREE.Vector3();
@@ -4921,7 +5020,7 @@ function moveAxisX(dx) {
   const nearX = mobGrid.size ? nearbyMobsFor(pos.x, pos.z, 1) : mobs;
   for (const m of nearX) {
     if (m === carryMob) continue;
-    if (m === carryGrappleMob && carryGrapplePulling) continue;
+    if (isMobFrozenByGrapple(m)) continue;
     if (m.dim !== undefined && m.dim !== dim) continue;
     const hw = villagerHW(m), hh = villagerH(m);
     if (pos.y + PLAYER_H <= m.pos.y || pos.y >= m.pos.y + hh) continue;
@@ -4964,7 +5063,7 @@ function moveAxisZ(dz) {
   const nearZ = mobGrid.size ? nearbyMobsFor(pos.x, pos.z, 1) : mobs;
   for (const m of nearZ) {
     if (m === carryMob) continue;
-    if (m === carryGrappleMob && carryGrapplePulling) continue;
+    if (isMobFrozenByGrapple(m)) continue;
     if (m.dim !== undefined && m.dim !== dim) continue;
     const hw = villagerHW(m), hh = villagerH(m);
     if (pos.y + PLAYER_H <= m.pos.y || pos.y >= m.pos.y + hh) continue;
@@ -5021,17 +5120,56 @@ function fireGrapple() {
   const dir = new THREE.Vector3();
   camera.getWorldDirection(dir);
   const b = pickBlock(camera.position, dir, true);
-  if (!b) return;
-  if ((b.id === MOON || b.id === MOON_WATER) && camera.position.y < MOON_FADE_START) return;
-  const tx = b.x + 0.5, ty = b.y + 1.001, tz = b.z + 0.5;
+  const eye = camera.position;
   const sx = pos.x, sy = pos.y + 0.3, sz = pos.z;
-  const distEye = Math.hypot(tx - sx, ty - sy, tz - sz);
-  if (distEye < 0.3) return;
+  let blockDist = Infinity, tx = 0, ty = 0, tz = 0;
+  if (b) {
+    if ((b.id === MOON || b.id === MOON_WATER) && eye.y < MOON_FADE_START) {
+    } else {
+      tx = b.x + 0.5; ty = b.y + 1.001; tz = b.z + 0.5;
+      blockDist = Math.hypot(tx - sx, ty - sy, tz - sz);
+    }
+  }
+  const mob = pickMob(dir, blockDist);
+  if (mob) {
+    const off = getMobHitOffset(eye, dir, mob);
+    const mx = off ? mob.pos.x + off.x : mob.pos.x;
+    const my = off ? mob.pos.y + off.y : mob.pos.y + mob.h + 0.001;
+    const mz = off ? mob.pos.z + off.z : mob.pos.z;
+    if (off) grappleMobOffset.copy(off);
+    else grappleMobOffset.set(0, mob.h + 0.001, 0);
+    const distMob = Math.hypot(mx - sx, my - sy, mz - sz);
+    if (distMob < 0.3) return;
+    if (!b || distMob < blockDist) {
+      grappleMob = mob;
+      grappleBlock = null;
+      grappleTarget.set(mx, my, mz);
+      grappleStart.set(sx, sy, sz);
+      grapplingDist = distMob;
+      grappleFly = 0;
+      grappleHookPos.set(sx, sy, sz);
+      grappleHooked = false;
+      grappleArrived = false;
+      grapplePulling = false;
+      grapplePass = true;
+      grappleActive = true;
+      grappleRetracting = false;
+      jumpCount = 1;
+      jumpIdle = 0;
+      stepDown = false;
+      return;
+    }
+  }
+  if (!b) return;
+  if ((b.id === MOON || b.id === MOON_WATER) && eye.y < MOON_FADE_START) return;
+  if (blockDist < 0.3) return;
+  grappleMob = null;
   grappleBlock = b;
   grappleTarget.set(tx, ty, tz);
   grappleStart.set(sx, sy, sz);
-  grapplingDist = distEye;
+  grapplingDist = blockDist;
   grappleFly = 0;
+  grappleHookPos.set(sx, sy, sz);
   grappleHooked = false;
   grappleArrived = false;
   grapplePulling = false;
@@ -5118,7 +5256,39 @@ function grappleVertBoost(y) {
 }
 function updateGrapple(dt) {
   if (grappleArrived) { grapplePulling = false; return false; }
+  if (grappleMob) {
+    if (!mobs.includes(grappleMob) || (grappleMob.dim !== undefined && grappleMob.dim !== dim)) {
+      grappleActive = false;
+      grappleMob = null;
+      grappleRetracting = true;
+      grappleHookPos.copy(grappleTarget);
+      return false;
+    }
+    grappleTarget.set(grappleMob.pos.x + grappleMobOffset.x, grappleMob.pos.y + grappleMobOffset.y, grappleMob.pos.z + grappleMobOffset.z);
+    if (grappleHooked) grappleHookPos.copy(grappleTarget);
+  }
   if (!grappleHooked) {
+    if (grappleMob) {
+      const dx0 = grappleTarget.x - grappleHookPos.x, dy0 = grappleTarget.y - grappleHookPos.y, dz0 = grappleTarget.z - grappleHookPos.z;
+      const dist0 = Math.hypot(dx0, dy0, dz0);
+      const hitR = (grappleMob.hw || 0.27) + 0.35;
+      const b = grappleVertBoost(pos.y);
+      const isVert = Math.abs(grappleTarget.y - grappleStart.y) > 2 * Math.abs(grappleTarget.x - grappleStart.x);
+      const tb = isVert ? b : 1;
+      const step = GRAPPLE_THROW * tb * dt;
+      if (dist0 <= hitR) {
+        grappleHookPos.copy(grappleTarget);
+        grappleHooked = true;
+      } else {
+        const move = Math.min(step, dist0);
+        const s = move / dist0;
+        grappleHookPos.x += dx0 * s;
+        grappleHookPos.y += dy0 * s;
+        grappleHookPos.z += dz0 * s;
+      }
+      grapplePulling = false;
+      return false;
+    }
     const b = grappleVertBoost(pos.y);
     const isVert = Math.abs(grappleTarget.y - grappleStart.y) > 2 * Math.abs(grappleTarget.x - grappleStart.x);
     const tb = isVert ? b : 1;
@@ -8631,8 +8801,8 @@ document.addEventListener("mouseup", (e) => {
     stepDown = false;
   }
   grappleRetracting = true;
-  grappleRetractLife = 0;
-  if (grappleHooked) grappleHookPos.copy(grappleTarget);
+  if (grappleMob) {
+  } else if (grappleHooked) grappleHookPos.copy(grappleTarget);
   else grappleHookPos.copy(grappleStart).lerp(grappleTarget, grappleFly);
   grappleActive = false;
   grappleArrived = false;
@@ -8891,15 +9061,17 @@ function loop(now) {
     if (grappleActive) {
       showRope = true;
       ropeA.set(pos.x, pos.y + 0.3, pos.z);
-      ropeB.copy(grappleStart).lerp(grappleTarget, grappleFly);
-      if (grappleHooked) ropeB.copy(grappleTarget);
+      if (grappleMob) ropeB.copy(grappleHookPos);
+      else {
+        ropeB.copy(grappleStart).lerp(grappleTarget, grappleFly);
+        if (grappleHooked) ropeB.copy(grappleTarget);
+      }
     } else if (grappleRetracting && !loading) {
-      grappleRetractLife += dt;
       const ex = pos.x, ey = pos.y + 0.3, ez = pos.z;
       const dhx = ex - grappleHookPos.x, dhy = ey - grappleHookPos.y, dhz = ez - grappleHookPos.z;
       const dh = Math.sqrt(dhx * dhx + dhy * dhy + dhz * dhz);
       const stepH = GRAPPLE_RETRACT * dt;
-      if (dh <= stepH + 0.05 || grappleRetractLife > 1.5) {
+      if (dh <= stepH + 0.05) {
         grappleRetracting = false;
       } else {
         grappleHookPos.x += dhx / dh * stepH;
@@ -9102,10 +9274,10 @@ if (location.search.includes('test')) {
   window._test = {
     get world(){ return world; }, get worlds(){ return worlds; }, get mobs(){ return mobs; },
     getBlock, setBlock, handleMobExplosion, processExplosionQueue, isMobStandingOn, intersectsMob, key, BLAST_RADIUS, TNT, STONE, AIR,
-    get villageCenter(){ return villageCenter; }, get villageHouses(){ return villageHouses; }, get villagePen(){ return villagePen; }, get isInsidePen(){ return isInsidePen; }, get LOG(){ return LOG; }, findPenGaps, nearestPenGap, penGapInside, penGapOutside, hasMobGround, mobBlockedAt, aabbCollidesWorld, mobProbeFree, randomPenPoint, randomAroundPenPoint,
+    get villageCenter(){ return villageCenter; }, get villageHouses(){ return villageHouses; }, get villagePen(){ return villagePen; }, get isInsidePen(){ return isInsidePen; }, get LOG(){ return LOG; }, findPenGaps, nearestPenGap, penGapInside, penGapOutside, hasMobGround, mobBlockedAt, aabbCollidesWorld, mobProbeFree, randomPenPoint, randomAroundPenPoint, groundYForMob, get CLOUD_BASE(){ return CLOUD_BASE; }, get CLOUD_TOP(){ return CLOUD_TOP; }, get MAX_Y(){ return MAX_Y; },
     getTypeMats, get typeMats(){ return typeMats; }, buildWorld, generateWorld, computeVillageLayout, spawnVillagers, refreshBlocks, get boxGeo(){ return boxGeo; }, THREE,
     get pos(){ return pos; }, get camera(){ return camera; }, get yaw(){ return yaw; }, set yaw(v){ yaw=v; }, get pitch(){ return pitch; }, set pitch(v){ pitch=v; },
-    get carryMob(){ return carryMob; }, handleCarryEnterDown, handleCarryEnterUp, pickMob, get carryGrappleActive(){ return carryGrappleActive; }, get carryGrappleMob(){ return carryGrappleMob; }, get carryGrappleBlock(){ return carryGrappleBlock; }, updateCarryGrapple, get currentBlock(){ return currentBlock; }, updateTarget, toggleCarry: handleCarryEnterDown, findNearestMobForGrab: (...a)=>{ const d=new THREE.Vector3(); camera.getWorldDirection(d); return pickMob(d); }, get playerArms(){ return playerArms; }, get started(){ return started; }, set started(v){ started=v; }, get loading(){ return loading; }, get freeCam(){ return freeCam; }, set freeCam(v){ freeCam=v; }, get helpOpen(){ return helpOpen; },
+    get carryMob(){ return carryMob; }, handleCarryEnterDown, handleCarryEnterUp, pickMob, get carryGrappleActive(){ return carryGrappleActive; }, get carryGrappleMob(){ return carryGrappleMob; }, get carryGrappleBlock(){ return carryGrappleBlock; }, get carryGrappleHookPos(){ return carryGrappleHookPos; }, get carryGrappleOffset(){ return carryGrappleOffset; }, get carryGrappleMode(){ return carryGrappleMode; }, get isMobFrozenByGrapple(){ return isMobFrozenByGrapple; }, get grappleMob(){ return grappleMob; }, get grappleMobOffset(){ return grappleMobOffset; }, get grappleHookPos(){ return grappleHookPos; }, get grappleTarget(){ return grappleTarget; }, updateCarryGrapple, get currentBlock(){ return currentBlock; }, updateTarget, toggleCarry: handleCarryEnterDown, findNearestMobForGrab: (...a)=>{ const d=new THREE.Vector3(); camera.getWorldDirection(d); return pickMob(d); }, get playerArms(){ return playerArms; }, get started(){ return started; }, set started(v){ started=v; }, get loading(){ return loading; }, get freeCam(){ return freeCam; }, set freeCam(v){ freeCam=v; }, get helpOpen(){ return helpOpen; },
     get WOLF_COUNT(){ return WOLF_COUNT; }, makeWolfMesh, villagerHW, villagerH, wolfHasMobGround, wolfBlockedAt, wolfProbeFree, wanderGoalForWolf, wolfFindPath, wolfInWater, waterSurfaceForMob, wolfPhysicsStep, updateMobs
   };
 }
