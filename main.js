@@ -2033,7 +2033,18 @@ function wanderGoalFor(m) {
     if (dCur < 2) continue;
     if (m.lastTarget && Math.hypot(ix - m.lastTarget.x, iz - m.lastTarget.z) < 4) continue;
     const v = getVisit(ix, iz);
-    const score = v * 10 - dCur * 0.15;
+    let mobPenalty = 0;
+    for (const o of mobs) {
+      if (o === m || (o.dim !== undefined && o.dim !== dim)) continue;
+      if (o.kind === "pig" || o.kind === "cow" || o.kind === "wolf") continue;
+      const d = Math.hypot(ix - o.pos.x, iz - o.pos.z);
+      if (d < 1.8) mobPenalty += (1.8 - d) * 7;
+      if (o.target) {
+        const td = Math.hypot(ix - o.target.x, iz - o.target.z);
+        if (td < 1.4) mobPenalty += (1.4 - td) * 5;
+      }
+    }
+    const score = v * 10 - dCur * 0.15 + mobPenalty;
     if (score < bestScore) { bestScore = score; best = { x, z }; }
   }
   if (best) { m.lastTarget = { x: best.x, z: best.z }; return best; }
@@ -2073,7 +2084,18 @@ function wanderGoalForPen(m) {
     if (dCur < 1.2) continue;
     if (m.lastTarget && Math.hypot(cx - m.lastTarget.x, cz - m.lastTarget.z) < 2) continue;
     const v = getVisit(cx | 0, cz | 0);
-    const score = v * 10 - dCur * 0.15;
+    let mobPenalty = 0;
+    for (const o of mobs) {
+      if (o === m || (o.dim !== undefined && o.dim !== dim)) continue;
+      if (o.kind !== "pig" && o.kind !== "cow") continue;
+      const d = Math.hypot(cx - o.pos.x, cz - o.pos.z);
+      if (d < 1.9) mobPenalty += (1.9 - d) * 8;
+      if (o.target) {
+        const td = Math.hypot(cx - o.target.x, cz - o.target.z);
+        if (td < 1.6) mobPenalty += (1.6 - td) * 6;
+      }
+    }
+    const score = v * 10 - dCur * 0.15 + mobPenalty;
     if (score < bestScore) { bestScore = score; best = { x: cx, z: cz }; }
   }
   if (best) { m.lastTarget = { x: best.x, z: best.z }; return best; }
@@ -2166,7 +2188,12 @@ function hasMobGround(x, z, hw, y) {
     const ox0 = Math.max(x - hw, bx), ox1 = Math.min(x + hw, bx + 1);
     const oz0 = Math.max(z - hw, bz), oz1 = Math.min(z + hw, bz + 1);
     if (ox1 - ox0 > 0.02 && oz1 - oz0 > 0.02) {
-      if (isSolid(bx, gy, bz)) {} else return false;
+      if (isSolid(bx, gy, bz)) {
+        if (villagePen && getBlock(bx, gy, bz) === LOG && (bx === villagePen.minX || bx === villagePen.maxX || bz === villagePen.minZ || bz === villagePen.maxZ)) return false;
+        if (villageHouses.length && gy >= villageCenter.y + 1 && gy <= villageCenter.y + 5) {
+          for (const h of villageHouses) if (bx >= h.minX && bx <= h.maxX && bz >= h.minZ && bz <= h.maxZ) return false;
+        }
+      } else return false;
       const b = getBlock(bx, Math.floor(py), bz);
       if (b === WATER || b === LAVA || b === MOON_WATER) return false;
     }
@@ -2207,7 +2234,13 @@ function wolfHasMobGround(x, z, hw, y) {
     const ox0 = Math.max(x - hw, bx), ox1 = Math.min(x + hw, bx + 1);
     const oz0 = Math.max(z - hw, bz), oz1 = Math.min(z + hw, bz + 1);
     if (ox1 - ox0 > 0.02 && oz1 - oz0 > 0.02) {
-      if (isSolid(bx, gy, bz)) return true;
+      if (isSolid(bx, gy, bz)) {
+        if (villageHouses.length && gy >= villageCenter.y + 1 && gy <= villageCenter.y + 5) {
+          let overHouse = false; for (const h of villageHouses) if (bx >= h.minX && bx <= h.maxX && bz >= h.minZ && bz <= h.maxZ) { overHouse = true; break; }
+          if (overHouse) continue;
+        }
+        return true;
+      }
     }
   }
   return false;
@@ -2247,6 +2280,21 @@ function mobCanStep(m){ return !!m.canStep; }
 function mobHasGroundFor(m,x,z,hw,y){ return m.canStep ? wolfHasMobGround(x,z,hw,y) : hasMobGround(x,z,hw,y); }
 function mobBlockedAtFor(m,x,z,hw,y){ return m.canStep ? wolfBlockedAt(x,z,hw,y) : mobBlockedAt(x,z,hw,y); }
 function mobProbeFreeFor(m,x,z,dx,dz,d,hw,y){ return m.canStep ? wolfProbeFree(x,z,dx,dz,d,hw,y) : mobProbeFree(x,z,dx,dz,d,hw,y); }
+function isPigCow(m){ return m.kind === "pig" || m.kind === "cow"; }
+function pigOverlapsFence(x,z,hw){
+  if(!villagePen) return false;
+  const vy=villagePen.vy+1;
+  for(let bx=Math.floor(x-hw); bx<=Math.floor(x+hw); bx++){
+    for(let bz=Math.floor(z-hw); bz<=Math.floor(z+hw); bz++){
+      const onBorder=(bx===villagePen.minX || bx===villagePen.maxX || bz===villagePen.minZ || bz===villagePen.maxZ);
+      if(!onBorder) continue;
+      if(bx < villagePen.minX || bx > villagePen.maxX || bz < villagePen.minZ || bz > villagePen.maxZ) continue;
+      if(getBlock(bx, vy, bz) !== LOG) continue;
+      if(x+hw > bx && x-hw < bx+1 && z+hw > bz && z-hw < bz+1) return true;
+    }
+  }
+  return false;
+}
 function wolfFindPath(sx, sz, tx, tz, hw, pyHint) {
   if (hw == null) hw = 0.30;
   const py = pyHint != null ? pyHint : villageCenter.y + 1;
@@ -2296,7 +2344,18 @@ function wanderGoalForWolf(m) {
     if (dCur < 2) continue;
     if (m.lastTarget && Math.hypot(ix - m.lastTarget.x, iz - m.lastTarget.z) < 4) continue;
     const v = getVisit(ix, iz);
-    const score = v * 10 - dCur * 0.15;
+    let mobPenalty = 0;
+    for (const o of mobs) {
+      if (o === m || (o.dim !== undefined && o.dim !== dim)) continue;
+      if (o.kind !== "wolf") continue;
+      const d = Math.hypot(ix - o.pos.x, iz - o.pos.z);
+      if (d < 1.9) mobPenalty += (1.9 - d) * 7;
+      if (o.target) {
+        const td = Math.hypot(ix - o.target.x, iz - o.target.z);
+        if (td < 1.5) mobPenalty += (1.5 - td) * 5;
+      }
+    }
+    const score = v * 10 - dCur * 0.15 + mobPenalty;
     if (score < bestScore) { bestScore = score; best = { x, z }; }
   }
   if (best) { m.lastTarget = { x: best.x, z: best.z }; return best; }
@@ -2356,16 +2415,15 @@ function mobCollidesOther(mob, nx, nz) {
   for (const o of nearby) {
     if (o === mob || o === carryMob || o === carryGrappleMob) continue;
     if (o.dim !== undefined && o.dim !== dim) continue;
+    let need = hw + villagerHW(o) + 0.04;
     if (!fleeing) {
       const oflee = o.fleeUntil && performance.now() / 1000 < o.fleeUntil;
-      if (!oflee) {
-        if (mob.isBaby && o.id === mob.parentId) continue;
-        if (o.isBaby && o.parentId === mob.id) continue;
+      if (!oflee && ((mob.isBaby && o.id === mob.parentId) || (o.isBaby && o.parentId === mob.id))) {
+        need = (hw + villagerHW(o)) * 0.62 + 0.06;
       }
     }
     if (Math.abs(y - o.pos.y) > 1.2) continue;
     const dx = nx - o.pos.x, dz = nz - o.pos.z;
-    const need = hw + villagerHW(o) + 0.04;
     if (dx * dx + dz * dz < need * need) return o;
   }
   return null;
@@ -2607,51 +2665,69 @@ function isMobStandingOn(bx, by, bz) {
   return false;
 }
 function separateMobs() {
-  for (const m of mobs) {
-    if (m === carryMob) continue;
-    if (isMobFrozenByGrapple(m)) continue;
-    if (m.dim !== undefined && m.dim !== dim) continue;
-    let sx = 0, sz = 0, cnt = 0;
-    const nearby = nearbyMobsFor(m.pos.x, m.pos.z, 1);
-    const fleeingSelf = m.fleeUntil && performance.now() / 1000 < m.fleeUntil;
-    for (const o of nearby) {
-      if (o === m || o === carryMob) continue;
-      if (isMobFrozenByGrapple(o)) continue;
-      if (o.dim !== undefined && o.dim !== dim) continue;
-      if (!fleeingSelf) {
-        const oflee = o.fleeUntil && performance.now() / 1000 < o.fleeUntil;
-        if (!oflee) {
-          if (m.isBaby && o.id === m.parentId) continue;
-          if (o.isBaby && o.parentId === m.id) continue;
+  for (let iter = 0; iter < 3; iter++) {
+    let anyMoved = false;
+    for (const m of mobs) {
+      if (m === carryMob) continue;
+      if (isMobFrozenByGrapple(m)) continue;
+      if (m.dim !== undefined && m.dim !== dim) continue;
+      let sx = 0, sz = 0, cnt = 0;
+      const nearby = nearbyMobsFor(m.pos.x, m.pos.z, 1);
+      const fleeingSelf = m.fleeUntil && performance.now() / 1000 < m.fleeUntil;
+      for (const o of nearby) {
+        if (o === m || o === carryMob) continue;
+        if (isMobFrozenByGrapple(o)) continue;
+        if (o.dim !== undefined && o.dim !== dim) continue;
+        let need = villagerHW(m) + villagerHW(o) + 0.18;
+        if (!fleeingSelf) {
+          const oflee = o.fleeUntil && performance.now() / 1000 < o.fleeUntil;
+          if (!oflee && ((m.isBaby && o.id === m.parentId) || (o.isBaby && o.parentId === m.id))) {
+            need = (villagerHW(m) + villagerHW(o)) * 0.62 + 0.10;
+          }
+        }
+        const dx = m.pos.x - o.pos.x, dz = m.pos.z - o.pos.z;
+        const d2 = dx * dx + dz * dz;
+        if (d2 < need * need && d2 > 0.0001) {
+          const d = Math.sqrt(d2);
+          const overlap = need - d;
+          const push = overlap * (fleeingSelf ? 0.92 : 0.68);
+          sx += (dx / d) * push; sz += (dz / d) * push; cnt++;
+        } else if (d2 < (need + 0.45) * (need + 0.45) && d2 > 0.0001) {
+          const d = Math.sqrt(d2);
+          const w = (need + 0.45 - d) / 0.45;
+          const push = w * 0.05;
+          sx += (dx / d) * push; sz += (dz / d) * push; cnt++;
         }
       }
-      const dx = m.pos.x - o.pos.x, dz = m.pos.z - o.pos.z;
-      const d2 = dx * dx + dz * dz;
-      const need = villagerHW(m) + villagerHW(o) + 0.04;
-      if (d2 < need * need && d2 > 0.0001) {
-        const d = Math.sqrt(d2);
-        const push = (need - d) * (fleeingSelf ? 0.22 : 0.08);
-        sx += (dx / d) * push; sz += (dz / d) * push; cnt++;
-      }
-    }
-    if (cnt) {
-      let nx = m.pos.x + sx, nz = m.pos.z + sz;
-      const hg = m.canStep ? wolfHasMobGround : hasMobGround;
-      if (fleeingSelf) {
-        if (!aabbCollidesWorld(nx, m.pos.y, nz, m.hw, m.h) && !mobCollidesOther(m, nx, nz) && hg(nx, nz, m.hw, m.pos.y)) {
-          m.pos.x += (nx - m.pos.x) * 0.55; m.pos.z += (nz - m.pos.z) * 0.55;
+      if (cnt) {
+        let nx = m.pos.x + sx, nz = m.pos.z + sz;
+        const hg = m.canStep ? wolfHasMobGround : hasMobGround;
+        const pigBlocked = (x,z)=> isPigCow(m) && pigOverlapsFence(x,z,m.hw);
+        if (!aabbCollidesWorld(nx, m.pos.y, nz, m.hw, m.h) && hg(nx, nz, m.hw, m.pos.y) && !pigBlocked(nx,nz)) {
+          m.pos.x = nx; m.pos.z = nz; anyMoved = true;
+          if (mobStats) mobStats.mobCol++;
         } else {
-          const tryX = m.pos.x + Math.sign(sx) * 0.12, tryZ = m.pos.z + Math.sign(sz) * 0.12;
-          if (!aabbCollidesWorld(tryX, m.pos.y, tryZ, m.hw, m.h) && !mobCollidesOther(m, tryX, tryZ) && hg(tryX, tryZ, m.hw, m.pos.y)) m.pos.x = tryX;
-          else if (!aabbCollidesWorld(m.pos.x, m.pos.y, tryZ, m.hw, m.h) && !mobCollidesOther(m, m.pos.x, tryZ) && hg(m.pos.x, tryZ, m.hw, m.pos.y)) m.pos.z = tryZ;
+          const tryX = m.pos.x + sx, tryZ = m.pos.z;
+          if (Math.abs(sx) > 0.001 && !aabbCollidesWorld(tryX, m.pos.y, tryZ, m.hw, m.h) && hg(tryX, tryZ, m.hw, m.pos.y) && !pigBlocked(tryX,tryZ)) {
+            m.pos.x = tryX; anyMoved = true; if (mobStats) mobStats.mobCol++;
+          } else {
+            const tryX2 = m.pos.x, tryZ2 = m.pos.z + sz;
+            if (Math.abs(sz) > 0.001 && !aabbCollidesWorld(tryX2, m.pos.y, tryZ2, m.hw, m.h) && hg(tryX2, tryZ2, m.hw, m.pos.y) && !pigBlocked(tryX2,tryZ2)) {
+              m.pos.z = tryZ2; anyMoved = true; if (mobStats) mobStats.mobCol++;
+            } else {
+              const s = 0.14 * Math.sign(sx || (Math.random() - 0.5));
+              const t2 = 0.14 * Math.sign(sz || (Math.random() - 0.5));
+              const px = m.pos.x + s, pz = m.pos.z + t2;
+              if (!aabbCollidesWorld(px, m.pos.y, pz, m.hw, m.h) && hg(px, pz, m.hw, m.pos.y) && !pigBlocked(px,pz)) {
+                m.pos.x = px; m.pos.z = pz; anyMoved = true; if (mobStats) mobStats.mobCol++;
+              }
+            }
+          }
         }
-        if (mobStats) mobStats.mobCol++;
-      } else if (!aabbCollidesWorld(nx, m.pos.y, nz, m.hw, m.h) && !mobCollidesOther(m, nx, nz) && hg(nx, nz, m.hw, m.pos.y)) {
-        m.pos.x += (nx - m.pos.x) * 0.25;
-        m.pos.z += (nz - m.pos.z) * 0.25;
-        if (mobStats) mobStats.mobCol++;
       }
     }
+    if (!anyMoved) break;
+    if (iter < 2) buildMobGrid();
   }
 }
 function pushMobsFromPlayer() {
@@ -2671,7 +2747,7 @@ function pushMobsFromPlayer() {
       const push = (need - d) * (fleeing ? 0.22 : 0.30);
       const nx = m.pos.x + (dx / d) * push, nz = m.pos.z + (dz / d) * push;
       const hg2 = m.canStep ? wolfHasMobGround : hasMobGround;
-      if (!aabbCollidesWorld(nx, m.pos.y, nz, m.hw, m.h) && !mobCollidesOther(m, nx, nz) && hg2(nx, nz, m.hw, m.pos.y)) {
+      if (!aabbCollidesWorld(nx, m.pos.y, nz, m.hw, m.h) && !mobCollidesOther(m, nx, nz) && hg2(nx, nz, m.hw, m.pos.y) && !(isPigCow(m) && pigOverlapsFence(nx,nz,m.hw))) {
         m.pos.x += (nx - m.pos.x) * (fleeing ? 0.55 : 0.50);
         m.pos.z += (nz - m.pos.z) * (fleeing ? 0.55 : 0.50);
         if (mobStats) mobStats.playerCol++;
@@ -2682,13 +2758,35 @@ function pushMobsFromPlayer() {
     }
   }
 }
+function mobWouldCollide(mob, nx, nz) {
+  if (mob === carryMob) return false;
+  const hw = villagerHW(mob);
+  const y = mob.pos.y;
+  const nearby = nearbyMobsFor(nx, nz, 1);
+  const fleeingSelf = mob.fleeUntil && performance.now() / 1000 < mob.fleeUntil;
+  for (const o of nearby) {
+    if (o === mob || o === carryMob || isMobFrozenByGrapple(o)) continue;
+    if (o.dim !== undefined && o.dim !== dim) continue;
+    let need = hw + villagerHW(o) + 0.04;
+    if (!fleeingSelf) {
+      const oflee = o.fleeUntil && performance.now() / 1000 < o.fleeUntil;
+      if (!oflee && ((mob.isBaby && o.id === mob.parentId) || (o.isBaby && o.parentId === mob.id))) {
+        need = (hw + villagerHW(o)) * 0.62 + 0.06;
+      }
+    }
+    if (Math.abs(y - o.pos.y) > 1.2) continue;
+    const dx = nx - o.pos.x, dz = nz - o.pos.z;
+    if (dx * dx + dz * dz < need * need) return true;
+  }
+  return false;
+}
 function updateMobs(dt) {
   if (!mobs.length) return;
   const over = dim === "over" && villageHouses.length;
   if (over) {
     mobTick++;
     buildMobGrid();
-    if ((mobTick & 1) === 0) separateMobs(); else { /* keep push every frame */ }
+    separateMobs();
     pushMobsFromPlayer();
   } else {
     buildMobGrid();
@@ -3041,6 +3139,43 @@ function updateMobs(dt) {
         }
       }
     }
+    {
+      let repX = 0, repZ = 0, cnt = 0;
+      const nearby = nearbyMobsFor(m.pos.x, m.pos.z, 2);
+      for (const o of nearby) {
+        if (o === m || o === carryMob || isMobFrozenByGrapple(o)) continue;
+        if (o.dim !== undefined && o.dim !== dim) continue;
+        let need = villagerHW(m) + villagerHW(o) + 0.50;
+        const fleeingSelf = m.fleeUntil && performance.now() / 1000 < m.fleeUntil;
+        if (!fleeingSelf) {
+          const oflee = o.fleeUntil && performance.now() / 1000 < o.fleeUntil;
+          if (!oflee && ((m.isBaby && o.id === m.parentId) || (o.isBaby && o.parentId === m.id))) need = (villagerHW(m) + villagerHW(o)) * 0.62 + 0.22;
+        }
+        if (Math.abs(m.pos.y - o.pos.y) > 1.2) continue;
+        const dx = m.pos.x - o.pos.x, dz = m.pos.z - o.pos.z;
+        const d2 = dx * dx + dz * dz;
+        if (d2 < need * need && d2 > 0.0001) {
+          const d = Math.sqrt(d2);
+          const w = (need - d) / need;
+          repX += (dx / d) * w;
+          repZ += (dz / d) * w;
+          cnt++;
+        }
+      }
+      if (cnt) {
+        repX /= cnt; repZ /= cnt;
+        const len = Math.hypot(repX, repZ);
+        if (len > 0.001) {
+          repX /= len; repZ /= len;
+          const str = Math.min(1, cnt * 0.55) * m.speed * 0.85;
+          wantX += repX * str;
+          wantZ += repZ * str;
+          const wlen = Math.hypot(wantX, wantZ);
+          const cap = m.speed * 1.30;
+          if (wlen > cap) { wantX *= cap / wlen; wantZ *= cap / wlen; }
+        }
+      }
+    }
     // lerp vel towards want (like player)
     m.vel.x += (wantX - m.vel.x) * Math.min(1, dt * 6);
     m.vel.z += (wantZ - m.vel.z) * Math.min(1, dt * 6);
@@ -3060,6 +3195,14 @@ function updateMobs(dt) {
     // physics step — canStep (wolves) use player-like smooth step + swim, others classic
     if (canStep) wolfPhysicsStep(m, dt, g);
     else mobPhysicsStep(m, dt, g);
+    if(isPigCow(m) && villagePen && pigOverlapsFence(m.pos.x, m.pos.z, m.hw)){
+      const pen=villagePen;
+      m.pos.x = pen.cx+0.5;
+      m.pos.z = pen.cz+0.5;
+      m.pos.y = pen.vy+1;
+      m.vel.x=0; m.vel.z=0; m.vel.y=0;
+      m.onGround=true;
+    }
     // mob-mob / player already in separate/push, but also check immediate collision after move
     // stuck detection — 1-block corner: never stay stuck
     const moved = Math.hypot(m.pos.x - prevX, m.pos.z - prevZ);
@@ -3068,13 +3211,35 @@ function updateMobs(dt) {
     if (m._stuckT > 0.55) {
       if (m.mode === "inside") {
         m.target = randomInsidePoint(m.homeId);
+      } else if ((m.kind === "pig" || m.kind === "cow") && isInsidePen(m.pos.x, m.pos.z)) {
+        m.target = wanderGoalForPen(m);
+        m.path = null; m.pathKey = null;
+        const ang = Math.random() * Math.PI * 2;
+        m.vel.x = Math.cos(ang) * (WALK / 2) * 0.6; m.vel.z = Math.sin(ang) * (WALK / 2) * 0.6;
+        m.steerX = m.vel.x; m.steerZ = m.vel.z; m.steerCooldown = 0.6;
+      } else if (m.canStep && m.kind === "wolf") {
+        m.target = wanderGoalForWolf(m);
+        m.path = null; m.pathKey = null;
+        const ang = Math.random() * Math.PI * 2;
+        m.vel.x = Math.cos(ang) * (WALK / 2) * 0.6; m.vel.z = Math.sin(ang) * (WALK / 2) * 0.6;
+        m.steerX = m.vel.x; m.steerZ = m.vel.z; m.steerCooldown = 0.6;
       } else {
         let bestF = -1, bx = 0, bz = 0;
         for (let a = 0; a < 360; a += 45) {
           const rad = a * Math.PI / 180;
           const cx = Math.cos(rad), cz = Math.sin(rad);
           const free = probeFree(m.pos.x, m.pos.z, cx, cz, 2.2, m.hw, m.pos.y);
-          if (free > bestF) { bestF = free; bx = cx; bz = cz; }
+          // penalize directions crowded with mobs
+          let mobFactor = 0;
+          const testX = m.pos.x + cx * 1.1, testZ = m.pos.z + cz * 1.1;
+          for (const o of mobs) {
+            if (o === m || (o.dim !== undefined && o.dim !== dim)) continue;
+            const d2 = (testX - o.pos.x) * (testX - o.pos.x) + (testZ - o.pos.z) * (testZ - o.pos.z);
+            if (d2 < 1.2 * 1.2) mobFactor += 0.5;
+          }
+          const eff = free - mobFactor * 0.6;
+          if (eff > bestF) { bestF = eff; bx = cx; bz = cz; }
+          else if (free > bestF) { bestF = free; bx = cx; bz = cz; }
         }
         if (bestF > 0.35) {
           const tx2 = m.pos.x + bx * (1.5 + Math.random()*2.5);
@@ -3148,6 +3313,7 @@ function updateMobs(dt) {
       for (let k=0;k<4;k++){ const nx=m.pos.x + (Math.random()-0.5)*0.6, nz=m.pos.z + (Math.random()-0.5)*0.6; if(!aabbCollidesWorld(nx,m.pos.y,nz,m.hw,m.h)){ m.pos.x=nx; m.pos.z=nz; break; } }
     }
   }
+  if (over) { buildMobGrid(); separateMobs(); }
 }
 function panicVillagers(cx, cy, cz) {
   if (!villageHouses.length || !mobs.length) return;
@@ -4735,6 +4901,7 @@ function aabbOverlaps(ax, ay, az, ahw, ah, bx, by, bz, bhw, bh) {
 
 // Mob physics: same gravity/collision as player but no tryStep (no stepping)
 function moveMobAxisX(mob, dx) {
+  const oldX = mob.pos.x;
   mob.pos.x += dx;
   if (dx === 0) return false;
   const dir = dx > 0 ? 1 : -1;
@@ -4762,6 +4929,38 @@ function moveMobAxisX(mob, dx) {
         mob.pos.x = cellX + 1 + mob.hw + 0.001; mob.vel.x = 0; if (mobStats) mobStats.worldCol++; return true;
       }
     }
+  if(isPigCow(mob) && pigOverlapsFence(mob.pos.x, mob.pos.z, mob.hw)){
+    mob.pos.x = oldX; mob.vel.x = 0; if(mobStats) mobStats.worldCol++; return true;
+  }
+  if (mobWouldCollide(mob, mob.pos.x, mob.pos.z)) {
+    const wouldOld = mobWouldCollide(mob, oldX, mob.pos.z);
+    let block = !wouldOld;
+    if (wouldOld) {
+      const nearby = nearbyMobsFor(mob.pos.x, mob.pos.z, 1);
+      for (const o of nearby) {
+        if (o === mob || o === carryMob || isMobFrozenByGrapple(o)) continue;
+        if (o.dim !== undefined && o.dim !== dim) continue;
+        let need = villagerHW(mob) + villagerHW(o) + 0.04;
+        const fleeingSelf = mob.fleeUntil && performance.now() / 1000 < mob.fleeUntil;
+        if (!fleeingSelf) {
+          const oflee = o.fleeUntil && performance.now() / 1000 < o.fleeUntil;
+          if (!oflee && ((mob.isBaby && o.id === mob.parentId) || (o.isBaby && o.parentId === mob.id))) need = (villagerHW(mob) + villagerHW(o)) * 0.62 + 0.06;
+        }
+        if (Math.abs(mob.pos.y - o.pos.y) > 1.2) continue;
+        const dNew = Math.hypot(mob.pos.x - o.pos.x, mob.pos.z - o.pos.z);
+        const dOld = Math.hypot(oldX - o.pos.x, mob.pos.z - o.pos.z);
+        if (dNew < need && dNew < dOld - 0.001) { block = true; break; }
+        if (dNew < need && !wouldOld) { block = true; break; }
+      }
+      if (!block) {
+        // moving away - allow
+      } else {
+        mob.pos.x = oldX; mob.vel.x = 0; if (mobStats) mobStats.mobCol++; return true;
+      }
+    } else {
+      mob.pos.x = oldX; mob.vel.x = 0; if (mobStats) mobStats.mobCol++; return true;
+    }
+  }
   if (mob.onGround && !mobHasGroundFor(mob, mob.pos.x, mob.pos.z, mob.hw, mob.pos.y)) {
     if (mob.canStep && mobHasGroundFor(mob, mob.pos.x, mob.pos.z, mob.hw, mob.pos.y-1) && !aabbCollidesWorld(mob.pos.x, mob.pos.y-1, mob.pos.z, mob.hw, mob.h)) {
       mob.pos.y -= 1;
@@ -4772,6 +4971,7 @@ function moveMobAxisX(mob, dx) {
   return false;
 }
 function moveMobAxisZ(mob, dz) {
+  const oldZ = mob.pos.z;
   mob.pos.z += dz;
   if (dz === 0) return false;
   const dir = dz > 0 ? 1 : -1;
@@ -4799,6 +4999,33 @@ function moveMobAxisZ(mob, dz) {
         mob.pos.z = cellZ + 1 + mob.hw + 0.001; mob.vel.z = 0; if (mobStats) mobStats.worldCol++; return true;
       }
     }
+  if(isPigCow(mob) && pigOverlapsFence(mob.pos.x, mob.pos.z, mob.hw)){
+    mob.pos.z = oldZ; mob.vel.z = 0; if(mobStats) mobStats.worldCol++; return true;
+  }
+  if (mobWouldCollide(mob, mob.pos.x, mob.pos.z)) {
+    const wouldOld = mobWouldCollide(mob, mob.pos.x, oldZ);
+    let block = !wouldOld;
+    if (wouldOld) {
+      const nearby = nearbyMobsFor(mob.pos.x, mob.pos.z, 1);
+      for (const o of nearby) {
+        if (o === mob || o === carryMob || isMobFrozenByGrapple(o)) continue;
+        if (o.dim !== undefined && o.dim !== dim) continue;
+        let need = villagerHW(mob) + villagerHW(o) + 0.04;
+        const fleeingSelf = mob.fleeUntil && performance.now() / 1000 < mob.fleeUntil;
+        if (!fleeingSelf) {
+          const oflee = o.fleeUntil && performance.now() / 1000 < o.fleeUntil;
+          if (!oflee && ((mob.isBaby && o.id === mob.parentId) || (o.isBaby && o.parentId === mob.id))) need = (villagerHW(mob) + villagerHW(o)) * 0.62 + 0.06;
+        }
+        if (Math.abs(mob.pos.y - o.pos.y) > 1.2) continue;
+        const dNew = Math.hypot(mob.pos.x - o.pos.x, mob.pos.z - o.pos.z);
+        const dOld = Math.hypot(mob.pos.x - o.pos.x, oldZ - o.pos.z);
+        if (dNew < need && dNew < dOld - 0.001) { block = true; break; }
+        if (dNew < need && !wouldOld) { block = true; break; }
+      }
+      if (!block) {
+      } else { mob.pos.z = oldZ; mob.vel.z = 0; if (mobStats) mobStats.mobCol++; return true; }
+    } else { mob.pos.z = oldZ; mob.vel.z = 0; if (mobStats) mobStats.mobCol++; return true; }
+  }
   if (mob.onGround && !mobHasGroundFor(mob, mob.pos.x, mob.pos.z, mob.hw, mob.pos.y)) {
     if (mob.canStep && mobHasGroundFor(mob, mob.pos.x, mob.pos.z, mob.hw, mob.pos.y-1) && !aabbCollidesWorld(mob.pos.x, mob.pos.y-1, mob.pos.z, mob.hw, mob.h)) {
       mob.pos.y -= 1;
@@ -4812,10 +5039,24 @@ function moveMobAxisY(mob, dy) {
   mob.pos.y += dy;
   mob.onGround = false;
   const top = mob.pos.y + mob.h, feet = mob.pos.y;
-  for (let bx = Math.floor(mob.pos.x - mob.hw); bx <= Math.floor(mob.pos.x + mob.hw); bx++)
-    for (let bz = Math.floor(mob.pos.z - mob.hw); bz <= Math.floor(mob.pos.z + mob.hw); bz++) {
-      if (mob.vel.y > 0 && isSolid(bx, Math.floor(top), bz) && top > Math.floor(top)) { mob.pos.y = Math.floor(top) - mob.h - 0.001; mob.vel.y = 0; return true; }
-      if (mob.vel.y <= 0 && isSolid(bx, Math.floor(feet), bz)) { mob.pos.y = Math.floor(feet) + 1 + 0.001; mob.vel.y = 0; mob.onGround = true; return true; }
+  for (let bx = Math.floor(mob.pos.x - mob.hw + 0.001); bx <= Math.floor(mob.pos.x + mob.hw - 0.001); bx++)
+    for (let bz = Math.floor(mob.pos.z - mob.hw + 0.001); bz <= Math.floor(mob.pos.z + mob.hw - 0.001); bz++) {
+      if (mob.vel.y > 0 && isSolid(bx, Math.floor(top), bz) && top > Math.floor(top)) {
+        if ((mob.kind === "pig" || mob.kind === "cow") && villagePen && getBlock(bx, Math.floor(top), bz) === LOG && (bx === villagePen.minX || bx === villagePen.maxX || bz === villagePen.minZ || bz === villagePen.maxZ)) continue;
+        if (villageHouses.length && Math.floor(top) >= villageCenter.y + 1 && Math.floor(top) <= villageCenter.y + 5) {
+          let overHouse = false; for (const h of villageHouses) if (bx >= h.minX && bx <= h.maxX && bz >= h.minZ && bz <= h.maxZ) { overHouse = true; break; }
+          if (overHouse) continue;
+        }
+        mob.pos.y = Math.floor(top) - mob.h - 0.001; mob.vel.y = 0; return true;
+      }
+      if (mob.vel.y <= 0 && isSolid(bx, Math.floor(feet), bz)) {
+        if ((mob.kind === "pig" || mob.kind === "cow") && villagePen && getBlock(bx, Math.floor(feet), bz) === LOG && (bx === villagePen.minX || bx === villagePen.maxX || bz === villagePen.minZ || bz === villagePen.maxZ)) continue;
+        if (villageHouses.length && Math.floor(feet) >= villageCenter.y + 1 && Math.floor(feet) <= villageCenter.y + 5) {
+          let overHouse = false; for (const h of villageHouses) if (bx >= h.minX && bx <= h.maxX && bz >= h.minZ && bz <= h.maxZ) { overHouse = true; break; }
+          if (overHouse) continue;
+        }
+        mob.pos.y = Math.floor(feet) + 1 + 0.001; mob.vel.y = 0; mob.onGround = true; return true;
+      }
     }
   return false;
 }
@@ -4834,6 +5075,15 @@ function mobPhysicsStep(mob, dt, g) {
     if (mob.pos.x > maxX) { mob.pos.x = maxX; mob.vel.x = 0; }
     if (mob.pos.z < minZ) { mob.pos.z = minZ; mob.vel.z = 0; }
     if (mob.pos.z > maxZ) { mob.pos.z = maxZ; mob.vel.z = 0; }
+  }
+  if(isPigCow(mob) && villagePen && pigOverlapsFence(mob.pos.x, mob.pos.z, mob.hw)){
+    const pen=villagePen;
+    mob.pos.x = pen.cx+0.5;
+    mob.pos.z = pen.cz+0.5;
+    mob.pos.y = pen.vy+1;
+    mob.vel.x=0; mob.vel.z=0; mob.vel.y=0;
+    mob.onGround = true;
+    if(mobStats) mobStats.worldCol++;
   }
   // penBound: no artificial clamp — the LOG fence blocks via aabbCollidesWorld/hasMobGround
   // if a fence block is destroyed, the gap lets them through (general physics)
@@ -4879,15 +5129,28 @@ function wolfMoveAxisY(mob, dy) {
   mob.pos.y += dy;
   mob.onGround = false;
   const top = mob.pos.y + mob.h, feet = mob.pos.y;
-  for (let bx = Math.floor(mob.pos.x - mob.hw); bx <= Math.floor(mob.pos.x + mob.hw); bx++)
-    for (let bz = Math.floor(mob.pos.z - mob.hw); bz <= Math.floor(mob.pos.z + mob.hw); bz++) {
-      if (mob.vel.y > 0 && isSolid(bx, Math.floor(top), bz) && top > Math.floor(top)) { mob.pos.y = Math.floor(top) - mob.h - 0.001; mob.vel.y = 0; return true; }
-      if (mob.vel.y <= 0 && isSolid(bx, Math.floor(feet - 0.001), bz)) { mob.pos.y = Math.floor(feet - 0.001) + 1 + 0.001; mob.vel.y = 0; mob.onGround = true; mob.wolfStepUp = false; return true; }
+  for (let bx = Math.floor(mob.pos.x - mob.hw + 0.001); bx <= Math.floor(mob.pos.x + mob.hw - 0.001); bx++)
+    for (let bz = Math.floor(mob.pos.z - mob.hw + 0.001); bz <= Math.floor(mob.pos.z + mob.hw - 0.001); bz++) {
+      if (mob.vel.y > 0 && isSolid(bx, Math.floor(top), bz) && top > Math.floor(top)) {
+        if (villageHouses.length && Math.floor(top) >= villageCenter.y + 1 && Math.floor(top) <= villageCenter.y + 5) {
+          let overHouse = false; for (const h of villageHouses) if (bx >= h.minX && bx <= h.maxX && bz >= h.minZ && bz <= h.maxZ) { overHouse = true; break; }
+          if (overHouse) continue;
+        }
+        mob.pos.y = Math.floor(top) - mob.h - 0.001; mob.vel.y = 0; return true;
+      }
+      if (mob.vel.y <= 0 && isSolid(bx, Math.floor(feet - 0.001), bz)) {
+        if (villageHouses.length && Math.floor(feet - 0.001) >= villageCenter.y + 1 && Math.floor(feet - 0.001) <= villageCenter.y + 5) {
+          let overHouse = false; for (const h of villageHouses) if (bx >= h.minX && bx <= h.maxX && bz >= h.minZ && bz <= h.maxZ) { overHouse = true; break; }
+          if (overHouse) continue;
+        }
+        mob.pos.y = Math.floor(feet - 0.001) + 1 + 0.001; mob.vel.y = 0; mob.onGround = true; mob.wolfStepUp = false; return true;
+      }
     }
   if (!mob.onGround && (mob.pos.y % 1) < 0.05 && wolfHasMobGround(mob.pos.x, mob.pos.z, mob.hw, mob.pos.y) && !aabbCollidesWorld(mob.pos.x, mob.pos.y, mob.pos.z, mob.hw, mob.h)) mob.onGround = true;
   return false;
 }
 function wolfMoveAxisX(mob, dx) {
+  const oldX = mob.pos.x;
   mob.pos.x += dx;
   if (dx === 0) return false;
   const dir = dx > 0 ? 1 : -1;
@@ -4907,9 +5170,33 @@ function wolfMoveAxisX(mob, dx) {
         mob.pos.x = cellX + 1 + mob.hw + 0.001; return true;
       }
     }
+  if (mobWouldCollide(mob, mob.pos.x, mob.pos.z)) {
+    const wouldOld = mobWouldCollide(mob, oldX, mob.pos.z);
+    let block = !wouldOld;
+    if (wouldOld) {
+      const nearby = nearbyMobsFor(mob.pos.x, mob.pos.z, 1);
+      for (const o of nearby) {
+        if (o === mob || o === carryMob || isMobFrozenByGrapple(o)) continue;
+        if (o.dim !== undefined && o.dim !== dim) continue;
+        let need = villagerHW(mob) + villagerHW(o) + 0.04;
+        const fleeingSelf = mob.fleeUntil && performance.now() / 1000 < mob.fleeUntil;
+        if (!fleeingSelf) {
+          const oflee = o.fleeUntil && performance.now() / 1000 < o.fleeUntil;
+          if (!oflee && ((mob.isBaby && o.id === mob.parentId) || (o.isBaby && o.parentId === mob.id))) need = (villagerHW(mob) + villagerHW(o)) * 0.62 + 0.06;
+        }
+        if (Math.abs(mob.pos.y - o.pos.y) > 1.2) continue;
+        const dNew = Math.hypot(mob.pos.x - o.pos.x, mob.pos.z - o.pos.z);
+        const dOld = Math.hypot(oldX - o.pos.x, mob.pos.z - o.pos.z);
+        if (dNew < need && dNew < dOld - 0.001) { block = true; break; }
+        if (dNew < need && !wouldOld) { block = true; break; }
+      }
+      if (!block) {} else { mob.pos.x = oldX; mob.vel.x = 0; if (mobStats) mobStats.mobCol++; return true; }
+    } else { mob.pos.x = oldX; mob.vel.x = 0; if (mobStats) mobStats.mobCol++; return true; }
+  }
   return false;
 }
 function wolfMoveAxisZ(mob, dz) {
+  const oldZ = mob.pos.z;
   mob.pos.z += dz;
   if (dz === 0) return false;
   const dir = dz > 0 ? 1 : -1;
@@ -4929,6 +5216,29 @@ function wolfMoveAxisZ(mob, dz) {
         mob.pos.z = cellZ + 1 + mob.hw + 0.001; return true;
       }
     }
+  if (mobWouldCollide(mob, mob.pos.x, mob.pos.z)) {
+    const wouldOld = mobWouldCollide(mob, mob.pos.x, oldZ);
+    let block = !wouldOld;
+    if (wouldOld) {
+      const nearby = nearbyMobsFor(mob.pos.x, mob.pos.z, 1);
+      for (const o of nearby) {
+        if (o === mob || o === carryMob || isMobFrozenByGrapple(o)) continue;
+        if (o.dim !== undefined && o.dim !== dim) continue;
+        let need = villagerHW(mob) + villagerHW(o) + 0.04;
+        const fleeingSelf = mob.fleeUntil && performance.now() / 1000 < mob.fleeUntil;
+        if (!fleeingSelf) {
+          const oflee = o.fleeUntil && performance.now() / 1000 < o.fleeUntil;
+          if (!oflee && ((mob.isBaby && o.id === mob.parentId) || (o.isBaby && o.parentId === mob.id))) need = (villagerHW(mob) + villagerHW(o)) * 0.62 + 0.06;
+        }
+        if (Math.abs(mob.pos.y - o.pos.y) > 1.2) continue;
+        const dNew = Math.hypot(mob.pos.x - o.pos.x, mob.pos.z - o.pos.z);
+        const dOld = Math.hypot(mob.pos.x - o.pos.x, oldZ - o.pos.z);
+        if (dNew < need && dNew < dOld - 0.001) { block = true; break; }
+        if (dNew < need && !wouldOld) { block = true; break; }
+      }
+      if (!block) {} else { mob.pos.z = oldZ; mob.vel.z = 0; if (mobStats) mobStats.mobCol++; return true; }
+    } else { mob.pos.z = oldZ; mob.vel.z = 0; if (mobStats) mobStats.mobCol++; return true; }
+  }
   return false;
 }
 function wolfPhysicsStep(mob, dt, g) {
@@ -9278,7 +9588,7 @@ if (location.search.includes('test')) {
     getTypeMats, get typeMats(){ return typeMats; }, buildWorld, generateWorld, computeVillageLayout, spawnVillagers, refreshBlocks, get boxGeo(){ return boxGeo; }, THREE,
     get pos(){ return pos; }, get camera(){ return camera; }, get yaw(){ return yaw; }, set yaw(v){ yaw=v; }, get pitch(){ return pitch; }, set pitch(v){ pitch=v; },
     get carryMob(){ return carryMob; }, handleCarryEnterDown, handleCarryEnterUp, pickMob, get carryGrappleActive(){ return carryGrappleActive; }, get carryGrappleMob(){ return carryGrappleMob; }, get carryGrappleBlock(){ return carryGrappleBlock; }, get carryGrappleHookPos(){ return carryGrappleHookPos; }, get carryGrappleOffset(){ return carryGrappleOffset; }, get carryGrappleMode(){ return carryGrappleMode; }, get isMobFrozenByGrapple(){ return isMobFrozenByGrapple; }, get grappleMob(){ return grappleMob; }, get grappleMobOffset(){ return grappleMobOffset; }, get grappleHookPos(){ return grappleHookPos; }, get grappleTarget(){ return grappleTarget; }, updateCarryGrapple, get currentBlock(){ return currentBlock; }, updateTarget, toggleCarry: handleCarryEnterDown, findNearestMobForGrab: (...a)=>{ const d=new THREE.Vector3(); camera.getWorldDirection(d); return pickMob(d); }, get playerArms(){ return playerArms; }, get started(){ return started; }, set started(v){ started=v; }, get loading(){ return loading; }, get freeCam(){ return freeCam; }, set freeCam(v){ freeCam=v; }, get helpOpen(){ return helpOpen; },
-    get WOLF_COUNT(){ return WOLF_COUNT; }, makeWolfMesh, villagerHW, villagerH, wolfHasMobGround, wolfBlockedAt, wolfProbeFree, wanderGoalForWolf, wolfFindPath, wolfInWater, waterSurfaceForMob, wolfPhysicsStep, updateMobs
+    get WOLF_COUNT(){ return WOLF_COUNT; }, makeWolfMesh, villagerHW, villagerH, wolfHasMobGround, wolfBlockedAt, wolfProbeFree, wanderGoalForWolf, wolfFindPath, wolfInWater, waterSurfaceForMob, wolfPhysicsStep, updateMobs, get isPigCow(){ return isPigCow; }, get pigOverlapsFence(){ return pigOverlapsFence; }
   };
 }
 
