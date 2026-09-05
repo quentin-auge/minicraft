@@ -2178,6 +2178,39 @@ function randomAroundPenPoint(m) {
   }
   return wanderGoalFor(m);
 }
+function fleePointAway(mob, cx, cz) {
+  let dx = mob.pos.x - cx, dz = mob.pos.z - cz;
+  let len = Math.hypot(dx, dz);
+  if (len < 0.15) { const a = Math.random() * Math.PI * 2; dx = Math.cos(a); dz = Math.sin(a); len = 1; } else { dx /= len; dz /= len; }
+  const probeFree = mob.canStep ? wolfProbeFree : mobProbeFree;
+  const hasGround = mob.canStep ? wolfHasMobGround : hasMobGround;
+  const baseAng = Math.atan2(dz, dx);
+  for (let attempt = 0; attempt < 10; attempt++) {
+    const angOff = (Math.random() - 0.5) * 1.0;
+    const ang = baseAng + angOff;
+    const dist = 7 + Math.random() * 7;
+    const tx = mob.pos.x + Math.cos(ang) * dist;
+    const tz = mob.pos.z + Math.sin(ang) * dist;
+    if (Math.abs(tx) > WORLD_RADIUS - 1 || Math.abs(tz) > WORLD_RADIUS - 1) continue;
+    if (isInsideAnyHouse(tx, tz)) continue;
+    const py = mob.pos.y;
+    if (aabbCollidesWorld(tx, py, tz, mob.hw, mob.h)) continue;
+    let okGround = hasGround(tx, tz, mob.hw, py);
+    if (!okGround) {
+      if (hasGround(tx, tz, mob.hw, py + 1) || hasGround(tx, tz, mob.hw, py - 1)) okGround = true;
+      else continue;
+    }
+    const d = Math.hypot(tx - mob.pos.x, tz - mob.pos.z);
+    const free = probeFree(mob.pos.x, mob.pos.z, (tx - mob.pos.x) / d, (tz - mob.pos.z) / d, Math.min(d, 7), mob.hw, py);
+    if (free < d * 0.55) continue;
+    return { x: tx, z: tz };
+  }
+  const tx2 = mob.pos.x + dx * 6, tz2 = mob.pos.z + dz * 6;
+  const py2 = mob.pos.y;
+  const hasGround2 = mob.canStep ? wolfHasMobGround : hasMobGround;
+  if (Math.abs(tx2) <= WORLD_RADIUS - 1 && Math.abs(tz2) <= WORLD_RADIUS - 1 && !aabbCollidesWorld(tx2, py2, tz2, mob.hw, mob.h) && (hasGround2(tx2, tz2, mob.hw, py2) || hasGround2(tx2, tz2, mob.hw, py2 + 1) || hasGround2(tx2, tz2, mob.hw, py2 - 1))) return { x: tx2, z: tz2 };
+  return { x: mob.pos.x + dx * 3 + (Math.random() - 0.5), z: mob.pos.z + dz * 3 + (Math.random() - 0.5) };
+}
 function hasMobGround(x, z, hw, y) {
   const py = y != null ? y : villageCenter.y + 1;
   const gy = Math.floor(py) - 1;
@@ -2838,21 +2871,32 @@ function updateMobs(dt) {
     const prevX = m.pos.x, prevZ = m.pos.z;
     addVisit(m.pos.x, m.pos.z);
     if (aabbCollidesWorld(m.pos.x, m.pos.y, m.pos.z, m.hw, m.h)) { mobInvariantsViolated++; if (mobStats) mobStats.invariants++; }
-    // Step-capable mobs (wolves) — instant step, no block feeling (converge to pen when panicking)
+    // Step-capable mobs (wolves) — instant step, no block feeling (converge to pen when panicking, or flee away outside)
     if (m.canStep) {
       if (m.fleeUntil != null && now < m.fleeUntil) {
-        m.speed = WALK * 2;
-        m.wanderT -= dt;
-        if (!m.target || Math.hypot(m.target.x - m.pos.x, m.target.z - m.pos.z) < 0.6 || m.wanderT <= 0) {
-          if (villagePen) {
-            const jitter = () => (Math.random() - 0.5) * 2;
-            m.target = { x: villagePen.cx + 0.5 + jitter(), z: villagePen.cz + 0.5 + jitter() };
-          } else m.target = wanderGoalForWolf(m);
-          m.wanderT = 2 + Math.random() * 2;
-          m.steerCooldown = 0; m.path = null; m.pathKey = null;
+        if (m._outsideFlee) {
+          m.speed = WALK * 2;
+          m.wanderT -= dt;
+          if (!m.target || Math.hypot(m.target.x - m.pos.x, m.target.z - m.pos.z) < 0.7 || m.wanderT <= 0) {
+            m.target = fleePointAway(m, m._fleeSrcX, m._fleeSrcZ);
+            m.wanderT = 1.2 + Math.random() * 0.8;
+            m.steerCooldown = 0; m.path = null; m.pathKey = null;
+          }
+        } else {
+          m.speed = WALK * 2;
+          m.wanderT -= dt;
+          if (!m.target || Math.hypot(m.target.x - m.pos.x, m.target.z - m.pos.z) < 0.6 || m.wanderT <= 0) {
+            if (villagePen) {
+              const jitter = () => (Math.random() - 0.5) * 2;
+              m.target = { x: villagePen.cx + 0.5 + jitter(), z: villagePen.cz + 0.5 + jitter() };
+            } else m.target = wanderGoalForWolf(m);
+            m.wanderT = 2 + Math.random() * 2;
+            m.steerCooldown = 0; m.path = null; m.pathKey = null;
+          }
         }
       } else {
-        if (m.fleeUntil) { m.fleeUntil = 0; m.speed = WALK / 2; } else m.speed = WALK / 2;
+        if (m._outsideFlee) { delete m._outsideFlee; delete m._fleeSrcX; delete m._fleeSrcZ; m.fleeUntil = 0; m.speed = WALK / 2; }
+        else if (m.fleeUntil) { m.fleeUntil = 0; m.speed = WALK / 2; } else m.speed = WALK / 2;
         m.wanderT -= dt;
         if (!m.target || Math.hypot(m.target.x - m.pos.x, m.target.z - m.pos.z) < 0.6 || m.wanderT <= 0) {
           m.target = wanderGoalForWolf(m);
@@ -2866,39 +2910,44 @@ function updateMobs(dt) {
       }
       const insidePen = isInsidePen(m.pos.x, m.pos.z);
       if (m.fleeUntil != null && now < m.fleeUntil) {
-        m.speed = WALK * 2;
-        if (!insidePen) {
-          // outside pen: look for the entrance (gap in the LOG fence)
-          const gap = nearestPenGap(m.pos.x, m.pos.z);
-          if (gap) {
-            const inside = penGapInside(gap);
-            if (!m.target || Math.hypot(m.target.x - inside.x, m.target.z - inside.z) > 0.5) {
-              // test if the entrance is reachable, otherwise run around
-              const d = Math.hypot(inside.x - m.pos.x, inside.z - m.pos.z);
-              const probe = mobProbeFree(m.pos.x, m.pos.z, (inside.x - m.pos.x)/(d||1), (inside.z - m.pos.z)/(d||1), Math.min(d, 8), m.hw, m.pos.y);
-              if (probe < d * 0.4) {
-                // entrance blocked or too far → run around the pen immediately
-                if (!m.target || m._aroundT === undefined || m.wanderT <= 0 || Math.hypot(m.target.x - m.pos.x, m.target.z - m.pos.z) < 0.8) {
-                  m.target = randomAroundPenPoint(m); m.wanderT = 0.35 + Math.random()*0.35; m.steerCooldown = 0; m._aroundT = (m._aroundT||0)+1;
+        if (m._outsideFlee) {
+          m.speed = WALK * 2;
+          m.wanderT -= dt;
+          if (!m.target || Math.hypot(m.target.x - m.pos.x, m.target.z - m.pos.z) < 0.7 || m.wanderT <= 0) {
+            m.target = fleePointAway(m, m._fleeSrcX, m._fleeSrcZ);
+            m.wanderT = 1.2 + Math.random() * 0.8; m.steerCooldown = 0; m.path = null; m.pathKey = null;
+          }
+        } else {
+          m.speed = WALK * 2;
+          if (!insidePen) {
+            const gap = nearestPenGap(m.pos.x, m.pos.z);
+            if (gap) {
+              const inside = penGapInside(gap);
+              if (!m.target || Math.hypot(m.target.x - inside.x, m.target.z - inside.z) > 0.5) {
+                const d = Math.hypot(inside.x - m.pos.x, inside.z - m.pos.z);
+                const probe = mobProbeFree(m.pos.x, m.pos.z, (inside.x - m.pos.x)/(d||1), (inside.z - m.pos.z)/(d||1), Math.min(d, 8), m.hw, m.pos.y);
+                if (probe < d * 0.4) {
+                  if (!m.target || m._aroundT === undefined || m.wanderT <= 0 || Math.hypot(m.target.x - m.pos.x, m.target.z - m.pos.z) < 0.8) {
+                    m.target = randomAroundPenPoint(m); m.wanderT = 0.35 + Math.random()*0.35; m.steerCooldown = 0; m._aroundT = (m._aroundT||0)+1;
+                  }
+                } else {
+                  m.target = inside; m.wanderT = 2 + Math.random()*1; m.steerCooldown = 0; m.path = null; m.pathKey = null;
                 }
-              } else {
-                m.target = inside; m.wanderT = 2 + Math.random()*1; m.steerCooldown = 0; m.path = null; m.pathKey = null;
+              }
+            } else {
+              m.wanderT -= dt;
+              if (!m.target || Math.hypot(m.target.x - m.pos.x, m.target.z - m.pos.z) < 0.8 || m.wanderT <= 0) {
+                m.target = randomAroundPenPoint(m); m.wanderT = 0.35 + Math.random()*0.35; m.steerCooldown = 0; m.path = null; m.pathKey = null;
               }
             }
           } else {
-            // no opening → run all around the pen immediately
             m.wanderT -= dt;
-            if (!m.target || Math.hypot(m.target.x - m.pos.x, m.target.z - m.pos.z) < 0.8 || m.wanderT <= 0) {
-              m.target = randomAroundPenPoint(m); m.wanderT = 0.35 + Math.random()*0.35; m.steerCooldown = 0; m.path = null; m.pathKey = null;
-            }
+            if (!m.target || Math.hypot(m.target.x - m.pos.x, m.target.z - m.pos.z) < 0.6 || m.wanderT <= 0) { m.target = wanderGoalForPen(m); m.wanderT = 0.3 + Math.random()*0.3; m.steerCooldown = 0; m.path=null; m.pathKey=null; }
           }
-        } else {
-          // inside and fleeing: mill around immediately inside the pen
-          m.wanderT -= dt;
-          if (!m.target || Math.hypot(m.target.x - m.pos.x, m.target.z - m.pos.z) < 0.6 || m.wanderT <= 0) { m.target = wanderGoalForPen(m); m.wanderT = 0.3 + Math.random()*0.3; m.steerCooldown = 0; m.path=null; m.pathKey=null; }
         }
         } else {
-          if (m.fleeUntil) { m.fleeUntil = 0; m.speed = WALK / 2.2; } else m.speed = WALK / 2.2;
+          if (m._outsideFlee) { delete m._outsideFlee; delete m._fleeSrcX; delete m._fleeSrcZ; m.fleeUntil = 0; m.speed = WALK / 2.2; }
+          else if (m.fleeUntil) { m.fleeUntil = 0; m.speed = WALK / 2.2; } else m.speed = WALK / 2.2;
           // when not panicking: 1.5% per frame to exit freely if a gap exists
           if (insidePen && findPenGaps().length && Math.random() < 0.015) {
             const gap = nearestPenGap(m.pos.x, m.pos.z);
@@ -3342,76 +3391,110 @@ function panicVillagers(cx, cy, cz) {
 }
 function panicPenMobs(cx, cy, cz) {
   if (!villagePen || !mobs.length) return;
-  if (dim === "over" && ((cx - villageCenter.x) ** 2 + (cz - villageCenter.z) ** 2 > (VILLAGE_RADIUS + 15) ** 2)) return;
   if (Math.abs(cy - villageCenter.y) > CLOUD_BASE / 2) return;
   const now = performance.now() / 1000;
-  for (const m of mobs) {
-    if (m === carryMob || m === carryGrappleMob) continue;
-    if (m.dim !== undefined && m.dim !== dim) continue;
-    if (m.kind !== "pig" && m.kind !== "cow") continue;
-    const stagger = Math.random() * 3;
-    m.fleeUntil = Math.max(m.fleeUntil || 0, now + 10 + stagger);
-    m.speed = WALK * 2;
-    // mill around immediately and look for the entrance if a gap exists, otherwise run around
-    const insidePen = isInsidePen(m.pos.x, m.pos.z);
-    if (insidePen) {
-      m.target = wanderGoalForPen(m);
-      m.wanderT = 0.25 + Math.random()*0.25; m.steerCooldown = 0; m.path = null; m.pathKey = null;
-    } else {
-      const gap = nearestPenGap(m.pos.x, m.pos.z);
-      if (gap) {
-        const inside = penGapInside(gap);
-        // test if the gap is reachable (not blocked by a wall)
-        const d = Math.hypot(inside.x - m.pos.x, inside.z - m.pos.z);
-        const probe = mobProbeFree(m.pos.x, m.pos.z, (inside.x - m.pos.x)/(d||1), (inside.z - m.pos.z)/(d||1), Math.min(d, 6), m.hw, m.pos.y);
-        if (probe > d * 0.6 || d < 3) {
-          m.target = inside; m.wanderT = 1.2 + Math.random()*0.6; m.steerCooldown = 0;
+  const insideVillage = dim !== "over" || ((cx - villageCenter.x) ** 2 + (cz - villageCenter.z) ** 2 <= (VILLAGE_RADIUS + 15) ** 2);
+  if (insideVillage) {
+    for (const m of mobs) {
+      if (m === carryMob || m === carryGrappleMob) continue;
+      if (m.dim !== undefined && m.dim !== dim) continue;
+      if (m.kind !== "pig" && m.kind !== "cow") continue;
+      const stagger = Math.random() * 3;
+      m.fleeUntil = Math.max(m.fleeUntil || 0, now + 10 + stagger);
+      m.speed = WALK * 2;
+      delete m._outsideFlee; delete m._fleeSrcX; delete m._fleeSrcZ;
+      const insidePen = isInsidePen(m.pos.x, m.pos.z);
+      if (insidePen) {
+        m.target = wanderGoalForPen(m);
+        m.wanderT = 0.25 + Math.random()*0.25; m.steerCooldown = 0; m.path = null; m.pathKey = null;
+      } else {
+        const gap = nearestPenGap(m.pos.x, m.pos.z);
+        if (gap) {
+          const inside = penGapInside(gap);
+          const d = Math.hypot(inside.x - m.pos.x, inside.z - m.pos.z);
+          const probe = mobProbeFree(m.pos.x, m.pos.z, (inside.x - m.pos.x)/(d||1), (inside.z - m.pos.z)/(d||1), Math.min(d, 6), m.hw, m.pos.y);
+          if (probe > d * 0.6 || d < 3) {
+            m.target = inside; m.wanderT = 1.2 + Math.random()*0.6; m.steerCooldown = 0;
+          } else {
+            m.target = randomAroundPenPoint(m); m.wanderT = 0.35 + Math.random()*0.35; m.steerCooldown = 0;
+          }
         } else {
           m.target = randomAroundPenPoint(m); m.wanderT = 0.35 + Math.random()*0.35; m.steerCooldown = 0;
         }
-      } else {
-        m.target = randomAroundPenPoint(m); m.wanderT = 0.35 + Math.random()*0.35; m.steerCooldown = 0;
+        m.path = null; m.pathKey = null;
       }
-      m.path = null; m.pathKey = null;
+    }
+  } else {
+    for (const m of mobs) {
+      if (m === carryMob || m === carryGrappleMob) continue;
+      if (m.dim !== undefined && m.dim !== dim) continue;
+      if (m.kind !== "pig" && m.kind !== "cow") continue;
+      const dx = m.pos.x - cx, dz = m.pos.z - cz;
+      if (dx * dx + dz * dz > 20 * 20) continue;
+      if (Math.abs(m.pos.y - cy) > 12) continue;
+      const stagger = Math.random() * 1;
+      m.fleeUntil = Math.max(m.fleeUntil || 0, now + 5 + stagger);
+      m.speed = WALK * 2;
+      m._outsideFlee = true; m._fleeSrcX = cx; m._fleeSrcZ = cz;
+      m.target = fleePointAway(m, cx, cz);
+      m.wanderT = 1.2 + Math.random() * 0.8; m.steerCooldown = 0; m.path = null; m.pathKey = null;
     }
   }
 }
 function panicWolves(cx, cy, cz) {
   if (!mobs.length) return;
-  if (dim === "over" && ((cx - villageCenter.x) ** 2 + (cz - villageCenter.z) ** 2 > (VILLAGE_RADIUS + 15) ** 2)) return;
   if (Math.abs(cy - villageCenter.y) > CLOUD_BASE / 2) return;
   const now = performance.now() / 1000;
-  for (const m of mobs) {
-    if (m === carryMob || m === carryGrappleMob) continue;
-    if (m.dim !== undefined && m.dim !== dim) continue;
-    if (m.kind !== "wolf") continue;
-    const stagger = Math.random() * 3;
-    m.fleeUntil = Math.max(m.fleeUntil || 0, now + 10 + stagger);
-    m.speed = WALK * 2;
-    if (villagePen) {
-      const gaps = findPenGaps();
-      let tx, tz;
-      if (gaps.length) {
-        const gap = nearestPenGap(m.pos.x, m.pos.z);
-        if (gap) {
-          const inside = penGapInside(gap);
-          tx = inside.x + (Math.random() - 0.5) * 0.8;
-          tz = inside.z + (Math.random() - 0.5) * 0.8;
+  const insideVillage = dim !== "over" || ((cx - villageCenter.x) ** 2 + (cz - villageCenter.z) ** 2 <= (VILLAGE_RADIUS + 15) ** 2);
+  if (insideVillage) {
+    for (const m of mobs) {
+      if (m === carryMob || m === carryGrappleMob) continue;
+      if (m.dim !== undefined && m.dim !== dim) continue;
+      if (m.kind !== "wolf") continue;
+      const stagger = Math.random() * 3;
+      m.fleeUntil = Math.max(m.fleeUntil || 0, now + 10 + stagger);
+      m.speed = WALK * 2;
+      delete m._outsideFlee; delete m._fleeSrcX; delete m._fleeSrcZ;
+      if (villagePen) {
+        const gaps = findPenGaps();
+        let tx, tz;
+        if (gaps.length) {
+          const gap = nearestPenGap(m.pos.x, m.pos.z);
+          if (gap) {
+            const inside = penGapInside(gap);
+            tx = inside.x + (Math.random() - 0.5) * 0.8;
+            tz = inside.z + (Math.random() - 0.5) * 0.8;
+          } else {
+            const p = randomPenPoint();
+            tx = p.x; tz = p.z;
+          }
         } else {
           const p = randomPenPoint();
-          tx = p.x; tz = p.z;
+          tx = p.x + (Math.random() - 0.5) * 1.2;
+          tz = p.z + (Math.random() - 0.5) * 1.2;
         }
+        m.target = { x: tx, z: tz };
       } else {
-        const p = randomPenPoint();
-        tx = p.x + (Math.random() - 0.5) * 1.2;
-        tz = p.z + (Math.random() - 0.5) * 1.2;
+        m.target = wanderGoalForWolf(m);
       }
-      m.target = { x: tx, z: tz };
-    } else {
-      m.target = wanderGoalForWolf(m);
+      m.wanderT = 1 + Math.random() * 1;
+      m.steerCooldown = 0; m.path = null; m.pathKey = null;
     }
-    m.wanderT = 1 + Math.random() * 1;
-    m.steerCooldown = 0; m.path = null; m.pathKey = null;
+  } else {
+    for (const m of mobs) {
+      if (m === carryMob || m === carryGrappleMob) continue;
+      if (m.dim !== undefined && m.dim !== dim) continue;
+      if (m.kind !== "wolf") continue;
+      const dx = m.pos.x - cx, dz = m.pos.z - cz;
+      if (dx * dx + dz * dz > 20 * 20) continue;
+      if (Math.abs(m.pos.y - cy) > 12) continue;
+      const stagger = Math.random() * 1;
+      m.fleeUntil = Math.max(m.fleeUntil || 0, now + 5 + stagger);
+      m.speed = WALK * 2;
+      m._outsideFlee = true; m._fleeSrcX = cx; m._fleeSrcZ = cz;
+      m.target = fleePointAway(m, cx, cz);
+      m.wanderT = 1.2 + Math.random() * 0.8; m.steerCooldown = 0; m.path = null; m.pathKey = null;
+    }
   }
 }
 function handleMobExplosion(cx, cy, cz) {
