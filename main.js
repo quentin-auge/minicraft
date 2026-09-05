@@ -1452,7 +1452,7 @@ function groundYForMob(x, z, hintY, hw) {
   for (let y = MAX_Y; y >= 0; y--) if (!mobBlockedAt(x, z, hw, y)) return y;
   return Math.floor(hintY);
 }
-function wolfInWater(m) {
+function mobInWater(m) {
   const hw = m.hw, hh = m.h;
   const y0 = Math.floor(m.pos.y + 0.01), y1 = Math.floor(m.pos.y + hh - 0.01);
   for (let y = y0; y <= y1; y++) for (let bx = Math.floor(m.pos.x - hw); bx <= Math.floor(m.pos.x + hw); bx++) for (let bz = Math.floor(m.pos.z - hw); bz <= Math.floor(m.pos.z + hw); bz++) {
@@ -1461,6 +1461,7 @@ function wolfInWater(m) {
   }
   return false;
 }
+function wolfInWater(m){ return mobInWater(m); }
 function waterSurfaceForMob(m) {
   let top = -Infinity;
   for (let bx = Math.floor(m.pos.x - m.hw); bx <= Math.floor(m.pos.x + m.hw); bx++) for (let bz = Math.floor(m.pos.z - m.hw); bz <= Math.floor(m.pos.z + m.hw); bz++) {
@@ -2221,14 +2222,20 @@ function hasMobGround(x, z, hw, y) {
     const ox0 = Math.max(x - hw, bx), ox1 = Math.min(x + hw, bx + 1);
     const oz0 = Math.max(z - hw, bz), oz1 = Math.min(z + hw, bz + 1);
     if (ox1 - ox0 > 0.02 && oz1 - oz0 > 0.02) {
+      const gyBlock = getBlock(bx, gy, bz);
+      const gyIsWater = gyBlock === WATER || gyBlock === LAVA || gyBlock === MOON_WATER;
       if (isSolid(bx, gy, bz)) {
-        if (villagePen && getBlock(bx, gy, bz) === LOG && (bx === villagePen.minX || bx === villagePen.maxX || bz === villagePen.minZ || bz === villagePen.maxZ)) return false;
+        if (villagePen && gyBlock === LOG && (bx === villagePen.minX || bx === villagePen.maxX || bz === villagePen.minZ || bz === villagePen.maxZ)) return false;
         if (villageHouses.length && gy >= villageCenter.y + 1 && gy <= villageCenter.y + 5) {
           for (const h of villageHouses) if (bx >= h.minX && bx <= h.maxX && bz >= h.minZ && bz <= h.maxZ) return false;
         }
-      } else return false;
-      const b = getBlock(bx, Math.floor(py), bz);
-      if (b === WATER || b === LAVA || b === MOON_WATER) return false;
+      } else if (!gyIsWater) {
+        return false;
+      } else {
+        if (villageHouses.length && gy >= villageCenter.y + 1 && gy <= villageCenter.y + 5) {
+          for (const h of villageHouses) if (bx >= h.minX && bx <= h.maxX && bz >= h.minZ && bz <= h.maxZ) return false;
+        }
+      }
     }
   }
   return true;
@@ -2267,7 +2274,15 @@ function wolfHasMobGround(x, z, hw, y) {
     const ox0 = Math.max(x - hw, bx), ox1 = Math.min(x + hw, bx + 1);
     const oz0 = Math.max(z - hw, bz), oz1 = Math.min(z + hw, bz + 1);
     if (ox1 - ox0 > 0.02 && oz1 - oz0 > 0.02) {
+      const gyBlock = getBlock(bx, gy, bz);
+      const gyIsWater = gyBlock === WATER || gyBlock === LAVA || gyBlock === MOON_WATER;
       if (isSolid(bx, gy, bz)) {
+        if (villageHouses.length && gy >= villageCenter.y + 1 && gy <= villageCenter.y + 5) {
+          let overHouse = false; for (const h of villageHouses) if (bx >= h.minX && bx <= h.maxX && bz >= h.minZ && bz <= h.maxZ) { overHouse = true; break; }
+          if (overHouse) continue;
+        }
+        return true;
+      } else if (gyIsWater) {
         if (villageHouses.length && gy >= villageCenter.y + 1 && gy <= villageCenter.y + 5) {
           let overHouse = false; for (const h of villageHouses) if (bx >= h.minX && bx <= h.maxX && bz >= h.minZ && bz <= h.maxZ) { overHouse = true; break; }
           if (overHouse) continue;
@@ -2524,7 +2539,7 @@ function spawnVillagers() {
         legPhase: Math.random() * Math.PI * 2, speed: WALK / 2,
         blockedT: 0, yaw, yawTarget: yaw, villageBound: true,
         _stuckT: 0, _prevX: sx, _prevZ: sz,
-        path: null, pathIdx: 0, pathKey: null, sc: isBaby ? 0.52 : 1, steerX: 0, steerZ: 0, steerCooldown: 0, lastTarget: null
+        path: null, pathIdx: 0, pathKey: null, sc: isBaby ? 0.52 : 1, steerX: 0, steerZ: 0, steerCooldown: 0, lastTarget: null, _wasInWater: false, wolfInWater: false
       };
       mobs.push(m);
       mobById.set(m.id, m);
@@ -2591,7 +2606,7 @@ function spawnVillagers() {
         legPhase: Math.random() * Math.PI * 2, speed: WALK / 2.2,
         blockedT: 0, yaw, yawTarget: yaw, villageBound: false, penBound: true, penId: 0,
         _stuckT: 0, _prevX: sx, _prevZ: sz,
-        path: null, pathIdx: 0, pathKey: null, sc: 1, steerX: 0, steerZ: 0, steerCooldown: 0, lastTarget: null
+        path: null, pathIdx: 0, pathKey: null, sc: 1, steerX: 0, steerZ: 0, steerCooldown: 0, lastTarget: null, _wasInWater: false, wolfInWater: false
       };
       mobs.push(m);
       mobById.set(m.id, m);
@@ -2645,7 +2660,7 @@ function spawnVillagers() {
         blockedT: 0, yaw, yawTarget: yaw, villageBound: true,
         _stuckT: 0, _prevX: sx, _prevZ: sz,
         path: null, pathIdx: 0, pathKey: null, sc: 1, steerX: 0, steerZ: 0, steerCooldown: 0, lastTarget: null,
-        wolfStepUp: false, wolfStepUpClearY: 0, wolfInWater: false, wasOnGroundWolf: false
+        wolfStepUp: false, wolfStepUpClearY: 0, wolfInWater: false, wasOnGroundWolf: false, _wasInWater: false
       };
       m.target = wanderGoalForWolf(m);
       mobs.push(m);
@@ -4994,6 +5009,7 @@ function moveMobAxisX(mob, dx) {
     for (let bz = Math.floor(mob.pos.z - mob.hw); bz <= Math.floor(mob.pos.z + mob.hw); bz++) {
       if (!isSolid(cellX, by, bz)) continue;
       if (dir > 0 && edge > cellX) {
+        if (tryMobWaterStep(mob, cellX, by, bz)) return false;
         const canStep = mob.canStep && !aabbCollidesWorld(mob.pos.x, mob.pos.y+1, mob.pos.z, mob.hw, mob.h) && mobHasGroundFor(mob, mob.pos.x, mob.pos.z, mob.hw, mob.pos.y+1);
         if (canStep) {
           mob.pos.y += 1;
@@ -5003,6 +5019,7 @@ function moveMobAxisX(mob, dx) {
         mob.pos.x = cellX - mob.hw - 0.001; mob.vel.x = 0; if (mobStats) mobStats.worldCol++; return true;
       }
       if (dir < 0 && edge < cellX + 0.999) {
+        if (tryMobWaterStep(mob, cellX, by, bz)) return false;
         const canStep = mob.canStep && !aabbCollidesWorld(mob.pos.x, mob.pos.y+1, mob.pos.z, mob.hw, mob.h) && mobHasGroundFor(mob, mob.pos.x, mob.pos.z, mob.hw, mob.pos.y+1);
         if (canStep) {
           mob.pos.y += 1;
@@ -5064,6 +5081,7 @@ function moveMobAxisZ(mob, dz) {
     for (let bx = Math.floor(mob.pos.x - mob.hw); bx <= Math.floor(mob.pos.x + mob.hw); bx++) {
       if (!isSolid(bx, by, cellZ)) continue;
       if (dir > 0 && edge > cellZ) {
+        if (tryMobWaterStep(mob, bx, by, cellZ)) return false;
         const canStep = mob.canStep && !aabbCollidesWorld(mob.pos.x, mob.pos.y+1, mob.pos.z, mob.hw, mob.h) && mobHasGroundFor(mob, mob.pos.x, mob.pos.z, mob.hw, mob.pos.y+1);
         if (canStep) {
           mob.pos.y += 1;
@@ -5073,6 +5091,7 @@ function moveMobAxisZ(mob, dz) {
         mob.pos.z = cellZ - mob.hw - 0.001; mob.vel.z = 0; if (mobStats) mobStats.worldCol++; return true;
       }
       if (dir < 0 && edge < cellZ + 0.999) {
+        if (tryMobWaterStep(mob, bx, by, cellZ)) return false;
         const canStep = mob.canStep && !aabbCollidesWorld(mob.pos.x, mob.pos.y+1, mob.pos.z, mob.hw, mob.h) && mobHasGroundFor(mob, mob.pos.x, mob.pos.z, mob.hw, mob.pos.y+1);
         if (canStep) {
           mob.pos.y += 1;
@@ -5146,8 +5165,29 @@ function moveMobAxisY(mob, dy) {
 function mobPhysicsStep(mob, dt, g) {
   const grav = g != null ? g : GRAVITY;
   const useGrav = mob.pos.y >= MOON_Y - MOON_R ? grav * 0.5 : grav;
-  if (!mob.onGround) mob.vel.y -= useGrav * dt;
-  if (mob.vel.y < -40) mob.vel.y = -40;
+  const inWater = mobInWater(mob);
+  const wasInWater = mob._wasInWater || false;
+  if (inWater && !wasInWater && mob.vel.y < 0) mob.vel.y *= 0.3;
+  mob._wasInWater = inWater;
+  mob.wolfInWater = inWater;
+  if (inWater) {
+    const surface = waterSurfaceForMob(mob);
+    if (surface === -Infinity) {
+      if (!mob.onGround) mob.vel.y -= useGrav * dt;
+    } else {
+      const targetY = surface - mob.h / 3;
+      const err = targetY - mob.pos.y;
+      if (err > SWIM_AREA) mob.vel.y += SWIM_ACCEL * dt;
+      else {
+        const want = err * 4;
+        mob.vel.y += (want - mob.vel.y) * Math.min(1, dt * SWIM_BRAKE * 2);
+      }
+    }
+    mob.vel.y = Math.min(Math.max(mob.vel.y, -SWIM_MAX), SWIM_MAX);
+  } else {
+    if (!mob.onGround) mob.vel.y -= useGrav * dt;
+    if (mob.vel.y < -40) mob.vel.y = -40;
+  }
   moveMobAxisY(mob, mob.vel.y * dt);
   moveMobAxisX(mob, mob.vel.x * dt);
   moveMobAxisZ(mob, mob.vel.z * dt);
@@ -5167,24 +5207,6 @@ function mobPhysicsStep(mob, dt, g) {
     mob.vel.x=0; mob.vel.z=0; mob.vel.y=0;
     mob.onGround = true;
     if(mobStats) mobStats.worldCol++;
-  }
-  // penBound: no artificial clamp — the LOG fence blocks via aabbCollidesWorld/hasMobGround
-  // if a fence block is destroyed, the gap lets them through (general physics)
-  let inLiquid = false;
-  for (let by = Math.floor(mob.pos.y); by <= Math.floor(mob.pos.y + mob.h); by++) {
-    for (let bx = Math.floor(mob.pos.x - mob.hw); bx <= Math.floor(mob.pos.x + mob.hw); bx++) {
-      for (let bz = Math.floor(mob.pos.z - mob.hw); bz <= Math.floor(mob.pos.z + mob.hw); bz++) {
-        const lid = getBlock(bx, by, bz);
-        if (lid === WATER || lid === LAVA || lid === MOON_WATER) { inLiquid = true; break; }
-      }
-      if (inLiquid) break;
-    }
-    if (inLiquid) break;
-  }
-  if (inLiquid) {
-    mob.vel.y *= 0.96;
-    if (mob.vel.y < 0.6) mob.vel.y = 0.6;
-    mob.onGround = false;
   }
 }
 function tryWolfStep(mob, bx, by, bz) {
@@ -5207,6 +5229,17 @@ function tryWolfStep(mob, bx, by, bz) {
     mob.wolfStepUp = false;
     return true;
   }
+}
+function tryMobWaterStep(mob, bx, by, bz) {
+  if (!mobInWater(mob)) return false;
+  const fy = Math.floor(mob.pos.y);
+  if (by !== fy && by !== fy + 1) return false;
+  if (isSolid(bx, by + 1, bz)) return false;
+  if (aabbCollidesWorld(mob.pos.x, by + 1 + 0.001, mob.pos.z, mob.hw, mob.h)) return false;
+  mob.vel.y = JUMP_MIN + 2.5;
+  mob.onGround = false;
+  mob.wolfStepUp = false;
+  return true;
 }
 function wolfMoveAxisY(mob, dy) {
   mob.pos.y += dy;
@@ -5327,7 +5360,10 @@ function wolfMoveAxisZ(mob, dz) {
 function wolfPhysicsStep(mob, dt, g) {
   const grav = g != null ? g : GRAVITY;
   const useGrav = mob.pos.y >= MOON_Y - MOON_R ? grav * 0.5 : grav;
-  const inWater = wolfInWater(mob);
+  const inWater = mobInWater(mob);
+  const wasInWater = mob._wasInWater || false;
+  if (inWater && !wasInWater && mob.vel.y < 0) mob.vel.y *= 0.3;
+  mob._wasInWater = inWater;
   mob.wolfInWater = inWater;
   mob.wasOnGroundWolf = wolfHasMobGround(mob.pos.x, mob.pos.z, mob.hw, mob.pos.y) || mob.onGround;
   if (mob.wolfStepUp) {
@@ -5344,7 +5380,7 @@ function wolfPhysicsStep(mob, dt, g) {
     if (surface === -Infinity) {
       if (!mob.onGround) mob.vel.y -= useGrav * dt;
     } else {
-      const targetY = surface - 1.17;
+      const targetY = surface - mob.h / 3;
       const err = targetY - mob.pos.y;
       if (err > SWIM_AREA) mob.vel.y += SWIM_ACCEL * dt;
       else {
@@ -9671,7 +9707,7 @@ if (location.search.includes('test')) {
     getTypeMats, get typeMats(){ return typeMats; }, buildWorld, generateWorld, computeVillageLayout, spawnVillagers, refreshBlocks, get boxGeo(){ return boxGeo; }, THREE,
     get pos(){ return pos; }, get camera(){ return camera; }, get yaw(){ return yaw; }, set yaw(v){ yaw=v; }, get pitch(){ return pitch; }, set pitch(v){ pitch=v; },
     get carryMob(){ return carryMob; }, handleCarryEnterDown, handleCarryEnterUp, pickMob, get carryGrappleActive(){ return carryGrappleActive; }, get carryGrappleMob(){ return carryGrappleMob; }, get carryGrappleBlock(){ return carryGrappleBlock; }, get carryGrappleHookPos(){ return carryGrappleHookPos; }, get carryGrappleOffset(){ return carryGrappleOffset; }, get carryGrappleMode(){ return carryGrappleMode; }, get isMobFrozenByGrapple(){ return isMobFrozenByGrapple; }, get grappleMob(){ return grappleMob; }, get grappleMobOffset(){ return grappleMobOffset; }, get grappleHookPos(){ return grappleHookPos; }, get grappleTarget(){ return grappleTarget; }, updateCarryGrapple, get currentBlock(){ return currentBlock; }, updateTarget, toggleCarry: handleCarryEnterDown, findNearestMobForGrab: (...a)=>{ const d=new THREE.Vector3(); camera.getWorldDirection(d); return pickMob(d); }, get playerArms(){ return playerArms; }, get started(){ return started; }, set started(v){ started=v; }, get loading(){ return loading; }, get freeCam(){ return freeCam; }, set freeCam(v){ freeCam=v; }, get helpOpen(){ return helpOpen; },
-    get WOLF_COUNT(){ return WOLF_COUNT; }, makeWolfMesh, villagerHW, villagerH, wolfHasMobGround, wolfBlockedAt, wolfProbeFree, wanderGoalForWolf, wolfFindPath, wolfInWater, waterSurfaceForMob, wolfPhysicsStep, updateMobs, get isPigCow(){ return isPigCow; }, get pigOverlapsFence(){ return pigOverlapsFence; }
+    get WOLF_COUNT(){ return WOLF_COUNT; }, makeWolfMesh, villagerHW, villagerH, wolfHasMobGround, wolfBlockedAt, wolfProbeFree, wanderGoalForWolf, wolfFindPath, wolfInWater, mobInWater, waterSurfaceForMob, mobPhysicsStep, wolfPhysicsStep, updateMobs, get isPigCow(){ return isPigCow; }, get pigOverlapsFence(){ return pigOverlapsFence; }
   };
 }
 
