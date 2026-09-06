@@ -9724,7 +9724,15 @@ function select(i) {
   selected = ((i % hotbarList().length) + hotbarList().length) % hotbarList().length;
   [...hotbarEl.children].forEach((c, j) => c.classList.toggle("selected", j === selected));
 }
-document.addEventListener("wheel", (e) => { if (!loading) select(selected + (e.deltaY > 0 ? -1 : 1)); }, { passive: true });
+let lastWheelT = 0;
+const WHEEL_COOLDOWN = 50;
+document.addEventListener("wheel", (e) => {
+  if (loading) return;
+  const now = performance.now();
+  if (now - lastWheelT < WHEEL_COOLDOWN) return;
+  lastWheelT = now;
+  select(selected + (e.deltaY > 0 ? -1 : 1));
+}, { passive: true });
 
 // ---------------------------------------------------------------------------
 // Input / pointer lock
