@@ -881,11 +881,14 @@ function stairEntrances() {
 
 const VILLAGE_RADIUS = 28;
 const VILLAGE_HOUSES = 8;
-const VILLAGE_PEN_W = 12;
-const VILLAGE_PEN_D = 10;
+const VILLAGE_PEN_W = 14;
+const VILLAGE_PEN_D = 12;
 const VILLAGE_POOL_W = 8;
 const VILLAGE_POOL_D = 6;
 const VILLAGE_POOL_DEPTH = 2;
+const VILLAGE_PEN_POOL_W = 2;
+const VILLAGE_PEN_POOL_D = 2;
+const VILLAGE_PEN_POOL_DEPTH = 1;
 const PIG_COUNT = 4;
 const COW_COUNT = 4;
 const WOLF_COUNT = 5;
@@ -920,7 +923,7 @@ function computeVillageLayout() {
   villageCenter = { x: vx, z: vz, y: vy };
   villageMinX = vx - VILLAGE_RADIUS; villageMaxX = vx + VILLAGE_RADIUS;
   villageMinZ = vz - VILLAGE_RADIUS; villageMaxZ = vz + VILLAGE_RADIUS;
-  // — pig/cow pen first to guarantee a slot (12×10) —
+  // — pig/cow pen first to guarantee a slot (14×12) —
   villagePen = null;
   let _penTries = 0;
   for (let _pt = 0; _pt < 1200 && !villagePen; _pt++) {
@@ -938,6 +941,7 @@ function computeVillageLayout() {
     else if (_a >= 135 && _a < 225) _gateSide = 2;
     else if (_a >= 225 && _a < 315) _gateSide = 3;
     villagePen = { cx, cz, vy, minX, maxX, minZ, maxZ, gateSide: _gateSide };
+    villagePen.pool = { minX: minX + 1, minZ: minZ + 1, maxX: minX + VILLAGE_PEN_POOL_W, maxZ: minZ + VILLAGE_PEN_POOL_D };
   }
   // — 8x6 swimming pool, 2 deep, at floor level; avoids the pen, houses avoid it —
   villagePool = null;
@@ -1007,6 +1011,36 @@ function isInsidePen(x, z) {
   if (!villagePen) return false;
   return x >= villagePen.minX && x <= villagePen.maxX && z >= villagePen.minZ && z <= villagePen.maxZ;
 }
+function isInsidePenPool(x, z) {
+  if (!villagePen || !villagePen.pool) return false;
+  const q = villagePen.pool;
+  return x >= q.minX && x <= q.maxX && z >= q.minZ && z <= q.maxZ;
+}
+function penPoolExitTarget(x, z) {
+  if (!villagePen || !villagePen.pool) return null;
+  const q = villagePen.pool, p = villagePen;
+  const dL = x - q.minX, dR = (q.maxX + 1) - x, dT = z - q.minZ, dB = (q.maxZ + 1) - z;
+  const cx = Math.max(p.minX + 1, Math.min(p.maxX - 1, x));
+  const cz = Math.max(p.minZ + 1, Math.min(p.maxZ - 1, z));
+  const cands = [];
+  if (dL <= dR && dL <= dT && dL <= dB) cands.push(0);
+  if (dR <= dL && dR <= dT && dR <= dB) cands.push(1);
+  if (dT <= dB && dT <= dL && dT <= dR) cands.push(2);
+  if (dB <= dT && dB <= dL && dB <= dR) cands.push(3);
+  for (let i = 0; i < 4; i++) if (!cands.includes(i)) cands.push(i);
+  for (const side of cands) {
+    let ex = null;
+    if (side === 0) ex = { x: q.minX - 1.5, z: cz };
+    else if (side === 1) ex = { x: q.maxX + 2.5, z: cz };
+    else if (side === 2) ex = { x: cx, z: q.minZ - 1.5 };
+    else ex = { x: cx, z: q.maxZ + 2.5 };
+    if (ex.x <= p.minX + 0.7 || ex.x >= p.maxX - 0.7 || ex.z <= p.minZ + 0.7 || ex.z >= p.maxZ - 0.7) continue;
+    if (ex.x < villageMinX + 1 || ex.x > villageMaxX - 1 || ex.z < villageMinZ + 1 || ex.z > villageMaxZ - 1) continue;
+    if (isInsideAnyHouse(ex.x, ex.z)) continue;
+    return ex;
+  }
+  return null;
+}
 function isInsidePool(x, z) {
   if (!villagePool) return false;
   return x >= villagePool.minX && x <= villagePool.maxX && z >= villagePool.minZ && z <= villagePool.maxZ;
@@ -1064,6 +1098,27 @@ function placeVillagePen() {
     if (!onEdge) continue;
     setBlock(x, vy + 1, z, LOG);
     if (getBlock(x, vy + 2, z) !== AIR) setBlock(x, vy + 2, z, AIR);
+  }
+}
+function placeVillagePenPool() {
+  if (!villagePen || !villagePen.pool) return;
+  const p = villagePen, q = p.pool, vy = p.vy;
+  for (let x = q.minX; x <= q.maxX; x++) for (let z = q.minZ; z <= q.maxZ; z++) {
+    setBlock(x, vy + 1 - VILLAGE_PEN_POOL_DEPTH, z, STONE);
+    for (let y = vy + 2 - VILLAGE_PEN_POOL_DEPTH; y <= vy + 1; y++) setBlock(x, y, z, WATER);
+    if (getBlock(x, vy + 2, z) !== AIR) setBlock(x, vy + 2, z, AIR);
+    if (getBlock(x, vy + 3, z) !== AIR) setBlock(x, vy + 3, z, AIR);
+  }
+  // stone L on the two inner sides; the pen's own LOG fence frames the two corner sides
+  for (let z = q.minZ; z <= q.maxZ + 1; z++) {
+    setBlock(q.maxX + 1, vy + 1, z, STONE);
+    if (getBlock(q.maxX + 1, vy + 2, z) !== AIR) setBlock(q.maxX + 1, vy + 2, z, AIR);
+    if (getBlock(q.maxX + 1, vy + 3, z) !== AIR) setBlock(q.maxX + 1, vy + 3, z, AIR);
+  }
+  for (let x = q.minX; x <= q.maxX + 1; x++) {
+    setBlock(x, vy + 1, q.maxZ + 1, STONE);
+    if (getBlock(x, vy + 2, q.maxZ + 1) !== AIR) setBlock(x, vy + 2, q.maxZ + 1, AIR);
+    if (getBlock(x, vy + 3, q.maxZ + 1) !== AIR) setBlock(x, vy + 3, q.maxZ + 1, AIR);
   }
 }
 function placeVillageHouses() {
@@ -2079,6 +2134,7 @@ function randomVillagePoint() {
     const z = villageMinZ + 2 + Math.random() * (villageMaxZ - villageMinZ - 4);
     if (isInsideAnyHouse(x, z)) continue;
     if (isInsidePool(x, z)) continue;
+    if (isInsidePenPool(x, z)) continue;
     if (mobBlockedAt(x, z, 0.27, villageCenter.y + 1)) continue;
     if (x < villageMinX + 1 || x > villageMaxX - 1 || z < villageMinZ + 1 || z > villageMaxZ - 1) continue;
     return { x, z };
@@ -2103,6 +2159,7 @@ function wanderGoalFor(m) {
     const z = villageMinZ + 2 + Math.random() * (villageMaxZ - villageMinZ - 4);
     if (isInsideAnyHouse(x, z)) continue;
     if (isInsidePool(x, z)) continue;
+    if (isInsidePenPool(x, z)) continue;
     if (x < villageMinX + 1 || x > villageMaxX - 1 || z < villageMinZ + 1 || z > villageMaxZ - 1) continue;
     if (mobBlockedAt(x, z, m.hw, villageCenter.y + 1)) continue;
     if (aabbCollidesWorld(x, villageCenter.y + 1, z, m.hw, m.h)) continue;
@@ -2131,6 +2188,7 @@ function wanderGoalFor(m) {
     const z = villageMinZ + 2 + Math.random() * (villageMaxZ - villageMinZ - 4);
     if (isInsideAnyHouse(x, z)) continue;
     if (isInsidePool(x, z)) continue;
+    if (isInsidePenPool(x, z)) continue;
     if (mobBlockedAt(x, z, 0.27, villageCenter.y + 1)) continue;
     return { x, z };
   }
@@ -2143,6 +2201,7 @@ function randomPenPoint() {
     const x = p.minX + 1.5 + Math.random() * (p.maxX - p.minX - 3);
     const z = p.minZ + 1.5 + Math.random() * (p.maxZ - p.minZ - 3);
     const cx = Math.floor(x) + 0.5, cz = Math.floor(z) + 0.5;
+    if (isInsidePenPool(cx, cz)) continue;
     if (isInsidePen(cx, cz) && !mobBlockedAt(cx, cz, 0.32, villageCenter.y + 1) && !aabbCollidesWorld(cx, villageCenter.y + 1, cz, 0.32, 1.1)) return { x: cx, z: cz };
   }
   return { x: villagePen.cx + 0.5, z: villagePen.cz + 0.5 };
@@ -2155,6 +2214,7 @@ function wanderGoalForPen(m) {
     const x = p.minX + 1.5 + Math.random() * (p.maxX - p.minX - 3);
     const z = p.minZ + 1.5 + Math.random() * (p.maxZ - p.minZ - 3);
     const cx = Math.floor(x) + 0.5, cz = Math.floor(z) + 0.5;
+    if (isInsidePenPool(cx, cz)) continue;
     if (isInsidePen(cx, cz) && mobBlockedAt(cx, cz, m.hw, villageCenter.y + 1)) continue;
     if (aabbCollidesWorld(cx, villageCenter.y + 1, cz, m.hw, m.h)) continue;
     // keep strictly inside fence interior (1 block inset)
@@ -2182,6 +2242,7 @@ function wanderGoalForPen(m) {
     const x = p.minX + 1.5 + Math.random() * (p.maxX - p.minX - 3);
     const z = p.minZ + 1.5 + Math.random() * (p.maxZ - p.minZ - 3);
     const cx = Math.floor(x) + 0.5, cz = Math.floor(z) + 0.5;
+    if (isInsidePenPool(cx, cz)) continue;
     if (mobBlockedAt(cx, cz, m.hw, villageCenter.y + 1)) continue;
     if (aabbCollidesWorld(cx, villageCenter.y + 1, cz, m.hw, m.h)) continue;
     return { x: cx, z: cz };
@@ -2275,6 +2336,7 @@ function fleePointAway(mob, cx, cz) {
     if (Math.abs(tx) > WORLD_RADIUS - 1 || Math.abs(tz) > WORLD_RADIUS - 1) continue;
     if (isInsideAnyHouse(tx, tz)) continue;
     if (isInsidePool(tx, tz)) continue;
+    if (isInsidePenPool(tx, tz)) continue;
     const py = mob.pos.y;
     if (aabbCollidesWorld(tx, py, tz, mob.hw, mob.h)) continue;
     let okGround = hasGround(tx, tz, mob.hw, py);
@@ -2290,7 +2352,7 @@ function fleePointAway(mob, cx, cz) {
   const tx2 = mob.pos.x + dx * 6, tz2 = mob.pos.z + dz * 6;
   const py2 = mob.pos.y;
   const hasGround2 = mob.canStep ? wolfHasMobGround : hasMobGround;
-  if (!isInsidePool(tx2, tz2) && Math.abs(tx2) <= WORLD_RADIUS - 1 && Math.abs(tz2) <= WORLD_RADIUS - 1 && !aabbCollidesWorld(tx2, py2, tz2, mob.hw, mob.h) && (hasGround2(tx2, tz2, mob.hw, py2) || hasGround2(tx2, tz2, mob.hw, py2 + 1) || hasGround2(tx2, tz2, mob.hw, py2 - 1))) return { x: tx2, z: tz2 };
+  if (!isInsidePool(tx2, tz2) && !isInsidePenPool(tx2, tz2) && Math.abs(tx2) <= WORLD_RADIUS - 1 && Math.abs(tz2) <= WORLD_RADIUS - 1 && !aabbCollidesWorld(tx2, py2, tz2, mob.hw, mob.h) && (hasGround2(tx2, tz2, mob.hw, py2) || hasGround2(tx2, tz2, mob.hw, py2 + 1) || hasGround2(tx2, tz2, mob.hw, py2 - 1))) return { x: tx2, z: tz2 };
   return { x: mob.pos.x + dx * 3 + (Math.random() - 0.5), z: mob.pos.z + dz * 3 + (Math.random() - 0.5) };
 }
 function hasMobGround(x, z, hw, y) {
@@ -2444,6 +2506,7 @@ function wolfFindPath(sx, sz, tx, tz, hw, pyHint) {
       if (came.has(k)) continue;
       if (isOutsideGoal && isInsideAnyHouse(nx + 0.5, nz + 0.5)) continue;
       if (villagePool && isInsidePool(nx + 0.5, nz + 0.5)) continue;
+      if (isInsidePenPool(nx + 0.5, nz + 0.5)) continue;
       if (wolfBlockedAt(nx + 0.5, nz + 0.5, hw, py)) continue;
       came.set(k, [cx, cz]);
       q.push([nx, nz]);
@@ -2467,6 +2530,7 @@ function wanderGoalForWolf(m) {
     const z = villageMinZ + 2 + Math.random() * (villageMaxZ - villageMinZ - 4);
     if (isInsideAnyHouse(x, z)) continue;
     if (isInsidePool(x, z)) continue;
+    if (isInsidePenPool(x, z)) continue;
     if (x < villageMinX + 1 || x > villageMaxX - 1 || z < villageMinZ + 1 || z > villageMaxZ - 1) continue;
     if (wolfBlockedAt(x, z, m.hw, villageCenter.y + 1)) continue;
     if (aabbCollidesWorld(x, villageCenter.y + 1, z, m.hw, m.h)) continue;
@@ -2495,6 +2559,7 @@ function wanderGoalForWolf(m) {
     const z = villageMinZ + 2 + Math.random() * (villageMaxZ - villageMinZ - 4);
     if (isInsideAnyHouse(x, z)) continue;
     if (isInsidePool(x, z)) continue;
+    if (isInsidePenPool(x, z)) continue;
     if (wolfBlockedAt(x, z, 0.30, villageCenter.y + 1)) continue;
     return { x, z };
   }
@@ -2521,6 +2586,7 @@ function findVillagePath(sx, sz, tx, tz, hw, pyHint) {
       if (came.has(k)) continue;
       if (isOutsideGoal && isInsideAnyHouse(nx + 0.5, nz + 0.5)) continue;
       if (villagePool && isInsidePool(nx + 0.5, nz + 0.5)) continue;
+      if (isInsidePenPool(nx + 0.5, nz + 0.5)) continue;
       if (mobBlockedAt(nx + 0.5, nz + 0.5, hw, py)) continue;
       came.set(k, [cx, cz]);
       q.push([nx, nz]);
@@ -2598,7 +2664,7 @@ function spawnVillagers() {
         sz = Math.floor(sz) + 0.5;
         const blockKey = `${Math.floor(sx)},${villageCenter.y + 1},${Math.floor(sz)}`;
         if (usedBlocks.has(blockKey)) { tries++; continue; }
-        if (isInsideAnyHouse(sx, sz) || isInsidePool(sx, sz) || mobBlockedAt(sx, sz, hw, villageCenter.y + 1) || used.some((u) => (u[0] - sx) ** 2 + (u[1] - sz) ** 2 < 1.6)) { tries++; continue; }
+        if (isInsideAnyHouse(sx, sz) || isInsidePool(sx, sz) || isInsidePenPool(sx, sz) || mobBlockedAt(sx, sz, hw, villageCenter.y + 1) || used.some((u) => (u[0] - sx) ** 2 + (u[1] - sz) ** 2 < 1.6)) { tries++; continue; }
         break;
       } while (tries < 30);
       // final snap center
@@ -2664,6 +2730,7 @@ function spawnVillagers() {
         sx = Math.floor(rx) + 0.5; sz = Math.floor(rz) + 0.5;
         const blockKey = `${Math.floor(sx)},${villageCenter.y + 1},${Math.floor(sz)}`;
         if (usedBlocks.has(blockKey)) { tries++; continue; }
+        if (isInsidePenPool(sx, sz)) { tries++; continue; }
         if (mobBlockedAt(sx, sz, hw, villageCenter.y + 1) || aabbCollidesWorld(sx, villageCenter.y + 1, sz, hw, hh)) { tries++; continue; }
         // keep strictly inside fence interior
         if (sx <= villagePen.minX + 0.7 || sx >= villagePen.maxX - 0.7 || sz <= villagePen.minZ + 0.7 || sz >= villagePen.maxZ - 0.7) { tries++; continue; }
@@ -2718,7 +2785,7 @@ function spawnVillagers() {
         sx = Math.floor(sx) + 0.5; sz = Math.floor(sz) + 0.5;
         const blockKey = `${Math.floor(sx)},${villageCenter.y + 1},${Math.floor(sz)}`;
         if (usedBlocks.has(blockKey)) { tries++; continue; }
-        if (isInsideAnyHouse(sx, sz) || isInsidePool(sx, sz) || wolfBlockedAt(sx, sz, hw, villageCenter.y + 1) || aabbCollidesWorld(sx, villageCenter.y + 1, sz, hw, hh)) { tries++; continue; }
+        if (isInsideAnyHouse(sx, sz) || isInsidePool(sx, sz) || isInsidePenPool(sx, sz) || wolfBlockedAt(sx, sz, hw, villageCenter.y + 1) || aabbCollidesWorld(sx, villageCenter.y + 1, sz, hw, hh)) { tries++; continue; }
         if (isInsidePen(sx, sz)) { tries++; continue; }
         if (used.some((u) => (u[0] - sx) ** 2 + (u[1] - sz) ** 2 < 1.4)) { tries++; continue; }
         break;
@@ -3208,6 +3275,10 @@ function updateMobs(dt) {
       poolEx = poolExitTarget(m.pos.x, m.pos.z);
       if (poolEx) { m.path = null; m.pathKey = null; }
     }
+    if (!poolEx && villagePen && villagePen.pool && isInsidePenPool(m.pos.x, m.pos.z) && mobInWater(m)) {
+      poolEx = penPoolExitTarget(m.pos.x, m.pos.z);
+      if (poolEx) { m.path = null; m.pathKey = null; }
+    }
     let tx = poolEx ? poolEx.x : (m.target ? m.target.x : m.pos.x);
     let tz = poolEx ? poolEx.z : (m.target ? m.target.z : m.pos.z);
     let hasPath = false;
@@ -3662,6 +3733,7 @@ function generateWorld() {
   stairEntrances();
   placeVillageHouses();
   placeVillagePen();
+  placeVillagePenPool();
   placeVillagePool();
   generateClouds();
   generateMoon();
@@ -9777,12 +9849,12 @@ requestAnimationFrame(loop);
 if (location.search.includes('test')) {
   window._test = {
     get world(){ return world; }, get worlds(){ return worlds; }, get mobs(){ return mobs; },
-    getBlock, setBlock, handleMobExplosion, processExplosionQueue, isMobStandingOn, intersectsMob, key, BLAST_RADIUS, TNT, STONE, AIR, get SAND(){ return SAND; }, get WATER(){ return WATER; }, get VILLAGE_POOL_W(){ return VILLAGE_POOL_W; }, get VILLAGE_POOL_D(){ return VILLAGE_POOL_D; }, get VILLAGE_POOL_DEPTH(){ return VILLAGE_POOL_DEPTH; },
-    get villageCenter(){ return villageCenter; }, get villageHouses(){ return villageHouses; }, get villagePen(){ return villagePen; }, get villagePool(){ return villagePool; }, get isInsidePen(){ return isInsidePen; }, get isInsidePool(){ return isInsidePool; }, get poolExitTarget(){ return poolExitTarget; }, get LOG(){ return LOG; }, findPenGaps, nearestPenGap, penGapInside, penGapOutside, hasMobGround, mobBlockedAt, aabbCollidesWorld, mobProbeFree, randomPenPoint, randomAroundPenPoint, groundYForMob, get CLOUD_BASE(){ return CLOUD_BASE; }, get CLOUD_TOP(){ return CLOUD_TOP; }, get MAX_Y(){ return MAX_Y; },
+    getBlock, setBlock, handleMobExplosion, processExplosionQueue, isMobStandingOn, intersectsMob, key, BLAST_RADIUS, TNT, STONE, AIR, get SAND(){ return SAND; }, get WATER(){ return WATER; }, get VILLAGE_POOL_W(){ return VILLAGE_POOL_W; }, get VILLAGE_POOL_D(){ return VILLAGE_POOL_D; }, get VILLAGE_POOL_DEPTH(){ return VILLAGE_POOL_DEPTH; }, get VILLAGE_PEN_POOL_W(){ return VILLAGE_PEN_POOL_W; }, get VILLAGE_PEN_POOL_D(){ return VILLAGE_PEN_POOL_D; }, get VILLAGE_PEN_POOL_DEPTH(){ return VILLAGE_PEN_POOL_DEPTH; },
+    get villageCenter(){ return villageCenter; }, get villageHouses(){ return villageHouses; }, get villagePen(){ return villagePen; }, get villagePool(){ return villagePool; }, get isInsidePen(){ return isInsidePen; }, get isInsidePool(){ return isInsidePool; }, get isInsidePenPool(){ return isInsidePenPool; }, get poolExitTarget(){ return poolExitTarget; }, get penPoolExitTarget(){ return penPoolExitTarget; }, get LOG(){ return LOG; }, findPenGaps, nearestPenGap, penGapInside, penGapOutside, hasMobGround, mobBlockedAt, aabbCollidesWorld, mobProbeFree, randomPenPoint, randomAroundPenPoint, groundYForMob, get CLOUD_BASE(){ return CLOUD_BASE; }, get CLOUD_TOP(){ return CLOUD_TOP; }, get MAX_Y(){ return MAX_Y; },
     getTypeMats, get typeMats(){ return typeMats; }, buildWorld, generateWorld, computeVillageLayout, spawnVillagers, refreshBlocks, get boxGeo(){ return boxGeo; }, THREE,
     get pos(){ return pos; }, get camera(){ return camera; }, get yaw(){ return yaw; }, set yaw(v){ yaw=v; }, get pitch(){ return pitch; }, set pitch(v){ pitch=v; },
     get carryMob(){ return carryMob; }, handleCarryEnterDown, handleCarryEnterUp, pickMob, get carryGrappleActive(){ return carryGrappleActive; }, get carryGrappleMob(){ return carryGrappleMob; }, get carryGrappleBlock(){ return carryGrappleBlock; }, get carryGrappleHookPos(){ return carryGrappleHookPos; }, get carryGrappleOffset(){ return carryGrappleOffset; }, get carryGrappleMode(){ return carryGrappleMode; }, get isMobFrozenByGrapple(){ return isMobFrozenByGrapple; }, get grappleMob(){ return grappleMob; }, get grappleMobOffset(){ return grappleMobOffset; }, get grappleHookPos(){ return grappleHookPos; }, get grappleTarget(){ return grappleTarget; }, updateCarryGrapple, get currentBlock(){ return currentBlock; }, updateTarget, toggleCarry: handleCarryEnterDown, findNearestMobForGrab: (...a)=>{ const d=new THREE.Vector3(); camera.getWorldDirection(d); return pickMob(d); }, get playerArms(){ return playerArms; }, get started(){ return started; }, set started(v){ started=v; }, get loading(){ return loading; }, get freeCam(){ return freeCam; }, set freeCam(v){ freeCam=v; }, get helpOpen(){ return helpOpen; },
-    get WOLF_COUNT(){ return WOLF_COUNT; }, makeWolfMesh, villagerHW, villagerH, wolfHasMobGround, wolfBlockedAt, wolfProbeFree, wanderGoalForWolf, wolfFindPath, wolfInWater, mobInWater, waterSurfaceForMob, mobPhysicsStep, wolfPhysicsStep, updateMobs, get isPigCow(){ return isPigCow; }, get pigOverlapsFence(){ return pigOverlapsFence; }, get MOB_FLOAT_FRAC(){ return MOB_FLOAT_FRAC; }, mobFloatTargetY, mobWaterExitJump, poolExitTarget
+    get WOLF_COUNT(){ return WOLF_COUNT; }, makeWolfMesh, villagerHW, villagerH, wolfHasMobGround, wolfBlockedAt, wolfProbeFree, wanderGoalForWolf, wolfFindPath, wolfInWater, mobInWater, waterSurfaceForMob, mobPhysicsStep, wolfPhysicsStep, updateMobs,     get isPigCow(){ return isPigCow; }, get pigOverlapsFence(){ return pigOverlapsFence; }, get MOB_FLOAT_FRAC(){ return MOB_FLOAT_FRAC; }, mobFloatTargetY, mobWaterExitJump, poolExitTarget, penPoolExitTarget, isInsidePenPool
   };
 }
 
