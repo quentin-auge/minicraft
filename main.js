@@ -6615,6 +6615,10 @@ let leftTimer = 0;
 let leftStairs = false;
 let leftEverMoved = false;
 let rightMoved = false;
+// Accumulated pointer-lock pixels since right press: the hold only skips the
+// 1s gate once this passes RIGHT_MOVE_PX, so tiny jitter never starts a dig.
+let rightMoveAcc = 0;
+const RIGHT_MOVE_PX = 15;
 // Positions of every block placed/removed during the current click hold:
 // chained edits are only allowed within CHAIN_RANGE blocks of any of them.
 let clickAnchors = [];
@@ -9764,7 +9768,10 @@ document.addEventListener("mousemove", (e) => {
   leftMoved = true;
   leftEverMoved = true;
   leftTimer = 0;
-  rightMoved = true;
+  if (editHold[2].down) {
+    rightMoveAcc += Math.abs(e.movementX) + Math.abs(e.movementY);
+    if (rightMoveAcc >= RIGHT_MOVE_PX) rightMoved = true;
+  }
 });
 
 document.addEventListener("mousedown", (e) => {
@@ -9778,7 +9785,7 @@ document.addEventListener("mousedown", (e) => {
       leftMoved = false; leftTimer = 0; leftStairs = false; leftEverMoved = false; clickAnchors = [];
       if (placeBlock(hotbarList()[selected])) clickAnchors.push([currentBlock.x + currentBlock.face[0], currentBlock.y + currentBlock.face[1], currentBlock.z + currentBlock.face[2]]);
     } else {
-      rightMoved = false; clickAnchors = [];
+      rightMoved = false; rightMoveAcc = 0; clickAnchors = [];
       if (currentBlock) { const b = [currentBlock.x, currentBlock.y, currentBlock.z]; breakBlock(); clickAnchors.push(b); }
     }
   }
@@ -9791,6 +9798,7 @@ document.addEventListener("mouseup", (e) => {
     h.t = 0;
     h.acc = 0;
     if (e.button === 0) { chainHome = null; chainPlat = null; chainSpin = 0; leftStairs = false; leftTimer = 0; clickAnchors = []; }
+    else { rightMoved = false; rightMoveAcc = 0; clickAnchors = []; }
   }
   if (e.button !== 1 || loading) return;
   if (!grappleActive) return;
@@ -10026,7 +10034,8 @@ function loop(now) {
           leftMoved = false;
         }
       }
-      // Holding right click chains digging; moving the mouse starts it right away.
+      // Holding right click chains digging: only after 1s still held, or once
+      // ~15px of deliberate mouse travel skipped the wait (rightMoved).
       if (editHold[2].down) {
         const h = editHold[2];
         if (rightMoved) h.t = Math.max(h.t, CHAIN_HOLD);
@@ -10061,6 +10070,9 @@ function loop(now) {
       chainSpin = 0;
       leftStairs = false;
       leftTimer = 0;
+      rightMoved = false;
+      rightMoveAcc = 0;
+      clickAnchors = [];
     }
     let showRope = false;
     if (grappleActive) {
