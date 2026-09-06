@@ -1241,13 +1241,14 @@ function villagerHeadMats(tex) {
   }
   return villagerHeadMatCache;
 }
-function makeVillagerMesh(isBaby) {
+function makeVillagerMesh(isBaby, palIdxOrNull) {
   const g = new THREE.Group();
   const sc = isBaby ? 0.52 : 1;
   if (!_villagerFace) _villagerFace = villagerFaceTex();
   if (!villagerHeadMatCache) villagerHeadMats(_villagerFace);
   const headMats = villagerHeadMatCache;
-  const palIdx = Math.floor(Math.random() * VILLAGER_PALETTES.length);
+  const palIdx = (palIdxOrNull != null && palIdxOrNull >= 0 && palIdxOrNull < VILLAGER_PALETTES.length)
+    ? palIdxOrNull : Math.floor(Math.random() * VILLAGER_PALETTES.length);
   const pal = VILLAGER_PALETTES[palIdx];
   const cache = villagerMatCache[palIdx];
   const robeMat = cache.robe;
@@ -1311,7 +1312,7 @@ function makeVillagerMesh(isBaby) {
   legR.scale.set(0.22 * sc, 0.16 * sc, 0.24 * sc);
   legR.position.set(0.15 * sc, 0.08 * sc, 0);
   g.add(legR);
-  g.userData = { isBaby, sc, legL, legR, armL, armR, body, head, palette: pal };
+  g.userData = { isBaby, sc, legL, legR, armL, armR, body, head, palette: pal, palIdx };
   return g;
 }
 // — Pigs and cows — same physics as villagers, boxy mesh —
@@ -2019,6 +2020,14 @@ function updateCarryGrapple(dt) {
       return;
     }
     if (carryGrappleMode === "grab") {
+      if (mob.dim !== undefined && mob.dim !== dim) {
+        carryGrappleMob = null;
+        carryGrapplePulling = false;
+        carryGrappleActive = false;
+        carryGrappleRetracting = true;
+        carryGrappleHookPos.copy(carryGrappleTarget);
+        return;
+      }
       const eye = new THREE.Vector3(pos.x, pos.y + 0.3, pos.z);
       const dx = eye.x - mob.pos.x, dy = eye.y - mob.pos.y, dz = eye.z - mob.pos.z;
       const dist = Math.hypot(dx, dy, dz);
@@ -2050,6 +2059,22 @@ function updateCarryGrapple(dt) {
         carryGrappleHookPos.set(mob.pos.x + carryGrappleOffset.x, mob.pos.y + carryGrappleOffset.y, mob.pos.z + carryGrappleOffset.z);
       }
     } else {
+      if (mob.dim !== undefined && mob.dim !== dim) {
+        carryGrappleMob = null;
+        carryGrapplePulling = false;
+        carryGrappleActive = false;
+        carryGrappleRetracting = false;
+        carryGrappleBlock = null;
+        carryMob = mob;
+        setMobTransparent(mob, 0.35);
+        mob.mode = "carried"; mob.path = null; mob.target = null;
+        if (mob.vel) mob.vel.set(0, 0, 0);
+        mob.blockedT = 0; mob._stuckT = 0;
+        if (mob.isBaby) mob._followDetourUntil = 0;
+        carryGrappleCubes.visible = false;
+        carryGrappleHead.visible = false;
+        return;
+      }
       const tx = carryGrappleTarget.x, ty = carryGrappleTarget.y, tz = carryGrappleTarget.z;
       const dx = tx - mob.pos.x, dy = ty - mob.pos.y, dz = tz - mob.pos.z;
       const dist = Math.hypot(dx, dy, dz);
@@ -2683,6 +2708,7 @@ function spawnVillagers() {
       scene.add(mesh);
       const m = {
         id: gid++, kind: "villager", canStep: false, homeId: h.id, isBaby, parentId: -1, dim: "over",
+        palIdx: mesh.userData.palIdx != null ? mesh.userData.palIdx : 0,
         pos: new THREE.Vector3(sx, villageCenter.y + 1, sz),
         vel: new THREE.Vector3(0, 0, 0),
         hw, h: hh, mesh, onGround: false,
@@ -2838,6 +2864,196 @@ function removeVillagers() {
   if (!mobs.length && villagerGeo) { /* keep geo for reuse */ }
   mobStats = { worldCol: 0, mobCol: 0, playerCol: 0, stuck: 0, falls: 0, frames: 0, invariants: 0 };
   if (!keepCarry) playerArms.visible = false;
+}
+let overworldMobCache = null;
+let pendingOverworldMobs = null;
+const MOB_SAVE_BYTES = 19;
+function mobKindCode(m) {
+  if (m.kind === "pig") return 1;
+  if (m.kind === "cow") return 2;
+  if (m.kind === "wolf") return 3;
+  return 0;
+}
+function mobKindFromCode(c) {
+  if (c === 1) return "pig";
+  if (c === 2) return "cow";
+  if (c === 3) return "wolf";
+  return "villager";
+}
+function mobLookIndex(m) {
+  if (!m.kind || m.kind === "villager") {
+    if (m.palIdx != null && m.palIdx >= 0 && m.palIdx < VILLAGER_PALETTES.length) return m.palIdx;
+    const ui = m.mesh && m.mesh.userData ? m.mesh.userData.palIdx : null;
+    if (ui != null && ui >= 0 && ui < VILLAGER_PALETTES.length) return ui;
+    return 0;
+  }
+  if (m.kind === "wolf") {
+    const hex = m.collar != null ? m.collar : (m.mesh && m.mesh.userData ? m.mesh.userData.collarHex : null);
+    const i = WOLF_COLLAR_COLORS.indexOf(hex);
+    return i >= 0 ? i : 0;
+  }
+  return 0;
+}
+function encodeMobYaw(yaw) {
+  const t = ((yaw % (Math.PI * 2)) + Math.PI * 2) % (Math.PI * 2);
+  return Math.round(t / (Math.PI * 2) * 255) & 255;
+}
+function decodeMobYaw(b) {
+  return (b / 255) * Math.PI * 2;
+}
+function snapshotOverworldMobs(includeCarried) {
+  const overs = mobs.filter((m) => (m.dim === "over" || m.dim === undefined));
+  const list = overs.filter((m) => {
+    if (m === carryMob) return includeCarried;
+    if (m === carryGrappleMob && !includeCarried && carryGrappleMode === "release") return false;
+    return true;
+  });
+  if (!list.length) return [];
+  const idxById = new Map();
+  list.forEach((m, i) => idxById.set(m.id, i));
+  return list.map((m) => ({
+    kind: mobKindCode(m),
+    isBaby: !!m.isBaby,
+    homeId: m.homeId != null ? m.homeId : -1,
+    parentIdx: m.parentId != null ? (idxById.get(m.parentId) != null ? idxById.get(m.parentId) : -1) : -1,
+    x: m.pos.x, y: m.pos.y, z: m.pos.z,
+    yaw: m.yaw != null ? m.yaw : 0,
+    look: mobLookIndex(m),
+    villageBound: m.villageBound !== false,
+    penBound: !!m.penBound,
+  }));
+}
+function settleMobSpot(sx, sy, sz, hw, h, isWolf) {
+  const cx = Math.max(-WORLD_RADIUS + 2, Math.min(WORLD_RADIUS - 2, sx));
+  const cz = Math.max(-WORLD_RADIUS + 2, Math.min(WORLD_RADIUS - 2, sz));
+  const cy = Math.max(1, Math.min(MAX_Y - 2, sy));
+  const blockedAt = (x, y, z) => isWolf ? wolfBlockedAt(x, z, hw, y) : mobBlockedAt(x, z, hw, y);
+  const hasGround = (x, z, y) => isWolf ? wolfHasMobGround(x, z, hw, y) : hasMobGround(x, z, hw, y);
+  if (!aabbCollidesWorld(cx, cy, cz, hw, h) && !blockedAt(cx, cy, cz)) return { x: cx, y: cy, z: cz };
+  for (let r = 1; r <= 3; r++) {
+    for (let dx = -r; dx <= r; dx++) for (let dz = -r; dz <= r; dz++) {
+      if (Math.abs(dx) !== r && Math.abs(dz) !== r) continue;
+      const nx = Math.max(-WORLD_RADIUS + 2, Math.min(WORLD_RADIUS - 2, cx + dx));
+      const nz = Math.max(-WORLD_RADIUS + 2, Math.min(WORLD_RADIUS - 2, cz + dz));
+      const gy = groundYForMob(nx, nz, cy, hw);
+      const fy = Math.max(1, Math.min(MAX_Y - 2, gy));
+      if (aabbCollidesWorld(nx, fy, nz, hw, h) || blockedAt(nx, fy, nz)) continue;
+      if (!hasGround(nx, nz, fy)) continue;
+      return { x: nx, y: fy, z: nz };
+    }
+  }
+  const gy = groundYForMob(cx, cz, cy, hw);
+  return { x: cx, y: Math.max(1, Math.min(MAX_Y - 2, gy)), z: cz };
+}
+function restoreOverworldMobs(list, opts) {
+  const keepCarried = !opts || opts.keepCarried !== false;
+  if (!list || !list.length) return 0;
+  if (!villageHouses.length) computeVillageLayout();
+  if (!keepCarried && carryMob) {
+    if (carryMob.mesh) scene.remove(carryMob.mesh);
+    mobById.delete(carryMob.id);
+    const ci = mobs.indexOf(carryMob);
+    if (ci >= 0) mobs.splice(ci, 1);
+    carryMob = null;
+    playerArms.visible = false;
+  }
+  removeVillagers();
+  let gid = mobs.length ? Math.max(...mobs.map((m) => m.id)) + 1 : 0;
+  const usedXZ = mobs.map((m) => [m.pos.x, m.pos.z]);
+  const idByListIdx = new Array(list.length).fill(null);
+  const created = [];
+  for (let i = 0; i < list.length; i++) {
+    const e = list[i];
+    const kind = mobKindFromCode(e.kind);
+    const isBaby = !!e.isBaby && kind === "villager";
+    const hw = kind === "wolf" ? 0.30 : (kind === "pig" || kind === "cow") ? 0.32 : (isBaby ? 0.16 : 0.27);
+    const hh = kind === "wolf" ? 0.90 : kind === "pig" ? 0.92 : kind === "cow" ? 1.30 : (isBaby ? 0.98 : 1.82);
+    const isWolf = kind === "wolf";
+    let sx = e.x, sy = e.y, sz = e.z;
+    if (!isFinite(sx) || !isFinite(sy) || !isFinite(sz)) continue;
+    if (usedXZ.some((u) => (u[0] - sx) * (u[0] - sx) + (u[1] - sz) * (u[1] - sz) < 1.4)) {
+      const fixed = settleMobSpot(sx + 1.5, sy, sz + 1.5, hw, hh, isWolf);
+      sx = fixed.x; sy = fixed.y; sz = fixed.z;
+    }
+    const spot = settleMobSpot(sx, sy, sz, hw, hh, isWolf);
+    let homeId = e.homeId;
+    if (kind === "villager" && (homeId == null || homeId < 0 || homeId >= villageHouses.length)) homeId = villageHouses.length ? 0 : -1;
+    if (kind !== "villager") homeId = -1;
+    const ryaw = isFinite(e.yaw) ? e.yaw : 0;
+    let mesh = null;
+    let palIdx = 0, collar = WOLF_COLLAR_COLORS[0];
+    if (kind === "villager") {
+      palIdx = (e.look >= 0 && e.look < VILLAGER_PALETTES.length) ? e.look : 0;
+      mesh = makeVillagerMesh(isBaby, palIdx);
+    } else if (kind === "pig") mesh = makePigMesh();
+    else if (kind === "cow") mesh = makeCowMesh();
+    else {
+      collar = WOLF_COLLAR_COLORS[(e.look >= 0 && e.look < WOLF_COLLAR_COLORS.length) ? e.look : 0];
+      mesh = makeWolfMesh(WOLF_FUR, collar);
+    }
+    mesh.position.set(spot.x, spot.y, spot.z);
+    mesh.rotation.y = ryaw;
+    scene.add(mesh);
+    const base = {
+      id: gid++, kind, homeId, isBaby, parentId: -1, dim: "over",
+      pos: new THREE.Vector3(spot.x, spot.y, spot.z),
+      vel: new THREE.Vector3(0, 0, 0),
+      hw, h: hh, mesh, onGround: false,
+      target: null, mode: "wander", wanderT: 3 + Math.random() * 4, insideT: 0,
+      legPhase: Math.random() * Math.PI * 2,
+      blockedT: 0, yaw: ryaw, yawTarget: ryaw, villageBound: true,
+      _stuckT: 0, _prevX: spot.x, _prevZ: spot.z,
+      path: null, pathIdx: 0, pathKey: null, steerX: 0, steerZ: 0, steerCooldown: 0, lastTarget: null, _wasInWater: false, wolfInWater: false,
+    };
+    if (kind === "villager") {
+      base.canStep = false;
+      base.speed = WALK / 2;
+      base.sc = isBaby ? 0.52 : 1;
+      base.palIdx = palIdx;
+    } else if (kind === "pig" || kind === "cow") {
+      base.canStep = false;
+      base.speed = WALK / 2.2;
+      base.villageBound = false;
+      base.penBound = true;
+      base.penId = 0;
+      base.sc = 1;
+    } else {
+      base.canStep = true;
+      base.speed = WALK / 2;
+      base.fur = WOLF_FUR;
+      base.collar = collar;
+      base.sc = 1;
+      base.wolfStepUp = false;
+      base.wolfStepUpClearY = 0;
+      base.wolfInWater = false;
+      base.wasOnGroundWolf = false;
+    }
+    if (e.villageBound != null) base.villageBound = !!e.villageBound;
+    else if (kind === "pig" || kind === "cow") base.villageBound = false;
+    if (e.penBound != null) base.penBound = !!e.penBound;
+    mobs.push(base);
+    mobById.set(base.id, base);
+    idByListIdx[i] = base.id;
+    created.push(base);
+    usedXZ.push([spot.x, spot.z]);
+  }
+  list.forEach((e, i) => {
+    const nid = idByListIdx[i];
+    if (nid == null) return;
+    const cm = mobById.get(nid);
+    if (!cm || e.parentIdx == null || e.parentIdx < 0 || e.parentIdx >= list.length) return;
+    if (cm.kind !== "villager" || !cm.isBaby) return;
+    const pid = idByListIdx[e.parentIdx];
+    if (pid == null) return;
+    cm.parentId = pid;
+  });
+  for (const m of created) {
+    m.target = { x: m.pos.x, z: m.pos.z };
+    m.wanderT = 3 + Math.random() * 4;
+  }
+  buildMobGrid();
+  spawnVillagers();
+  return created.length;
 }
 function intersectsMob(bx, by, bz) {
   const nearby = nearbyMobsFor(bx + 0.5, bz + 0.5, 1);
@@ -7217,8 +7433,17 @@ function goToDimension(name, sx, sy, sz) {
   worldDirty = true;
   clearPortalFills();
   removeEndEntities();
-  if (dim !== "over") removeVillagers();
-  else if (!mobs.filter((m) => m.dim === "over" || m.dim === undefined).length) { if (!villageHouses.length) computeVillageLayout(); spawnVillagers(); }
+  if (dim !== "over") {
+    overworldMobCache = snapshotOverworldMobs(false);
+    removeVillagers();
+  }
+  else {
+    if (!villageHouses.length) computeVillageLayout();
+    const liveOver = mobs.filter((m) => m.dim === "over" || m.dim === undefined).length;
+    if (overworldMobCache && overworldMobCache.length && liveOver < overworldMobCache.length) {
+      restoreOverworldMobs(overworldMobCache, { keepCarried: true });
+    } else if (!liveOver) spawnVillagers();
+  }
   for (const m of mobs) m.mesh.visible = (m.dim === dim || m.dim === undefined) || m === carryMob || m === carryGrappleMob;
   if (name === "end") {
     generateEnd();
@@ -8723,11 +8948,13 @@ function serialize() {
   const m = placedFlowers.size;
   const gov = glowVariants.over.size, gev = glowVariants.end.size, gnv = glowVariants.nether.size;
   const winLen = overPortalWin ? 12 : 1;
-  const buf = new ArrayBuffer(117 + (on + en + nn) * 5 + m * 6 + (gov + gev + gnv) * 5 + winLen + 16);
+  const overMobs = dim === "over" ? snapshotOverworldMobs(true) : (overworldMobCache || []);
+  const mobN = overMobs.length;
+  const buf = new ArrayBuffer(117 + (on + en + nn) * 5 + m * 6 + (gov + gev + gnv) * 5 + winLen + 16 + 4 + mobN * MOB_SAVE_BYTES);
   const dv = new DataView(buf);
   let o = 0;
   new Uint8Array(buf, o, 9).set(SAVE_MAGIC); o += 9;
-  dv.setUint8(o++, 9); // format version
+  dv.setUint8(o++, 11); // format version
   dv.setUint8(o++, dim === "end" ? 1 : dim === "nether" ? 2 : 0);
   dv.setInt32(o, seed, true); o += 4;
   dv.setInt32(o, endSeed, true); o += 4;
@@ -8792,6 +9019,21 @@ function serialize() {
   writeVariants(glowVariants.over, gov);
   writeVariants(glowVariants.end, gev);
   writeVariants(glowVariants.nether, gnv);
+  dv.setUint32(o, mobN, true); o += 4;
+  for (const em of overMobs) {
+    dv.setUint8(o++, em.kind & 255);
+    let mfl = em.isBaby ? 1 : 0;
+    if (em.villageBound !== false) mfl |= 2;
+    if (em.penBound) mfl |= 4;
+    dv.setUint8(o++, mfl);
+    dv.setInt8(o++, Math.max(-128, Math.min(127, em.homeId)));
+    dv.setInt16(o, Math.max(-1, Math.min(32767, em.parentIdx)), true); o += 2;
+    dv.setFloat32(o, em.x, true); o += 4;
+    dv.setFloat32(o, em.y, true); o += 4;
+    dv.setFloat32(o, em.z, true); o += 4;
+    dv.setUint8(o++, encodeMobYaw(em.yaw || 0));
+    dv.setUint8(o++, em.look & 255);
+  }
   return buf;
 }
 
@@ -8801,13 +9043,15 @@ function deserialize(buf) {
   for (let i = 0; i < 9; i++) if (new Uint8Array(buf, o, 9)[i] !== SAVE_MAGIC[i]) throw new Error("Not a MiniCraft save");
   o += 9;
   const ver = dv.getUint8(o++);
-  if (ver !== 1 && ver !== 2 && ver !== 3 && ver !== 4 && ver !== 5 && ver !== 6 && ver !== 7 && ver !== 8 && ver !== 9) throw new Error("Unsupported save version");
+  if (ver !== 1 && ver !== 2 && ver !== 3 && ver !== 4 && ver !== 5 && ver !== 6 && ver !== 7 && ver !== 8 && ver !== 9 && ver !== 10 && ver !== 11) throw new Error("Unsupported save version");
   const yWidth = ver >= 8 ? 2 : 1;
   const readY = () => { const y = yWidth === 2 ? dv.getUint16(o, true) : dv.getUint8(o); o += yWidth; return y; };
   placedFlowers.clear();
   glowVariants.over.clear();
   glowVariants.end.clear();
   glowVariants.nether.clear();
+  pendingOverworldMobs = null;
+  overworldMobCache = null;
   let dimFlag = 0, endSeedVal = endSeed;
   if (ver >= 2) dimFlag = dv.getUint8(o++);
   if (ver >= 4) {
@@ -8938,6 +9182,27 @@ function deserialize(buf) {
   }
   dim = dimFlag === 2 ? "nether" : dimFlag === 1 ? "end" : "over";
   world = worlds[dim];
+  if (ver >= 10) {
+    const mobN = dv.getUint32(o, true); o += 4;
+    const arr = [];
+    for (let i = 0; i < mobN; i++) {
+      const kind = dv.getUint8(o++);
+      const flags = dv.getUint8(o++);
+      const homeId = dv.getInt8(o++);
+      const parentIdx = dv.getInt16(o, true); o += 2;
+      const x = dv.getFloat32(o, true); o += 4;
+      const y = dv.getFloat32(o, true); o += 4;
+      const z = dv.getFloat32(o, true); o += 4;
+      const yb = dv.getUint8(o++);
+      const look = dv.getUint8(o++);
+      if (!isFinite(x) || !isFinite(y) || !isFinite(z)) continue;
+      const e10 = { kind, isBaby: (flags & 1) !== 0, homeId, parentIdx, x, y, z, yaw: decodeMobYaw(yb), look };
+      if (ver >= 11) { e10.villageBound = (flags & 2) !== 0; e10.penBound = (flags & 4) !== 0; }
+      arr.push(e10);
+    }
+    pendingOverworldMobs = arr;
+    overworldMobCache = arr.map((e) => ({ ...e }));
+  }
   freeCam = flyFlag && dim !== "end";
   if (freeCam) camPos.copy(pos);
   worldDirty = true;
@@ -9210,10 +9475,24 @@ async function restoreSave(buf) {
     updateDimLabel();
     clearPortalFills();
     removeEndEntities();
-    removeVillagers();
     if (dim === "end") { endCleared = false; buildReturnPortal(); spawnDragon(); spawnEndermen(); }
     if (dim === "nether") { netReturnWin = null; buildNetherPortal(); }
-    if (dim === "over") { if (!villageHouses.length) computeVillageLayout(); spawnVillagers(); }
+    computeVillageLayout();
+    if (dim === "over") {
+      if (pendingOverworldMobs && pendingOverworldMobs.length) {
+        const saved = pendingOverworldMobs;
+        pendingOverworldMobs = null;
+        overworldMobCache = null;
+        if (!restoreOverworldMobs(saved, { keepCarried: false })) spawnVillagers();
+        else overworldMobCache = snapshotOverworldMobs(true);
+      } else {
+        pendingOverworldMobs = null;
+        removeVillagers();
+        spawnVillagers();
+      }
+    } else {
+      removeVillagers();
+    }
     scanWorldPortals();
     lastManualSave = Date.now();
     return true;
@@ -9313,6 +9592,8 @@ function resetDims() {
   protectedBlocks.clear();
   removeEndEntities();
   removeVillagers();
+  overworldMobCache = null;
+  pendingOverworldMobs = null;
   setDimensionEnv();
   updateDimLabel();
 }
@@ -9892,7 +10173,7 @@ function loop(now) {
     checkPortal();
     if (dim === "end") updateDragon(dt);
     if (dim === "end") updateEndermen(dt);
-    updateMobs(dt);
+    if (locked && started && !helpOpen) updateMobs(dt);
     if (toastTimer > 0) { toastTimer -= dt; if (toastTimer <= 0) toastEl.style.opacity = "0"; }
 
     if (dim === "over") {
@@ -10006,7 +10287,8 @@ if (location.search.includes('test')) {
     get overPortalWin(){ return overPortalWin; }, get overPortalDir(){ return overPortalDir; }, get overPortalSpawn(){ return overPortalSpawn; }, get overPortalFace(){ return overPortalFace; },
     portalWinValid, portalFrameBBox, findReturnSpot, frameTopSpot, facePortalFrom, recordOverPortal, nearestReturnWin, resolveOverworldReturn, nearPortalSpawn, resolveSpawn, collectEndWins, collectNetherWins, collectReturnWins, insideEndInterior, insideNetherInterior, winCenter, windowDist, isSolid,
     get PORTAL(){ return PORTAL; }, get OBSIDIAN(){ return OBSIDIAN; }, get WORLD_RADIUS(){ return WORLD_RADIUS; }, get PLAYER_HW(){ return PLAYER_HW; }, get PLAYER_H(){ return PLAYER_H; }, get MOON(){ return MOON; }, get CLOUD(){ return CLOUD; }, get GRASS(){ return GRASS; }, get STONE(){ return STONE; }, get ENDSTONE(){ return ENDSTONE; }, get NETHERRACK(){ return NETHERRACK; }, get dim(){ return dim; },
-    serialize, deserialize,
+    serialize, deserialize, snapshotOverworldMobs, restoreOverworldMobs, get overworldMobCache(){ return overworldMobCache; }, get pendingOverworldMobs(){ return pendingOverworldMobs; },
+    goToDimension, removeVillagers,
   };
 }
 
