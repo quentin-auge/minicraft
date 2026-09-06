@@ -6571,12 +6571,9 @@ function tryPlace(id, px, py, pz) {
   if (!BLOCK_INFO[id] || !BLOCK_INFO[id].placeable) return false;
   const target = getBlock(px, py, pz);
   const liquid = target === WATER || target === LAVA || target === MOON_WATER;
-  if (liquid) {
+  if (liquid || target === AIR) {
     if (BLOCK_INFO[id].solid && intersectsPlayer(px, py, pz)) return false;
     if (BLOCK_INFO[id].solid && intersectsMob(px, py, pz)) return false;
-  } else if (target === AIR) {
-    if (intersectsPlayer(px, py, pz)) return false;
-    if (intersectsMob(px, py, pz)) return false;
   } else if (!(target === id && (id === WATER || id === LAVA))) return false;
   if (id === FLOWER) placedFlowers.set(key(px, py, pz), { v: randomFlowerVariant(), a: Math.random() * Math.PI * 2 });
   if (id === GLOWSTONE) worldGlowVariants.get(world).set(key(px, py, pz), glowVariantNear(px, py, pz));
