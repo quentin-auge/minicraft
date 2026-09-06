@@ -7128,6 +7128,8 @@ let portalCd = 0;
 let prePortalFly = false;
 let overPortalSpawn = { x: 0.5, y: 1.01, z: 0.5 };
 let overPortalFace = null;
+let overPortalWin = null;
+let overPortalDir = null;
 const END_SPAWN = { x: 0.5, y: END_PLATFORM_TOP + 1.6, z: END_RETURN_Z - 3 };
 const END_RETURN_BASE_Y = END_PLATFORM_TOP + 1;
 const protectedBlocks = new Set();
@@ -7240,14 +7242,9 @@ function goToDimension(name, sx, sy, sz) {
   } else {
     setDimensionEnv();
     flying = prePortalFly;
-    if (overPortalFace == null) {
-      const w = findPortalWindow(Math.floor(overPortalSpawn.x), Math.floor(overPortalSpawn.y + 0.25), Math.floor(overPortalSpawn.z));
-      if (w) yaw = Math.atan2(-(w.minX + 2.5 - overPortalSpawn.x), -(winCenter(w).z + 0.5 - overPortalSpawn.z));
-    } else {
-      yaw = overPortalFace;
-    }
-    const s = resolveSpawn(overPortalSpawn.x, overPortalSpawn.y, overPortalSpawn.z);
-    sx = s.x; sy = s.y; sz = s.z;
+    const ret = resolveOverworldReturn();
+    yaw = ret.yaw;
+    sx = ret.spot.x; sy = ret.spot.y; sz = ret.spot.z;
   }
   if (freeCam) { freeCam = false; }
   Object.keys(keys).forEach((k) => { keys[k] = false; });
@@ -7742,52 +7739,187 @@ function insideNetherInterior(win, bx, by, bz) {
   return bx >= win.minX + 1 && bx <= win.minX + 3 && bz >= win.minZ + 1 && bz <= win.minZ + 2;
 }
 
-function nearPortalSpawn(win, dir) {
+function portalWinValid(w) {
+  if (!w) return false;
+  if (w.orient === "v") {
+    if (w.nether) {
+      const ww = w.dims === "4x5" || w.dims === "4x4" ? 4 : 5;
+      const hh = w.dims === "4x5" ? 5 : 4;
+      return nWinOk(w.minX, w.minY, w.minZ, ww, hh, w.face === "x" ? "x" : "z");
+    }
+    return w.h === 4 ? vWinOk4(w.minX, w.minY, w.minZ) : vWinOk(w.minX, w.minY, w.minZ);
+  }
+  if (w.nether) {
+    const ww = w.dims === "4x5" ? 4 : 5, dd = w.dims === "4x5" ? 5 : 4;
+    return nFlatWinOk(w.minX, w.minZ, w.minY, ww, dd);
+  }
+  return winOk(w.minX, w.minZ, w.minY);
+}
+
+function portalFrameBBox(w) {
+  if (w.orient === "v") {
+    if (w.nether) {
+      const ww = w.dims === "4x5" || w.dims === "4x4" ? 4 : 5;
+      const hh = w.dims === "4x5" ? 5 : 4;
+      if (w.face === "x") return { minX: w.minX, maxX: w.minX, minZ: w.minZ, maxZ: w.minZ + ww - 1, baseY: w.minY, topY: w.minY + hh - 1 };
+      return { minX: w.minX, maxX: w.minX + ww - 1, minZ: w.minZ, maxZ: w.minZ, baseY: w.minY, topY: w.minY + hh - 1 };
+    }
+    const topY = w.h === 4 ? w.minY + 3 : w.minY + 4;
+    if (w.face === "x") return { minX: w.minX, maxX: w.minX, minZ: w.minZ, maxZ: w.minZ + 4, baseY: w.minY, topY };
+    return { minX: w.minX, maxX: w.minX + 4, minZ: w.minZ, maxZ: w.minZ, baseY: w.minY, topY };
+  }
+  if (w.nether) {
+    const ww = w.dims === "4x5" ? 4 : 5, dd = w.dims === "4x5" ? 5 : 4;
+    return { minX: w.minX, maxX: w.minX + ww - 1, minZ: w.minZ, maxZ: w.minZ + dd - 1, baseY: w.minY, topY: w.minY };
+  }
+  return { minX: w.minX, maxX: w.minX + 4, minZ: w.minZ, maxZ: w.minZ + 4, baseY: w.minY, topY: w.minY };
+}
+
+function returnBodyClear(px, py, pz) {
+  for (let bx = Math.floor(px - PLAYER_HW + 0.02); bx <= Math.floor(px + PLAYER_HW - 0.02); bx++)
+    for (let by = Math.floor(py + 0.02); by <= Math.floor(py + PLAYER_H - 0.02); by++)
+      for (let bz = Math.floor(pz - PLAYER_HW + 0.02); bz <= Math.floor(pz + PLAYER_HW - 0.02); bz++)
+        if (isSolid(bx, by, bz)) return false;
+  return true;
+}
+
+function collectReturnWins(cx, cy, cz) {
+  return [...collectEndWins(cx, cy, cz, 16), ...collectNetherWins(cx, cy, cz, 16)];
+}
+
+function inReturnPortalBody(wins, px, py, pz) {
+  const bx = Math.floor(px), bz = Math.floor(pz);
+  for (const w of wins)
+    for (let by = Math.floor(py); by <= Math.floor(py + PLAYER_H); by++)
+      if (insideEndInterior(w, bx, by, bz) || insideNetherInterior(w, bx, by, bz)) return true;
+  return false;
+}
+
+function chebDistToBox(ix, iz, box) {
+  const dx = ix < box.minX ? box.minX - ix : ix > box.maxX ? ix - box.maxX : 0;
+  const dz = iz < box.minZ ? box.minZ - iz : iz > box.maxZ ? iz - box.maxZ : 0;
+  return Math.max(dx, dz);
+}
+
+function findReturnSpot(win, dir, wins) {
+  const box = portalFrameBBox(win);
   const c = winCenter(win);
-  const cx = c.x, cz = c.z;
-  const by = win.minY;
-  const inInterior = (sx, sz) => {
-    if (win.orient === "h") {
-      if (sx < win.minX + 1 || sx > win.minX + 3) return false;
-      if (win.dims === "4x5") return sz >= win.minZ + 1 && sz <= win.minZ + 3;
-      return sz >= win.minZ + 1 && sz <= win.minZ + 2;
-    }
-    if (win.face === "x") {
-      if (sx !== win.minX) return false;
-      if (win.dims === "4x5" || win.dims === "4x4") return sz >= win.minZ + 1 && sz <= win.minZ + 2;
-      return sz >= win.minZ + 1 && sz <= win.minZ + 3;
-    }
-    if (sx < win.minX + 1 || sx > win.minX + 3) return false;
-    return sz === win.minZ;
-  };
-  const spot = (sx, sz) => {
-    if (inInterior(sx, sz)) return null;
-    if (isSolid(sx, by, sz) || isSolid(sx, by + 1, sz)) return null;
-    if (!isSolid(sx, by - 1, sz)) return null;
-    return { x: sx + 0.5, y: by, z: sz + 0.5 };
-  };
-  const n = Math.hypot(dir.x, dir.z) || 1;
-  const dx = dir.x / n, dz = dir.z / n;
-  for (let d = 6; d <= 9; d++) {
-    const cands = [
-      { x: cx + Math.round(dx * d), z: cz + Math.round(dz * d) },
-      { x: cx - Math.round(dx * d), z: cz - Math.round(dz * d) },
-      { x: cx - Math.round(dz * d), z: cz + Math.round(dx * d) },
-      { x: cx + Math.round(dz * d), z: cz - Math.round(dx * d) },
-    ];
-    for (const c of cands) {
-      const s = spot(c.x, c.z);
-      if (s) return s;
+  const px = c.x + 0.5, pz = c.z + 0.5;
+  const n = dir ? Math.hypot(dir.x, dir.z) : 0;
+  const dx = n ? dir.x / n : 0, dz = n ? dir.z / n : 0;
+  for (let r = 1; r <= 3; r++) {
+    for (const dy of [0, 1, -1, 2, -2]) {
+      const feetY = box.baseY + dy;
+      if (feetY < 1 || feetY + 1 > MAX_Y) continue;
+      const ring = [];
+      for (let ix = box.minX - r; ix <= box.maxX + r; ix++)
+        for (let iz = box.minZ - r; iz <= box.maxZ + r; iz++) {
+          if (chebDistToBox(ix, iz, box) !== r) continue;
+          if (ix < -WORLD_RADIUS || ix > WORLD_RADIUS || iz < -WORLD_RADIUS || iz > WORLD_RADIUS) continue;
+          ring.push([ix, iz]);
+        }
+      if (n) ring.sort((a, b) => ((b[0] + 0.5 - px) * dx + (b[1] + 0.5 - pz) * dz) - ((a[0] + 0.5 - px) * dx + (a[1] + 0.5 - pz) * dz));
+      for (const [ix, iz] of ring) {
+        if (!isSolid(ix, feetY - 1, iz)) continue;
+        if (!returnBodyClear(ix + 0.5, feetY, iz + 0.5)) continue;
+        if (inReturnPortalBody(wins, ix + 0.5, feetY, iz + 0.5)) continue;
+        return { x: ix + 0.5, y: feetY, z: iz + 0.5 };
+      }
     }
   }
-  for (let r = 6; r <= 12; r++)
-    for (let ox = -r; ox <= r; ox++)
-      for (let oz = -r; oz <= r; oz++) {
-        if (Math.max(Math.abs(ox), Math.abs(oz)) !== r) continue;
-        const s = spot(cx + ox, cz + oz);
-        if (s) return s;
+  return null;
+}
+
+function frameTopSpot(win, wins) {
+  const box = portalFrameBBox(win);
+  const cols = [];
+  if (win.orient === "v") {
+    if (win.face === "x") {
+      for (let z = box.minZ; z <= box.maxZ; z++) cols.push([box.minX, box.topY, z]);
+    } else {
+      for (let x = box.minX; x <= box.maxX; x++) cols.push([x, box.topY, box.minZ]);
+    }
+  } else {
+    for (let x = box.minX; x <= box.maxX; x++)
+      for (let z = box.minZ; z <= box.maxZ; z++) {
+        const edge = x === box.minX || x === box.maxX || z === box.minZ || z === box.maxZ;
+        if (edge) cols.push([x, box.topY, z]);
       }
-  return { x: win.minX + 0.5, y: by, z: win.minZ - 0.5 };
+  }
+  const c = winCenter(win);
+  cols.sort((a, b) => (Math.abs(a[0] - c.x) + Math.abs(a[2] - c.z)) - (Math.abs(b[0] - c.x) + Math.abs(b[2] - c.z)));
+  for (const [fx, fy, fz] of cols) {
+    if (!isSolid(fx, fy, fz)) continue;
+    for (let feetY = fy + 1; feetY <= Math.min(fy + 30, MAX_Y - 1); feetY++) {
+      if (!isSolid(fx, feetY - 1, fz)) continue;
+      if (!returnBodyClear(fx + 0.5, feetY, fz + 0.5)) continue;
+      if (inReturnPortalBody(wins, fx + 0.5, feetY, fz + 0.5)) continue;
+      return { x: fx + 0.5, y: feetY, z: fz + 0.5 };
+    }
+  }
+  return null;
+}
+
+function facePortalFrom(win, px, pz) {
+  const c = winCenter(win);
+  return Math.atan2(-(c.x + 0.5 - px), -(c.z + 0.5 - pz));
+}
+
+function nearestReturnWin(sx, sy, sz) {
+  const cx = Math.floor(sx), cy = Math.floor(sy), cz = Math.floor(sz);
+  let best = null;
+  for (const w of collectEndWins(cx, cy, cz, 16)) {
+    const d = windowDist(w, cx, cy, cz);
+    if (!best || d < best.d) best = { win: Object.assign({ nether: false }, w), d };
+  }
+  for (const w of collectNetherWins(cx, cy, cz, 16)) {
+    const d = windowDist(w, cx, cy, cz);
+    if (!best || d < best.d) best = { win: Object.assign({ nether: true }, w), d };
+  }
+  return best ? best.win : null;
+}
+
+function recordOverPortal(win, nether, dir) {
+  overPortalWin = Object.assign({ nether }, win);
+  overPortalDir = dir && (dir.x || dir.z) ? { x: dir.x, z: dir.z } : null;
+  const c = winCenter(win);
+  const wins = collectReturnWins(Math.floor(c.x), win.minY, Math.floor(c.z));
+  const spot = findReturnSpot(overPortalWin, overPortalDir, wins) || frameTopSpot(overPortalWin, wins);
+  if (spot) {
+    overPortalSpawn = { x: spot.x, y: spot.y, z: spot.z };
+    overPortalFace = facePortalFrom(win, spot.x, spot.z);
+  } else {
+    overPortalSpawn = { x: c.x + 0.5, y: win.minY, z: c.z + 0.5 };
+    overPortalFace = null;
+  }
+}
+
+function resolveOverworldReturn() {
+  let win = portalWinValid(overPortalWin) ? overPortalWin : null;
+  if (!win && overPortalSpawn) win = nearestReturnWin(overPortalSpawn.x, overPortalSpawn.y, overPortalSpawn.z);
+  if (win && !portalWinValid(win)) win = null;
+  if (win) {
+    const c = winCenter(win);
+    const wins = collectReturnWins(Math.floor(c.x), win.minY, Math.floor(c.z));
+    const spot = findReturnSpot(win, overPortalDir, wins) || frameTopSpot(win, wins);
+    if (spot) return { spot, yaw: facePortalFrom(win, spot.x, spot.z) };
+  }
+  const spot = resolveSpawn(overPortalSpawn.x, overPortalSpawn.y, overPortalSpawn.z);
+  let fallbackYaw = overPortalFace;
+  if (win) fallbackYaw = facePortalFrom(win, spot.x, spot.z);
+  else if (fallbackYaw == null) {
+    const w = findPortalWindow(Math.floor(overPortalSpawn.x), Math.floor(overPortalSpawn.y + 0.25), Math.floor(overPortalSpawn.z));
+    if (w) fallbackYaw = Math.atan2(-(w.minX + 2.5 - overPortalSpawn.x), -(winCenter(w).z + 0.5 - overPortalSpawn.z));
+    else fallbackYaw = yaw;
+  }
+  return { spot, yaw: fallbackYaw };
+}
+
+function nearPortalSpawn(win, dir) {
+  const full = Object.assign({ nether: false }, win);
+  const c = winCenter(win);
+  const wins = collectReturnWins(Math.floor(c.x), win.minY, Math.floor(c.z));
+  return findReturnSpot(full, dir, wins) || frameTopSpot(full, wins) || { x: c.x + 0.5, y: win.minY, z: c.z + 0.5 };
 }
 
 // Find a safe landing spot near (sx, sy, sz) on live terrain: full body
@@ -7796,44 +7928,21 @@ function nearPortalSpawn(win, dir) {
 // frame that would instantly re-teleport you.
 function resolveSpawn(sx, sy, sz) {
   const cx = Math.floor(sx), cz = Math.floor(sz), cy = Math.floor(sy);
-  const wins = [...collectEndWins(cx, cy, cz, 16), ...collectNetherWins(cx, cy, cz, 16)];
-  const inPortalBody = (px, py, pz) => {
-    const bx = Math.floor(px), bz = Math.floor(pz);
-    for (const w of wins)
-      for (let by = Math.floor(py); by <= Math.floor(py + PLAYER_H); by++)
-        if (insideEndInterior(w, bx, by, bz) || insideNetherInterior(w, bx, by, bz)) return true;
-    return false;
-  };
-  const bodyClear = (px, py, pz) => {
-    for (let bx = Math.floor(px - PLAYER_HW + 0.02); bx <= Math.floor(px + PLAYER_HW - 0.02); bx++)
-      for (let by = Math.floor(py + 0.02); by <= Math.floor(py + PLAYER_H - 0.02); by++)
-        for (let bz = Math.floor(pz - PLAYER_HW + 0.02); bz <= Math.floor(pz + PLAYER_HW - 0.02); bz++)
-          if (isSolid(bx, by, bz)) return false;
-    return true;
-  };
-  const groundTop = (ix, iz) => {
-    for (let y = cy + 8; y > cy - 40; y--)
-      if (isSolid(ix, y, iz)) return y + 1;
-    return null;
-  };
-  for (let r = 0; r <= 14; r++) {
-    for (let ix = cx - r; ix <= cx + r; ix++)
-      for (let iz = cz - r; iz <= cz + r; iz++) {
-        if (r > 0 && ix > cx - r && ix < cx + r && iz > cz - r && iz < cz + r) continue;
-        const top = groundTop(ix, iz);
-        if (top == null) continue;
-        const px = ix + 0.5, py = top, pz = iz + 0.5;
-        if (!bodyClear(px, py, pz)) continue;
-        if (inPortalBody(px, py, pz)) continue;
-        return { x: px, y: py, z: pz };
-      }
-  }
-  for (let y = MAX_Y; y > 0; y--) {
-    const fx = Math.floor(sx), fz = Math.floor(sz);
-    const bb = getBlock(fx, y, fz);
-    if (bb === CLOUD || bb === MOON) continue;
-    if (isSolid(fx, y, fz) && bodyClear(fx + 0.5, y + 1.01, fz + 0.5) && !inPortalBody(fx + 0.5, y + 1.01, fz + 0.5))
-      return { x: fx + 0.5, y: y + 1.01, z: fz + 0.5 };
+  const wins = collectReturnWins(cx, cy, cz);
+  for (let r = 0; r <= 3; r++) {
+    for (const dy of [0, 1, -1, 2, -2, -3, 3]) {
+      const feetY = cy + dy;
+      if (feetY < 1 || feetY + 1 > MAX_Y) continue;
+      for (let ix = cx - r; ix <= cx + r; ix++)
+        for (let iz = cz - r; iz <= cz + r; iz++) {
+          if (r > 0 && Math.max(Math.abs(ix - cx), Math.abs(iz - cz)) !== r) continue;
+          if (ix < -WORLD_RADIUS || ix > WORLD_RADIUS || iz < -WORLD_RADIUS || iz > WORLD_RADIUS) continue;
+          if (!isSolid(ix, feetY - 1, iz)) continue;
+          if (!returnBodyClear(ix + 0.5, feetY, iz + 0.5)) continue;
+          if (inReturnPortalBody(wins, ix + 0.5, feetY, iz + 0.5)) continue;
+          return { x: ix + 0.5, y: feetY, z: iz + 0.5 };
+        }
+    }
   }
   return { x: sx, y: sy, z: sz };
 }
@@ -7869,9 +7978,7 @@ function checkPortal() {
       if (keys["KeyD"] || keys["ArrowRight"]) { ddx += right.x; ddz += right.z; }
       if (keys["KeyA"] || keys["ArrowLeft"]) { ddx -= right.x; ddz -= right.z; }
       if (ddx === 0 && ddz === 0) { ddx = forward.x; ddz = forward.z; }
-      overPortalSpawn = nearPortalSpawn(f.win, { x: ddx, z: ddz });
-      const c = winCenter(f.win);
-      overPortalFace = Math.atan2(-(c.x + 0.5 - overPortalSpawn.x), -(c.z + 0.5 - overPortalSpawn.z));
+      if (dim === "over") recordOverPortal(f.win, true, { x: ddx, z: ddz });
       if (dim === "nether") {
         portalTrigger("over", overPortalSpawn.x, overPortalSpawn.y, overPortalSpawn.z, "You returned to the Overworld");
       } else {
@@ -7887,9 +7994,7 @@ function checkPortal() {
       if (keys["KeyD"] || keys["ArrowRight"]) { ddx += right.x; ddz += right.z; }
       if (keys["KeyA"] || keys["ArrowLeft"]) { ddx -= right.x; ddz -= right.z; }
       if (ddx === 0 && ddz === 0) { ddx = forward.x; ddz = forward.z; }
-      overPortalSpawn = nearPortalSpawn(f.win, { x: ddx, z: ddz });
-      const c = winCenter(f.win);
-      overPortalFace = Math.atan2(-(c.x + 0.5 - overPortalSpawn.x), -(c.z + 0.5 - overPortalSpawn.z));
+      if (dim === "over") recordOverPortal(f.win, false, { x: ddx, z: ddz });
       if (dim === "end") {
         portalTrigger("over", overPortalSpawn.x, overPortalSpawn.y, overPortalSpawn.z, "You returned to the Overworld");
       } else {
@@ -8617,11 +8722,12 @@ function serialize() {
   const on = count(over), en = count(end), nn = count(nether);
   const m = placedFlowers.size;
   const gov = glowVariants.over.size, gev = glowVariants.end.size, gnv = glowVariants.nether.size;
-  const buf = new ArrayBuffer(117 + (on + en + nn) * 5 + m * 6 + (gov + gev + gnv) * 5);
+  const winLen = overPortalWin ? 12 : 1;
+  const buf = new ArrayBuffer(117 + (on + en + nn) * 5 + m * 6 + (gov + gev + gnv) * 5 + winLen + 16);
   const dv = new DataView(buf);
   let o = 0;
   new Uint8Array(buf, o, 9).set(SAVE_MAGIC); o += 9;
-  dv.setUint8(o++, 8); // format version
+  dv.setUint8(o++, 9); // format version
   dv.setUint8(o++, dim === "end" ? 1 : dim === "nether" ? 2 : 0);
   dv.setInt32(o, seed, true); o += 4;
   dv.setInt32(o, endSeed, true); o += 4;
@@ -8636,6 +8742,21 @@ function serialize() {
   dv.setFloat64(o, overPortalSpawn.x, true); o += 8;
   dv.setFloat64(o, overPortalSpawn.y, true); o += 8;
   dv.setFloat64(o, overPortalSpawn.z, true); o += 8;
+  if (overPortalWin) {
+    dv.setUint8(o++, 1);
+    dv.setUint8(o++, overPortalWin.nether ? 1 : 0);
+    dv.setUint8(o++, overPortalWin.orient === "v" ? 1 : 0);
+    dv.setUint8(o++, overPortalWin.face === "x" ? 1 : 0);
+    dv.setUint8(o++, overPortalWin.dims === "4x5" ? 1 : overPortalWin.dims === "4x4" ? 2 : overPortalWin.dims === "5x4" ? 3 : 0);
+    dv.setUint8(o++, overPortalWin.h === 4 ? 1 : 0);
+    dv.setInt16(o, overPortalWin.minX, true); o += 2;
+    dv.setUint16(o, overPortalWin.minY, true); o += 2;
+    dv.setInt16(o, overPortalWin.minZ, true); o += 2;
+  } else {
+    dv.setUint8(o++, 0);
+  }
+  dv.setFloat64(o, overPortalDir ? overPortalDir.x : 0, true); o += 8;
+  dv.setFloat64(o, overPortalDir ? overPortalDir.z : 0, true); o += 8;
   const writeMap = (map, n) => {
     dv.setUint32(o, n, true); o += 4;
     map.forEach((id, k) => {
@@ -8680,7 +8801,7 @@ function deserialize(buf) {
   for (let i = 0; i < 9; i++) if (new Uint8Array(buf, o, 9)[i] !== SAVE_MAGIC[i]) throw new Error("Not a MiniCraft save");
   o += 9;
   const ver = dv.getUint8(o++);
-  if (ver !== 1 && ver !== 2 && ver !== 3 && ver !== 4 && ver !== 5 && ver !== 6 && ver !== 7 && ver !== 8) throw new Error("Unsupported save version");
+  if (ver !== 1 && ver !== 2 && ver !== 3 && ver !== 4 && ver !== 5 && ver !== 6 && ver !== 7 && ver !== 8 && ver !== 9) throw new Error("Unsupported save version");
   const yWidth = ver >= 8 ? 2 : 1;
   const readY = () => { const y = yWidth === 2 ? dv.getUint16(o, true) : dv.getUint8(o); o += yWidth; return y; };
   placedFlowers.clear();
@@ -8707,6 +8828,31 @@ function deserialize(buf) {
   selected = dv.getUint8(o++);
   overPortalSpawn = { x: dv.getFloat64(o, true), y: dv.getFloat64(o, true), z: dv.getFloat64(o, true) };
   o += 24;
+  overPortalWin = null;
+  overPortalDir = null;
+  overPortalFace = null;
+  if (ver >= 9) {
+    const hasWin = dv.getUint8(o++);
+    if (hasWin) {
+      const nether = dv.getUint8(o++) === 1;
+      const orient = dv.getUint8(o++) === 1 ? "v" : "h";
+      const face = dv.getUint8(o++) === 1 ? "x" : "z";
+      const dimsCode = dv.getUint8(o++);
+      const hCode = dv.getUint8(o++);
+      const minX = dv.getInt16(o, true); o += 2;
+      const minY = dv.getUint16(o, true); o += 2;
+      const minZ = dv.getInt16(o, true); o += 2;
+      overPortalWin = {
+        nether, orient, face,
+        dims: dimsCode === 1 ? "4x5" : dimsCode === 2 ? "4x4" : dimsCode === 3 ? "5x4" : undefined,
+        minX, minY, minZ,
+      };
+      if (orient === "v" && !nether && hCode === 1) overPortalWin.h = 4;
+    }
+    const dx = dv.getFloat64(o, true); o += 8;
+    const dz = dv.getFloat64(o, true); o += 8;
+    if (dx || dz) overPortalDir = { x: dx, z: dz };
+  }
   const n = dv.getUint32(o, true); o += 4;
   worlds.over.clear();
   for (let i = 0; i < n; i++) {
@@ -9160,6 +9306,8 @@ function resetDims() {
   worldDirty = true;
   overPortalSpawn = { x: 0.5, y: 1.01, z: 0.5 };
   overPortalFace = null;
+  overPortalWin = null;
+  overPortalDir = null;
   endCleared = false;
   netReturnWin = null;
   protectedBlocks.clear();
@@ -9854,7 +10002,11 @@ if (location.search.includes('test')) {
     getTypeMats, get typeMats(){ return typeMats; }, buildWorld, generateWorld, computeVillageLayout, spawnVillagers, refreshBlocks, get boxGeo(){ return boxGeo; }, THREE,
     get pos(){ return pos; }, get camera(){ return camera; }, get yaw(){ return yaw; }, set yaw(v){ yaw=v; }, get pitch(){ return pitch; }, set pitch(v){ pitch=v; },
     get carryMob(){ return carryMob; }, handleCarryEnterDown, handleCarryEnterUp, pickMob, get carryGrappleActive(){ return carryGrappleActive; }, get carryGrappleMob(){ return carryGrappleMob; }, get carryGrappleBlock(){ return carryGrappleBlock; }, get carryGrappleHookPos(){ return carryGrappleHookPos; }, get carryGrappleOffset(){ return carryGrappleOffset; }, get carryGrappleMode(){ return carryGrappleMode; }, get isMobFrozenByGrapple(){ return isMobFrozenByGrapple; }, get grappleMob(){ return grappleMob; }, get grappleMobOffset(){ return grappleMobOffset; }, get grappleHookPos(){ return grappleHookPos; }, get grappleTarget(){ return grappleTarget; }, updateCarryGrapple, get currentBlock(){ return currentBlock; }, updateTarget, toggleCarry: handleCarryEnterDown, findNearestMobForGrab: (...a)=>{ const d=new THREE.Vector3(); camera.getWorldDirection(d); return pickMob(d); }, get playerArms(){ return playerArms; }, get started(){ return started; }, set started(v){ started=v; }, get loading(){ return loading; }, get freeCam(){ return freeCam; }, set freeCam(v){ freeCam=v; }, get helpOpen(){ return helpOpen; },
-    get WOLF_COUNT(){ return WOLF_COUNT; }, makeWolfMesh, villagerHW, villagerH, wolfHasMobGround, wolfBlockedAt, wolfProbeFree, wanderGoalForWolf, wolfFindPath, wolfInWater, mobInWater, waterSurfaceForMob, mobPhysicsStep, wolfPhysicsStep, updateMobs,     get isPigCow(){ return isPigCow; }, get pigOverlapsFence(){ return pigOverlapsFence; }, get MOB_FLOAT_FRAC(){ return MOB_FLOAT_FRAC; }, mobFloatTargetY, mobWaterExitJump, poolExitTarget, penPoolExitTarget, isInsidePenPool
+    get WOLF_COUNT(){ return WOLF_COUNT; }, makeWolfMesh, villagerHW, villagerH, wolfHasMobGround, wolfBlockedAt, wolfProbeFree, wanderGoalForWolf, wolfFindPath, wolfInWater, mobInWater, waterSurfaceForMob, mobPhysicsStep, wolfPhysicsStep, updateMobs,     get isPigCow(){ return isPigCow; }, get pigOverlapsFence(){ return pigOverlapsFence; }, get MOB_FLOAT_FRAC(){ return MOB_FLOAT_FRAC; }, mobFloatTargetY, mobWaterExitJump, poolExitTarget, penPoolExitTarget, isInsidePenPool,
+    get overPortalWin(){ return overPortalWin; }, get overPortalDir(){ return overPortalDir; }, get overPortalSpawn(){ return overPortalSpawn; }, get overPortalFace(){ return overPortalFace; },
+    portalWinValid, portalFrameBBox, findReturnSpot, frameTopSpot, facePortalFrom, recordOverPortal, nearestReturnWin, resolveOverworldReturn, nearPortalSpawn, resolveSpawn, collectEndWins, collectNetherWins, collectReturnWins, insideEndInterior, insideNetherInterior, winCenter, windowDist, isSolid,
+    get PORTAL(){ return PORTAL; }, get OBSIDIAN(){ return OBSIDIAN; }, get WORLD_RADIUS(){ return WORLD_RADIUS; }, get PLAYER_HW(){ return PLAYER_HW; }, get PLAYER_H(){ return PLAYER_H; }, get MOON(){ return MOON; }, get CLOUD(){ return CLOUD; }, get GRASS(){ return GRASS; }, get STONE(){ return STONE; }, get ENDSTONE(){ return ENDSTONE; }, get NETHERRACK(){ return NETHERRACK; }, get dim(){ return dim; },
+    serialize, deserialize,
   };
 }
 

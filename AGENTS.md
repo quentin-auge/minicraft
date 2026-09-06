@@ -330,14 +330,21 @@ stays bright at distance, `placeable: true` so it
   beside the Overworld portal you entered. You can
   build your own End-frame return portal in either orientation. The return
   portal's frame blocks are indestructible (`protectedBlocks`, checked by
-  `breakBlock` and the TNT blast loop). Returning drops you beside the
-  Overworld portal (never on it) and the landing spot is re-resolved on live
-  terrain (`resolveSpawn`: a ring search from the recorded entry spot that
-  requires full body clearance, solid ground under the feet, and no portal
-  interior — so a build or blast at the old spot never leaves you stuck in a
-  wall, floating, or standing in another frame; its last-ditch fallback scans
-  the entry column from `MAX_Y` down (skipping CLOUD/MOON) and only lands on a top
-  solid with body clearance, so it never returns an embedded point), flying is forbidden in the
+  `breakBlock` and the TNT blast loop). Returning drops you no more than 3
+  blocks from the Overworld portal frame (Chebyshev distance to any frame
+  block), on firm ground, facing the portal: the landing spot is re-resolved
+  on live terrain against the recorded frame (`overPortalWin` + entry side
+  `overPortalDir`, via `findReturnSpot`: expanding rings r=1..3 around the
+  frame footprint with a tight ±2 vertical band at frame-base level, requiring
+  full body clearance, solid ground under the feet — CLOUD/MOON count, so sky
+  portals land back on their cloud/moon — and no portal interior, so a build
+  or blast at the old spot never leaves you stuck in a wall, floating, or
+  standing in another frame; with no firm ground in range (floating pillar,
+  water, nuked ground) the fallback stands on the frame top itself
+  (`frameTopSpot`), and a destroyed frame falls back to a tight r≤3 search
+  around the recorded point (`resolveSpawn`) or the nearest live frame; the
+  final yaw is recomputed from the landing spot toward the frame centre
+  (`facePortalFrom`), flying is forbidden in the
   End, and free-cam
   (F) is disabled there; you land just short of the return portal (cooldown +
   zeroed movement prevent an instant round-trip).
@@ -380,7 +387,8 @@ stays bright at distance, `placeable: true` so it
   Nether-frame you build in the Nether) brings you
   back to the Overworld's last portal entry point. Any overworld portal entry
   (End or Nether) records the exact frame you stepped through
-  (`overPortalSpawn` = a clear solid spot ~6–9 blocks in front of it,
+  (`overPortalWin` = the frame window + entry side `overPortalDir`,
+  `overPortalSpawn` = a clear solid spot within 3 blocks of it,
   `overPortalFace` = the yaw facing its interior), so the portal you use to
   leave the Overworld is always the spot you land at on the way back — as many
   portals as you like each work per-use. In the Nether or End glowing
@@ -558,17 +566,19 @@ stays bright at distance, `placeable: true` so it
     the source and destination positions (`spawnEndermanBurst`, reusing the
     `bursts` effect system). Deleted with the dragon when leaving the End /
     resetting dims; spawned fresh every End entry.
-- **Save/load**: binary format (`SAVE_MAGIC`, version 8) capturing world
+- **Save/load**: binary format (`SAVE_MAGIC`, version 9) capturing world
   blocks (over/end/nether), dim, seeds (over/end/nether), player pos/yaw/pitch,
   fly state (the free-cam `freeCam` flag — restored on Load Save only when it
   was enabled upon save, so you resume flying where you saved;
   new worlds always start grounded (New World resets `freeCam`); saves from the old
   dead `flying` variable read as false), hotbar selection,
+  the recorded Overworld return portal (`overPortalWin` + `overPortalDir`, in v9),
   placed-flowers' stored color/rotation (`placedFlowers`) and per-glowstone
   colour entries (`glowVariants`, one per dimension, in v7); extra per-entry byte
   pair for flowers in v3, the nether dim/seed/blocks added in v4; older v1/v2/v3
   saves still load, and v5 saves from the briefly-lived torch era are tolerated
-  and read past their torch entries. Saves older than v7 have their glowstone
+  and read past their torch entries. Saves older than v9 re-derive the return
+  frame via nearest-frame lookup on the way back; saves older than v7 have their glowstone
   colours backfilled (clustered) on load, and v6 saves' stored seven-colour
   indices are remapped onto the six via `LEGACY_GLOW_MAP`.
   Backends: File System Access API (`pickSaveFile`/`saveToFile`) and the
