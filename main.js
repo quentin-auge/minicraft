@@ -883,6 +883,9 @@ const VILLAGE_RADIUS = 28;
 const VILLAGE_HOUSES = 8;
 const VILLAGE_PEN_W = 12;
 const VILLAGE_PEN_D = 10;
+const VILLAGE_POOL_W = 8;
+const VILLAGE_POOL_D = 6;
+const VILLAGE_POOL_DEPTH = 2;
 const PIG_COUNT = 4;
 const COW_COUNT = 4;
 const WOLF_COUNT = 5;
@@ -891,6 +894,7 @@ const WOLF_COLLAR_COLORS = [0xe53935, 0x2ecc40, 0x246bff, 0xffd600, 0x00bfa5];
 let villageCenter = { x: 0, z: 0, y: 0 };
 let villageHouses = [];
 let villagePen = null;
+let villagePool = null;
 let villageMinX = 0, villageMaxX = 0, villageMinZ = 0, villageMaxZ = 0;
 function computeVillageLayout() {
   villageHouses = [];
@@ -935,6 +939,20 @@ function computeVillageLayout() {
     else if (_a >= 225 && _a < 315) _gateSide = 3;
     villagePen = { cx, cz, vy, minX, maxX, minZ, maxZ, gateSide: _gateSide };
   }
+  // — 8x6 swimming pool, 2 deep, at floor level; avoids the pen, houses avoid it —
+  villagePool = null;
+  let _poolTries = 0;
+  for (let _pt = 0; _pt < 1200 && !villagePool; _pt++) {
+    _poolTries++;
+    const rx = (hash2(_poolTries, 12, seed + 7260) * 2 - 1) * (VILLAGE_RADIUS - Math.max(VILLAGE_POOL_W, VILLAGE_POOL_D) / 2 - 4);
+    const rz = (hash2(_poolTries, 13, seed + 7261) * 2 - 1) * (VILLAGE_RADIUS - Math.max(VILLAGE_POOL_W, VILLAGE_POOL_D) / 2 - 4);
+    const cx = Math.round(vx + rx), cz = Math.round(vz + rz);
+    const minX = cx - Math.floor(VILLAGE_POOL_W / 2), maxX = minX + VILLAGE_POOL_W - 1;
+    const minZ = cz - Math.floor(VILLAGE_POOL_D / 2), maxZ = minZ + VILLAGE_POOL_D - 1;
+    if (Math.hypot(cx - vx, cz - vz) + Math.max(VILLAGE_POOL_W, VILLAGE_POOL_D) / 2 + 1 > VILLAGE_RADIUS) continue;
+    if (villagePen && !(maxX + 2 < villagePen.minX || minX - 2 > villagePen.maxX || maxZ + 2 < villagePen.minZ || minZ - 2 > villagePen.maxZ)) continue;
+    villagePool = { cx, cz, vy, minX, maxX, minZ, maxZ };
+  }
   let tries = 0;
   for (let i = 0; i < VILLAGE_HOUSES; ) {
     const rx = (hash2(tries, 0, seed + 7200 + i * 997) * 2 - 1) * (VILLAGE_RADIUS - 7);
@@ -948,8 +966,9 @@ function computeVillageLayout() {
     const w = 7, d = 7;
     const minX = cx - Math.floor(w / 2), maxX = minX + w - 1;
     const minZ = cz - Math.floor(d / 2), maxZ = minZ + d - 1;
-    // avoid the pen
+    // avoid the pen and the pool
     if (villagePen && !(maxX + 2 < villagePen.minX || minX - 2 > villagePen.maxX || maxZ + 2 < villagePen.minZ || minZ - 2 > villagePen.maxZ)) { if (tries > 800) break; continue; }
+    if (villagePool && !(maxX + 2 < villagePool.minX || minX - 2 > villagePool.maxX || maxZ + 2 < villagePool.minZ || minZ - 2 > villagePool.maxZ)) { if (tries > 800) break; continue; }
     const toC = Math.atan2(vz - cz, vx - cx);
     const a = ((toC * 180 / Math.PI) + 360) % 360;
     let side = 0;
@@ -987,6 +1006,25 @@ function isInsideAnyHouse(x, z) {
 function isInsidePen(x, z) {
   if (!villagePen) return false;
   return x >= villagePen.minX && x <= villagePen.maxX && z >= villagePen.minZ && z <= villagePen.maxZ;
+}
+function isInsidePool(x, z) {
+  if (!villagePool) return false;
+  return x >= villagePool.minX && x <= villagePool.maxX && z >= villagePool.minZ && z <= villagePool.maxZ;
+}
+function placeVillagePool() {
+  if (!villagePool) return;
+  const p = villagePool, vy = p.vy;
+  for (let x = p.minX; x <= p.maxX; x++) for (let z = p.minZ; z <= p.maxZ; z++) {
+    setBlock(x, vy - VILLAGE_POOL_DEPTH, z, OBSIDIAN);
+    for (let y = vy - VILLAGE_POOL_DEPTH + 1; y <= vy; y++) setBlock(x, y, z, WATER);
+    if (getBlock(x, vy + 1, z) !== AIR) setBlock(x, vy + 1, z, AIR);
+    if (getBlock(x, vy + 2, z) !== AIR) setBlock(x, vy + 2, z, AIR);
+  }
+  for (let x = p.minX - 1; x <= p.maxX + 1; x++) for (let z = p.minZ - 1; z <= p.maxZ + 1; z++) {
+    const onRim = x === p.minX - 1 || x === p.maxX + 1 || z === p.minZ - 1 || z === p.maxZ + 1;
+    if (!onRim) continue;
+    for (let y = vy - VILLAGE_POOL_DEPTH + 1; y <= vy; y++) setBlock(x, y, z, STONE);
+  }
 }
 function placeVillagePen() {
   if (!villagePen) return;
@@ -3570,6 +3608,7 @@ function generateWorld() {
   stairEntrances();
   placeVillageHouses();
   placeVillagePen();
+  placeVillagePool();
   generateClouds();
   generateMoon();
 }
@@ -9702,8 +9741,8 @@ requestAnimationFrame(loop);
 if (location.search.includes('test')) {
   window._test = {
     get world(){ return world; }, get worlds(){ return worlds; }, get mobs(){ return mobs; },
-    getBlock, setBlock, handleMobExplosion, processExplosionQueue, isMobStandingOn, intersectsMob, key, BLAST_RADIUS, TNT, STONE, AIR,
-    get villageCenter(){ return villageCenter; }, get villageHouses(){ return villageHouses; }, get villagePen(){ return villagePen; }, get isInsidePen(){ return isInsidePen; }, get LOG(){ return LOG; }, findPenGaps, nearestPenGap, penGapInside, penGapOutside, hasMobGround, mobBlockedAt, aabbCollidesWorld, mobProbeFree, randomPenPoint, randomAroundPenPoint, groundYForMob, get CLOUD_BASE(){ return CLOUD_BASE; }, get CLOUD_TOP(){ return CLOUD_TOP; }, get MAX_Y(){ return MAX_Y; },
+    getBlock, setBlock, handleMobExplosion, processExplosionQueue, isMobStandingOn, intersectsMob, key, BLAST_RADIUS, TNT, STONE, AIR, get SAND(){ return SAND; }, get WATER(){ return WATER; }, get VILLAGE_POOL_W(){ return VILLAGE_POOL_W; }, get VILLAGE_POOL_D(){ return VILLAGE_POOL_D; }, get VILLAGE_POOL_DEPTH(){ return VILLAGE_POOL_DEPTH; },
+    get villageCenter(){ return villageCenter; }, get villageHouses(){ return villageHouses; }, get villagePen(){ return villagePen; }, get villagePool(){ return villagePool; }, get isInsidePen(){ return isInsidePen; }, get isInsidePool(){ return isInsidePool; }, get LOG(){ return LOG; }, findPenGaps, nearestPenGap, penGapInside, penGapOutside, hasMobGround, mobBlockedAt, aabbCollidesWorld, mobProbeFree, randomPenPoint, randomAroundPenPoint, groundYForMob, get CLOUD_BASE(){ return CLOUD_BASE; }, get CLOUD_TOP(){ return CLOUD_TOP; }, get MAX_Y(){ return MAX_Y; },
     getTypeMats, get typeMats(){ return typeMats; }, buildWorld, generateWorld, computeVillageLayout, spawnVillagers, refreshBlocks, get boxGeo(){ return boxGeo; }, THREE,
     get pos(){ return pos; }, get camera(){ return camera; }, get yaw(){ return yaw; }, set yaw(v){ yaw=v; }, get pitch(){ return pitch; }, set pitch(v){ pitch=v; },
     get carryMob(){ return carryMob; }, handleCarryEnterDown, handleCarryEnterUp, pickMob, get carryGrappleActive(){ return carryGrappleActive; }, get carryGrappleMob(){ return carryGrappleMob; }, get carryGrappleBlock(){ return carryGrappleBlock; }, get carryGrappleHookPos(){ return carryGrappleHookPos; }, get carryGrappleOffset(){ return carryGrappleOffset; }, get carryGrappleMode(){ return carryGrappleMode; }, get isMobFrozenByGrapple(){ return isMobFrozenByGrapple; }, get grappleMob(){ return grappleMob; }, get grappleMobOffset(){ return grappleMobOffset; }, get grappleHookPos(){ return grappleHookPos; }, get grappleTarget(){ return grappleTarget; }, updateCarryGrapple, get currentBlock(){ return currentBlock; }, updateTarget, toggleCarry: handleCarryEnterDown, findNearestMobForGrab: (...a)=>{ const d=new THREE.Vector3(); camera.getWorldDirection(d); return pickMob(d); }, get playerArms(){ return playerArms; }, get started(){ return started; }, set started(v){ started=v; }, get loading(){ return loading; }, get freeCam(){ return freeCam; }, set freeCam(v){ freeCam=v; }, get helpOpen(){ return helpOpen; },
