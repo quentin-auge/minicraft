@@ -892,6 +892,11 @@ const VILLAGE_PEN_POOL_DEPTH = 1;
 const PIG_COUNT = 4;
 const COW_COUNT = 4;
 const WOLF_COUNT = 5;
+const PIGEON_COUNT = 50;
+const PIGEON_MIN_Y = 50;
+const PIGEON_SEP_DIST = 2.5;
+const PIGEON_PROBE_DIST = 3;
+const PIGEON_SPEED = 8.8;
 const WOLF_FUR = 0xc8cdd2;
 const WOLF_COLLAR_COLORS = [0xe53935, 0x2ecc40, 0x246bff, 0xffd600, 0x00bfa5];
 let villageCenter = { x: 0, z: 0, y: 0 };
@@ -1019,6 +1024,66 @@ function isMobOnRoof(m) {
   if (!m || !m.pos) return false;
   if (!mobOnRoofLevel(m.pos.y)) return false;
   return !!houseAtRoof(m.pos.x, m.pos.z);
+}
+function houseInteriorFor(x, y, z) {
+  const h = isInsideAnyHouse(x, z);
+  if (!h) return null;
+  if (y < h.vy + 1 || y > h.vy + 4) return null;
+  return h;
+}
+function houseSealState(h) {
+  const now = performance.now() / 1000;
+  if (h._seal && now - h._seal.t < 1) return h._seal;
+  const isDoor = (x, z) => (x === h.d0x && z === h.d0z) || (x === h.d1x && z === h.d1z);
+  let sealed = true, hole = null;
+  const cells = [];
+  for (let x = h.minX; x <= h.maxX; x++) { cells.push([x, h.minZ]); cells.push([x, h.maxZ]); }
+  for (let z = h.minZ + 1; z <= h.maxZ - 1; z++) { cells.push([h.minX, z]); cells.push([h.maxX, z]); }
+  for (let y = h.vy + 1; y <= h.vy + 4 && sealed; y++)
+    for (const [x, z] of cells) {
+      if (!sealed) break;
+      if (y <= h.vy + 3 && isDoor(x, z)) continue;
+      if (!isSolid(x, y, z)) { sealed = false; hole = { x, y, z }; }
+    }
+  if (sealed)
+    for (let x = h.minX; x <= h.maxX && sealed; x++)
+      for (let z = h.minZ; z <= h.maxZ && sealed; z++)
+        if (!isSolid(x, h.vy + 5, z)) { sealed = false; hole = { x, y: h.vy + 5, z }; }
+  h._seal = { t: now, sealed, hole };
+  return h._seal;
+}
+function holeFaceNormal(h, hole) {
+  if (hole.y > h.vy + 4) return { x: 0, y: 1, z: 0 };
+  if (hole.x === h.minX) return { x: -1, y: 0, z: 0 };
+  if (hole.x === h.maxX) return { x: 1, y: 0, z: 0 };
+  if (hole.z === h.minZ) return { x: 0, y: 0, z: -1 };
+  if (hole.z === h.maxZ) return { x: 0, y: 0, z: 1 };
+  return { x: 0, y: 0, z: 0 };
+}
+function pigeonSegmentFree(ax, ay, az, bx, by, bz) {
+  const d = Math.hypot(bx - ax, by - ay, bz - az);
+  const n = Math.max(2, Math.ceil(d));
+  for (let i = 1; i <= n; i++) {
+    const t = i / n;
+    if (aabbCollidesWorld(ax + (bx - ax) * t, ay + (by - ay) * t, az + (bz - az) * t, 0.25, 0.5)) return false;
+  }
+  return true;
+}
+function bandReturnTarget(pos) {
+  const y = pos.y < PIGEON_MIN_Y ? PIGEON_MIN_Y + 10 : PIGEON_MAX_Y - 10;
+  return new THREE.Vector3(
+    Math.max(-WORLD_RADIUS + 2, Math.min(WORLD_RADIUS - 2, pos.x)),
+    y,
+    Math.max(-WORLD_RADIUS + 2, Math.min(WORLD_RADIUS - 2, pos.z)));
+}
+function pigeonDetourTarget(m) {
+  for (let t = 0; t < 10; t++) {
+    const a = Math.random() * Math.PI * 2, d = 8 + Math.random() * 8;
+    const x = m.pos.x + Math.cos(a) * d, z = m.pos.z + Math.sin(a) * d;
+    const y = Math.max(1, Math.min(MAX_Y - 1, m.pos.y + (Math.random() - 0.5) * 10));
+    if (pigeonProbeFree(x, y, z)) return new THREE.Vector3(x, y, z);
+  }
+  return null;
 }
 function isInsidePen(x, z) {
   if (!villagePen) return false;
@@ -1554,12 +1619,441 @@ function makeWolfMesh(furHex, collarHex) {
   g.userData = { sc, legBL, legBR, legFL, legFR, body, head, tail, furHex: fur, collarHex: collar, kind: "wolf" };
   return g;
 }
+const pigeonBodyMat = new THREE.MeshStandardMaterial({ color: 0x9aa0a6, roughness: 0.9 });
+const pigeonDarkMat = new THREE.MeshStandardMaterial({ color: 0x6b7076, roughness: 0.9 });
+const pigeonHeadMat = new THREE.MeshStandardMaterial({ color: 0xb9bec4, roughness: 0.9 });
+const pigeonBeakMat = new THREE.MeshStandardMaterial({ color: 0xe8930c, roughness: 0.9 });
+const pigeonEyeMat = new THREE.MeshStandardMaterial({ color: 0x111111 });
+function makePigeonMesh() {
+  const g = new THREE.Group();
+  if (!villagerGeo) villagerGeo = new THREE.BoxGeometry(1, 1, 1);
+  const geo = villagerGeo;
+  const body = new THREE.Mesh(geo, pigeonBodyMat);
+  body.scale.set(0.34, 0.30, 0.52);
+  body.position.set(0, 0.28, 0);
+  g.add(body);
+  const head = new THREE.Mesh(geo, pigeonHeadMat);
+  head.scale.set(0.24, 0.24, 0.24);
+  head.position.set(0, 0.48, 0.30);
+  g.add(head);
+  const beak = new THREE.Mesh(geo, pigeonBeakMat);
+  beak.scale.set(0.10, 0.08, 0.12);
+  beak.position.set(0, 0.46, 0.46);
+  g.add(beak);
+  for (const sx of [1, -1]) {
+    const eye = new THREE.Mesh(geo, pigeonEyeMat);
+    eye.scale.set(0.05, 0.05, 0.02);
+    eye.position.set(sx * 0.10, 0.52, 0.42);
+    g.add(eye);
+  }
+  const tail = new THREE.Mesh(geo, pigeonDarkMat);
+  tail.scale.set(0.22, 0.08, 0.30);
+  tail.position.set(0, 0.28, -0.38);
+  g.add(tail);
+  const wingL = new THREE.Group();
+  wingL.position.set(-0.18, 0.34, 0);
+  g.add(wingL);
+  const wingLM = new THREE.Mesh(geo, pigeonDarkMat);
+  wingLM.scale.set(0.44, 0.06, 0.30);
+  wingLM.position.set(-0.22, 0, 0);
+  wingL.add(wingLM);
+  const wingR = new THREE.Group();
+  wingR.position.set(0.18, 0.34, 0);
+  g.add(wingR);
+  const wingRM = new THREE.Mesh(geo, pigeonDarkMat);
+  wingRM.scale.set(0.44, 0.06, 0.30);
+  wingRM.position.set(0.22, 0, 0);
+  wingR.add(wingRM);
+  g.userData = { wingL, wingR, body, head, kind: "pigeon" };
+  return g;
+}
+function pigeonRandomTarget(from, minDist = 40, maxDist = 90) {
+  for (let t = 0; t < 12; t++) {
+    const a = Math.random() * Math.PI * 2;
+    const d = minDist + Math.random() * (maxDist - minDist);
+    const x = Math.max(-WORLD_RADIUS + 2, Math.min(WORLD_RADIUS - 2, from.x + Math.cos(a) * d));
+    const z = Math.max(-WORLD_RADIUS + 2, Math.min(WORLD_RADIUS - 2, from.z + Math.cos(a + 1.7) * d));
+    const y = PIGEON_MIN_Y + 5 + Math.random() * (PIGEON_MAX_Y - PIGEON_MIN_Y - 10);
+    if (Math.hypot(x - from.x, z - from.z) < 12) continue;
+    return new THREE.Vector3(x, y, z);
+  }
+  return new THREE.Vector3(
+    Math.max(-WORLD_RADIUS + 2, Math.min(WORLD_RADIUS - 2, from.x + (Math.random() - 0.5) * 80)),
+    PIGEON_MIN_Y + 5 + Math.random() * (PIGEON_MAX_Y - PIGEON_MIN_Y - 10),
+    Math.max(-WORLD_RADIUS + 2, Math.min(WORLD_RADIUS - 2, from.z + (Math.random() - 0.5) * 80)));
+}
+function pigeonNewArc(m) {
+  const side = Math.random() < 0.5 ? 1 : -1;
+  const r = 6 + Math.random() * 14;
+  const v = m.vel.length() || PIGEON_SPEED;
+  const fwd = v > 0.01 ? m.vel.clone().normalize() : new THREE.Vector3(Math.cos(m.yaw), 0, Math.sin(m.yaw));
+  const cx = m.pos.x - fwd.z * side * r + (Math.random() - 0.5) * 8;
+  const cz = m.pos.z + fwd.x * side * r + (Math.random() - 0.5) * 8;
+  const cy = Math.max(PIGEON_MIN_Y + 3, Math.min(PIGEON_MAX_Y - 3, m.pos.y + (Math.random() - 0.5) * 12));
+  m.arc = {
+    cx: Math.max(-WORLD_RADIUS + 2, Math.min(WORLD_RADIUS - 2, cx)),
+    cz: Math.max(-WORLD_RADIUS + 2, Math.min(WORLD_RADIUS - 2, cz)),
+    cy, r, side,
+    swept: 0,
+    total: 1.5 + Math.random() * 3.0,
+  };
+  m.mode = "arc";
+}
+function spawnSinglePigeon(outOfView = false, sx = null, sy = null, sz = null) {
+  let gid = mobs.length ? Math.max(...mobs.map((m) => m.id)) + 1 : 0;
+  let px, py, pz;
+  if (sx != null && sy != null && sz != null) {
+    px = sx; py = sy; pz = sz;
+  } else if (outOfView) {
+    const spot = pigeonSpotOutOfView();
+    px = spot.x; py = spot.y; pz = spot.z;
+  } else {
+    px = (Math.random() * 2 - 1) * (WORLD_RADIUS - 4);
+    pz = (Math.random() * 2 - 1) * (WORLD_RADIUS - 4);
+    py = PIGEON_MIN_Y + 5 + Math.random() * (PIGEON_MAX_Y - PIGEON_MIN_Y - 10);
+  }
+  py = Math.max(PIGEON_MIN_Y + 1, Math.min(PIGEON_MAX_Y - 1, py));
+  if (aabbCollidesWorld(px, py, pz, 0.25, 0.5)) {
+    for (let t = 0; t < 10 && aabbCollidesWorld(px, py, pz, 0.25, 0.5); t++) {
+      px = (Math.random() * 2 - 1) * (WORLD_RADIUS - 4);
+      pz = (Math.random() * 2 - 1) * (WORLD_RADIUS - 4);
+      py = PIGEON_MIN_Y + 5 + Math.random() * (PIGEON_MAX_Y - PIGEON_MIN_Y - 10);
+    }
+    if (aabbCollidesWorld(px, py, pz, 0.25, 0.5)) return null;
+  }
+  const mesh = makePigeonMesh();
+  mesh.position.set(px, py, pz);
+  const yaw = Math.random() * Math.PI * 2;
+  mesh.rotation.y = yaw;
+  scene.add(mesh);
+  const m = {
+    id: gid++, kind: "pigeon", canStep: false, homeId: -1, isBaby: false, parentId: -1, dim: "over",
+    pos: new THREE.Vector3(px, py, pz),
+    vel: new THREE.Vector3(Math.cos(yaw) * PIGEON_SPEED, 0, Math.sin(yaw) * PIGEON_SPEED),
+    hw: 0.25, h: 0.5, mesh, onGround: false,
+    target: null, arc: null, mode: "straight", wanderT: 0,
+    legPhase: Math.random() * Math.PI * 2, speed: PIGEON_SPEED,
+    blockedT: 0, yaw, yawTarget: yaw, villageBound: false,
+    _stuckT: 0, _prevX: px, _prevZ: pz,
+    path: null, pathIdx: 0, pathKey: null, sc: 1, steerX: 0, steerZ: 0, steerCooldown: 0, lastTarget: null, _wasInWater: false, wolfInWater: false,
+  };
+  m.target = pigeonRandomTarget(m.pos);
+  mobs.push(m);
+  mobById.set(m.id, m);
+  return m;
+}
+function spawnPigeons() {
+  const cur = mobs.filter((m) => (m.dim === "over" || m.dim === undefined) && m.kind === "pigeon").length;
+  for (let i = cur; i < PIGEON_COUNT; i++) spawnSinglePigeon(false);
+}
+function removePigeons() {
+  const keepCarry = carryMob && mobs.includes(carryMob) ? carryMob : null;
+  const survivors = [];
+  for (const m of mobs) {
+    if (m.kind !== "pigeon") { survivors.push(m); continue; }
+    if (m === keepCarry) { survivors.push(m); continue; }
+    if (m.mesh) scene.remove(m.mesh);
+    mobById.delete(m.id);
+  }
+  mobs.length = 0;
+  for (const s of survivors) mobs.push(s);
+  pigeonLock = null;
+  pigeonLockT = 0;
+  pigeonLockShots = 0;
+}
+function pigeonSpotOutOfView() {
+  const fwd = new THREE.Vector3();
+  camera.getWorldDirection(fwd);
+  let best = null, bestScore = -Infinity;
+  for (let t = 0; t < 24; t++) {
+    const x = (Math.random() * 2 - 1) * (WORLD_RADIUS - 4);
+    const z = (Math.random() * 2 - 1) * (WORLD_RADIUS - 4);
+    const y = PIGEON_MIN_Y + 5 + Math.random() * (PIGEON_MAX_Y - PIGEON_MIN_Y - 10);
+    if (aabbCollidesWorld(x, y, z, 0.25, 0.5)) continue;
+    const dx = x - camera.position.x, dy = y - camera.position.y, dz = z - camera.position.z;
+    const d = Math.hypot(dx, dy, dz) || 1;
+    const dot = (dx / d) * fwd.x + (dy / d) * fwd.y + (dz / d) * fwd.z;
+    const score = d - dot * 200;
+    if (d > 130 && dot < 0.5 && score > bestScore) { bestScore = score; best = { x, y, z }; }
+  }
+  if (best) return best;
+  const a = Math.random() * Math.PI * 2;
+  return {
+    x: Math.max(-WORLD_RADIUS + 4, Math.min(WORLD_RADIUS - 4, camera.position.x - fwd.x * 150 + Math.cos(a) * 30)),
+    y: PIGEON_MIN_Y + 10 + Math.random() * (PIGEON_MAX_Y - PIGEON_MIN_Y - 20),
+    z: Math.max(-WORLD_RADIUS + 4, Math.min(WORLD_RADIUS - 4, camera.position.z - fwd.z * 150 + Math.sin(a) * 30)),
+  };
+}
+function killPigeon(m) {
+  const i = mobs.indexOf(m);
+  if (i < 0) return;
+  if (m === carryMob) return;
+  if (pigeonLock === m) pigeonLock = null;
+  if (m.mesh) scene.remove(m.mesh);
+  mobById.delete(m.id);
+  mobs.splice(i, 1);
+  spawnSinglePigeon(true);
+}
+function pigeonProbeFree(x, y, z) {
+  if (x < -WORLD_RADIUS + 1 || x > WORLD_RADIUS - 1 || z < -WORLD_RADIUS + 1 || z > WORLD_RADIUS - 1) return false;
+  if (y < 1 || y > MAX_Y - 1) return false;
+  return !aabbCollidesWorld(x, y, z, 0.25, 0.5);
+}
+function pigeonSeparate(m, dt, vel, sp) {
+  const nearby = nearbyMobsFor(m.pos.x, m.pos.z, 1);
+  for (const o of nearby) {
+    if (o === m || o.kind !== "pigeon") continue;
+    if (o.dim !== undefined && o.dim !== dim) continue;
+    const ox = m.pos.x - o.pos.x, oy = m.pos.y - o.pos.y, oz = m.pos.z - o.pos.z;
+    const d2 = ox * ox + oy * oy + oz * oz;
+    if (d2 < PIGEON_SEP_DIST * PIGEON_SEP_DIST && d2 > 0.0001) {
+      const d = Math.sqrt(d2);
+      const push = (PIGEON_SEP_DIST - d) * 6 * dt;
+      vel.x += (ox / d) * push * sp * 0.12;
+      vel.y += (oy / d) * push * sp * 0.12;
+      vel.z += (oz / d) * push * sp * 0.12;
+    }
+  }
+}
+function pigeonAnimate(m, dt, vx, vy, vz, sp) {
+  const targetYaw = Math.atan2(vx, vz);
+  let dyaw = targetYaw - m.yaw;
+  while (dyaw > Math.PI) dyaw -= Math.PI * 2;
+  while (dyaw < -Math.PI) dyaw += Math.PI * 2;
+  m.yaw += dyaw * Math.min(1, dt * 3.5);
+  m.yawTarget = targetYaw;
+  m.mesh.position.copy(m.pos);
+  m.mesh.rotation.y = m.yaw;
+  m.mesh.rotation.x = Math.max(-0.45, Math.min(0.45, -vy / sp * 0.9));
+  m.mesh.rotation.z = Math.max(-0.5, Math.min(0.5, -dyaw * 1.2));
+  m.legPhase += dt * 11;
+  const f = Math.sin(m.legPhase) * 0.65;
+  if (m.mesh.userData.wingL) m.mesh.userData.wingL.rotation.z = f;
+  if (m.mesh.userData.wingR) m.mesh.userData.wingR.rotation.z = -f;
+}
+function pigeonCoopTarget(h) {
+  return new THREE.Vector3(
+    h.minX + 1.5 + Math.random() * (h.maxX - h.minX - 3),
+    h.vy + 1.5 + Math.random() * 2,
+    h.minZ + 1.5 + Math.random() * (h.maxZ - h.minZ - 3));
+}
+function updateHoleExitPigeon(m, dt, h, hole) {
+  dt = Math.min(0.05, dt);
+  const sp = WALK;
+  const n = holeFaceNormal(h, hole);
+  const cx = hole.x + 0.5, cy = hole.y + 0.5, cz = hole.z + 0.5;
+  let rx = m.pos.x - cx, ry = m.pos.y - cy, rz = m.pos.z - cz;
+  let s = rx * n.x + ry * n.y + rz * n.z;
+  let lx = rx - s * n.x, ly = ry - s * n.y, lz = rz - s * n.z;
+  if (s > -3 && s < 1.5) {
+    const snap = Math.min(1, dt * 6);
+    const nx = m.pos.x - lx * snap, ny = m.pos.y - ly * snap, nz = m.pos.z - lz * snap;
+    if (!aabbCollidesWorld(nx, ny, nz, m.hw, m.h)) { m.pos.x = nx; m.pos.y = ny; m.pos.z = nz; }
+    rx = m.pos.x - cx; ry = m.pos.y - cy; rz = m.pos.z - cz;
+    s = rx * n.x + ry * n.y + rz * n.z;
+    lx = rx - s * n.x; ly = ry - s * n.y; lz = rz - s * n.z;
+  }
+  const lat = Math.hypot(lx, ly, lz);
+  const fwd = sp * (0.3 + 0.7 * Math.min(1, lat / 0.5));
+  const k = Math.min(1, dt * 3);
+  const vel = { x: m.vel.x, y: m.vel.y, z: m.vel.z };
+  vel.x += ((n.x * fwd - lx * 5) - vel.x) * k;
+  vel.y += ((n.y * fwd - ly * 5) - vel.y) * k;
+  vel.z += ((n.z * fwd - lz * 5) - vel.z) * k;
+  pigeonSeparate(m, dt, vel, sp);
+  const nvl = Math.hypot(vel.x, vel.y, vel.z) || 1;
+  const cl = Math.max(sp * 0.6, Math.min(sp * 1.3, nvl));
+  vel.x = (vel.x / nvl) * cl; vel.y = (vel.y / nvl) * cl; vel.z = (vel.z / nvl) * cl;
+  m.pos.x += vel.x * dt;
+  m.pos.y += vel.y * dt;
+  m.pos.z += vel.z * dt;
+  if (aabbCollidesWorld(m.pos.x, m.pos.y, m.pos.z, m.hw, m.h)) {
+    m.pos.x -= vel.x * dt;
+    m.pos.y -= vel.y * dt;
+    m.pos.z -= vel.z * dt;
+    vel.x *= 0.3; vel.y *= 0.3; vel.z *= 0.3;
+  }
+  m.pos.x = Math.max(-WORLD_RADIUS + 1, Math.min(WORLD_RADIUS - 1, m.pos.x));
+  m.pos.z = Math.max(-WORLD_RADIUS + 1, Math.min(WORLD_RADIUS - 1, m.pos.z));
+  m.pos.y = Math.max(1, Math.min(MAX_Y - 1, m.pos.y));
+  m.vel.set(vel.x, vel.y, vel.z);
+  m.mode = "straight";
+  m.arc = null;
+  m.target = null;
+  m.targetMode = null;
+  pigeonAnimate(m, dt, vel.x, vel.y, vel.z, sp);
+}
+function updateCoopedPigeon(m, dt, h) {
+  dt = Math.min(0.05, dt);
+  const sp = WALK / 2;
+  if (!m.target || m.targetMode !== "coop" || Math.hypot(m.target.x - m.pos.x, m.target.y - m.pos.y, m.target.z - m.pos.z) < 0.8) {
+    m.target = pigeonCoopTarget(h);
+    m.targetMode = "coop";
+  }
+  const tx = m.target.x - m.pos.x, ty = m.target.y - m.pos.y, tz = m.target.z - m.pos.z;
+  const tl = Math.hypot(tx, ty, tz) || 1;
+  const k = Math.min(1, dt * 2.2);
+  const vel = { x: m.vel.x, y: m.vel.y, z: m.vel.z };
+  vel.x += ((tx / tl) * sp - vel.x) * k;
+  vel.y += ((ty / tl) * sp - vel.y) * k;
+  vel.z += ((tz / tl) * sp - vel.z) * k;
+  pigeonSeparate(m, dt, vel, sp);
+  const nvl = Math.hypot(vel.x, vel.y, vel.z) || 1;
+  const cl = Math.max(sp * 0.6, Math.min(sp * 1.3, nvl));
+  vel.x = (vel.x / nvl) * cl; vel.y = (vel.y / nvl) * cl; vel.z = (vel.z / nvl) * cl;
+  m.pos.x += vel.x * dt;
+  m.pos.y += vel.y * dt;
+  m.pos.z += vel.z * dt;
+  if (!houseInteriorFor(m.pos.x, m.pos.y, m.pos.z) || aabbCollidesWorld(m.pos.x, m.pos.y, m.pos.z, m.hw, m.h)) {
+    m.pos.x -= vel.x * dt;
+    m.pos.y -= vel.y * dt;
+    m.pos.z -= vel.z * dt;
+    m.target = pigeonCoopTarget(h);
+  }
+  m.pos.y = Math.max(h.vy + 1, Math.min(h.vy + 4, m.pos.y));
+  m.vel.set(vel.x, vel.y, vel.z);
+  pigeonAnimate(m, dt, vel.x, vel.y, vel.z, sp);
+}
+function updatePigeon(m, dt) {
+  dt = Math.min(0.05, dt);
+  const inHouse = houseInteriorFor(m.pos.x, m.pos.y, m.pos.z);
+  if (inHouse) {
+    const st = houseSealState(inHouse);
+    if (st.sealed) { updateCoopedPigeon(m, dt, inHouse); return; }
+    if (st.hole) { updateHoleExitPigeon(m, dt, inHouse, st.hole); return; }
+  } else if (m.targetMode === "coop") {
+    m.targetMode = null;
+    m.target = null;
+  }
+  const outBand = !inHouse && (m.pos.y < PIGEON_MIN_Y || m.pos.y > PIGEON_MAX_Y);
+  const sp = PIGEON_SPEED;
+  let vx = m.vel.x, vy = m.vel.y, vz = m.vel.z;
+  const vl = Math.hypot(vx, vy, vz) || 1;
+  let dx = vx / vl, dy = vy / vl, dz = vz / vl;
+  if (!inHouse) {
+  if (m.pos.y < PIGEON_MIN_Y + 5) dy += (PIGEON_MIN_Y + 5 - m.pos.y) * 0.08;
+  else if (m.pos.y > PIGEON_MAX_Y - 5) dy -= (m.pos.y - (PIGEON_MAX_Y - 5)) * 0.08;
+  }
+  const edge = WORLD_RADIUS - 6;
+  if (m.pos.x < -edge || m.pos.x > edge || m.pos.z < -edge || m.pos.z > edge) {
+    dx += (0 - m.pos.x) * 0.02;
+    dz += (0 - m.pos.z) * 0.02;
+  }
+  const dl = Math.hypot(dx, dy, dz) || 1;
+  dx /= dl; dy /= dl; dz /= dl;
+  let steerX = dx, steerY = dy, steerZ = dz;
+  if (!pigeonProbeFree(m.pos.x + dx * PIGEON_PROBE_DIST, m.pos.y + dy * PIGEON_PROBE_DIST, m.pos.z + dz * PIGEON_PROBE_DIST)) {
+    const baseYaw = Math.atan2(dx, dz);
+    const yaws = [0, 0.5, -0.5, 1.0, -1.0, 1.6, -1.6, Math.PI];
+    let found = false;
+    for (const off of yaws) {
+      for (const vy2 of [dy * 0.5, 0.25, -0.25, 0]) {
+        const nx = Math.sin(baseYaw + off), nz = Math.cos(baseYaw + off);
+        const nl = Math.hypot(nx, vy2, nz) || 1;
+        if (pigeonProbeFree(m.pos.x + (nx / nl) * PIGEON_PROBE_DIST, m.pos.y + (vy2 / nl) * PIGEON_PROBE_DIST, m.pos.z + (nz / nl) * PIGEON_PROBE_DIST)) {
+          steerX = nx / nl; steerY = vy2 / nl; steerZ = nz / nl;
+          found = true;
+          break;
+        }
+      }
+      if (found) break;
+    }
+    if (!found) {
+      steerX = -dx; steerY = 0.1; steerZ = -dz;
+      if (outBand && m.targetMode !== "detour") {
+        const det = pigeonDetourTarget(m);
+        if (det) { m.target = det; m.targetMode = "detour"; m.detourT = 2.5; }
+      }
+    }
+  } else if (m.mode === "straight") {
+    if (outBand && m.targetMode !== "detour") {
+      m.target = bandReturnTarget(m.pos);
+      m.targetMode = "return";
+    }
+    if (m.targetMode === "detour") {
+      m.detourT -= dt;
+      if (m.detourT <= 0 || (m.target && Math.hypot(m.target.x - m.pos.x, m.target.y - m.pos.y, m.target.z - m.pos.z) < 2)) {
+        m.target = null;
+        m.targetMode = null;
+      }
+    }
+    if (!m.target || Math.hypot(m.target.x - m.pos.x, m.target.y - m.pos.y, m.target.z - m.pos.z) < 2.5) {
+      if (outBand) { m.target = bandReturnTarget(m.pos); m.targetMode = "return"; }
+      else if (Math.random() < 0.55) m.target = pigeonRandomTarget(m.pos);
+      else pigeonNewArc(m);
+    }
+    if (m.mode === "straight" && m.target) {
+      const tx = m.target.x - m.pos.x, ty = m.target.y - m.pos.y, tz = m.target.z - m.pos.z;
+      const tl = Math.hypot(tx, ty, tz) || 1;
+      steerX = tx / tl; steerY = ty / tl; steerZ = tz / tl;
+      if (!pigeonProbeFree(m.pos.x + steerX * PIGEON_PROBE_DIST, m.pos.y + steerY * PIGEON_PROBE_DIST, m.pos.z + steerZ * PIGEON_PROBE_DIST)) {
+        m.target = pigeonRandomTarget(m.pos);
+      }
+    }
+  } else if (m.mode === "arc" && m.arc) {
+    const a = m.arc;
+    const rx = m.pos.x - a.cx, rz = m.pos.z - a.cz;
+    const rl = Math.hypot(rx, rz) || 1;
+    const tx = -rz / rl * a.side, tz = rx / rl * a.side;
+    const ty = Math.max(-0.3, Math.min(0.3, (a.cy - m.pos.y) * 0.05));
+    const tl = Math.hypot(tx, ty, tz) || 1;
+    steerX = tx / tl; steerY = ty / tl; steerZ = tz / tl;
+    a.swept += (sp / Math.max(4, a.r)) * dt;
+    if (a.swept >= a.total) { m.arc = null; m.mode = "straight"; m.target = pigeonRandomTarget(m.pos); }
+  }
+  const k = Math.min(1, dt * 2.2);
+  vx += (steerX * sp - vx) * k;
+  vy += (steerY * sp - vy) * k;
+  vz += (steerZ * sp - vz) * k;
+  const vel = { x: vx, y: vy, z: vz };
+  pigeonSeparate(m, dt, vel, sp);
+  vx = vel.x; vy = vel.y; vz = vel.z;
+  const nvl = Math.hypot(vx, vy, vz) || 1;
+  const cl = Math.max(sp * 0.6, Math.min(sp * 1.3, nvl));
+  vx = (vx / nvl) * cl; vy = (vy / nvl) * cl; vz = (vz / nvl) * cl;
+  m.pos.x += vx * dt;
+  m.pos.y += vy * dt;
+  m.pos.z += vz * dt;
+  m.pos.x = Math.max(-WORLD_RADIUS + 1, Math.min(WORLD_RADIUS - 1, m.pos.x));
+  m.pos.z = Math.max(-WORLD_RADIUS + 1, Math.min(WORLD_RADIUS - 1, m.pos.z));
+  m.pos.y = Math.max(1, Math.min(MAX_Y - 1, m.pos.y));
+  if (aabbCollidesWorld(m.pos.x, m.pos.y, m.pos.z, m.hw, m.h)) {
+    m.pos.x -= vx * dt;
+    m.pos.y -= vy * dt;
+    m.pos.z -= vz * dt;
+    vx = -vx * 0.5; vy = 0.5; vz = -vz * 0.5;
+    if (outBand) {
+      const det = pigeonDetourTarget(m);
+      if (det) { m.target = det; m.targetMode = "detour"; m.detourT = 2.5; }
+    } else {
+      m.target = pigeonRandomTarget(m.pos);
+    }
+    m.arc = null; m.mode = "straight";
+  }
+  m.vel.set(vx, vy, vz);
+  const targetYaw = Math.atan2(vx, vz);
+  let dyaw = targetYaw - m.yaw;
+  while (dyaw > Math.PI) dyaw -= Math.PI * 2;
+  while (dyaw < -Math.PI) dyaw += Math.PI * 2;
+  m.yaw += dyaw * Math.min(1, dt * 3.5);
+  m.yawTarget = targetYaw;
+  m.mesh.position.copy(m.pos);
+  m.mesh.rotation.y = m.yaw;
+  m.mesh.rotation.x = Math.max(-0.45, Math.min(0.45, -vy / sp * 0.9));
+  m.mesh.rotation.z = Math.max(-0.5, Math.min(0.5, -dyaw * 1.2));
+  m.legPhase += dt * 11;
+  const f = Math.sin(m.legPhase) * 0.65;
+  if (m.mesh.userData.wingL) m.mesh.userData.wingL.rotation.z = f;
+  if (m.mesh.userData.wingR) m.mesh.userData.wingR.rotation.z = -f;
+}
 function villagerHW(m) {
+  if (m.kind === "pigeon") return 0.25;
   if (m.kind === "wolf") return 0.30;
   if (m.kind === "pig" || m.kind === "cow") return 0.32;
   return m.isBaby ? 0.16 : 0.27;
 }
 function villagerH(m) {
+  if (m.kind === "pigeon") return 0.5;
   if (m.kind === "wolf") return 0.90;
   if (m.kind === "pig") return 0.92;
   if (m.kind === "cow") return 1.30;
@@ -1621,6 +2115,15 @@ function mobWaterExitJump(mob, bx, by, bz) {
 function setMobTransparent(m, alpha) {
   const trans = alpha < 1;
   const a = alpha;
+  if (!m.mesh.userData.matsCloned) {
+    m.mesh.userData.matsCloned = true;
+    m.mesh.traverse((obj) => {
+      if (obj.isMesh && obj.material) {
+        if (Array.isArray(obj.material)) obj.material = obj.material.map((mm) => mm.clone());
+        else obj.material = obj.material.clone();
+      }
+    });
+  }
   m.mesh.traverse((obj) => {
     if (obj.isMesh && obj.material) {
       const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
@@ -1735,6 +2238,32 @@ function releaseCarriedMobAt(px, py, pz) {
   if (!carryMob) return;
   const m = carryMob;
   const hw = m.hw;
+  if (m.kind === "pigeon") {
+    let nx = Math.max(-WORLD_RADIUS + 1, Math.min(WORLD_RADIUS - 1, px + 0.5));
+    let nz = Math.max(-WORLD_RADIUS + 1, Math.min(WORLD_RADIUS - 1, pz + 0.5));
+    let ny = Math.max(1, Math.min(MAX_Y - 2, Math.round(py)));
+    for (let t = 0; t < 8 && aabbCollidesWorld(nx, ny, nz, hw, m.h); t++) ny++;
+    if (aabbCollidesWorld(nx, ny, nz, hw, m.h)) { nx = m.pos.x; ny = m.pos.y; nz = m.pos.z; }
+    m.pos.set(nx, ny, nz);
+    m.mesh.position.copy(m.pos);
+    m.mesh.rotation.z = 0;
+    m.mesh.rotation.x = 0;
+    if (m.dim !== undefined) m.dim = dim;
+    const yaw2 = Math.random() * Math.PI * 2;
+    m.vel.set(Math.cos(yaw2) * PIGEON_SPEED, 0, Math.sin(yaw2) * PIGEON_SPEED);
+    m.onGround = false;
+    m.villageBound = false;
+    m.speed = PIGEON_SPEED;
+    m.mode = "straight";
+    m.arc = null;
+    m.target = pigeonRandomTarget(m.pos);
+    m.yaw = yaw2;
+    m.yawTarget = yaw2;
+    m.mesh.visible = true;
+    setMobTransparent(m, 1);
+    carryMob = null;
+    return;
+  }
   const fwdX = -Math.sin(yaw), fwdZ = -Math.cos(yaw);
   let nx = px + 0.5, nz = pz + 0.5, hintY = py;
   const insideVillagePre = nx >= villageMinX && nx <= villageMaxX && nz >= villageMinZ && nz <= villageMaxZ;
@@ -1976,6 +2505,7 @@ function updateCarryGrapple(dt) {
         carryGrappleActive = false;
         carryGrapplePulling = true;
         setMobTransparent(mob, 1);
+        if (grappleMob === mob) detachDisplacementGrapple();
       } else {
         const move = Math.min(step, dist0);
         const s = move / dist0;
@@ -2934,12 +3464,14 @@ function mobKindCode(m) {
   if (m.kind === "pig") return 1;
   if (m.kind === "cow") return 2;
   if (m.kind === "wolf") return 3;
+  if (m.kind === "pigeon") return 4;
   return 0;
 }
 function mobKindFromCode(c) {
   if (c === 1) return "pig";
   if (c === 2) return "cow";
   if (c === 3) return "wolf";
+  if (c === 4) return "pigeon";
   return "villager";
 }
 function mobLookIndex(m) {
@@ -3028,16 +3560,28 @@ function restoreOverworldMobs(list, opts) {
     const e = list[i];
     const kind = mobKindFromCode(e.kind);
     const isBaby = !!e.isBaby && kind === "villager";
-    const hw = kind === "wolf" ? 0.30 : (kind === "pig" || kind === "cow") ? 0.32 : (isBaby ? 0.16 : 0.27);
-    const hh = kind === "wolf" ? 0.90 : kind === "pig" ? 0.92 : kind === "cow" ? 1.30 : (isBaby ? 0.98 : 1.82);
+    const hw = kind === "pigeon" ? 0.25 : kind === "wolf" ? 0.30 : (kind === "pig" || kind === "cow") ? 0.32 : (isBaby ? 0.16 : 0.27);
+    const hh = kind === "pigeon" ? 0.5 : kind === "wolf" ? 0.90 : kind === "pig" ? 0.92 : kind === "cow" ? 1.30 : (isBaby ? 0.98 : 1.82);
     const isWolf = kind === "wolf";
     let sx = e.x, sy = e.y, sz = e.z;
     if (!isFinite(sx) || !isFinite(sy) || !isFinite(sz)) continue;
+    let spot = null;
+    if (kind === "pigeon") {
+      sx = Math.max(-WORLD_RADIUS + 1, Math.min(WORLD_RADIUS - 1, sx));
+      sz = Math.max(-WORLD_RADIUS + 1, Math.min(WORLD_RADIUS - 1, sz));
+      sy = Math.max(1, Math.min(MAX_Y - 2, isFinite(sy) ? sy : PIGEON_MIN_Y + 20));
+      if (aabbCollidesWorld(sx, sy, sz, hw, hh)) {
+        const alt = pigeonSpotOutOfView();
+        sx = alt.x; sy = alt.y; sz = alt.z;
+      }
+      spot = { x: sx, y: sy, z: sz };
+    } else {
     if (usedXZ.some((u) => (u[0] - sx) * (u[0] - sx) + (u[1] - sz) * (u[1] - sz) < 1.4)) {
       const fixed = settleMobSpot(sx + 1.5, sy, sz + 1.5, hw, hh, isWolf);
       sx = fixed.x; sy = fixed.y; sz = fixed.z;
     }
-    const spot = settleMobSpot(sx, sy, sz, hw, hh, isWolf);
+    spot = settleMobSpot(sx, sy, sz, hw, hh, isWolf);
+    }
     let homeId = e.homeId;
     if (kind === "villager" && (homeId == null || homeId < 0 || homeId >= villageHouses.length)) homeId = villageHouses.length ? 0 : -1;
     if (kind !== "villager") homeId = -1;
@@ -3049,6 +3593,7 @@ function restoreOverworldMobs(list, opts) {
       mesh = makeVillagerMesh(isBaby, palIdx);
     } else if (kind === "pig") mesh = makePigMesh();
     else if (kind === "cow") mesh = makeCowMesh();
+    else if (kind === "pigeon") mesh = makePigeonMesh();
     else {
       collar = WOLF_COLLAR_COLORS[(e.look >= 0 && e.look < WOLF_COLLAR_COLORS.length) ? e.look : 0];
       mesh = makeWolfMesh(WOLF_FUR, collar);
@@ -3079,6 +3624,16 @@ function restoreOverworldMobs(list, opts) {
       base.penBound = true;
       base.penId = 0;
       base.sc = 1;
+    } else if (kind === "pigeon") {
+      base.canStep = false;
+      base.speed = PIGEON_SPEED;
+      base.villageBound = false;
+      base.sc = 1;
+      base.arc = null;
+      const yaw2 = isFinite(e.yaw) ? e.yaw : Math.random() * Math.PI * 2;
+      base.yaw = yaw2;
+      base.yawTarget = yaw2;
+      base.vel.set(Math.cos(yaw2) * PIGEON_SPEED, 0, Math.sin(yaw2) * PIGEON_SPEED);
     } else {
       base.canStep = true;
       base.speed = WALK / 2;
@@ -3110,11 +3665,16 @@ function restoreOverworldMobs(list, opts) {
     cm.parentId = pid;
   });
   for (const m of created) {
-    m.target = { x: m.pos.x, z: m.pos.z };
+    if (m.kind === "pigeon") {
+      m.target = pigeonRandomTarget(m.pos);
+    } else {
+      m.target = { x: m.pos.x, z: m.pos.z };
+    }
     m.wanderT = 3 + Math.random() * 4;
   }
   buildMobGrid();
   spawnVillagers();
+  spawnPigeons();
   return created.length;
 }
 function intersectsMob(bx, by, bz) {
@@ -3147,6 +3707,7 @@ function separateMobs() {
     let anyMoved = false;
     for (const m of mobs) {
       if (m === carryMob) continue;
+      if (m.kind === "pigeon") continue;
       if (isMobFrozenByGrapple(m)) continue;
       if (m.dim !== undefined && m.dim !== dim) continue;
       let sx = 0, sz = 0, cnt = 0;
@@ -3154,6 +3715,7 @@ function separateMobs() {
       const fleeingSelf = m.fleeUntil && performance.now() / 1000 < m.fleeUntil;
       for (const o of nearby) {
         if (o === m || o === carryMob) continue;
+        if (o.kind === "pigeon") continue;
         if (isMobFrozenByGrapple(o)) continue;
         if (o.dim !== undefined && o.dim !== dim) continue;
         let need = villagerHW(m) + villagerHW(o) + 0.18;
@@ -3276,6 +3838,7 @@ function updateMobs(dt) {
     if (m === carryMob) continue;
     if (isMobFrozenByGrapple(m)) continue;
     if (m.dim !== undefined && m.dim !== dim) {
+      if (m.kind === "pigeon") { m.mesh.position.copy(m.pos); continue; }
       if (m.pos.y < -15) { scene.remove(m.mesh); mobById.delete(m.id); mobs.splice(idx, 1); continue; }
       if (m.vel == null) m.vel = new THREE.Vector3(0,0,0);
       const footY2 = Math.floor(m.pos.y);
@@ -3298,6 +3861,11 @@ function updateMobs(dt) {
       continue;
     }
     const now = performance.now() / 1000;
+    if (m.kind === "pigeon") {
+      if (dim !== "over") { m.mesh.position.copy(m.pos); continue; }
+      updatePigeon(m, dt);
+      continue;
+    }
     if (m.pos.y < -15) {
       if (m.villageBound === false) {
         const gy = groundYForMob(m.pos.x, m.pos.z, 30, m.hw);
@@ -4781,6 +5349,7 @@ const SPACE_SKY = new THREE.Color(0x05070f);
 const SKY_SPACE_START = CLOUD_BASE + CLOUD_SPAN * 3 / 8;
 const SKY_SPACE_END = CLOUD_BASE + CLOUD_SPAN * 5 / 8;
 const SKY_STAR_START = SKY_SPACE_START, SKY_STAR_FULL = SKY_SPACE_END;
+const PIGEON_MAX_Y = SKY_SPACE_START;
 
 const boxGeo = new THREE.BoxGeometry(1, 1, 1);
 const dummy = new THREE.Object3D();
@@ -5371,6 +5940,7 @@ const GRAPPLE_SPEED = 26;
 const GRAPPLE_THROW = 70;
 const GRAPPLE_RETRACT = 275;
 const GRAPPLE_FLING = 34;
+const PIGEON_FOLLOW_DIST = 3.5;
 const MOB_GRAPPLE_THROW = GRAPPLE_THROW * 1.25;
 const MOB_GRAPPLE_RETRACT = MOB_GRAPPLE_THROW * 1.25;
 const FLOAT_SPEED = 3.6;
@@ -5395,6 +5965,10 @@ let grapplePass = true;
 let grappleTopY = 0;
 let grappleRetracting = false;
 const grappleHookPos = new THREE.Vector3();
+const grappleTowDir = new THREE.Vector3(0, 0, 1);
+const grappleTowPos = new THREE.Vector3();
+let grappleTowInit = false;
+const grappleTowTmp = new THREE.Vector3();
 let flingActive = false;
 const vel = new THREE.Vector3();
 const camPos = new THREE.Vector3();
@@ -5986,6 +6560,20 @@ function collide() {
   moveAxisZ(vel.z * dt);
 }
 
+function detachDisplacementGrapple() {
+  if (!grappleActive) return;
+  grappleRetracting = true;
+  grappleTowInit = false;
+  grappleTowPos.set(0, 0, 0);
+  if (grappleMob) {
+    if (grappleMob !== carryMob && grappleMob !== carryGrappleMob) setMobTransparent(grappleMob, 1);
+  } else if (grappleHooked) grappleHookPos.copy(grappleTarget);
+  else grappleHookPos.copy(grappleStart).lerp(grappleTarget, grappleFly);
+  grappleActive = false;
+  grappleArrived = false;
+  grapplePulling = false;
+}
+
 function fireGrapple() {
   if (freeCam) return;
   const dir = new THREE.Vector3();
@@ -6014,6 +6602,7 @@ function fireGrapple() {
     if (!b || distMob < blockDist) {
       grappleMob = mob;
       grappleBlock = null;
+      if (mob !== carryMob && mob !== carryGrappleMob) setMobTransparent(mob, 1);
       grappleTarget.set(mx, my, mz);
       grappleStart.set(sx, sy, sz);
       grapplingDist = distMob;
@@ -6025,6 +6614,8 @@ function fireGrapple() {
       grapplePass = true;
       grappleActive = true;
       grappleRetracting = false;
+      grappleTowInit = false;
+      grappleTowPos.set(0, 0, 0);
       jumpCount = 1;
       jumpIdle = 0;
       stepDown = false;
@@ -6047,6 +6638,8 @@ function fireGrapple() {
   grapplePass = true;
   grappleActive = true;
   grappleRetracting = false;
+  grappleTowInit = false;
+  grappleTowPos.set(0, 0, 0);
   jumpCount = 1;
   jumpIdle = 0;
   stepDown = false;
@@ -6179,6 +6772,56 @@ function updateGrapple(dt) {
       grappleTarget.y = grappleTopY + 1.001;
     } else {
       grappleTopY = grappleBlock.y;
+    }
+  }
+  if (grappleMob && grappleMob.kind === "pigeon" && grappleHooked) {
+    const pm = grappleMob;
+    const pdx = grappleTarget.x - pos.x, pdy = grappleTarget.y - pos.y, pdz = grappleTarget.z - pos.z;
+    const followR = grappleTowInit ? PIGEON_FOLLOW_DIST + 2 : PIGEON_FOLLOW_DIST;
+    if (Math.hypot(pdx, pdy, pdz) <= followR) {
+      grappleHookPos.copy(grappleTarget);
+      const pvl = pm.vel.length();
+      if (pvl > 1e-3) {
+        grappleTowTmp.set(pm.vel.x / pvl, pm.vel.y / pvl, pm.vel.z / pvl);
+        grappleTowTmp.y = Math.max(-0.6, Math.min(0.6, grappleTowTmp.y));
+        const tl = grappleTowTmp.length() || 1;
+        grappleTowTmp.divideScalar(tl);
+        if (!grappleTowInit) { grappleTowDir.copy(grappleTowTmp); grappleTowInit = true; }
+        else { grappleTowDir.lerp(grappleTowTmp, Math.min(1, dt * 2.2)); if (grappleTowDir.lengthSq() < 1e-6) grappleTowDir.set(0, 0, 1); grappleTowDir.normalize(); }
+      } else if (!grappleTowInit) { grappleTowDir.set(0, 0, 1); grappleTowInit = true; }
+      const desX = pm.pos.x - grappleTowDir.x * 3, desY = pm.pos.y - grappleTowDir.y * 3 - 0.4, desZ = pm.pos.z - grappleTowDir.z * 3;
+      if (grappleTowPos.lengthSq() < 1e-6) grappleTowPos.set(desX, desY, desZ);
+      else grappleTowPos.lerp(grappleTowTmp.set(desX, desY, desZ), Math.min(1, dt * 6));
+      const stiff = 18, damp = 11;
+      const ex = grappleTowPos.x - pos.x, ey = grappleTowPos.y - pos.y, ez = grappleTowPos.z - pos.z;
+      const exl = Math.hypot(ex, ey, ez) || 1;
+      const ecl = Math.min(exl, 3);
+      vel.x += ((ex / exl * ecl) * stiff - (vel.x - pm.vel.x) * damp) * dt;
+      vel.y += ((ey / exl * ecl) * stiff - (vel.y - pm.vel.y) * damp) * dt;
+      vel.z += ((ez / exl * ecl) * stiff - (vel.z - pm.vel.z) * damp) * dt;
+      const spd = Math.hypot(vel.x, vel.y, vel.z);
+      const maxSp = PIGEON_SPEED * 2.2;
+      if (spd > maxSp) { vel.x *= maxSp / spd; vel.y *= maxSp / spd; vel.z *= maxSp / spd; }
+      let remaining = Math.min(Math.hypot(vel.x, vel.y, vel.z) * dt, 1.2);
+      let blockedX = false, blockedY = false, blockedZ = false;
+      let guard = 0;
+      while (remaining > 1e-4 && guard++ < 8) {
+        const move = Math.min(remaining, 0.4);
+        const vl2 = Math.hypot(vel.x, vel.y, vel.z) || 1;
+        const s = move / vl2;
+        if (grappleMoveY(vel.y * s)) blockedY = true;
+        if (grappleMoveX(vel.x * s)) blockedX = true;
+        if (grappleMoveZ(vel.z * s)) blockedZ = true;
+        remaining -= move;
+        if (blockedX || blockedY || blockedZ) break;
+      }
+      if (blockedY) vel.y = 0;
+      if (blockedX) vel.x = 0;
+      if (blockedZ) vel.z = 0;
+      onGround = false;
+      stepDown = false;
+      grapplePulling = true;
+      return true;
     }
   }
   const dx = grappleTarget.x - pos.x, dy = grappleTarget.y - pos.y, dz = grappleTarget.z - pos.z;
@@ -6681,6 +7324,7 @@ const editHold = {
   0: { down: false, t: 0, acc: 0 },
   2: { down: false, t: 0, acc: 0 },
 };
+let chainBreaking = false;
 let chainHome = null;
 let chainPlat = null;
 let chainSpin = 0;
@@ -6898,8 +7542,31 @@ function igniteTNT(bx, by, bz, fuse = FUSE_TIME) {
   const spr = makeFuseSprite();
   spr.position.set(bx + 0.5, by + 1.35, bz + 0.5);
   scene.add(spr);
-  const t = { bx, by, bz, px: bx + 0.5, py: by + 1.1, pz: bz + 0.5, fuse, life: fuse + 2, spr, mesh: null, stuck: false, ax: 0, ay: 0, az: 0 };
-  if (dim === "end" && dragon.mesh) {
+  const t = { bx, by, bz, px: bx + 0.5, py: by + 1.1, pz: bz + 0.5, fuse, life: fuse + 2, spr, mesh: null, stuck: false, ax: 0, ay: 0, az: 0, pigeon: null };
+  if (dim === "over" && !chainBreaking) {
+    const dir = new THREE.Vector3();
+    camera.getWorldDirection(dir);
+    const eye = camera.position;
+    const mob = pickMob(dir, PIGEON_AIM_DIST);
+    if (mob && mob.kind === "pigeon") {
+      const off = getMobHitOffset(eye, dir, mob);
+      const hx = off ? mob.pos.x + off.x : mob.pos.x, hy = off ? mob.pos.y + off.y : mob.pos.y + mob.h * 0.5, hz = off ? mob.pos.z + off.z : mob.pos.z;
+      const mobT = Math.hypot(hx - eye.x, hy - eye.y, hz - eye.z);
+      const blockT = Math.hypot(bx + 0.5 - eye.x, by + 0.5 - eye.y, bz + 0.5 - eye.z);
+      if (mobT <= blockT + 0.5) {
+        const nowI = performance.now() / 1000;
+        const freshI = pigeonLock === mob && nowI - pigeonLockT < PIGEON_LOCK_TIME;
+        if (freshI ? pigeonLockShots < 3 : !tntTargeted(mob)) {
+          t.pigeon = mob;
+          pigeonLock = mob;
+          pigeonLockT = nowI;
+          if (!freshI) pigeonLockShots = 0;
+          pigeonLockShots++;
+        }
+      }
+    }
+  }
+  if ((dim === "end" && dragon.mesh) || t.pigeon) {
     setBlock(bx, by, bz, AIR);
     refreshBlocks([[bx, by, bz]]);
     queueSave();
@@ -6909,6 +7576,85 @@ function igniteTNT(bx, by, bz, fuse = FUSE_TIME) {
     t.mesh = m;
   }
   tntLit.set(k, t);
+}
+
+let tntFlySeq = 0;
+const PIGEON_AIM_DIST = 200;
+const PIGEON_LOCK_TIME = 0.5;
+const PIGEON_LOCK_BURST_DIST = 30;
+let pigeonLock = null;
+let pigeonLockT = 0;
+let pigeonLockShots = 0;
+function aimedPigeon() {
+  if (dim !== "over") return null;
+  const dir = new THREE.Vector3();
+  camera.getWorldDirection(dir);
+  const eye = camera.position;
+  const mob = pickMob(dir, PIGEON_AIM_DIST);
+  if (!mob || mob.kind !== "pigeon") return null;
+  const off = getMobHitOffset(eye, dir, mob);
+  const hx = off ? mob.pos.x + off.x : mob.pos.x, hy = off ? mob.pos.y + off.y : mob.pos.y + mob.h * 0.5, hz = off ? mob.pos.z + off.z : mob.pos.z;
+  const mobT = Math.hypot(hx - eye.x, hy - eye.y, hz - eye.z);
+  if (currentBlock) {
+    const blockT = Math.hypot(currentBlock.x + 0.5 - eye.x, currentBlock.y + 0.5 - eye.y, currentBlock.z + 0.5 - eye.z);
+    if (mobT > blockT + 0.5) return null;
+  }
+  return mob;
+}
+function livePigeonLock() {
+  if (pigeonLock && mobs.includes(pigeonLock)) return pigeonLock;
+  pigeonLock = null;
+  return null;
+}
+function tntTargeted(mob) {
+  for (const t of tntLit.values()) if (t.pigeon === mob) return true;
+  return false;
+}
+function tryFireLockedTNT() {
+  const now = performance.now() / 1000;
+  const mob = aimedPigeon();
+  if (mob) {
+    const fresh = pigeonLock === mob && now - pigeonLockT < PIGEON_LOCK_TIME;
+    if (!fresh) {
+      if (tntTargeted(mob)) return false;
+      pigeonLock = mob;
+      pigeonLockShots = 0;
+    }
+    if (pigeonLockShots >= 3) return false;
+    fireTNTAtPigeon(mob);
+    pigeonLock = mob;
+    pigeonLockT = now;
+    pigeonLockShots++;
+    return true;
+  }
+  const lock = livePigeonLock();
+  if (lock && now - pigeonLockT < PIGEON_LOCK_TIME && pigeonLockShots < 3) {
+    let blockT = Infinity;
+    if (currentBlock) {
+      const eye = camera.position;
+      blockT = Math.hypot(currentBlock.x + 0.5 - eye.x, currentBlock.y + 0.5 - eye.y, currentBlock.z + 0.5 - eye.z);
+    }
+    if (blockT > PIGEON_LOCK_BURST_DIST) {
+      fireTNTAtPigeon(lock);
+      pigeonLockT = now;
+      pigeonLockShots++;
+      return true;
+    }
+  }
+  return false;
+}
+function fireTNTAtPigeon(mob) {
+  const dir = new THREE.Vector3();
+  camera.getWorldDirection(dir);
+  const eye = camera.position;
+  const sx = eye.x + dir.x, sy = eye.y + dir.y, sz = eye.z + dir.z;
+  const spr = makeFuseSprite();
+  spr.position.set(sx, sy + 0.85, sz);
+  scene.add(spr);
+  const m = makeTNTBomb();
+  m.position.set(sx, sy, sz);
+  scene.add(m);
+  tntLit.set("fly" + (tntFlySeq++), { bx: 0, by: -1, bz: 0, px: sx, py: sy, pz: sz, fuse: FUSE_TIME, life: FUSE_TIME + 2, spr, mesh: m, stuck: false, ax: 0, ay: 0, az: 0, pigeon: mob });
 }
 
 function makeFuseSprite() {
@@ -6936,6 +7682,25 @@ function drawFuseSprite(spr, v) {
 }
 
 function updateTNTTarget(t, dt) {
+  if (t.pigeon) {
+    const m = t.pigeon;
+    if (!mobs.includes(m)) return;
+    if (t.stuck) {
+      t.px = m.pos.x + t.ax; t.py = m.pos.y + t.ay; t.pz = m.pos.z + t.az;
+      return;
+    }
+    const dx = m.pos.x - t.px, dy = m.pos.y + m.h * 0.5 - t.py, dz = m.pos.z - t.pz;
+    const d = Math.hypot(dx, dy, dz);
+    if (d <= DRAGON_STICK_DIST) {
+      t.stuck = true;
+      t.ax = t.px - m.pos.x; t.ay = t.py - m.pos.y; t.az = t.pz - m.pos.z;
+      return;
+    }
+    if (d < 1e-6) return;
+    const sp = Math.min(d, TNT_HOME_SPEED * 4 * dt);
+    t.px += (dx / d) * sp; t.py += (dy / d) * sp; t.pz += (dz / d) * sp;
+    return;
+  }
   if (dim !== "end" || !dragon.mesh) return;
   const p = dragon.mesh.position;
   if (t.stuck) {
@@ -6962,7 +7727,15 @@ function tickTNT(dt) {
       if (t.stuck) {
         clearTNTVisual(t);
         tntLit.delete(k);
-        enqueueExplosion(t.px, t.py, t.pz, true, true);
+        if (t.pigeon && mobs.includes(t.pigeon)) killPigeon(t.pigeon);
+        if (t.pigeon) explodePigeon(t.px, t.py, t.pz, true);
+        else enqueueExplosion(t.px, t.py, t.pz, true, true);
+      } else if (t.pigeon) {
+        if (!mobs.includes(t.pigeon) || (t.life -= dt) <= 0) {
+          clearTNTVisual(t);
+          tntLit.delete(k);
+          explodePigeon(t.px, t.py, t.pz, false);
+        }
       } else if (!dragon.mesh) {
         clearTNTVisual(t);
         tntLit.delete(k);
@@ -6997,6 +7770,9 @@ function enqueueExplosion(x, y, z, pointBlank, homing = false, delay = 0) {
 function explodeTNT(x, y, z, pointBlank, homing = false) {
   enqueueExplosion(x, y, z, pointBlank, homing);
 }
+function explodePigeon(x, y, z, pointBlank) {
+  explosionQueue.push({ x, y, z, pointBlank, homing: true, due: 0, pigeon: true });
+}
 function processExplosionQueue() {
   if (!explosionQueue.length) return;
   const t0 = performance.now();
@@ -7007,11 +7783,12 @@ function processExplosionQueue() {
   while (explosionQueue.length && processed < explosionsPerFrame && (performance.now() - t0) < explosionBudgetMs) {
     const peek = explosionQueue[0];
     if (peek.due && peek.due > performance.now()) break;
-    const { x, y, z, pointBlank, homing } = explosionQueue.shift();
+    const { x, y, z, pointBlank, homing, pigeon } = explosionQueue.shift();
     const kShift = key(Math.floor(x), Math.floor(y), Math.floor(z));
     if (chainPending.has(kShift)) chainPending.delete(kShift);
     const cx = x + 0.5, cy = y + 0.5, cz = z + 0.5;
-    if (pointBlank) spawnDragonBurst(cx, cy, cz);
+    if (pigeon) spawnPigeonBurst(cx, cy, cz);
+    else if (pointBlank) spawnDragonBurst(cx, cy, cz);
     else spawnExplosion(cx, cy, cz);
     if (mobs.length) handleMobExplosion(cx, cy, cz);
     if (dim === "end" && dragon.mesh) {
@@ -7171,6 +7948,46 @@ function spawnDragonBurst(cx, cy, cz) {
   const mat = new THREE.PointsMaterial({
     size: 0.42, vertexColors: true, transparent: true, opacity: 1,
     depthWrite: false, blending: THREE.AdditiveBlending,
+  });
+  const pts = new THREE.Points(geo, mat);
+  scene.add(pts);
+  bursts.push({ pts, geo, mat, vel, life: 1.1, max: 1.1 });
+}
+
+function spawnPigeonBurst(cx, cy, cz) {
+  const N = 96;
+  const posA = new Float32Array(N * 3);
+  const colA = new Float32Array(N * 3);
+  const vel = new Float32Array(N * 3);
+  for (let i = 0; i < N; i++) {
+    posA[i * 3] = cx; posA[i * 3 + 1] = cy; posA[i * 3 + 2] = cz;
+    const pick = Math.random();
+    if (pick < 0.4) {
+      colA[i * 3] = 0.9 + Math.random() * 0.1;
+      colA[i * 3 + 1] = 0.08 + Math.random() * 0.1;
+      colA[i * 3 + 2] = 0.05 + Math.random() * 0.07;
+    } else if (pick < 0.7) {
+      colA[i * 3] = 1;
+      colA[i * 3 + 1] = 0.45 + Math.random() * 0.15;
+      colA[i * 3 + 2] = 0.05 + Math.random() * 0.07;
+    } else {
+      colA[i * 3] = 1;
+      colA[i * 3 + 1] = 0.8 + Math.random() * 0.15;
+      colA[i * 3 + 2] = 0.15 + Math.random() * 0.15;
+    }
+    const th = Math.random() * Math.PI * 2;
+    const ph = Math.acos(2 * Math.random() - 1);
+    const s = 6 + Math.random() * 12;
+    vel[i * 3] = s * Math.sin(ph) * Math.cos(th);
+    vel[i * 3 + 1] = s * Math.cos(ph) + 4;
+    vel[i * 3 + 2] = s * Math.sin(ph) * Math.sin(th);
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute("position", new THREE.BufferAttribute(posA, 3));
+  geo.setAttribute("color", new THREE.BufferAttribute(colA, 3));
+  const mat = new THREE.PointsMaterial({
+    size: 0.5, vertexColors: true, transparent: true, opacity: 1,
+    depthWrite: false,
   });
   const pts = new THREE.Points(geo, mat);
   scene.add(pts);
@@ -7523,6 +8340,7 @@ function goToDimension(name, sx, sy, sz) {
     if (overworldMobCache && overworldMobCache.length && liveOver < overworldMobCache.length) {
       restoreOverworldMobs(overworldMobCache, { keepCarried: true });
     } else if (!liveOver) spawnVillagers();
+    spawnPigeons();
   }
   for (const m of mobs) m.mesh.visible = (m.dim === dim || m.dim === undefined) || m === carryMob || m === carryGrappleMob;
   if (name === "end") {
@@ -9034,7 +9852,7 @@ function serialize() {
   const dv = new DataView(buf);
   let o = 0;
   new Uint8Array(buf, o, 9).set(SAVE_MAGIC); o += 9;
-  dv.setUint8(o++, 11); // format version
+  dv.setUint8(o++, 12); // format version
   dv.setUint8(o++, dim === "end" ? 1 : dim === "nether" ? 2 : 0);
   dv.setInt32(o, seed, true); o += 4;
   dv.setInt32(o, endSeed, true); o += 4;
@@ -9123,7 +9941,7 @@ function deserialize(buf) {
   for (let i = 0; i < 9; i++) if (new Uint8Array(buf, o, 9)[i] !== SAVE_MAGIC[i]) throw new Error("Not a MiniCraft save");
   o += 9;
   const ver = dv.getUint8(o++);
-  if (ver !== 1 && ver !== 2 && ver !== 3 && ver !== 4 && ver !== 5 && ver !== 6 && ver !== 7 && ver !== 8 && ver !== 9 && ver !== 10 && ver !== 11) throw new Error("Unsupported save version");
+  if (ver !== 1 && ver !== 2 && ver !== 3 && ver !== 4 && ver !== 5 && ver !== 6 && ver !== 7 && ver !== 8 && ver !== 9 && ver !== 10 && ver !== 11 && ver !== 12) throw new Error("Unsupported save version");
   const yWidth = ver >= 8 ? 2 : 1;
   const readY = () => { const y = yWidth === 2 ? dv.getUint16(o, true) : dv.getUint8(o); o += yWidth; return y; };
   placedFlowers.clear();
@@ -9563,12 +10381,13 @@ async function restoreSave(buf) {
         const saved = pendingOverworldMobs;
         pendingOverworldMobs = null;
         overworldMobCache = null;
-        if (!restoreOverworldMobs(saved, { keepCarried: false })) spawnVillagers();
+        if (!restoreOverworldMobs(saved, { keepCarried: false })) { spawnVillagers(); spawnPigeons(); }
         else overworldMobCache = snapshotOverworldMobs(true);
       } else {
         pendingOverworldMobs = null;
         removeVillagers();
         spawnVillagers();
+        spawnPigeons();
       }
     } else {
       removeVillagers();
@@ -9698,7 +10517,7 @@ async function buildWorld() {
     rebuildHotbar();
     recomputeGlowClusters();
     syncGlowLights();
-    removeVillagers(); spawnVillagers();
+    removeVillagers(); spawnVillagers(); spawnPigeons();
     select(0);
     updateCamera();
   } finally {
@@ -9867,10 +10686,14 @@ document.addEventListener("mousedown", (e) => {
     h.acc = 0;
     if (e.button === 0) {
       leftMoved = false; leftTimer = 0; leftStairs = false; leftEverMoved = false; clickAnchors = [];
-      if (placeBlock(hotbarList()[selected])) clickAnchors.push([currentBlock.x + currentBlock.face[0], currentBlock.y + currentBlock.face[1], currentBlock.z + currentBlock.face[2]]);
+      const sel = hotbarList()[selected];
+      if (sel === TNT) {
+        if (!tryFireLockedTNT() && placeBlock(sel)) clickAnchors.push([currentBlock.x + currentBlock.face[0], currentBlock.y + currentBlock.face[1], currentBlock.z + currentBlock.face[2]]);
+      } else if (placeBlock(sel)) clickAnchors.push([currentBlock.x + currentBlock.face[0], currentBlock.y + currentBlock.face[1], currentBlock.z + currentBlock.face[2]]);
     } else {
       rightMoved = false; rightMoveAcc = 0; clickAnchors = [];
       if (currentBlock) { const b = [currentBlock.x, currentBlock.y, currentBlock.z]; breakBlock(); clickAnchors.push(b); }
+      else if (hotbarList()[selected] === TNT) tryFireLockedTNT();
     }
   }
   if (e.button === 1) { e.preventDefault(); fireGrapple(); }
@@ -9887,18 +10710,32 @@ document.addEventListener("mouseup", (e) => {
   if (e.button !== 1 || loading) return;
   if (!grappleActive) return;
   if (grapplePulling) {
-    const dx = grappleTarget.x - grappleStart.x, dy = grappleTarget.y - grappleStart.y, dz = grappleTarget.z - grappleStart.z;
-    const dist = Math.hypot(dx, dy, dz) || 1;
-    vel.set((dx / dist) * GRAPPLE_FLING, (dy / dist) * GRAPPLE_FLING, (dz / dist) * GRAPPLE_FLING);
-    flingActive = true;
-    stepDown = false;
-    wasOnGround = false;
-    onGround = false;
+    const fdx = grappleTarget.x - pos.x, fdy = grappleTarget.y - pos.y, fdz = grappleTarget.z - pos.z;
+    if (grappleMob && grappleMob.kind === "pigeon" && grappleHooked &&
+        (grappleTowInit || Math.hypot(fdx, fdy, fdz) <= PIGEON_FOLLOW_DIST + 0.5)) {
+      const sp = Math.hypot(vel.x, vel.y, vel.z) || 1;
+      if (sp > GRAPPLE_FLING) { vel.x *= GRAPPLE_FLING / sp; vel.y *= GRAPPLE_FLING / sp; vel.z *= GRAPPLE_FLING / sp; }
+      flingActive = true;
+      stepDown = false;
+      wasOnGround = false;
+      onGround = false;
+    } else {
+      const dx = grappleTarget.x - grappleStart.x, dy = grappleTarget.y - grappleStart.y, dz = grappleTarget.z - grappleStart.z;
+      const dist = Math.hypot(dx, dy, dz) || 1;
+      vel.set((dx / dist) * GRAPPLE_FLING, (dy / dist) * GRAPPLE_FLING, (dz / dist) * GRAPPLE_FLING);
+      flingActive = true;
+      stepDown = false;
+      wasOnGround = false;
+      onGround = false;
+    }
   } else {
     stepDown = false;
   }
   grappleRetracting = true;
+  grappleTowInit = false;
+  grappleTowPos.set(0, 0, 0);
   if (grappleMob) {
+    if (grappleMob !== carryMob && grappleMob !== carryGrappleMob) setMobTransparent(grappleMob, 1);
   } else if (grappleHooked) grappleHookPos.copy(grappleTarget);
   else grappleHookPos.copy(grappleStart).lerp(grappleTarget, grappleFly);
   grappleActive = false;
@@ -10137,7 +10974,8 @@ function loop(now) {
               const near = !clickAnchors.length || clickAnchors.some(([ax, ay, az]) =>
                 (x - ax) ** 2 + (y - ay) ** 2 + (z - az) ** 2 <= CHAIN_RANGE * CHAIN_RANGE);
               if (near) {
-                breakBlock();
+                chainBreaking = true;
+                try { breakBlock(); } finally { chainBreaking = false; }
                 clickAnchors.push([x, y, z]);
               }
             }
@@ -10377,9 +11215,10 @@ if (location.search.includes('test')) {
     getBlock, setBlock, handleMobExplosion, processExplosionQueue, isMobStandingOn, intersectsMob, key, BLAST_RADIUS, TNT, STONE, AIR, get SAND(){ return SAND; }, get WATER(){ return WATER; }, get VILLAGE_POOL_W(){ return VILLAGE_POOL_W; }, get VILLAGE_POOL_D(){ return VILLAGE_POOL_D; }, get VILLAGE_POOL_DEPTH(){ return VILLAGE_POOL_DEPTH; }, get VILLAGE_PEN_POOL_W(){ return VILLAGE_PEN_POOL_W; }, get VILLAGE_PEN_POOL_D(){ return VILLAGE_PEN_POOL_D; }, get VILLAGE_PEN_POOL_DEPTH(){ return VILLAGE_PEN_POOL_DEPTH; },
     get villageCenter(){ return villageCenter; }, get villageHouses(){ return villageHouses; }, get villagePen(){ return villagePen; }, get villagePool(){ return villagePool; }, get isInsidePen(){ return isInsidePen; }, get isInsidePool(){ return isInsidePool; }, get isInsidePenPool(){ return isInsidePenPool; }, get poolExitTarget(){ return poolExitTarget; }, get penPoolExitTarget(){ return penPoolExitTarget; }, get LOG(){ return LOG; }, findPenGaps, nearestPenGap, penGapInside, penGapOutside, hasMobGround, mobBlockedAt, aabbCollidesWorld, mobProbeFree, randomPenPoint, randomAroundPenPoint, groundYForMob, get CLOUD_BASE(){ return CLOUD_BASE; }, get CLOUD_TOP(){ return CLOUD_TOP; }, get MAX_Y(){ return MAX_Y; },
     getTypeMats, get typeMats(){ return typeMats; }, buildWorld, generateWorld, computeVillageLayout, spawnVillagers, refreshBlocks, get boxGeo(){ return boxGeo; }, THREE,
-    get pos(){ return pos; }, get camera(){ return camera; }, get yaw(){ return yaw; }, set yaw(v){ yaw=v; }, get pitch(){ return pitch; }, set pitch(v){ pitch=v; },
-    get carryMob(){ return carryMob; }, handleCarryEnterDown, handleCarryEnterUp, pickMob, get carryGrappleActive(){ return carryGrappleActive; }, get carryGrappleMob(){ return carryGrappleMob; }, get carryGrappleBlock(){ return carryGrappleBlock; }, get carryGrappleHookPos(){ return carryGrappleHookPos; }, get carryGrappleOffset(){ return carryGrappleOffset; }, get carryGrappleMode(){ return carryGrappleMode; }, get isMobFrozenByGrapple(){ return isMobFrozenByGrapple; }, get grappleMob(){ return grappleMob; }, get grappleMobOffset(){ return grappleMobOffset; }, get grappleHookPos(){ return grappleHookPos; }, get grappleTarget(){ return grappleTarget; }, updateCarryGrapple, get currentBlock(){ return currentBlock; }, updateTarget, toggleCarry: handleCarryEnterDown, findNearestMobForGrab: (...a)=>{ const d=new THREE.Vector3(); camera.getWorldDirection(d); return pickMob(d); }, get playerArms(){ return playerArms; }, get started(){ return started; }, set started(v){ started=v; }, get loading(){ return loading; }, get freeCam(){ return freeCam; }, set freeCam(v){ freeCam=v; }, get helpOpen(){ return helpOpen; },
+    get pos(){ return pos; }, get vel(){ return vel; }, get camera(){ return camera; }, get yaw(){ return yaw; }, set yaw(v){ yaw=v; }, get pitch(){ return pitch; }, set pitch(v){ pitch=v; },
+    get carryMob(){ return carryMob; }, handleCarryEnterDown, handleCarryEnterUp, pickMob, get carryGrappleActive(){ return carryGrappleActive; }, get carryGrapplePulling(){ return carryGrapplePulling; }, get carryGrappleMob(){ return carryGrappleMob; }, get carryGrappleBlock(){ return carryGrappleBlock; }, get carryGrappleHookPos(){ return carryGrappleHookPos; }, get carryGrappleOffset(){ return carryGrappleOffset; }, get carryGrappleMode(){ return carryGrappleMode; }, get isMobFrozenByGrapple(){ return isMobFrozenByGrapple; }, get grappleMob(){ return grappleMob; }, get grappleMobOffset(){ return grappleMobOffset; }, get grappleHookPos(){ return grappleHookPos; }, get grappleTarget(){ return grappleTarget; }, updateCarryGrapple, get currentBlock(){ return currentBlock; }, updateTarget, hotbarList, placeBlock, breakBlock, get selected(){ return selected; }, set selected(v){ selected=v; }, toggleCarry: handleCarryEnterDown, findNearestMobForGrab: (...a)=>{ const d=new THREE.Vector3(); camera.getWorldDirection(d); return pickMob(d); }, get playerArms(){ return playerArms; }, get started(){ return started; }, set started(v){ started=v; }, get loading(){ return loading; }, get freeCam(){ return freeCam; }, set freeCam(v){ freeCam=v; }, get helpOpen(){ return helpOpen; },
     get WOLF_COUNT(){ return WOLF_COUNT; }, makeWolfMesh, villagerHW, villagerH, wolfHasMobGround, wolfBlockedAt, wolfProbeFree, wanderGoalForWolf, wolfFindPath, wolfInWater, mobInWater, waterSurfaceForMob, mobPhysicsStep, wolfPhysicsStep, updateMobs,     get isPigCow(){ return isPigCow; }, get pigOverlapsFence(){ return pigOverlapsFence; }, get MOB_FLOAT_FRAC(){ return MOB_FLOAT_FRAC; }, mobFloatTargetY, mobWaterExitJump, poolExitTarget, penPoolExitTarget, isInsidePenPool,
+    get PIGEON_COUNT(){ return PIGEON_COUNT; }, get PIGEON_MIN_Y(){ return PIGEON_MIN_Y; }, get PIGEON_MAX_Y(){ return PIGEON_MAX_Y; }, get PIGEON_SPEED(){ return PIGEON_SPEED; }, get TNT_HOME_SPEED(){ return TNT_HOME_SPEED; }, get PIGEON_AIM_DIST(){ return PIGEON_AIM_DIST; }, get PIGEON_LOCK_TIME(){ return PIGEON_LOCK_TIME; }, get pigeonLock(){ return pigeonLock; }, get pigeonLockT(){ return pigeonLockT; }, set pigeonLockT(v){ pigeonLockT = v; }, get pigeonLockShots(){ return pigeonLockShots; }, livePigeonLock, tntTargeted, tryFireLockedTNT, get chainBreaking(){ return chainBreaking; }, set chainBreaking(v){ chainBreaking = v; }, makePigeonMesh, spawnPigeons, spawnSinglePigeon, removePigeons, updatePigeon, updateCoopedPigeon, killPigeon, pigeonSpotOutOfView, pigeonProbeFree, pigeonRandomTarget, pigeonSeparate,     houseInteriorFor, houseSealState, holeFaceNormal, updateHoleExitPigeon, pigeonSegmentFree, bandReturnTarget, setMobTransparent,     get tntLit(){ return tntLit; }, igniteTNT, aimedPigeon, fireTNTAtPigeon, explodePigeon, spawnPigeonBurst, get bursts(){ return bursts; }, get flashes(){ return flashes; }, updateTNTTarget, tickTNT, fireGrapple, updateGrapple, updatePlayer, get grappleActive(){ return grappleActive; }, get grapplePulling(){ return grapplePulling; }, get grappleHooked(){ return grappleHooked; },
     get overPortalWin(){ return overPortalWin; }, get overPortalDir(){ return overPortalDir; }, get overPortalSpawn(){ return overPortalSpawn; }, get overPortalFace(){ return overPortalFace; },
     portalWinValid, portalFrameBBox, findReturnSpot, frameTopSpot, facePortalFrom, recordOverPortal, nearestReturnWin, resolveOverworldReturn, nearPortalSpawn, resolveSpawn, collectEndWins, collectNetherWins, collectReturnWins, insideEndInterior, insideNetherInterior, winCenter, windowDist, isSolid,
     get PORTAL(){ return PORTAL; }, get OBSIDIAN(){ return OBSIDIAN; }, get WORLD_RADIUS(){ return WORLD_RADIUS; }, get PLAYER_HW(){ return PLAYER_HW; }, get PLAYER_H(){ return PLAYER_H; }, get MOON(){ return MOON; }, get CLOUD(){ return CLOUD; }, get GRASS(){ return GRASS; }, get STONE(){ return STONE; }, get ENDSTONE(){ return ENDSTONE; }, get NETHERRACK(){ return NETHERRACK; }, get dim(){ return dim; },
