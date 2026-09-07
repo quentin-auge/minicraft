@@ -1007,6 +1007,19 @@ function isInsideAnyHouse(x, z) {
   for (const h of villageHouses) if (x > h.minX && x < h.maxX && z > h.minZ && z < h.maxZ) return h;
   return null;
 }
+function mobOnRoofLevel(y) {
+  return villageHouses.length && y >= villageCenter.y + 5.5;
+}
+function houseAtRoof(x, z) {
+  const bx = Math.floor(x), bz = Math.floor(z);
+  for (const h of villageHouses) if (bx >= h.minX && bx <= h.maxX && bz >= h.minZ && bz <= h.maxZ) return h;
+  return null;
+}
+function isMobOnRoof(m) {
+  if (!m || !m.pos) return false;
+  if (!mobOnRoofLevel(m.pos.y)) return false;
+  return !!houseAtRoof(m.pos.x, m.pos.z);
+}
 function isInsidePen(x, z) {
   if (!villagePen) return false;
   return x >= villagePen.minX && x <= villagePen.maxX && z >= villagePen.minZ && z <= villagePen.maxZ;
@@ -1745,7 +1758,10 @@ function releaseCarriedMobAt(px, py, pz) {
   const insideVillage = nx >= villageMinX && nx <= villageMaxX && nz >= villageMinZ && nz <= villageMaxZ;
   m.villageBound = insideVillage;
   m.speed = WALK / 2;
-  if (insideVillage) {
+  if (mobOnRoofLevel(hintY) && houseAtRoof(nx, nz)) {
+    m.mode = "wander";
+    m.target = wanderGoalForRoof(m);
+  } else if (insideVillage) {
     m.mode = "wander";
     let sx = nx + fwdX * 6, sz = nz + fwdZ * 6;
     sx = Math.max(villageMinX + 1, Math.min(villageMaxX - 1, sx));
@@ -2219,6 +2235,50 @@ function wanderGoalFor(m) {
   }
   return { x: villageCenter.x, z: villageCenter.z };
 }
+function wanderGoalForRoof(m) {
+  const h = houseAtRoof(m.pos.x, m.pos.z);
+  if (!h) return wanderGoalFor(m);
+  const roofY = h.vy + 6;
+  let best = null, bestScore = Infinity;
+  for (let t = 0; t < 30; t++) {
+    const x = h.minX + Math.random() * (h.maxX - h.minX + 1);
+    const z = h.minZ + Math.random() * (h.maxZ - h.minZ + 1);
+    const cx = Math.floor(x) + 0.5, cz = Math.floor(z) + 0.5;
+    if (houseAtRoof(cx, cz) !== h) continue;
+    if (cx - m.hw < h.minX || cx + m.hw > h.maxX + 1 || cz - m.hw < h.minZ || cz + m.hw > h.maxZ + 1) continue;
+    if (aabbCollidesWorld(cx, roofY, cz, m.hw, m.h)) continue;
+    if (!hasMobGround(cx, cz, m.hw, roofY)) continue;
+    const dCur = Math.hypot(cx - m.pos.x, cz - m.pos.z);
+    if (dCur < 1.2) continue;
+    if (m.lastTarget && Math.hypot(cx - m.lastTarget.x, cz - m.lastTarget.z) < 2) continue;
+    const v = getVisit(cx | 0, cz | 0);
+    let mobPenalty = 0;
+    for (const o of mobs) {
+      if (o === m || (o.dim !== undefined && o.dim !== dim)) continue;
+      if (houseAtRoof(o.pos.x, o.pos.z) !== h) continue;
+      const d = Math.hypot(cx - o.pos.x, cz - o.pos.z);
+      if (d < 1.9) mobPenalty += (1.9 - d) * 8;
+      if (o.target && houseAtRoof(o.target.x, o.target.z) === h) {
+        const td = Math.hypot(cx - o.target.x, cz - o.target.z);
+        if (td < 1.6) mobPenalty += (1.6 - td) * 6;
+      }
+    }
+    const score = v * 10 - dCur * 0.15 + mobPenalty;
+    if (score < bestScore) { bestScore = score; best = { x: cx, z: cz }; }
+  }
+  if (best) { m.lastTarget = { x: best.x, z: best.z }; return best; }
+  for (let t = 0; t < 20; t++) {
+    const x = h.minX + Math.random() * (h.maxX - h.minX + 1);
+    const z = h.minZ + Math.random() * (h.maxZ - h.minZ + 1);
+    const cx = Math.floor(x) + 0.5, cz = Math.floor(z) + 0.5;
+    if (houseAtRoof(cx, cz) !== h) continue;
+    if (cx - m.hw < h.minX || cx + m.hw > h.maxX + 1 || cz - m.hw < h.minZ || cz + m.hw > h.maxZ + 1) continue;
+    if (aabbCollidesWorld(cx, roofY, cz, m.hw, m.h)) continue;
+    if (!hasMobGround(cx, cz, m.hw, roofY)) continue;
+    return { x: cx, z: cz };
+  }
+  return { x: m.pos.x, z: m.pos.z };
+}
 function randomPenPoint() {
   if (!villagePen) return randomVillagePoint();
   const p = villagePen;
@@ -2384,6 +2444,7 @@ function hasMobGround(x, z, hw, y) {
   const py = y != null ? y : villageCenter.y + 1;
   const gy = Math.floor(py) - 1;
   if (gy < 0) return false;
+  const onRoof = mobOnRoofLevel(py) && !!houseAtRoof(x, z);
   const x0 = Math.floor(x - hw), x1 = Math.floor(x + hw);
   const z0 = Math.floor(z - hw), z1 = Math.floor(z + hw);
   for (let bx = x0; bx <= x1; bx++) for (let bz = z0; bz <= z1; bz++) {
@@ -2394,13 +2455,13 @@ function hasMobGround(x, z, hw, y) {
       const gyIsWater = gyBlock === WATER || gyBlock === LAVA || gyBlock === MOON_WATER;
       if (isSolid(bx, gy, bz)) {
         if (villagePen && gyBlock === LOG && (bx === villagePen.minX || bx === villagePen.maxX || bz === villagePen.minZ || bz === villagePen.maxZ)) return false;
-        if (villageHouses.length && gy >= villageCenter.y + 1 && gy <= villageCenter.y + 5) {
+        if (!onRoof && villageHouses.length && gy >= villageCenter.y + 1 && gy <= villageCenter.y + 5) {
           for (const h of villageHouses) if (bx >= h.minX && bx <= h.maxX && bz >= h.minZ && bz <= h.maxZ) return false;
         }
       } else if (!gyIsWater) {
         return false;
       } else {
-        if (villageHouses.length && gy >= villageCenter.y + 1 && gy <= villageCenter.y + 5) {
+        if (!onRoof && villageHouses.length && gy >= villageCenter.y + 1 && gy <= villageCenter.y + 5) {
           for (const h of villageHouses) if (bx >= h.minX && bx <= h.maxX && bz >= h.minZ && bz <= h.maxZ) return false;
         }
       }
@@ -2436,6 +2497,7 @@ function wolfHasMobGround(x, z, hw, y) {
   const py = y != null ? y : villageCenter.y + 1;
   const gy = Math.floor(py) - 1;
   if (gy < 0) return false;
+  const onRoof = mobOnRoofLevel(py) && !!houseAtRoof(x, z);
   const x0 = Math.floor(x - hw), x1 = Math.floor(x + hw);
   const z0 = Math.floor(z - hw), z1 = Math.floor(z + hw);
   for (let bx = x0; bx <= x1; bx++) for (let bz = z0; bz <= z1; bz++) {
@@ -2445,13 +2507,13 @@ function wolfHasMobGround(x, z, hw, y) {
       const gyBlock = getBlock(bx, gy, bz);
       const gyIsWater = gyBlock === WATER || gyBlock === LAVA || gyBlock === MOON_WATER;
       if (isSolid(bx, gy, bz)) {
-        if (villageHouses.length && gy >= villageCenter.y + 1 && gy <= villageCenter.y + 5) {
+        if (!onRoof && villageHouses.length && gy >= villageCenter.y + 1 && gy <= villageCenter.y + 5) {
           let overHouse = false; for (const h of villageHouses) if (bx >= h.minX && bx <= h.maxX && bz >= h.minZ && bz <= h.maxZ) { overHouse = true; break; }
           if (overHouse) continue;
         }
         return true;
       } else if (gyIsWater) {
-        if (villageHouses.length && gy >= villageCenter.y + 1 && gy <= villageCenter.y + 5) {
+        if (!onRoof && villageHouses.length && gy >= villageCenter.y + 1 && gy <= villageCenter.y + 5) {
           let overHouse = false; for (const h of villageHouses) if (bx >= h.minX && bx <= h.maxX && bz >= h.minZ && bz <= h.maxZ) { overHouse = true; break; }
           if (overHouse) continue;
         }
@@ -3479,6 +3541,21 @@ function updateMobs(dt) {
         m.path = null; m.pathKey = null; m.wanderT = 99;
       }
     } else if ((!m.kind || m.kind === "villager") && m.fleeUntil) { m.fleeUntil = 0; m.speed = WALK / 2; }
+
+    // Roof mobs: stay and wander locally on the same roof, never walk off alone (panic in place at WALKx2)
+    if (isMobOnRoof(m)) {
+      const rh = houseAtRoof(m.pos.x, m.pos.z);
+      const fleeing = m.fleeUntil != null && now < m.fleeUntil;
+      m.mode = "wander";
+      m.speed = fleeing ? WALK * 2 : ((m.kind === "pig" || m.kind === "cow") ? WALK / 2.2 : WALK / 2);
+      m.wanderT -= dt;
+      const onSameRoof = m.target && houseAtRoof(m.target.x, m.target.z) === rh;
+      if (!m.target || !onSameRoof || Math.hypot(m.target.x - m.pos.x, m.target.z - m.pos.z) < 0.6 || m.wanderT <= 0) {
+        m.target = wanderGoalForRoof(m);
+        m.wanderT = fleeing ? 0.8 + Math.random() * 0.8 : 3 + Math.random() * 4;
+        m.path = null; m.pathKey = null; m.steerCooldown = 0;
+      }
+    }
 
     // Steering towards target — BFS path for 1-block corridors + smart wall avoidance
     const canStep = !!m.canStep;
@@ -5521,12 +5598,13 @@ function moveMobAxisZ(mob, dz) {
 function moveMobAxisY(mob, dy) {
   mob.pos.y += dy;
   mob.onGround = false;
+  const onRoof = isMobOnRoof(mob);
   const top = mob.pos.y + mob.h, feet = mob.pos.y;
   for (let bx = Math.floor(mob.pos.x - mob.hw + 0.001); bx <= Math.floor(mob.pos.x + mob.hw - 0.001); bx++)
     for (let bz = Math.floor(mob.pos.z - mob.hw + 0.001); bz <= Math.floor(mob.pos.z + mob.hw - 0.001); bz++) {
       if (mob.vel.y > 0 && isSolid(bx, Math.floor(top), bz) && top > Math.floor(top)) {
         if ((mob.kind === "pig" || mob.kind === "cow") && villagePen && getBlock(bx, Math.floor(top), bz) === LOG && (bx === villagePen.minX || bx === villagePen.maxX || bz === villagePen.minZ || bz === villagePen.maxZ)) continue;
-        if (villageHouses.length && Math.floor(top) >= villageCenter.y + 1 && Math.floor(top) <= villageCenter.y + 5) {
+        if (!onRoof && villageHouses.length && Math.floor(top) >= villageCenter.y + 1 && Math.floor(top) <= villageCenter.y + 5) {
           let overHouse = false; for (const h of villageHouses) if (bx >= h.minX && bx <= h.maxX && bz >= h.minZ && bz <= h.maxZ) { overHouse = true; break; }
           if (overHouse) continue;
         }
@@ -5534,7 +5612,7 @@ function moveMobAxisY(mob, dy) {
       }
       if (mob.vel.y <= 0 && isSolid(bx, Math.floor(feet), bz)) {
         if ((mob.kind === "pig" || mob.kind === "cow") && villagePen && getBlock(bx, Math.floor(feet), bz) === LOG && (bx === villagePen.minX || bx === villagePen.maxX || bz === villagePen.minZ || bz === villagePen.maxZ)) continue;
-        if (villageHouses.length && Math.floor(feet) >= villageCenter.y + 1 && Math.floor(feet) <= villageCenter.y + 5) {
+        if (!onRoof && villageHouses.length && Math.floor(feet) >= villageCenter.y + 1 && Math.floor(feet) <= villageCenter.y + 5) {
           let overHouse = false; for (const h of villageHouses) if (bx >= h.minX && bx <= h.maxX && bz >= h.minZ && bz <= h.maxZ) { overHouse = true; break; }
           if (overHouse) continue;
         }
@@ -5607,18 +5685,19 @@ function tryMobWaterStep(mob, bx, by, bz) {
 function wolfMoveAxisY(mob, dy) {
   mob.pos.y += dy;
   mob.onGround = false;
+  const onRoof = isMobOnRoof(mob);
   const top = mob.pos.y + mob.h, feet = mob.pos.y;
   for (let bx = Math.floor(mob.pos.x - mob.hw + 0.001); bx <= Math.floor(mob.pos.x + mob.hw - 0.001); bx++)
     for (let bz = Math.floor(mob.pos.z - mob.hw + 0.001); bz <= Math.floor(mob.pos.z + mob.hw - 0.001); bz++) {
       if (mob.vel.y > 0 && isSolid(bx, Math.floor(top), bz) && top > Math.floor(top)) {
-        if (villageHouses.length && Math.floor(top) >= villageCenter.y + 1 && Math.floor(top) <= villageCenter.y + 5) {
+        if (!onRoof && villageHouses.length && Math.floor(top) >= villageCenter.y + 1 && Math.floor(top) <= villageCenter.y + 5) {
           let overHouse = false; for (const h of villageHouses) if (bx >= h.minX && bx <= h.maxX && bz >= h.minZ && bz <= h.maxZ) { overHouse = true; break; }
           if (overHouse) continue;
         }
         mob.pos.y = Math.floor(top) - mob.h - 0.001; mob.vel.y = 0; return true;
       }
       if (mob.vel.y <= 0 && isSolid(bx, Math.floor(feet - 0.001), bz)) {
-        if (villageHouses.length && Math.floor(feet - 0.001) >= villageCenter.y + 1 && Math.floor(feet - 0.001) <= villageCenter.y + 5) {
+        if (!onRoof && villageHouses.length && Math.floor(feet - 0.001) >= villageCenter.y + 1 && Math.floor(feet - 0.001) <= villageCenter.y + 5) {
           let overHouse = false; for (const h of villageHouses) if (bx >= h.minX && bx <= h.maxX && bz >= h.minZ && bz <= h.maxZ) { overHouse = true; break; }
           if (overHouse) continue;
         }
