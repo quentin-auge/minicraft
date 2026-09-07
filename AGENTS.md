@@ -626,6 +626,25 @@ stays bright at distance, `placeable: true` so it
   including directly underneath; release during transit flings along
   the launch line at `GRAPPLE_FLING` like any other grapple, release while following
   keeps the tow momentum clamped to `GRAPPLE_FLING`. Persisted as mob kind code 4 in save v12.
+  Cloud perching: pigeons sit ~50% of the time, on village roofs (`pigeonRoofTopAt`,
+  any house roof cell at `vy+6`), cloud tops (`pigeonCloudTopAt`, now with an
+  optional y-range) and tree tops (`pigeonTreeTopAt`, highest `LOG`/`LEAVES`
+  with headroom) alike — roof stone/planks count as perch support only on house
+  roofs (`pigeonPerchSupports` checks `vy+5`). Perched birds are spread evenly
+  across height: `pigeonPerchBand` splits spots into low (roofs+trees, below
+  `CLOUD_BASE`), mid and high cloud halves, and `pigeonFindPerchSpot` sends each
+  new perch leg to the emptiest band (25% random for organic feel), joining a
+  nearby perched group of <3 in that band (`PIGEON_PERCH_JOIN_R` 50,
+  same-height slots ≥`PIGEON_PERCH_SEP` 1.3 apart, path checked via `pigeonSegmentFree`)
+  or picking a fresh top (≤90 blocks, village-biased roof sampling for the low
+  band, y-clamped cloud sampling otherwise); `updateToPerchPigeon` flies
+  there (direct homing under 12 blocks, aborts on block/timeout) and `updatePerchedPigeon`
+  sits 2–10 s (`PIGEON_PERCH_MIN_T/MAX_T`) shuffling within ~0.7 blocks with folded wings,
+  taking off (`pigeonTakeoff`) on expiry, dug-out perch or displacement-grapple latch.
+  Takeoff hops straight back to a nearby perch (`PIGEON_HOP_CHANCE` 0.9, 2 short-leg
+  retries via `perchRetry`), and every leg re-pick goes through `pigeonNextLeg`
+  (perch roll `PIGEON_PERCH_CHANCE` 0.65, min 1.2 s between full decisions via `_decideT`),
+  so flight legs stay short and duty cycle holds across worlds.
 - **Save/load**: binary format (`SAVE_MAGIC`, version 12) capturing world
   blocks (over/end/nether), dim, seeds (over/end/nether), player pos/yaw/pitch,
   fly state (the free-cam `freeCam` flag — restored on Load Save only when it
