@@ -343,7 +343,10 @@ stays bright at distance, `placeable: true` so it
   beside the Overworld portal you entered. You can
   build your own End-frame return portal in either orientation. The return
   portal's frame blocks are indestructible (`protectedBlocks`, checked by
-  `breakBlock` and the TNT blast loop). Returning drops you no more than 3
+  `breakBlock` and the TNT blast loop), and so is the whole End platform
+  (all 3 platform layers, added in `buildReturnPortal`). Protection keys are
+  dimension-scoped (`protKey`, `dim:key`), so End coordinates never
+  shadow-protect same-coordinated Overworld/Nether blocks). Returning drops you no more than 3
   blocks from the Overworld portal frame (Chebyshev distance to any frame
   block), on firm ground, facing the portal: the landing spot is re-resolved
   on live terrain against the recorded frame (`overPortalWin` + entry side

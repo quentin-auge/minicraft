@@ -7686,7 +7686,7 @@ function updateTarget() {
 function breakBlock() {
   if (!currentBlock) return;
   const { x, y, z } = currentBlock;
-  if (protectedBlocks.has(key(x, y, z))) return;
+  if (protectedBlocks.has(protKey(x, y, z))) return;
   if (getBlock(x, y, z) === STONE && y === 0) return;
   if (isMobStandingOn(x, y, z) || intersectsMob(x, y, z)) return;
   if (getBlock(x, y, z) === TNT) { igniteTNT(x, y, z); return; }
@@ -8257,7 +8257,7 @@ function processExplosionQueue() {
     if (homing) { processed++; continue; }
     const bx = Math.floor(x), by = Math.floor(y), bz = Math.floor(z);
     const k0 = key(bx, by, bz);
-    if (!protectedBlocks.has(k0) && !batchKeys.has(k0)) {
+    if (!protectedBlocks.has(dim + ":" + k0) && !batchKeys.has(k0)) {
       const id0 = getBlock(bx, by, bz);
       if (id0 === TNT || (!isMobStandingOn(bx, by, bz) && !intersectsMob(bx, by, bz))) {
         if (id0 !== WATER && id0 !== LAVA && !(id0 === STONE && by === 0)) {
@@ -8279,7 +8279,7 @@ function processExplosionQueue() {
       if (id !== TNT && (isMobStandingOn(gx, gy, gz) || intersectsMob(gx, gy, gz))) continue;
       if (id === AIR || id === WATER || id === LAVA) continue;
       if (id === STONE && gy === 0) continue;
-      if (protectedBlocks.has(kk)) continue;
+      if (protectedBlocks.has(dim + ":" + kk)) continue;
       if (id === TNT) {
         if (tntLit.has(kk)) {
           const lt = tntLit.get(kk);
@@ -8705,6 +8705,7 @@ let overPortalDir = null;
 const END_SPAWN = { x: 0.5, y: END_PLATFORM_TOP + 1.6, z: END_RETURN_Z - 3 };
 const END_RETURN_BASE_Y = END_PLATFORM_TOP + 1;
 const protectedBlocks = new Set();
+const protKey = (x, y, z) => dim + ":" + key(x, y, z);
 let endCleared = false;
 let dormantMsgAt = 0;
 
@@ -8718,9 +8719,13 @@ function buildReturnPortal() {
       if (isEdge && !isCorner) {
         setBlock(x, END_RETURN_BASE_Y + y, END_RETURN_Z, PORTAL);
         coords.push([x, END_RETURN_BASE_Y + y, END_RETURN_Z]);
-        protectedBlocks.add(key(x, END_RETURN_BASE_Y + y, END_RETURN_Z));
+        protectedBlocks.add(protKey(x, END_RETURN_BASE_Y + y, END_RETURN_Z));
       }
     }
+  for (let x = -END_PLATFORM_R; x <= END_PLATFORM_R; x++)
+    for (let z = -END_PLATFORM_R; z <= END_PLATFORM_R; z++)
+      for (let y = END_PLATFORM_TOP - 2; y <= END_PLATFORM_TOP; y++)
+        protectedBlocks.add(protKey(x, y, z));
   endReturnWin = { orient: "v", minX: -2, minY: END_RETURN_BASE_Y, minZ: END_RETURN_Z };
   refreshBlocks(coords);
 }
@@ -8747,7 +8752,7 @@ function buildNetherPortal() {
       if (!isEdge) continue;
       setBlock(x, base + y, NETHER_RETURN_Z, OBSIDIAN);
       coords.push([x, base + y, NETHER_RETURN_Z]);
-      protectedBlocks.add(key(x, base + y, NETHER_RETURN_Z));
+      protectedBlocks.add(protKey(x, base + y, NETHER_RETURN_Z));
     }
   netReturnWin = { minX: -2, minY: base, minZ: NETHER_RETURN_Z };
   refreshBlocks(coords);
