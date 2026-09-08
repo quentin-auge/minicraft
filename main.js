@@ -6359,7 +6359,8 @@ const GRAPPLE_SPEED = 26;
 const GRAPPLE_THROW = 70;
 const GRAPPLE_RETRACT = 275;
 const GRAPPLE_FLING = 34;
-const PIGEON_FOLLOW_DIST = 3.5;
+const PIGEON_FOLLOW_DIST = 2.5;
+const DRAGON_FOLLOW_DIST = 8;
 const MOB_GRAPPLE_THROW = GRAPPLE_THROW * 1.25;
 const MOB_GRAPPLE_RETRACT = MOB_GRAPPLE_THROW * 1.25;
 const FLOAT_SPEED = 3.6;
@@ -7009,6 +7010,7 @@ function fireGrapple() {
     }
   }
   const mob = pickMob(dir, blockDist);
+  if (mob && mob.kind === "enderman") return;
   if (mob) {
     const off = getMobHitOffset(eye, dir, mob);
     const mx = off ? mob.pos.x + off.x : mob.pos.x;
@@ -7195,8 +7197,9 @@ function updateGrapple(dt) {
   }
   if (grappleMob && (grappleMob.kind === "pigeon" || grappleMob.kind === "dragon") && grappleHooked) {
     const pm = grappleMob;
+    const followDist = pm.kind === "dragon" ? DRAGON_FOLLOW_DIST : PIGEON_FOLLOW_DIST;
     const pdx = grappleTarget.x - pos.x, pdy = grappleTarget.y - pos.y, pdz = grappleTarget.z - pos.z;
-    const followR = grappleTowInit ? PIGEON_FOLLOW_DIST + 2 : PIGEON_FOLLOW_DIST;
+    const followR = grappleTowInit ? followDist + 2 : followDist;
     if (Math.hypot(pdx, pdy, pdz) <= followR) {
       grappleHookPos.copy(grappleTarget);
       const pvl = pm.vel.length();
@@ -7208,7 +7211,7 @@ function updateGrapple(dt) {
         if (!grappleTowInit) { grappleTowDir.copy(grappleTowTmp); grappleTowInit = true; }
         else { grappleTowDir.lerp(grappleTowTmp, Math.min(1, dt * 2.2)); if (grappleTowDir.lengthSq() < 1e-6) grappleTowDir.set(0, 0, 1); grappleTowDir.normalize(); }
       } else if (!grappleTowInit) { grappleTowDir.set(0, 0, 1); grappleTowInit = true; }
-      const desX = pm.pos.x - grappleTowDir.x * 3, desY = pm.pos.y - grappleTowDir.y * 3 - 0.4, desZ = pm.pos.z - grappleTowDir.z * 3;
+      const desX = pm.pos.x - grappleTowDir.x * followDist, desY = pm.pos.y - grappleTowDir.y * followDist - 0.4, desZ = pm.pos.z - grappleTowDir.z * followDist;
       if (grappleTowPos.lengthSq() < 1e-6) grappleTowPos.set(desX, desY, desZ);
       else grappleTowPos.lerp(grappleTowTmp.set(desX, desY, desZ), Math.min(1, dt * 6));
       const stiff = 18, damp = 11;
@@ -11505,7 +11508,7 @@ document.addEventListener("mouseup", (e) => {
   if (grapplePulling) {
     const fdx = grappleTarget.x - pos.x, fdy = grappleTarget.y - pos.y, fdz = grappleTarget.z - pos.z;
     if (grappleMob && (grappleMob.kind === "pigeon" || grappleMob.kind === "dragon") && grappleHooked &&
-        (grappleTowInit || Math.hypot(fdx, fdy, fdz) <= PIGEON_FOLLOW_DIST + 0.5)) {
+        (grappleTowInit || Math.hypot(fdx, fdy, fdz) <= (grappleMob.kind === "dragon" ? DRAGON_FOLLOW_DIST : PIGEON_FOLLOW_DIST) + 0.5)) {
       const sp = Math.hypot(vel.x, vel.y, vel.z) || 1;
       if (sp > GRAPPLE_FLING) { vel.x *= GRAPPLE_FLING / sp; vel.y *= GRAPPLE_FLING / sp; vel.z *= GRAPPLE_FLING / sp; }
       flingActive = true;
