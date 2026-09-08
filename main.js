@@ -471,6 +471,9 @@ function keyXYZ(k) {
 }
 
 const worlds = { over: new Map(), end: new Map(), nether: new Map() };
+// DEV ONLY: start dimension for new worlds. Set back to "over" to restore
+// the normal spawn behaviour.
+const DEV_START_DIM = "end";
 let dim = "over";
 let world = worlds.over;
 const getBlock = (x, y, z) => world.get(key(x, y, z)) || AIR;
@@ -2401,12 +2404,16 @@ function updatePigeon(m, dt) {
   if (m.mesh.userData.wingR) m.mesh.userData.wingR.rotation.z = -f;
 }
 function villagerHW(m) {
+  if (m.kind === "dragon") return 1.5;
+  if (m.kind === "enderman") return 0.31;
   if (m.kind === "pigeon") return 0.25;
   if (m.kind === "wolf") return 0.30;
   if (m.kind === "pig" || m.kind === "cow") return 0.32;
   return m.isBaby ? 0.16 : 0.27;
 }
 function villagerH(m) {
+  if (m.kind === "dragon") return 3;
+  if (m.kind === "enderman") return 2.7;
   if (m.kind === "pigeon") return 0.5;
   if (m.kind === "wolf") return 0.90;
   if (m.kind === "pig") return 0.92;
@@ -2443,9 +2450,10 @@ function mobInWater(m) {
 function wolfInWater(m){ return mobInWater(m); }
 function waterSurfaceForMob(m) {
   let top = -Infinity;
+  const yTop = Math.floor(m.pos.y + m.h);
   for (let bx = Math.floor(m.pos.x - m.hw); bx <= Math.floor(m.pos.x + m.hw); bx++) for (let bz = Math.floor(m.pos.z - m.hw); bz <= Math.floor(m.pos.z + m.hw); bz++) {
     const ct = colTops[dim][colTopIdx(bx, bz)];
-    for (let y = ct; y >= 0; y--) {
+    for (let y = Math.min(ct, yTop); y >= 0; y--) {
       const id = getBlock(bx, y, bz);
       if (id === WATER || id === LAVA || id === MOON_WATER) { if (y + 1 > top) top = y + 1; break; }
     }
@@ -2643,6 +2651,13 @@ function releaseCarriedMobAt(px, py, pz) {
   m.mesh.rotation.z = 0;
   m.mesh.rotation.x = 0;
   if (m.dim !== undefined) m.dim = dim;
+  if (m.kind === "enderman") {
+    m.baseY = hintY;
+    m.teleportT = 3 + Math.random() * 7;
+    m.lookT = 0;
+    m.angry = 0;
+    if (!endermen.includes(m)) endermen.push(m);
+  }
   m.vel.set(0, 0, 0);
   m.onGround = false;
   const insideVillage = nx >= villageMinX && nx <= villageMaxX && nz >= villageMinZ && nz <= villageMaxZ;
@@ -2737,6 +2752,7 @@ function startCarryGrabGrapple() {
   camera.getWorldDirection(dir);
   const mob = pickMob(dir);
   if (!mob) return false;
+  if (mob.kind === "dragon") { showMsg("The dragon is too powerful to grab"); return false; }
   const eye = camera.position;
   const off = getMobHitOffset(eye, dir, mob);
   const mx = off ? mob.pos.x + off.x : mob.pos.x;
@@ -2776,6 +2792,7 @@ function startCarryReleaseGrapple() {
   }
   carryGrappleBlock = { x: px, y: py, z: pz };
   carryGrappleMode = "release";
+  if (carryMob.dim !== undefined) carryMob.dim = dim;
   carryGrappleStart.copy(eye);
   carryGrappleTarget.set(tx, ty, tz);
   carryGrappleDist = Math.hypot(tx - eye.x, ty - eye.y, tz - eye.z);
@@ -3591,6 +3608,7 @@ function mobCollidesOther(mob, nx, nz) {
   const fleeing = mob.fleeUntil && performance.now() / 1000 < mob.fleeUntil;
   for (const o of nearby) {
     if (o === mob || o === carryMob || o === carryGrappleMob) continue;
+    if (o.kind === "dragon" || o.kind === "enderman") continue;
     if (o.dim !== undefined && o.dim !== dim) continue;
     let need = hw + villagerHW(o) + 0.04;
     if (!fleeing) {
@@ -3811,6 +3829,7 @@ function removeVillagers() {
   }
   mobs.length = 0;
   for (const s of survivors) { mobs.push(s); mobById.set(s.id, s); }
+  for (let i = endermen.length - 1; i >= 0; i--) if (!mobs.includes(endermen[i])) endermen.splice(i, 1);
   if (!mobs.length) { mobGrid.clear(); visitGrid.clear(); }
   else { buildMobGrid(); }
   for (const h of villageHouses) { h.doorQueue = []; h.doorLock = null; h.lockUntil = 0; }
@@ -3826,6 +3845,7 @@ function mobKindCode(m) {
   if (m.kind === "cow") return 2;
   if (m.kind === "wolf") return 3;
   if (m.kind === "pigeon") return 4;
+  if (m.kind === "enderman") return 5;
   return 0;
 }
 function mobKindFromCode(c) {
@@ -3833,6 +3853,7 @@ function mobKindFromCode(c) {
   if (c === 2) return "cow";
   if (c === 3) return "wolf";
   if (c === 4) return "pigeon";
+  if (c === 5) return "enderman";
   return "villager";
 }
 function mobLookIndex(m) {
@@ -3921,8 +3942,8 @@ function restoreOverworldMobs(list, opts) {
     const e = list[i];
     const kind = mobKindFromCode(e.kind);
     const isBaby = !!e.isBaby && kind === "villager";
-    const hw = kind === "pigeon" ? 0.25 : kind === "wolf" ? 0.30 : (kind === "pig" || kind === "cow") ? 0.32 : (isBaby ? 0.16 : 0.27);
-    const hh = kind === "pigeon" ? 0.5 : kind === "wolf" ? 0.90 : kind === "pig" ? 0.92 : kind === "cow" ? 1.30 : (isBaby ? 0.98 : 1.82);
+    const hw = kind === "pigeon" ? 0.25 : kind === "wolf" ? 0.30 : (kind === "pig" || kind === "cow") ? 0.32 : kind === "enderman" ? ENDERMAN_HW : (isBaby ? 0.16 : 0.27);
+    const hh = kind === "pigeon" ? 0.5 : kind === "wolf" ? 0.90 : kind === "pig" ? 0.92 : kind === "cow" ? 1.30 : kind === "enderman" ? ENDERMAN_H : (isBaby ? 0.98 : 1.82);
     const isWolf = kind === "wolf";
     let sx = e.x, sy = e.y, sz = e.z;
     if (!isFinite(sx) || !isFinite(sy) || !isFinite(sz)) continue;
@@ -3949,13 +3970,18 @@ function restoreOverworldMobs(list, opts) {
     const ryaw = isFinite(e.yaw) ? e.yaw : 0;
     let mesh = null;
     let palIdx = 0, collar = WOLF_COLLAR_COLORS[0];
+    let endermanVis = null;
     if (kind === "villager") {
       palIdx = (e.look >= 0 && e.look < VILLAGER_PALETTES.length) ? e.look : 0;
       mesh = makeVillagerMesh(isBaby, palIdx);
     } else if (kind === "pig") mesh = makePigMesh();
     else if (kind === "cow") mesh = makeCowMesh();
     else if (kind === "pigeon") mesh = makePigeonMesh();
-    else {
+    else if (kind === "enderman") {
+      ensureEndermanAssets();
+      endermanVis = makeEndermanMesh();
+      mesh = endermanVis.g;
+    } else {
       collar = WOLF_COLLAR_COLORS[(e.look >= 0 && e.look < WOLF_COLLAR_COLORS.length) ? e.look : 0];
       mesh = makeWolfMesh(WOLF_FUR, collar);
     }
@@ -4003,6 +4029,23 @@ function restoreOverworldMobs(list, opts) {
       base.yaw = yaw2;
       base.yawTarget = yaw2;
       base.vel.set(Math.cos(yaw2) * PIGEON_SPEED, 0, Math.sin(yaw2) * PIGEON_SPEED);
+    } else if (kind === "enderman") {
+      base.canStep = false;
+      base.speed = WALK / 2;
+      base.villageBound = false;
+      base.sc = 1;
+      base.g = endermanVis.g;
+      base.eyeMat = endermanVis.eyeMat;
+      base.armL = endermanVis.armL;
+      base.armR = endermanVis.armR;
+      base.head = endermanVis.head;
+      base.t = 0;
+      base.angry = 0;
+      base.teleportT = 3 + Math.random() * 7;
+      base.lookT = 0;
+      base.baseY = spot.y;
+      base.mesh.rotation.y = base.yaw;
+      endermen.push(base);
     } else {
       base.canStep = true;
       base.speed = WALK / 2;
@@ -4076,7 +4119,7 @@ function separateMobs() {
     let anyMoved = false;
     for (const m of mobs) {
       if (m === carryMob) continue;
-      if (m.kind === "pigeon") continue;
+      if (m.kind === "pigeon" || m.kind === "dragon" || m.kind === "enderman") continue;
       if (isMobFrozenByGrapple(m)) continue;
       if (m.dim !== undefined && m.dim !== dim) continue;
       let sx = 0, sz = 0, cnt = 0;
@@ -4084,7 +4127,7 @@ function separateMobs() {
       const fleeingSelf = m.fleeUntil && performance.now() / 1000 < m.fleeUntil;
       for (const o of nearby) {
         if (o === m || o === carryMob) continue;
-        if (o.kind === "pigeon") continue;
+        if (o.kind === "pigeon" || o.kind === "dragon" || o.kind === "enderman") continue;
         if (isMobFrozenByGrapple(o)) continue;
         if (o.dim !== undefined && o.dim !== dim) continue;
         let need = villagerHW(m) + villagerHW(o) + 0.18;
@@ -4145,6 +4188,7 @@ function pushMobsFromPlayer() {
   const nearby = nearbyMobsFor(pos.x, pos.z, 2);
   for (const m of nearby) {
     if (m === carryMob) continue;
+    if (m.kind === "dragon" || m.kind === "enderman") continue;
     if (isMobFrozenByGrapple(m)) continue;
     if (m.dim !== undefined && m.dim !== dim) continue;
     const fleeing = m.fleeUntil && performance.now() / 1000 < m.fleeUntil;
@@ -4175,6 +4219,7 @@ function mobWouldCollide(mob, nx, nz) {
   const fleeingSelf = mob.fleeUntil && performance.now() / 1000 < mob.fleeUntil;
   for (const o of nearby) {
     if (o === mob || o === carryMob || isMobFrozenByGrapple(o)) continue;
+    if (o.kind === "dragon" || o.kind === "enderman") continue;
     if (o.dim !== undefined && o.dim !== dim) continue;
     let need = hw + villagerHW(o) + 0.04;
     if (!fleeingSelf) {
@@ -4207,7 +4252,7 @@ function updateMobs(dt) {
     if (m === carryMob) continue;
     if (isMobFrozenByGrapple(m)) continue;
     if (m.dim !== undefined && m.dim !== dim) {
-      if (m.kind === "pigeon") { m.mesh.position.copy(m.pos); continue; }
+      if (m.kind === "pigeon" || m.kind === "enderman") { m.mesh.position.copy(m.pos); continue; }
       if (m.pos.y < -15) { scene.remove(m.mesh); mobById.delete(m.id); mobs.splice(idx, 1); continue; }
       if (m.vel == null) m.vel = new THREE.Vector3(0,0,0);
       const footY2 = Math.floor(m.pos.y);
@@ -4230,6 +4275,8 @@ function updateMobs(dt) {
       continue;
     }
     const now = performance.now() / 1000;
+    if (m.kind === "dragon") continue;
+    if (m.kind === "enderman") { updateEnderman(m, dt); continue; }
     if (m.kind === "pigeon") {
       if (dim !== "over") { m.mesh.position.copy(m.pos); continue; }
       updatePigeon(m, dt);
@@ -4910,6 +4957,7 @@ function handleMobExplosion(cx, cy, cz) {
 }
 
 function generateWorld() {
+  dim = "over"; // setBlock records column tops per dim, so pin it while generating
   world = worlds.over;
   worlds.over.clear();
   colTops.over.fill(0);
@@ -6935,7 +6983,7 @@ function detachDisplacementGrapple() {
   grappleTowInit = false;
   grappleTowPos.set(0, 0, 0);
   if (grappleMob) {
-    if (grappleMob !== carryMob && grappleMob !== carryGrappleMob) setMobTransparent(grappleMob, 1);
+    if (grappleMob.kind !== "dragon" && grappleMob !== carryMob && grappleMob !== carryGrappleMob) setMobTransparent(grappleMob, 1);
   } else if (grappleHooked) grappleHookPos.copy(grappleTarget);
   else grappleHookPos.copy(grappleStart).lerp(grappleTarget, grappleFly);
   grappleActive = false;
@@ -6971,7 +7019,7 @@ function fireGrapple() {
     if (!b || distMob < blockDist) {
       grappleMob = mob;
       grappleBlock = null;
-      if (mob !== carryMob && mob !== carryGrappleMob) setMobTransparent(mob, 1);
+      if (mob.kind !== "dragon" && mob !== carryMob && mob !== carryGrappleMob) setMobTransparent(mob, 1);
       grappleTarget.set(mx, my, mz);
       grappleStart.set(sx, sy, sz);
       grapplingDist = distMob;
@@ -7143,7 +7191,7 @@ function updateGrapple(dt) {
       grappleTopY = grappleBlock.y;
     }
   }
-  if (grappleMob && grappleMob.kind === "pigeon" && grappleHooked) {
+  if (grappleMob && (grappleMob.kind === "pigeon" || grappleMob.kind === "dragon") && grappleHooked) {
     const pm = grappleMob;
     const pdx = grappleTarget.x - pos.x, pdy = grappleTarget.y - pos.y, pdz = grappleTarget.z - pos.z;
     const followR = grappleTowInit ? PIGEON_FOLLOW_DIST + 2 : PIGEON_FOLLOW_DIST;
@@ -7169,7 +7217,7 @@ function updateGrapple(dt) {
       vel.y += ((ey / exl * ecl) * stiff - (vel.y - pm.vel.y) * damp) * dt;
       vel.z += ((ez / exl * ecl) * stiff - (vel.z - pm.vel.z) * damp) * dt;
       const spd = Math.hypot(vel.x, vel.y, vel.z);
-      const maxSp = PIGEON_SPEED * 2.2;
+      const maxSp = (pm.speed || PIGEON_SPEED) * 2.2;
       if (spd > maxSp) { vel.x *= maxSp / spd; vel.y *= maxSp / spd; vel.z *= maxSp / spd; }
       let remaining = Math.min(Math.hypot(vel.x, vel.y, vel.z) * dt, 1.2);
       let blockedX = false, blockedY = false, blockedZ = false;
@@ -7872,9 +7920,7 @@ function intersectsPlayer(bx, by, bz) {
 // ---------------------------------------------------------------------------
 const FUSE_TIME = 3;
 const BLAST_RADIUS = 3;
-const DRAGON_HIT_DIST = 4.5;
 const DRAGON_FULL_DMG = 0.125;
-const DRAGON_MIN_DMG = 0.05;
 const TNT_HOME_SPEED = 11;
 const DRAGON_STICK_DIST = 1.2;
 const tntBombGeo = new THREE.BoxGeometry(0.9, 0.9, 0.9);
@@ -7935,7 +7981,31 @@ function igniteTNT(bx, by, bz, fuse = FUSE_TIME) {
       }
     }
   }
-  if ((dim === "end" && dragon.mesh) || t.pigeon) {
+  if (dim === "end" && dragon.mesh && dragon.mob && !chainBreaking && !t.pigeon) {
+    const dir = new THREE.Vector3();
+    camera.getWorldDirection(dir);
+    const eye = camera.position;
+    const mob = pickMob(dir, PIGEON_AIM_DIST);
+    if (mob && mob.kind === "dragon") {
+      const off = getMobHitOffset(eye, dir, mob);
+      const hx = off ? mob.pos.x + off.x : mob.pos.x, hy = off ? mob.pos.y + off.y : mob.pos.y + mob.h * 0.5, hz = off ? mob.pos.z + off.z : mob.pos.z;
+      const mobT = Math.hypot(hx - eye.x, hy - eye.y, hz - eye.z);
+      const blockT = Math.hypot(bx + 0.5 - eye.x, by + 0.5 - eye.y, bz + 0.5 - eye.z);
+      if (mobT <= blockT + 0.5) {
+        const cap = dragonShotsCap();
+        const nowI = performance.now() / 1000;
+        const freshI = pigeonLock === mob && nowI - pigeonLockT < PIGEON_LOCK_TIME;
+        if (cap > 0 && (freshI ? pigeonLockShots < cap : !tntTargeted(mob))) {
+          t.pigeon = mob;
+          pigeonLock = mob;
+          pigeonLockT = nowI;
+          if (!freshI) pigeonLockShots = 0;
+          pigeonLockShots++;
+        }
+      }
+    }
+  }
+  if (t.pigeon) {
     setBlock(bx, by, bz, AIR);
     refreshBlocks([[bx, by, bz]]);
     queueSave();
@@ -7979,6 +8049,26 @@ function tntTargeted(mob) {
   for (const t of tntLit.values()) if (t.pigeon === mob) return true;
   return false;
 }
+function dragonShotsCap() {
+  if (dim !== "end" || !dragon.mesh || dragon.hp <= 0) return 0;
+  return Math.max(1, Math.ceil(dragon.hp / DRAGON_FULL_DMG));
+}
+function aimedDragon() {
+  if (dim !== "end" || !dragon.mesh || !dragon.mob) return null;
+  const dir = new THREE.Vector3();
+  camera.getWorldDirection(dir);
+  const eye = camera.position;
+  const mob = pickMob(dir, PIGEON_AIM_DIST);
+  if (!mob || mob.kind !== "dragon") return null;
+  const off = getMobHitOffset(eye, dir, mob);
+  const hx = off ? mob.pos.x + off.x : mob.pos.x, hy = off ? mob.pos.y + off.y : mob.pos.y + mob.h * 0.5, hz = off ? mob.pos.z + off.z : mob.pos.z;
+  const mobT = Math.hypot(hx - eye.x, hy - eye.y, hz - eye.z);
+  if (currentBlock) {
+    const blockT = Math.hypot(currentBlock.x + 0.5 - eye.x, currentBlock.y + 0.5 - eye.y, currentBlock.z + 0.5 - eye.z);
+    if (mobT > blockT + 0.5) return null;
+  }
+  return mob;
+}
 function tryFireLockedTNT() {
   const now = performance.now() / 1000;
   const mob = aimedPigeon();
@@ -7996,8 +8086,28 @@ function tryFireLockedTNT() {
     pigeonLockShots++;
     return true;
   }
+  const dr = aimedDragon();
+  if (dr) {
+    const cap = dragonShotsCap();
+    if (cap <= 0) return false;
+    const fresh = pigeonLock === dr && now - pigeonLockT < PIGEON_LOCK_TIME;
+    if (!fresh) {
+      if (tntTargeted(dr)) return false;
+      pigeonLock = dr;
+      pigeonLockShots = 0;
+    }
+    if (pigeonLockShots >= cap) return false;
+    fireTNTAtPigeon(dr);
+    pigeonLock = dr;
+    pigeonLockT = now;
+    pigeonLockShots++;
+    return true;
+  }
   const lock = livePigeonLock();
-  if (lock && now - pigeonLockT < PIGEON_LOCK_TIME && pigeonLockShots < 3) {
+  if (lock && lock.dim !== undefined && lock.dim !== dim) { pigeonLock = null; return false; }
+  if (lock && now - pigeonLockT < PIGEON_LOCK_TIME) {
+    const cap = lock.kind === "dragon" ? dragonShotsCap() : 3;
+    if (cap <= 0 || pigeonLockShots >= cap) return false;
     let blockT = Infinity;
     if (currentBlock) {
       const eye = camera.position;
@@ -8070,21 +8180,6 @@ function updateTNTTarget(t, dt) {
     t.px += (dx / d) * sp; t.py += (dy / d) * sp; t.pz += (dz / d) * sp;
     return;
   }
-  if (dim !== "end" || !dragon.mesh) return;
-  const p = dragon.mesh.position;
-  if (t.stuck) {
-    t.px = p.x + t.ax; t.py = p.y + t.ay; t.pz = p.z + t.az;
-    return;
-  }
-  const dx = p.x - t.px, dy = p.y + 1 - t.py, dz = p.z - t.pz;
-  const d = Math.hypot(dx, dy, dz);
-  if (d <= DRAGON_STICK_DIST) {
-    t.stuck = true;
-    t.ax = t.px - p.x; t.ay = t.py - p.y; t.az = t.pz - p.z;
-    return;
-  }
-  const sp = Math.min(d, TNT_HOME_SPEED * dt);
-  t.px += (dx / d) * sp; t.py += (dy / d) * sp; t.pz += (dz / d) * sp;
 }
 
 function tickTNT(dt) {
@@ -8096,14 +8191,17 @@ function tickTNT(dt) {
       if (t.stuck) {
         clearTNTVisual(t);
         tntLit.delete(k);
-        if (t.pigeon && mobs.includes(t.pigeon)) killPigeon(t.pigeon);
-        if (t.pigeon) explodePigeon(t.px, t.py, t.pz, true);
+        const isPigeonBomb = t.pigeon && t.pigeon.kind === "pigeon";
+        if (isPigeonBomb && mobs.includes(t.pigeon)) killPigeon(t.pigeon);
+        if (isPigeonBomb) explodePigeon(t.px, t.py, t.pz, true);
         else enqueueExplosion(t.px, t.py, t.pz, true, true);
       } else if (t.pigeon) {
+        const isPigeonBomb = t.pigeon.kind === "pigeon";
         if (!mobs.includes(t.pigeon) || (t.life -= dt) <= 0) {
           clearTNTVisual(t);
           tntLit.delete(k);
-          explodePigeon(t.px, t.py, t.pz, false);
+          if (isPigeonBomb) explodePigeon(t.px, t.py, t.pz, false);
+          else enqueueExplosion(t.px, t.py, t.pz, false, true);
         }
       } else if (!dragon.mesh) {
         clearTNTVisual(t);
@@ -8124,11 +8222,6 @@ function tickTNT(dt) {
       drawFuseSprite(t.spr, t.fuse);
     }
   }
-}
-
-function dragonBlastDamage(dist, pointBlank) {
-  if (pointBlank) return DRAGON_FULL_DMG;
-  return DRAGON_FULL_DMG - (DRAGON_FULL_DMG - DRAGON_MIN_DMG) * Math.min(1, dist / DRAGON_HIT_DIST);
 }
 
 const CHAIN_DELAY = 50;
@@ -8160,10 +8253,7 @@ function processExplosionQueue() {
     else if (pointBlank) spawnDragonBurst(cx, cy, cz);
     else spawnExplosion(cx, cy, cz);
     if (mobs.length) handleMobExplosion(cx, cy, cz);
-    if (dim === "end" && dragon.mesh) {
-      const cd = Math.hypot(dragon.mesh.position.x - cx, dragon.mesh.position.y - cy, dragon.mesh.position.z - cz);
-      damageDragon(dragonBlastDamage(cd, pointBlank));
-    }
+    if (dim === "end" && dragon.mesh && homing && pointBlank && !pigeon) damageDragon(DRAGON_FULL_DMG);
     if (homing) { processed++; continue; }
     const bx = Math.floor(x), by = Math.floor(y), bz = Math.floor(z);
     const k0 = key(bx, by, bz);
@@ -9505,7 +9595,7 @@ const dragon = {
   path: null, s: 0, seg: 0, yaw: 0, pitch: 0, bank: 0, prevYaw: 0, t: 0, nextRun: 0,
   mouth: null, fx: null, parts: [], spitTimer: 0, spitting: 0,
   surgeT: 0, surge: 1, speedMul: 1, hp: 0,
-  mats: null, hitCount: 0, flee: null,
+  mats: null, hitCount: 0, flee: null, mob: null,
   dying: 0, deathFlash: 0, deathIdx: 0,
 };
 const dragonMat = (color, opts = {}) =>
@@ -9683,6 +9773,27 @@ function spawnDragon() {
   dragon.surgeT = 0; dragon.surge = 1; dragon.speedMul = 1;
   dragon.hp = 1;
   dragon.dying = 0; dragon.deathFlash = 0; dragon.deathIdx = 0;
+  if (!dragon.mob || !mobs.includes(dragon.mob)) {
+    let gid = mobs.length ? Math.max(...mobs.map((m) => m.id)) + 1 : 0;
+    const dm = {
+      id: gid, kind: "dragon", canStep: false, homeId: -1, isBaby: false, parentId: -1, dim: "end",
+      pos: dragon.mesh.position.clone(),
+      vel: new THREE.Vector3(),
+      hw: 1.5, h: 3, mesh: dragon.mesh, onGround: false,
+      target: null, mode: "straight", wanderT: 0,
+      yaw: 0, yawTarget: 0, villageBound: false, speed: DRAGON_SPEED,
+      _stuckT: 0, _prevX: 0, _prevZ: 0,
+      path: null, pathIdx: 0, pathKey: null, steerX: 0, steerZ: 0, steerCooldown: 0, lastTarget: null, _wasInWater: false, wolfInWater: false,
+    };
+    mobs.push(dm);
+    mobById.set(dm.id, dm);
+    dragon.mob = dm;
+  } else {
+    dragon.mob.pos.copy(dragon.mesh.position);
+    dragon.mob.vel.set(0, 0, 0);
+    dragon.mob.mesh = dragon.mesh;
+    if (!mobById.has(dragon.mob.id)) mobById.set(dragon.mob.id, dragon.mob);
+  }
   updateBossBar();
   buildDragonPath();
 }
@@ -9703,6 +9814,13 @@ function paintDragon() {
 
 function removeDragon() {
   if (!dragon.mesh) return;
+  if (dragon.mob) {
+    if (pigeonLock === dragon.mob) { pigeonLock = null; pigeonLockT = 0; pigeonLockShots = 0; }
+    mobById.delete(dragon.mob.id);
+    const mi = mobs.indexOf(dragon.mob);
+    if (mi >= 0) mobs.splice(mi, 1);
+    dragon.mob = null;
+  }
   scene.remove(dragon.mesh);
   dragon.mesh.traverse((o) => {
     if (o.geometry) o.geometry.dispose();
@@ -9852,6 +9970,7 @@ function updateDragon(dt) {
     M.position.y += (Math.random() - 0.5) * 0.3;
     M.position.z += (Math.random() - 0.5) * 0.3;
     M.rotation.z = dragon.bank + (Math.random() - 0.5) * 0.5;
+    if (dragon.mob) { dragon.mob.pos.copy(M.position); dragon.mob.vel.set(0, 0, 0); }
     if (dragon.dying <= 0) {
       const dx = M.position.x, dy = M.position.y + 1, dz = M.position.z;
       removeDragon();
@@ -9931,6 +10050,12 @@ function updateDragon(dt) {
   M.rotation.y = dragon.yaw;
   M.rotation.x = dragon.pitch;
   M.rotation.z = dragon.bank;
+  if (dragon.mob) {
+    dragon.mob.pos.copy(M.position);
+    dragon.mob.vel.copy(fwd).multiplyScalar(DRAGON_SPEED * dragon.speedMul);
+    dragon.mob.yaw = dragon.yaw;
+    dragon.mob.yawTarget = dragon.yaw;
+  }
 
   const flapRate = (2.4 + Math.sin(t * 0.35) * 0.8) * (0.65 + 0.4 * dragon.speedMul);
   const amp = Math.max(0.2, 0.8 - Math.abs(fwd.y) * 0.9);
@@ -9963,7 +10088,10 @@ const endermen = [];
 let endermanGeo = null;
 let endermanBodyMat = null;
 const ENDERMAN_RANGE = 55;
-const ENDERMAN_ANGRY_TIME = 4;
+const ENDERMAN_ANGRY_TIME = 0.5;
+const ENDERMAN_STARE_TIME = 0.3;
+const ENDERMAN_HW = 0.31;
+const ENDERMAN_H = 2.7;
 
 function endermanBox(parent, mat, sx, sy, sz, px, py, pz) {
   const m = new THREE.Mesh(endermanGeo, mat);
@@ -10001,30 +10129,59 @@ function makeEndermanMesh() {
   return { g, eyeMat, armL, armR, head, t: 0, angry: 0, teleportT: 0, lookT: 0 };
 }
 
+function ensureEndermanAssets() {
+  if (!endermanGeo) endermanGeo = new THREE.BoxGeometry(1, 1, 1);
+  if (!endermanBodyMat) endermanBodyMat = new THREE.MeshStandardMaterial({ color: 0x0c0a12, roughness: 0.85, metalness: 0.05 });
+}
+
 function spawnEndermen() {
-  if (endermen.length) return;
-  endermanGeo = new THREE.BoxGeometry(1, 1, 1);
-  endermanBodyMat = new THREE.MeshStandardMaterial({ color: 0x0c0a12, roughness: 0.85, metalness: 0.05 });
-  for (let i = 0; i < ENDERMEN_COUNT; i++) {
-    const e = makeEndermanMesh();
+  const freeEnd = (e) => mobs.includes(e) && (e.dim === undefined || e.dim === "end") && e !== carryMob && e !== carryGrappleMob;
+  if (endermen.some(freeEnd)) return;
+  ensureEndermanAssets();
+  let gid = mobs.length ? Math.max(...mobs.map((m) => m.id)) + 1 : 0;
+  const liveEnd = endermen.filter(freeEnd).length;
+  for (let i = liveEnd; i < ENDERMEN_COUNT; i++) {
+    const v = makeEndermanMesh();
     const spot = endermanPickSpot(0, 0, 6, endermen);
-    e.g.position.set(spot.x, END_PLATFORM_TOP + 1, spot.z);
-    e.g.rotation.y = Math.random() * Math.PI * 2;
-    e.teleportT = 3 + Math.random() * 7;
-    scene.add(e.g);
+    v.g.position.set(spot.x, END_PLATFORM_TOP + 1, spot.z);
+    v.g.rotation.y = Math.random() * Math.PI * 2;
+    v.teleportT = 3 + Math.random() * 7;
+    scene.add(v.g);
+    const e = {
+      id: gid++, kind: "enderman", canStep: false, homeId: -1, isBaby: false, parentId: -1, dim: "end",
+      pos: v.g.position.clone(),
+      vel: new THREE.Vector3(),
+      hw: ENDERMAN_HW, h: ENDERMAN_H, mesh: v.g, onGround: false,
+      target: null, mode: "wander", wanderT: 0,
+      yaw: v.g.rotation.y, yawTarget: v.g.rotation.y, villageBound: false, speed: WALK / 2,
+      _stuckT: 0, _prevX: spot.x, _prevZ: spot.z,
+      path: null, pathIdx: 0, pathKey: null, steerX: 0, steerZ: 0, steerCooldown: 0, lastTarget: null, _wasInWater: false, wolfInWater: false,
+      g: v.g, eyeMat: v.eyeMat, armL: v.armL, armR: v.armR, head: v.head,
+      t: 0, angry: 0, teleportT: v.teleportT, lookT: 0, baseY: END_PLATFORM_TOP + 1,
+    };
+    mobs.push(e);
+    mobById.set(e.id, e);
     endermen.push(e);
   }
 }
 
 function removeEndermen() {
   if (!endermen.length) return;
+  const keep = [];
   for (const e of endermen) {
+    if (e === carryMob || e === carryGrappleMob || (e.dim !== undefined && e.dim !== "end")) { keep.push(e); continue; }
     scene.remove(e.g);
     e.eyeMat.dispose();
+    mobById.delete(e.id);
+    const mi = mobs.indexOf(e);
+    if (mi >= 0) mobs.splice(mi, 1);
   }
   endermen.length = 0;
-  if (endermanGeo) { endermanGeo.dispose(); endermanGeo = null; }
-  if (endermanBodyMat) { endermanBodyMat.dispose(); endermanBodyMat = null; }
+  for (const k of keep) endermen.push(k);
+  if (!endermen.length) {
+    if (endermanGeo) { endermanGeo.dispose(); endermanGeo = null; }
+    if (endermanBodyMat) { endermanBodyMat.dispose(); endermanBodyMat = null; }
+  }
 }
 
 function spawnEndermanBurst(cx, cy, cz) {
@@ -10056,11 +10213,12 @@ function spawnEndermanBurst(cx, cy, cz) {
   bursts.push({ pts, geo, mat, vel, life: 0.7, max: 0.7 });
 }
 
-function endermanPickSpot(cx, cz, minDist, others = []) {
+function endermanPickSpot(cx, cz, minDist, others = [], maxDist = END_PLATFORM_R - 4, px = null, pz = null) {
   const R = END_PLATFORM_R - 4;
+  const preferAng = (px != null && pz != null && (px || pz)) ? Math.atan2(pz, px) : null;
   for (let tries = 0; tries < 24; tries++) {
-    const a = Math.random() * Math.PI * 2;
-    const r = Math.sqrt(Math.random()) * R;
+    const a = preferAng != null ? preferAng + (Math.random() * 2 - 1) * Math.PI * 0.5 : Math.random() * Math.PI * 2;
+    const r = minDist + Math.sqrt(Math.random()) * Math.max(0.5, maxDist - minDist);
     const x = Math.round(cx + Math.cos(a) * r);
     const z = Math.round(cz + Math.sin(a) * r);
     if (Math.abs(x) > R || Math.abs(z) > R) continue;
@@ -10077,8 +10235,8 @@ function endermanPickSpot(cx, cz, minDist, others = []) {
     return { x, z };
   }
   for (let tries = 0; tries < 12; tries++) {
-    const a = Math.random() * Math.PI * 2;
-    const r = 2 + Math.random() * 5;
+    const a = preferAng != null ? preferAng + (Math.random() * 2 - 1) * Math.PI * 0.5 : Math.random() * Math.PI * 2;
+    const r = 2 + Math.random() * Math.min(5, Math.max(0.5, maxDist - 2));
     const x = THREE.MathUtils.clamp(Math.round(cx + Math.cos(a) * r), -R, R);
     const z = THREE.MathUtils.clamp(Math.round(cz + Math.sin(a) * r), -R, R);
     if ((x - cx) * (x - cx) + (z - cz) * (z - cz) >= minDist * minDist) return { x, z };
@@ -10086,17 +10244,114 @@ function endermanPickSpot(cx, cz, minDist, others = []) {
   return { x: THREE.MathUtils.clamp(cx, -R, R), z: THREE.MathUtils.clamp(cz, -R, R) };
 }
 
-function endermanTeleport(e, x, z) {
+function endermanTeleport(e, x, z, baseY) {
   const M = e.g;
   spawnEndermanBurst(M.position.x, M.position.y + 1.35, M.position.z);
   M.position.x = x;
   M.position.z = z;
-  M.position.y = END_PLATFORM_TOP + 1;
+  M.position.y = baseY != null ? baseY : END_PLATFORM_TOP + 1;
+  if (baseY != null) e.baseY = baseY;
+  e.pos.copy(M.position);
   spawnEndermanBurst(M.position.x, M.position.y + 1.35, M.position.z);
 }
 
+function endermanFirmGround(x, z, hw, y) {
+  if (!hasMobGround(x, z, hw, y)) return false;
+  const gy = Math.floor(y) - 1;
+  if (gy < 0) return false;
+  const x0 = Math.floor(x - hw), x1 = Math.floor(x + hw);
+  const z0 = Math.floor(z - hw), z1 = Math.floor(z + hw);
+  for (let bx = x0; bx <= x1; bx++) for (let bz = z0; bz <= z1; bz++) {
+    const ox0 = Math.max(x - hw, bx), ox1 = Math.min(x + hw, bx + 1);
+    const oz0 = Math.max(z - hw, bz), oz1 = Math.min(z + hw, bz + 1);
+    if (ox1 - ox0 > 0.02 && oz1 - oz0 > 0.02 && !isSolid(bx, gy, bz)) return false;
+  }
+  return true;
+}
+
+function endermanPickSpotOutside(e, cx, cz, px, pz) {
+  const others = endermanOthers(e).filter((o) => o.dim === e.dim);
+  const B = WORLD_RADIUS - 2;
+  const ccx = Math.round(cx), ccz = Math.round(cz);
+  const hasHead = px != null && pz != null && (px || pz);
+  const hsp = Math.hypot(vel.x, vel.z);
+  let fx = null, fz = null;
+  if (hsp > 5) { fx = vel.x / hsp; fz = vel.z / hsp; }
+  else if (hasHead) { fx = -px; fz = -pz; }
+  const frontAng = fx != null ? Math.atan2(fz, fx) : null;
+  const backAng = hasHead ? Math.atan2(pz, px) : (frontAng != null ? frontAng + Math.PI : null);
+  const tryCone = (ang, needFirm, needSep) => {
+    if (ang == null) return null;
+    for (let i = 0; i < 16; i++) {
+      const a = ang + (Math.random() * 2 - 1) * Math.PI / 4;
+      const x = ccx + Math.round(Math.cos(a) * 5), z = ccz + Math.round(Math.sin(a) * 5);
+      if (x < -B || x > B || z < -B || z > B) continue;
+      const gy = groundYForMob(x, z, e.pos.y, ENDERMAN_HW);
+      if (gy < 1 || gy > MAX_Y - 3) continue;
+      if (gy > e.pos.y + 6) continue;
+      if (aabbCollidesWorld(x, gy, z, ENDERMAN_HW, ENDERMAN_H)) continue;
+      if (needFirm && !endermanFirmGround(x, z, ENDERMAN_HW, gy)) continue;
+      if (needSep) {
+        let far = true;
+        for (const o of others) {
+          const ox = x - o.pos.x, oz = z - o.pos.z;
+          if (ox * ox + oz * oz < 9) { far = false; break; }
+        }
+        if (!far) continue;
+      }
+      return { x, z, y: gy };
+    }
+    return null;
+  };
+  const cone = tryCone(frontAng, true, true) || tryCone(frontAng, true, false)
+    || tryCone(backAng, true, true) || tryCone(backAng, true, false);
+  if (cone) return cone;
+  const dirs = [[1, 0], [1, 1], [0, 1], [-1, 1], [-1, 0], [-1, -1], [0, -1], [1, -1]];
+  if (px == null || pz == null) {
+    for (let i = dirs.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      const tmp = dirs[i]; dirs[i] = dirs[j]; dirs[j] = tmp;
+    }
+  } else {
+    const pl = Math.hypot(px, pz) || 1;
+    dirs.sort((a, b) => (b[0] * px + b[1] * pz) / (Math.hypot(b[0], b[1]) * pl) - (a[0] * px + a[1] * pz) / (Math.hypot(a[0], a[1]) * pl));
+  }
+  for (let pass = 0; pass < 3; pass++) {
+    const needFirm = pass < 2, needSep = pass < 1;
+    for (const [dx, dz] of dirs) {
+      const r = 3 / Math.hypot(dx, dz);
+      const x = ccx + Math.round(dx * r), z = ccz + Math.round(dz * r);
+      if (x < -B || x > B || z < -B || z > B) continue;
+      const gy = groundYForMob(x, z, e.pos.y, ENDERMAN_HW);
+      if (gy < 1 || gy > MAX_Y - 3) continue;
+      if (gy > e.pos.y + 6) continue;
+      if (aabbCollidesWorld(x, gy, z, ENDERMAN_HW, ENDERMAN_H)) continue;
+      if (needFirm && !endermanFirmGround(x, z, ENDERMAN_HW, gy)) continue;
+      if (needSep) {
+        let far = true;
+        for (const o of others) {
+          const ox = x - o.pos.x, oz = z - o.pos.z;
+          if (ox * ox + oz * oz < 9) { far = false; break; }
+        }
+        if (!far) continue;
+      }
+      return { x, z, y: gy };
+    }
+  }
+  const sy = Math.max(1, Math.min(MAX_Y - 3, Math.round(e.pos.y)));
+  return { x: THREE.MathUtils.clamp(Math.round(e.pos.x), -B, B), z: THREE.MathUtils.clamp(Math.round(e.pos.z), -B, B), y: sy };
+}
+
+function endermanSpotFor(e, cx, cz, minDist, px, pz, maxDist) {
+  if (dim === "end" && (e.dim === undefined || e.dim === "end")) {
+    const s = endermanPickSpot(cx, cz, minDist, endermanOthers(e), maxDist == null ? END_PLATFORM_R - 4 : maxDist, px, pz);
+    return { x: s.x, z: s.z, y: END_PLATFORM_TOP + 1 };
+  }
+  return endermanPickSpotOutside(e, cx, cz, px, pz);
+}
+
 function endermanOthers(e) {
-  return endermen.filter((o) => o !== e);
+  return endermen.filter((o) => o !== e && o !== carryMob && o !== carryGrappleMob);
 }
 
 const endermanFwd = new THREE.Vector3();
@@ -10106,9 +10361,21 @@ function updateEndermen(dt) {
 }
 
 function updateEnderman(e, dt) {
+  if (e === carryMob || isMobFrozenByGrapple(e)) { e.lookT = 0; return; }
+  if (e.dim !== undefined && e.dim !== dim) return;
+  const inboundGrab = e === carryGrappleMob && carryGrappleMode === "grab" && (carryGrappleActive || carryGrapplePulling);
   const M = e.g;
   const t = (e.t += dt);
-  M.position.y = END_PLATFORM_TOP + 1 + Math.sin(t * 1.3) * 0.02;
+  const baseY = e.baseY != null ? e.baseY : END_PLATFORM_TOP + 1;
+  let hoverY = baseY + Math.sin(t * 1.3) * 0.02;
+  if (mobInWater(e)) {
+    const surf = waterSurfaceForMob(e);
+    if (surf > -Infinity) {
+      hoverY = mobFloatTargetY(surf, ENDERMAN_H);
+      e.baseY = hoverY;
+    }
+  }
+  M.position.y += (hoverY - M.position.y) * Math.min(1, dt * 8);
 
   const dx = pos.x - M.position.x;
   const dz = pos.z - M.position.z;
@@ -10119,34 +10386,26 @@ function updateEnderman(e, dt) {
     while (d < -Math.PI) d += Math.PI * 2;
     M.rotation.y += d * Math.min(1, dt * 6);
   }
+  e.yaw = M.rotation.y;
+  e.yawTarget = M.rotation.y;
 
   const shaking = e.angry > 0;
   const amp = shaking ? 0.45 : 0.06;
   const phase = shaking ? t * 16 : t * 1.8;
   e.armL.rotation.x = Math.sin(phase) * amp;
   e.armR.rotation.x = Math.sin(phase + 0.6) * amp;
-  e.eyeMat.color.setHex(shaking ? 0xff2d95 : 0xb44cff);
+  e.eyeMat.color.setHex(0xb44cff);
+  const hsp = Math.hypot(vel.x, vel.z);
+  let headX = Math.sin(yaw), headZ = Math.cos(yaw);
+  if (hsp > 5) { headX = vel.x / hsp; headZ = vel.z / hsp; }
 
   if (e.angry > 0) {
     e.angry -= dt;
     if (e.angry <= 0) {
-      const spot = endermanPickSpot(Math.floor(pos.x), Math.floor(pos.z), 8, endermanOthers(e));
-      endermanTeleport(e, spot.x, spot.z);
+      const spot = endermanSpotFor(e, Math.floor(pos.x), Math.floor(pos.z), 1, headX, headZ, 4);
+      endermanTeleport(e, spot.x, spot.z, spot.y);
     }
-    return;
-  }
-
-  e.teleportT -= dt;
-  if (e.teleportT <= 0) {
-    e.teleportT = 4 + Math.random() * 6;
-    const spot = endermanPickSpot(Math.floor(pos.x), Math.floor(pos.z), 5, endermanOthers(e));
-    endermanTeleport(e, spot.x, spot.z);
-    return;
-  }
-  if (distToPlayer < 2.5) {
-    e.teleportT = 1.5;
-    const spot = endermanPickSpot(Math.floor(pos.x), Math.floor(pos.z), 6, endermanOthers(e));
-    endermanTeleport(e, spot.x, spot.z);
+    e.pos.copy(M.position);
     return;
   }
 
@@ -10154,16 +10413,16 @@ function updateEnderman(e, dt) {
   const ex = M.position.x, ey = M.position.y + 1.35, ez = M.position.z;
   const vx = ex - pos.x, vy = ey - (pos.y + EYE), vz = ez - pos.z;
   const dist = Math.hypot(vx, vy, vz);
-  if (dist < ENDERMAN_RANGE) {
+  if (dist < ENDERMAN_RANGE && !inboundGrab) {
     const dot = (vx * endermanFwd.x + vy * endermanFwd.y + vz * endermanFwd.z) / dist;
     if (dot > 0.995) {
       e.lookT += dt;
-      if (e.lookT > 0.35) {
+      if (e.lookT > ENDERMAN_STARE_TIME) {
         e.lookT = 0;
         e.angry = ENDERMAN_ANGRY_TIME;
-        const bx = Math.floor(pos.x), bz = Math.floor(pos.z);
-        const spot = endermanPickSpot(bx + Math.sin(yaw) * 4, bz + Math.cos(yaw) * 4, 2, endermanOthers(e));
-        endermanTeleport(e, spot.x, spot.z);
+        const px = Math.floor(pos.x), pz = Math.floor(pos.z);
+        const spot = endermanSpotFor(e, px, pz, 1, headX, headZ, 4);
+        endermanTeleport(e, spot.x, spot.z, spot.y);
         showMsg("An Enderman is angered — stop staring!");
       }
     } else {
@@ -10172,6 +10431,7 @@ function updateEnderman(e, dt) {
   } else {
     e.lookT = 0;
   }
+  e.pos.copy(M.position);
 }
 
 // ---------------------------------------------------------------------------
@@ -10221,7 +10481,7 @@ function serialize() {
   const dv = new DataView(buf);
   let o = 0;
   new Uint8Array(buf, o, 9).set(SAVE_MAGIC); o += 9;
-  dv.setUint8(o++, 12); // format version
+  dv.setUint8(o++, 13); // format version
   dv.setUint8(o++, dim === "end" ? 1 : dim === "nether" ? 2 : 0);
   dv.setInt32(o, seed, true); o += 4;
   dv.setInt32(o, endSeed, true); o += 4;
@@ -10310,7 +10570,7 @@ function deserialize(buf) {
   for (let i = 0; i < 9; i++) if (new Uint8Array(buf, o, 9)[i] !== SAVE_MAGIC[i]) throw new Error("Not a MiniCraft save");
   o += 9;
   const ver = dv.getUint8(o++);
-  if (ver !== 1 && ver !== 2 && ver !== 3 && ver !== 4 && ver !== 5 && ver !== 6 && ver !== 7 && ver !== 8 && ver !== 9 && ver !== 10 && ver !== 11 && ver !== 12) throw new Error("Unsupported save version");
+  if (ver !== 1 && ver !== 2 && ver !== 3 && ver !== 4 && ver !== 5 && ver !== 6 && ver !== 7 && ver !== 8 && ver !== 9 && ver !== 10 && ver !== 11 && ver !== 12 && ver !== 13) throw new Error("Unsupported save version");
   const yWidth = ver >= 8 ? 2 : 1;
   const readY = () => { const y = yWidth === 2 ? dv.getUint16(o, true) : dv.getUint8(o); o += yWidth; return y; };
   placedFlowers.clear();
@@ -10838,8 +11098,8 @@ async function loadSave() {
 }
 
 function resetDims() {
-  dim = "over";
-  world = worlds.over;
+  dim = DEV_START_DIM;
+  world = worlds[DEV_START_DIM];
   clearPortalFills();
   worlds.end.clear();
   worlds.nether.clear();
@@ -10879,14 +11139,41 @@ async function buildWorld() {
     generateWorld();
     flying = false;
     freeCam = false;
-    spawnPlayer();
+    if (DEV_START_DIM === "end") {
+      let oy = 1.01;
+      for (let y = MAX_Y; y > 0; y--) {
+        const b = getBlock(0, y, 0);
+        if (b === CLOUD || b === MOON) continue;
+        if (isSolid(0, y, 0)) { oy = y + 1.01; break; }
+      }
+      overPortalSpawn = { x: 0.5, y: oy, z: 0.5 };
+      dim = "end";
+      world = worlds.end;
+      generateEnd();
+      endCleared = false;
+      buildReturnPortal();
+      spawnDragon();
+      spawnEndermen();
+      setDimensionEnv();
+      pos.set(0.5, END_PLATFORM_TOP + 2.01, 4.5);
+      vel.set(0, 0, 0);
+      yaw = 0;
+      pitch = 0;
+    } else {
+      spawnPlayer();
+    }
     camPos.copy(pos);
     scanWorldPortals();
     rebuildMeshes();
     rebuildHotbar();
     recomputeGlowClusters();
     syncGlowLights();
-    removeVillagers(); spawnVillagers(); spawnPigeons();
+    if (DEV_START_DIM === "end") {
+      overworldMobCache = snapshotOverworldMobs(false);
+      removeVillagers();
+    } else {
+      removeVillagers(); spawnVillagers(); spawnPigeons();
+    }
     select(0);
     updateCamera();
   } finally {
@@ -11080,7 +11367,7 @@ document.addEventListener("mouseup", (e) => {
   if (!grappleActive) return;
   if (grapplePulling) {
     const fdx = grappleTarget.x - pos.x, fdy = grappleTarget.y - pos.y, fdz = grappleTarget.z - pos.z;
-    if (grappleMob && grappleMob.kind === "pigeon" && grappleHooked &&
+    if (grappleMob && (grappleMob.kind === "pigeon" || grappleMob.kind === "dragon") && grappleHooked &&
         (grappleTowInit || Math.hypot(fdx, fdy, fdz) <= PIGEON_FOLLOW_DIST + 0.5)) {
       const sp = Math.hypot(vel.x, vel.y, vel.z) || 1;
       if (sp > GRAPPLE_FLING) { vel.x *= GRAPPLE_FLING / sp; vel.y *= GRAPPLE_FLING / sp; vel.z *= GRAPPLE_FLING / sp; }
@@ -11104,7 +11391,7 @@ document.addEventListener("mouseup", (e) => {
   grappleTowInit = false;
   grappleTowPos.set(0, 0, 0);
   if (grappleMob) {
-    if (grappleMob !== carryMob && grappleMob !== carryGrappleMob) setMobTransparent(grappleMob, 1);
+    if (grappleMob.kind !== "dragon" && grappleMob !== carryMob && grappleMob !== carryGrappleMob) setMobTransparent(grappleMob, 1);
   } else if (grappleHooked) grappleHookPos.copy(grappleTarget);
   else grappleHookPos.copy(grappleStart).lerp(grappleTarget, grappleFly);
   grappleActive = false;
@@ -11475,7 +11762,6 @@ function loop(now) {
     updatePortalVisual();
     checkPortal();
     if (dim === "end") updateDragon(dt);
-    if (dim === "end") updateEndermen(dt);
     if (locked && started && !helpOpen) updateMobs(dt);
     if (toastTimer > 0) { toastTimer -= dt; if (toastTimer <= 0) toastEl.style.opacity = "0"; }
 
@@ -11593,6 +11879,9 @@ if (location.search.includes('test')) {
     get PORTAL(){ return PORTAL; }, get OBSIDIAN(){ return OBSIDIAN; }, get WORLD_RADIUS(){ return WORLD_RADIUS; }, get PLAYER_HW(){ return PLAYER_HW; }, get PLAYER_H(){ return PLAYER_H; }, get MOON(){ return MOON; }, get CLOUD(){ return CLOUD; }, get GRASS(){ return GRASS; }, get STONE(){ return STONE; }, get ENDSTONE(){ return ENDSTONE; }, get NETHERRACK(){ return NETHERRACK; }, get dim(){ return dim; },
     serialize, deserialize, snapshotOverworldMobs, restoreOverworldMobs, get overworldMobCache(){ return overworldMobCache; }, get pendingOverworldMobs(){ return pendingOverworldMobs; },
     goToDimension, removeVillagers,
+    get DEV_START_DIM(){ return DEV_START_DIM; },
+    get dragon(){ return dragon; }, spawnDragon, removeDragon, updateDragon, paintDragon, damageDragon, dragonShotsCap, aimedDragon, get DRAGON_FULL_DMG(){ return DRAGON_FULL_DMG; }, get DRAGON_SPEED(){ return DRAGON_SPEED; },
+    get endermen(){ return endermen; }, get ENDERMEN_COUNT(){ return ENDERMEN_COUNT; }, get ENDERMAN_STARE_TIME(){ return ENDERMAN_STARE_TIME; }, get ENDERMAN_ANGRY_TIME(){ return ENDERMAN_ANGRY_TIME; }, spawnEndermen, removeEndermen, updateEnderman, updateEndermen, endermanTeleport, endermanPickSpot, endermanSpotFor, ensureEndermanAssets, makeEndermanMesh,
   };
 }
 

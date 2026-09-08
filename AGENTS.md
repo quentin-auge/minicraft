@@ -304,9 +304,21 @@ stays bright at distance, `placeable: true` so it
   TNT caught in a blast (or re-broken) detonates immediately. In the End, a
   lit TNT targets the Ender Dragon: the TNT cube flies up at it, sticks onto
   its body and detonates on contact with a big purple particle burst (each
-  stuck blast = 1/8 of its HP, so it takes 8 TNT to slay). A dragon-homing blast deals dragon damage only —
+  stuck blast = 1/8 of its HP, so it takes 8 TNT to slay). Aim at the dragon
+  like at a pigeon (`aimedDragon` + `fireTNTAtPigeon`, same `PIGEON_AIM_DIST` 200
+  reach, `mobT <= blockT + 0.5` occlusion and `tntTargeted` single-live-bomb rule,
+  wired through both `tryFireLockedTNT` and the discrete-break `igniteTNT` path):
+  the per-lock shot cap is live (`dragonShotsCap` = `ceil(hp / DRAGON_FULL_DMG)`,
+  8 at full health, fewer as it is hit) instead of the pigeon's fixed 3.
+  Placed TNT in the End only homes when the break aims at the dragon
+  (`igniteTNT` converts to a free bomb only when `t.pigeon` is set, like the
+  overworld pigeon path); otherwise it stays a normal fused block that explodes
+  in place and never touches the dragon — only TNT aimed at the dragon flies at
+  it and hits it. A dragon-homing blast deals dragon damage only (full 1/8 HP
+  per stuck blast) —
   it never destroys terrain, so no crater is left where the TNT launched; a
-  homing bomb that never sticks detonates in air after `life` (3s fuse + 2s chase).
+  homing bomb that never sticks fizzles in air after `life` (3s fuse + 2s chase)
+  with no dragon damage.
 - **Portals / dimensions**: portal frames are detected in either orientation —
   upright (vertical frames standing on edge) or flat (laid on the ground —
   `winOk`/`vWinOk` for End frames, `nWinOk`/`nFlatWinOk` for Nether obsidian,
@@ -538,9 +550,17 @@ stays bright at distance, `placeable: true` so it
   `DRAGON_PAINT` palette (a new color every `0.08`s) while shaking in place for
   1s (`dragon.dying`/`deathFlash`/`deathIdx`, driven inside `updateDragon` via
   `paintDragonPalette`; `damageDragon` now only starts the countdown instead of
-  killing outright), then death triggers a huge double-layer purple
+   killing outright), then death triggers a huge double-layer purple
    explosion, opens the return portal and removes the dragon. Resources are
-  disposed when leaving the End.
+  disposed when leaving the End. The dragon is a flying mob (`kind: "dragon"`
+  in `mobs[]`, `hw` 1.5 `h` 3, `dim: "end"`, created in `spawnDragon` as
+  `dragon.mob` and removed in `removeDragon`): `updateDragon` syncs `pos`/`vel`
+  every frame so `pickMob`, the displacement grapple and aimed TNT track it
+  live; `updateMobs` skips it (no ground physics) and the separation/push/collide
+  helpers ignore it. It can be grappled and followed exactly like a pigeon
+  (same tow spring behind `vel`, `PIGEON_FOLLOW_DIST` 3.5) but never grabbed —
+  ENTER refuses with a toast. Grapple latch/release skips `setMobTransparent`
+  for it so hit-repainting keeps working on the shared materials.
 - **Villagers**: 24 villagers (8 houses ×3: 2 adults+1 baby, `VILLAGE_RADIUS 28` stone plaza at `villageCenter.y` integrated in `generateWorld` via `computeVillageLayout` before terrain — override `h=villageCenter.y`, `intersectsVillage` skips tunnels/rooms/stairs/trees, `placeVillageHouses` `7×7×5` seeded `hash2` with `|dx|<9&&|dz|<9` veto). Houses enterable (2-wide door facing centre, window opposite, flat roof, palette variance). Villagers use same AABB/gravity as player (`aabbCollidesWorld`/`moveMobAxisX/Z/Y`/`mobPhysicsStep` `GRAVITY 37.44`, moon gravity `*0.5` at `MOON_Y-MOON_R`, `hw 0.27/0.16` `h 1.82/0.98`, `villageBound` clamp, `WALK/2` `2.2` (`WALK 4.4`), flee `WALK×2` `8.8`, float in `WATER/LAVA/MOON_WATER` exactly like player — same buoyancy (`mobInWater`/`waterSurfaceForMob` `SWIM_ACCEL 2.0` `SWIM_BRAKE 1.5` `SWIM_AREA 10` `SWIM_MAX 64` `vel.y*=0.3` on entry, `targetY = surface - h/2` waterline at 1/2 height)). Collisions: world + player (`pushMobsFromPlayer`/`moveAxisX/Z` push via `nearbyMobsFor` grid) + among themselves (`separateMobs`/`mobCollidesOther` via `MOB_GRID 8` `mobGrid` `mobById` `buildMobGrid`, `separateMobs` every frame 3 iterations (expanded personal space `+0.18` hard, `+0.04` for `mobWouldCollide` blocking (strict visual, not `0.14`, to avoid pen deadlock), soft `+0.45` anticipatory), repulsion steering (`+0.50` radius, `0.85*WALK`) and post-physics `separateMobs` pass plus `moveMobAxisX/Z`/`wolfMoveAxisX/Z` mob-blocking (`mobWouldCollide` at `+0.14`) to never merge — instrumented, best-effort never blocked). Materials cached (`villagerMatCache`/`villagerHeadMatCache`, `villagerGeo` reused) and spawn snapped to block centers `floor+0.5` with `usedBlocks` no overlap. Holes and house roofs = walls via `hasMobGround`/`mobBlockedAt` (`>0.02` overlap, `!isSolid y-1` counts as empty, plus house roof `vy+5` and `LOG` fence top excluded as ground and `moveMobAxisY`/`wolfMoveAxisY` skip `LOG` fence / house `vy+1..5` for Y push, so `pig`/`cow` never stay on fence and ground mobs never climb onto roofs alone even after TNT craters, `MOVE_X/Z` auto-step `±1` `hasMobGround`/`!aabb`; mobs already on a roof (`mobOnRoofLevel`/`houseAtRoof`/`isMobOnRoof`, `vy+5.5`) keep solid support (`hasMobGround`/`wolfHasMobGround`/`moveMobAxisY`/`wolfMoveAxisY` skip the house exclusion) and wander it locally (`wanderGoalForRoof` scored like `wanderGoalFor` — least-visited `v*10 - d*0.15` + same-roof mob dispersion over the full 7x7 footprint, so they cross the whole roof instead of pacing one corner, roof edges act as walls, `releaseCarriedMobAt` places roof-local targets, TNT panic runs in place at `WALKx2` with fast retargets)) — `mobProbeFree` and `findVillagePath` (BFS 4-N `0.5`, `pyHint`, `intersectsVillage`/`isInsideAnyHouse` off-target) avoid holes/roofs only. Water on ground (floor same level as water block — `WATER`/`LAVA`/`MOON_WATER` at `gy` floor or `py` foot with solid below) is **not** a wall: `hasMobGround` treats `WATER`/`LAVA`/`MOON_WATER` at `gy` as ground and ignores water at `py`, so `mobBlockedAt`/`mobProbeFree`/`findVillagePath` may go through it; `moveMobAxisX/Z` use `tryMobWaterStep` (`vel.y=JUMP_MIN+2.5` from `fy`/`fy+1` when `mobInWater`) to climb back onto floor at same level like wolves, smooth `GRAVITY` arc without hesitation, for every mob (villagers, babies, cows, etc.); `updateMobs` `mobTick` + `addVisit`/`visitGrid` `VISIT_CELL 8` `wanderGoalFor` least-visited `v*10 - d*0.15+mobPenalty` `30` tries `2` skip `lastTarget<4` (+penalty `8*(1.8-d)` if near other mob/target, `6*(1.4-td)`; pen: `8*(1.9-d)`/`6*(1.6-td)`; wolf: `7*(1.9-d)`/`5*(1.5-td)`), disperses pen center cluster, 12-dir scoring `free*(0.55+0.45*dot)` + BFS `>1.8` or `probe<0.55`, hysteresis `steerX/Z/Cooldown 0.45/0.35` avoids jitter, failsafe `want==0&&dist>0.6` 8 dirs `free>0.5`, anti-stuck `_stuckT>0.55` `bestF>0.35` `1.5-2.5` `canStand` `hasMobGround y/y±1` + pivot `probe<0.15`. TNT: `handleMobExplosion` only panics; explosion crater leaves the mob's standing block intact (`isMobStandingOn`/`intersectsMob` via `nearbyMobsFor` in `processExplosionQueue` and `breakBlock` `isMobStandingOn||intersectsMob` guard the pillar, so nearby blasts keep mobs on their block and a `TNT` under a mob cannot be ignited directly; `TNT` itself bypasses the guard for chain detonation, so a chained blast does destroy the `TNT` under the mob and the mob drops into the crater via normal `mobPhysicsStep` gravity — no sideways fall, no fade/despawn). `generateWorld`/`removeVillagers` clear `visitGrid`/`mobGrid`/`mobById`. **TNT panic**: `panicVillagers(cx,cy,cz)` called in `handleMobExplosion` when `dim=="over"` and the explosion is inside `(VILLAGE_RADIUS+15)²` of `villageCenter` and `abs(cy-villageCenter.y)<=CLOUD_BASE/2`; all villagers `homeId>=0` get `fleeUntil=now+10+stagger` (`stagger=Math.random()*3`, 0–3 s random per villager to stagger the exit), flee toward the CENTER of their house (`house.cx+0.5,house.cz+0.5` via `mode="goOut"`+BFS `target=centre`, `WALK*2`), stay `insideT=10s+stagger` inside the house if already inside, then return to `wander` after expiry (staggered `insideT`/`fleeUntil` make villagers exit in single file over ~3 s instead of all at once, avoiding a bottleneck at the door); while fleeing `mobCollidesOther/separateMobs/pushMobsFromPlayer` ignore parent/child and push at `0.22`; babies do not follow the parent during `fleeUntil`. Nether/End have no village; Overworld mobs persist via `snapshotOverworldMobs`/`restoreOverworldMobs` (in-memory `overworldMobCache` across dimension trips, 19-byte entries in save v10 across reloads, snap-and-settle validation, carried mob travels instead of caching; return restores whenever live < cache so carrying through a portal never wipes the village, grab-mode grapple mobs are cached while release-mode ones ride the hook back to hand via dim-mismatch guards in `updateCarryGrapple`), fresh `spawnVillagers` only for new worlds/old saves/shortfalls; restores resume in place (saved `villageBound`/`penBound` kept so outside mobs are never clamped back, wander target reset to the respawn spot — no village pull) and `updateMobs` runs only while pointer-locked (`locked && started && !helpOpen`), so mobs freeze in the pause menu and while tabbed away; `removeVillagers`/`spawnVillagers` on `buildWorld`/`resetDims`, `mobStats` throttled.
 - **Pig/cow pen**: village extension (`VILLAGE_PEN_W 14×VILLAGE_PEN_D 12`, `villagePen:{minX,maxX,minZ,maxZ,cx,cz,vy,gateSide}` placed **before** houses in `computeVillageLayout` (1200 tries `hash2` `seed+7250/7251`, `+R` inside, houses avoid `+2`), `placeVillagePen` spreads `GRASS` inside and `LOG` **1 block high** closed fence, plus a 2×2 1-deep corner wading pool 1 block above the ground (`VILLAGE_PEN_POOL_W 2×VILLAGE_PEN_POOL_D 2×VILLAGE_PEN_POOL_DEPTH 1`, `villagePen.pool` flush in the pen corner at `minX+1/minZ+1`, `placeVillagePenPool` sets a STONE floor at `vy` with WATER at `vy+1` plus a STONE L rim on the two inner sides at `vy+1` — the pen's own LOG fence frames the two corner sides, called in `generateWorld` right after `placeVillagePen`; no mob ever spawns inside it — `isInsidePenPool` skips in villager/pig/cow/wolf spawns as well as in the village-pool wander/spawn/path avoidance, and `penPoolExitTarget` mirrors the water-exit steering for pen targets) — physics blocks via `aabbCollidesWorld`/`hasMobGround` (excludes `LOG` fence top as ground) plus explicit `pigOverlapsFence` (`isPigCow`/`pigOverlapsFence`) in `separateMobs`/`pushMobsFromPlayer`/`moveMobAxisX/Z` that forbids any `pig`/`cow` move onto a solid `LOG` fence cell (corner jam via collisions can no longer push onto rim; wolves still allowed, `AIR` gap lets them through) and `mobPhysicsStep`/`updateMobs` teleport to pen center (`pen.cx+0.5, pen.cz+0.5, pen.vy+1`) if they ever end up overlapping a solid fence (so `pig`/`cow` never stay on rim). `PIG_COUNT 4` + `COW_COUNT 4` (`pigMat 0xf2aeb2` pink, `cowMat` white spotted, `makePigMesh`/`makeCowMesh` 4 legs `legBL/BR/FL/FR`, `hw0.32` `h0.92/1.30`, `isInsidePen`/`randomPenPoint`/`wanderGoalForPen` 30 tries `visit*10 - d*0.15`). Same physics as villagers incl. same float in water as player (`mobInWater`/`waterSurfaceForMob` `SWIM_ACCEL 2.0` `SWIM_BRAKE 1.5` `SWIM_AREA 10` `SWIM_MAX 64` `targetY = surface - h/2`) (`villagerHW/H` dispatched by `kind`, `mobBlockedAt`/`mobProbeFree` shared, water on ground at same level (`WATER`/`LAVA`/`MOON_WATER` at `gy` floor or `py` foot) counts as ground (like wolves) — not avoided, probe/path may go through; `tryMobWaterStep` lets them climb back onto floor at same level smoothly (`JUMP_MIN+2.5` from `fy`/`fy+1` when `mobInWater`), without hesitation, for every kind; only the fence blocks). Grab `ENTER` via `pickMob`/`CARRY_GRAPPLE`, `handleMobExplosion` only panics then `fleeUntil` (`panicPenMobs` same radius as villagers `(VILLAGE_RADIUS+15)²` `|dy|<CLOUD_BASE/2`, `stagger 0-3s`, if gap in fence `findPenGaps`/`nearestPenGap` → `penGapInside` looks for the entrance, otherwise `randomAroundPenPoint` runs around at `WALK*2` `8.8`). Outside the village radius a TNT within 20 blocks horizontally (`dx²+dz²≤400`, `|dy|<12`) triggers 5s (`+0-1s` stagger) panic for nearby pigs/cows that flee away from the blast via `fleePointAway` (7-14 blocks opposite the explosion, `mobProbeFree`/`hasMobGround` validated, `WALK*2`, no pen rally, `_outsideFlee`/`_fleeSrcX/Z` cleared after). `updateMobs` branch `pig/cow`: `fleeUntil` with `_outsideFlee` → `fleePointAway` 7-14 blocks opposite TNT for 5s (`WALK*2`, outside village no pen); otherwise `fleeUntil` outside pen → `nearestPenGap`/`penGapInside`/`randomAroundPenPoint` (look for entrance, otherwise loop `2s` around), inside → `wanderGoalForPen` milling, otherwise `insidePen ? wanderGoalForPen : wanderGoalFor` (`hasMobGround`/`aabb`/`findPenGaps`/`randomAroundPenPoint`), 4-leg animation `sin*0.65` (`legBL/BR/FL/FR`). `spawnVillagers` spawns pigs/cows after villagers (`usedBlocks` avoids overlap, `gid` continuous), `removeVillagers` removes them, regenerated on every `buildWorld`; center-cluster fixed via `wanderGoalForPen` penalties (`8*(1.9-d)`/`6*(1.6-td)`) + repulsion and anti-stuck `wanderGoalForPen` branch and `separateMobs` 3×/frame, pen avgDist `~3–4` vs `~1.9` before, `maxOverlap 0` instrumented.
 - **Village pool**: 8×6 swimming pool 2 deep at floor level (`VILLAGE_POOL_W 8×VILLAGE_POOL_D 6`, `VILLAGE_POOL_DEPTH 2`, `villagePool:{minX,maxX,minZ,maxZ,cx,cz,vy}` placed after the pen in `computeVillageLayout` (1200 tries `hash2` `seed+7260/7261`, `+R` inside, avoids pen `+2`, houses avoid it `+2` so no intersection with houses or pen), `placeVillagePool` sets OBSIDIAN floor at `vy-2` with WATER at `vy-1..vy` (surface flush with the stone plaza) plus a 1-block STONE frame ring around the water at `vy-1..vy` (stone walls `+` rim, so every edge water cell touches stone sideways and every bottom-layer cell sits on obsidian) and clears `vy+1..vy+2` to AIR, called in `generateWorld` after houses/pen; `isInsidePool`/`poolExitTarget` exposed in `_test`). All mobs float uniformly at 1/2 height (`MOB_FLOAT_FRAC` 0.5, `mobFloatTargetY`) and share one water-exit jump (`mobWaterExitJump`: live `mobInWater`, `fy`/`fy+1`, `JUMP_MIN+2.5`, used by both `tryMobWaterStep` and `tryWolfStep` for villagers/babies/pigs/cows/wolves without exception, so the ground-level water exit is preserved at the deeper float). Pool wander targets are avoided (`randomVillagePoint`/`wanderGoalFor`/`wanderGoalForWolf`/`fleePointAway`/`randomAroundPenPoint` skip `isInsidePool`, `findVillagePath`/`wolfFindPath` route around it, spawns avoid it) and any mob in pool water steers directly to the nearest outside point (`poolExitTarget`, bypassing BFS/avoidance, no extra scans) so exits are quick, smooth and lag-free via the normal jump arc.
@@ -549,28 +569,68 @@ stays bright at distance, `placeable: true` so it
   current target (`grappleMob`), the displacement grapple detaches without fling
   (`detachDisplacementGrapple`) the moment the grab hook catches it, so normal
   physics resumes and the player falls with gravity while the mob rides in;
-  grabbing any other mob leaves the displacement tow untouched. `handleCarryEnterUp`: releasing `Enter` before the hook touches its target aborts and retracts the hook at `GRAPPLE_RETRACT =275` — for grab the hook retracts empty and the mob stays where it is (pulling for grab now continues even if released, mob still rides to the player at `MOB_GRAPPLE_RETRACT`), for release the mob (frozen) rides the hook back to the player (`carryGrappleHookPos`+`mob.pos` both move at `GRAPPLE_RETRACT` to the eye, then `carryMob` is restored). Holding `Enter` through the hit lets the mob return directly without re-pressing. Release when carrying now fires a 2-phase grapple (`startCarryReleaseGrapple` creates `Active` hook flying to the block at `MOB_GRAPPLE_THROW*tb` with the mob riding the tip, then `Pulling` mob to the block at `MOB_GRAPPLE_RETRACT`, `releaseCarriedMobAt` and retract at `GRAPPLE_RETRACT`; flat `while(isSolid)h++` `h<=1`→center else face). Empty retracts (with or without mob) always use `GRAPPLE_RETRACT` with no timeout. After any grapple you must release `Enter` and press again (`e.repeat` ignored). `pickMob` ray-AABB unlimited range (used with `blockDist` max for `fireGrapple`). While held, `updateCarry` moves mob to `eye+fwd*CARRY_DIST(1.2)-CARRY_DOWN(0.40)-h/2` with `playerArms` visible.
-- **Endermen**: ambient teleporters that spawn on the End platform alongside
+  grabbing any other mob leaves the displacement tow untouched. `handleCarryEnterUp`: releasing `Enter` before the hook touches its target aborts and retracts the hook at `GRAPPLE_RETRACT =275` — for grab the hook retracts empty and the mob stays where it is (pulling for grab now continues even if released, mob still rides to the player at `MOB_GRAPPLE_RETRACT`), for release the mob (frozen) rides the hook back to the player (`carryGrappleHookPos`+`mob.pos` both move at `GRAPPLE_RETRACT` to the eye, then `carryMob` is restored). Holding `Enter` through the hit lets the mob return directly without re-pressing. Release when carrying now fires a 2-phase grapple (`startCarryReleaseGrapple` creates `Active` hook flying to the block at `MOB_GRAPPLE_THROW*tb` with the mob riding the tip, then `Pulling` mob to the block at `MOB_GRAPPLE_RETRACT`,   `releaseCarriedMobAt` and retract at `GRAPPLE_RETRACT`; flat `while(isSolid)h++`
+  `h<=1`→center else face; the mob adopts the current dimension when the release
+  flight starts, so transported mobs (e.g. an End enderman) can be released in
+  any dimension instead of tripping the grapple dim-mismatch guard). Empty retracts (with or without mob) always use `GRAPPLE_RETRACT` with no timeout. After any grapple you must release `Enter` and press again (`e.repeat` ignored). `pickMob` ray-AABB unlimited range (used with `blockDist` max for `fireGrapple`). While held, `updateCarry` moves mob to `eye+fwd*CARRY_DIST(1.2)-CARRY_DOWN(0.40)-h/2` with `playerArms` visible.
+- **Endermen**: teleporting mobs (`kind: "enderman"` in `mobs[]`, `hw` 0.31
+  `h` 2.7, tracked in `endermen[]`) that spawn on the End platform alongside
   the dragon — `ENDERMEN_COUNT` (10) of them, all sharing one unit box
   geometry and body material (`spawnEndermen`/`removeEndermen`, one glowing
   purple `MeshBasicMaterial` eye material each). Each is a tall (2.7-block)
   slender black humanoid: two long legs, a torso, a head with two glowing
   purple eyes and two long arms that hang
   down past the legs (`makeEndermanMesh`). They stand still facing the player,
-  gently swaying their arms and bobbing, and teleport constantly:
-  - They wander — every `teleportT` (4–10 s) each blinks away to a random clear
-    spot on the platform (`endermanPickSpot`, keeps inside radius 20, avoids
-    the return portal region, blocks and other endermen).
-  - Back off by teleporting if the player gets within 2.5 blocks (walks into
-    one).
-  - Classic "don't stare" behaviour: holding the crosshair on one for >0.35 s
-    (look cone via `camera.getWorldDirection`) angers it — it teleports behind
-    the player (a `sin/cos(yaw)` offset) and shakes its arms with
-    hot-pink eyes for `ENDERMAN_ANGRY_TIME` (4 s), then teleports away and
-   calms. Teleports are telegraphed by a small purple particle burst at both
+  gently swaying their arms and bobbing, and teleport only when stared at:
+  - Classic "don't stare" behaviour: holding the crosshair on one for more than
+    `ENDERMAN_STARE_TIME` (0.3 s, look cone via `camera.getWorldDirection`)
+    angers it — in the End it teleports behind
+    the player (a `sin/cos(yaw)` offset capped to 1–4 blocks on the platform),
+    outside the End it blinks to a random spot 5 blocks in front of the player
+    (90° cone around the facing/motion heading, vertical free so it can land up
+    or down on local terrain, `endermanPickSpotOutside`), falling back behind
+    you only when the front is blocked by an obstacle or the level edge. The
+    escape
+    heading follows your motion: fast movement (horizontal speed > 5, e.g.
+    flying) aims it ahead of you so you can't overshoot it, otherwise behind
+    you — and shakes
+    its arms (eyes stay purple)
+    for `ENDERMAN_ANGRY_TIME` (0.5 s), then teleports away and
+   calms. No wander blinks, no proximity blinks: without a stare they never
+   move. Grabbed/hook-held endermen are excluded from the teleport separation
+   lists (`endermanOthers` skips `carryMob`/`carryGrappleMob`), so the rest of
+   the group picks destinations exactly as rigorously while you carry one as
+   without. Teleports are telegraphed by a small purple particle burst at both
    the source and destination positions (`spawnEndermanBurst`, reusing the
-   `bursts` effect system). Deleted with the dragon when leaving the End /
-   resetting dims; spawned fresh every End entry.
+   `bursts` effect system). End-dimension ones are deleted with the dragon when
+   leaving the End / resetting dims; spawned fresh every End entry
+   (`spawnEndermen` tops up only missing End ones so transported ones survive —
+   carried/hook-held ones don't count, so re-entering the End while carrying
+   one still spawns a full group of 10).
+  They run through `updateMobs` (no ground physics, excluded from
+  separation/push/collide) so they freeze in the pause menu like other mobs.
+  They float in water/lava/moon-water like every other mob (`mobInWater` /
+  `waterSurfaceForMob`, `MOB_FLOAT_FRAC` half-height via `mobFloatTargetY` —
+  `waterSurfaceForMob` scans down from the body top so a moon lake overhead
+  never reads as the local surface).
+  Outside the End they blink to a spot ~5 blocks away (`endermanPickSpotOutside`,
+  a random angle in the 90° front cone at 5 blocks, then the mirrored back cone
+  when the front is blocked (obstacle or level edge), then the old 8-direction
+  dist-3 safety — so you can follow them; up or
+  down local terrain, clamped inside the level and never rocketing skyward
+  (`gy <= pos.y + 6`, so a `groundYForMob` moon-top fallback never fires),
+  `endermanFirmGround` requiring solid footing (never water/lava), staying put
+  when no spot is free).
+  Grab race: a carry-grab hook that connects before 0.3 s of continuous stare
+  freezes the mob (`isMobFrozenByGrapple`, `lookT` reset, no teleport); past
+  0.3 s it teleports away first. While your grab hook is inbound on an enderman
+  (flying or pulling) it holds still for the catch — no stare blinks until
+  the grab resolves. A displacement grapple latches normally but
+  never freezes, so a hooked enderman still teleports (the hook follows the
+  new `pos`). Carried endermen can be released in the Overworld or the Nether,
+  where they keep End behaviour on local ground (`endermanSpotFor` /
+  `endermanPickSpotOutside`, same 0.3 s stare + "stop staring" toast), and they
+  persist in saves as mob kind code 5 (save v13).
 - **Pigeons**: `PIGEON_COUNT` 50 flying mobs, Overworld only, cruising at
   `PIGEON_SPEED` (`WALK*2` = 8.8) inside the day-sky band Y 50–235
   (`PIGEON_MIN_Y`/`PIGEON_MAX_Y = SKY_SPACE_START`, so the ceiling is exactly
@@ -645,7 +705,7 @@ stays bright at distance, `placeable: true` so it
   retries via `perchRetry`), and every leg re-pick goes through `pigeonNextLeg`
   (perch roll `PIGEON_PERCH_CHANCE` 0.65, min 1.2 s between full decisions via `_decideT`),
   so flight legs stay short and duty cycle holds across worlds.
-- **Save/load**: binary format (`SAVE_MAGIC`, version 12) capturing world
+- **Save/load**: binary format (`SAVE_MAGIC`, version 13) capturing world
   blocks (over/end/nether), dim, seeds (over/end/nether), player pos/yaw/pitch,
   fly state (the free-cam `freeCam` flag — restored on Load Save only when it
   was enabled upon save, so you resume flying where you saved;
@@ -662,6 +722,7 @@ stays bright at distance, `placeable: true` so it
   and read past their torch entries. Saves older than v10 respawn mobs fresh (v10 entries
   default bounds by kind on restore); pre-v12 saves respawn their 50 pigeons fresh
   (`spawnPigeons` top-up on restore, kind code 4 `pigeon` added in v12);
+  pre-v13 saves have no endermen stored (kind code 5 `enderman` added in v13);
   saves older than v9 re-derive the return
   frame via nearest-frame lookup on the way back; saves older than v7 have their glowstone
   colours backfilled (clustered) on load, and v6 saves' stored seven-colour
@@ -711,4 +772,15 @@ stays bright at distance, `placeable: true` so it
 - Always commit changes after completing a task; amend the last commit when
   fixing something just made.
 - Always keep AGENTS.md up to date with the project structure and features.
-- Instrumentation (puppeteer): Verified no merge (maxOverlap 0, minDist `>0.6`, pen avgDist `3–4`, stuckFrames 0) over 30s×3 worlds, plus pen/minD `>1.2` and panic `0`. Pigeons verified over 2 fresh worlds: 50 birds in band 50–235 at `WALK*2`, straight+arc modes both used, min 3D separation `>6`, zero in-solid, stone wall avoidance 0 hits; aimed TNT locks, kills in ≤2 steps with no terrain damage and respawns >130 blocks out of view back in band;   ENTER grab catches in ~10 steps; displacement grapple latches in ~21-26 frames and reels at exactly `GRAPPLE_SPEED` (26, min=max, same as block pull) in all 5 pigeon directions with arrival, 0 blocked frames and 0 distance increases,   then follows ~3 blocks behind (mean 2.4-3.0, max <3.7); save v12 round-trips 50 pigeon entries; no `PAGEERROR`. Pigeon follow-ups verified: band ceiling 235 (`PIGEON_MAX_Y = SKY_SPACE_START`); per-instance transparency (carried bird 0.35, other + towed birds stay 1, with and without parallel carry); TNT edge cases (arc-mode lock+kill, no lock when bird behind TNT, double-ignite single blast); house coop (stays sealed 30 s at interior height, exits through a broken wall/roof via axis-tracking in ≤90 steps, door alone never releases); smooth band return (ground climb ≤0.5/step, moon descent, sealed-box milling, no teleports); direct TNT fire (sky aim locks, kill in ~35 steps with respawn + clean `tntLit`, ground aim places normally with no fire); no `PAGEERROR`. Only when the user asks to instrument. Launches `python3 server.py` on 8383, opens `http://127.0.0.1:8383/?test` headless (`headless:'shell'` + `--no-sandbox --disable-gpu`, `NODE_PATH=/Users/q.auge/projects/tech/minicraft/node_modules`), then drives `window._test` (`buildWorld`, `mobs`, `villageHouses`, `villageCenter`, `handleMobExplosion`, etc.) to assert behavior (positions/targets/modes, `fleeUntil` spread, no `PAGEERROR`).
+- Instrumentation (puppeteer): Verified no merge (maxOverlap 0, minDist `>0.6`, pen avgDist `3–4`, stuckFrames 0) over 30s×3 worlds, plus pen/minD `>1.2` and panic `0`. Pigeons verified over 2 fresh worlds: 50 birds in band 50–235 at `WALK*2`, straight+arc modes both used, min 3D separation `>6`, zero in-solid, stone wall avoidance 0 hits; aimed TNT locks, kills in ≤2 steps with no terrain damage and respawns >130 blocks out of view back in band;   ENTER grab catches in ~10 steps; displacement grapple latches in ~21-26 frames and reels at exactly `GRAPPLE_SPEED` (26, min=max, same as block pull) in all 5 pigeon directions with arrival, 0 blocked frames and 0 distance increases,   then follows ~3 blocks behind (mean 2.4-3.0, max <3.7); save v12 round-trips 50 pigeon entries; no `PAGEERROR`. Pigeon follow-ups verified: band ceiling 235 (`PIGEON_MAX_Y = SKY_SPACE_START`); per-instance transparency (carried bird 0.35, other + towed birds stay 1, with and without parallel carry); TNT edge cases (arc-mode lock+kill, no lock when bird behind TNT, double-ignite single blast); house coop (stays sealed 30 s at interior height, exits through a broken wall/roof via axis-tracking in ≤90 steps, door alone never releases); smooth band return (ground climb ≤0.5/step, moon descent, sealed-box milling, no teleports); direct TNT fire (sky aim locks, kill in ~35 steps with respawn + clean `tntLit`, ground aim places normally with no fire); no `PAGEERROR`. Only when the user asks to instrument. Launches `python3 server.py` on 8383, opens `http://127.0.0.1:8383/?test` headless   (`headless:'shell'` + `--no-sandbox --disable-gpu`, `NODE_PATH=/Users/q.auge/projects/tech/minicraft/node_modules`), then drives `window._test` (`buildWorld`, `mobs`, `villageHouses`, `villageCenter`, `handleMobExplosion`, etc.) to assert behavior (positions/targets/modes, `fleeUntil` spread, no `PAGEERROR`).
+- Dev start dimension: `DEV_START_DIM` next to `let dim` selects where New World
+  spawns the player (`resetDims`/`buildWorld` honour it; End start generates the
+  End, spawns dragon + endermen and places the player on the platform, seeds a
+  valid `overPortalSpawn` on real overworld ground so the trip back lands
+  outside the terrain, and spawns no overworld mobs so the End holds only
+  dragon + endermen). It is
+  currently `"end"` for testing — set it back to `"over"` to restore the
+  original behaviour. `generateWorld` pins `dim = "over"` while it runs:
+  `setBlock` records column tops per `dim`, so generating with any other dim
+  leaves `colTops.over` at zero and chunk meshing skips everything above y=0
+  (invisible houses/trees/clouds on return).
