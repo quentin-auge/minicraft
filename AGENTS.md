@@ -539,10 +539,10 @@ stays bright at distance, `placeable: true` so it
   eyes (unlit), translucent purple bat-wing membranes (mirrored), and
   segmented forked tail boxes; shared geometries/materials. It spawns black and
   re-paints itself with every TNT hit (`paintDragon`, cycling the `DRAGON_PAINT`
-  palette of 8 neon shades — hot pink, green, gold, blue, orange, crimson,
+  palette of 8 dark shades — dark pink, green, gold, blue, orange, crimson,
   violet, cyan — across the stored body/belly/plate/bone/membrane materials).
   All dragon materials carry a faint self-illumination (`emissive` = own color,
-  0.55 body / 0.6 membrane, synced in `paintDragonPalette`) so the black base
+  0.45 body / 0.5 membrane, synced in `paintDragonPalette`) so the black base
   stays readable against the black End sky without changing its colors.
   It breathes a
   long-reaching spray of fading purple cube fire from its mouth (about 3x the

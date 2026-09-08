@@ -9606,7 +9606,7 @@ const dragon = {
   dying: 0, deathFlash: 0, deathIdx: 0,
 };
 const dragonMat = (color, opts = {}) =>
-  new THREE.MeshStandardMaterial(Object.assign({ color, emissive: color, emissiveIntensity: 0.55, roughness: 0.5, metalness: 0.08 }, opts));
+  new THREE.MeshStandardMaterial(Object.assign({ color, emissive: color, emissiveIntensity: 0.45, roughness: 0.5, metalness: 0.08 }, opts));
 let dragonUnitGeo = null;
 let dragonMemGeo = null;
 const dragonVec = new THREE.Vector3();
@@ -9620,14 +9620,14 @@ const DRAGON_FLEE_DIST = 16;
 const DRAGON_FLEE_SPEED = 11;
 const DRAGON_PAINT = [
   [0x0d0d12, 0x16161e, 0x20202a, 0x2a2a36, 0x100f1a], // black (base)
-  [0xff2d95, 0xff5aa8, 0xff77b5, 0xffa1cc, 0xff6eb8], // hot pink
-  [0x3ddc5a, 0x55e86f, 0x76f68c, 0x9bffad, 0x63e87c], // neon green
-  [0xffd12e, 0xffdb5a, 0xffe475, 0xffef9e, 0xffdb63], // gold
-  [0x3da6ff, 0x5bb7ff, 0x7cc8ff, 0xa4dbff, 0x63baff], // sky blue
-  [0xff9d2e, 0xffb057, 0xffc175, 0xffd49e, 0xffb563], // orange
-  [0xff3d5a, 0xff5a74, 0xff7c91, 0xffa4b2, 0xff637f], // crimson
-  [0xa63dff, 0xba5bff, 0xcd7cff, 0xe0a4ff, 0xc063ff], // violet
-  [0x2ee6d8, 0x57ece2, 0x80f2e8, 0xb0f8f0, 0x63ece0], // cyan
+  [0x8c1851, 0x8c315c, 0x8c4163, 0x8c5870, 0x8c3c65], // dark pink
+  [0x217931, 0x2e7f3d, 0x40874d, 0x558c5f, 0x367f44], // dark green
+  [0x8c7219, 0x8c7831, 0x8c7d40, 0x8c8356, 0x8c7836], // dark gold
+  [0x215b8c, 0x32648c, 0x446e8c, 0x5a788c, 0x36668c], // dark blue
+  [0x8c5619, 0x8c602f, 0x8c6a40, 0x8c7456, 0x8c6336], // dark orange
+  [0x8c2131, 0x8c313f, 0x8c444f, 0x8c5a61, 0x8c3645], // dark crimson
+  [0x5b218c, 0x66328c, 0x70448c, 0x7b5a8c, 0x69368c], // dark violet
+  [0x197e76, 0x2f817c, 0x46857f, 0x608884, 0x36817b], // dark cyan
 ];
 
 function dragonBox(parent, mat, sx, sy, sz, px, py, pz, rx = 0, ry = 0, rz = 0) {
@@ -9667,7 +9667,7 @@ function spawnDragon() {
   const plateMat = dragonMat(0x20202a);
   const boneMat = dragonMat(0x2a2a36);
   const memMat = new THREE.MeshStandardMaterial({
-    color: 0x100f1a, emissive: 0x100f1a, emissiveIntensity: 0.6, roughness: 0.9, metalness: 0.02,
+    color: 0x100f1a, emissive: 0x100f1a, emissiveIntensity: 0.5, roughness: 0.9, metalness: 0.02,
     transparent: true, opacity: 0.92, side: THREE.DoubleSide, depthWrite: false,
   });
   const eyeMat = new THREE.MeshBasicMaterial({ color: 0xc86bff });
