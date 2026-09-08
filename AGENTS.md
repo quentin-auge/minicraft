@@ -541,6 +541,9 @@ stays bright at distance, `placeable: true` so it
   re-paints itself with every TNT hit (`paintDragon`, cycling the `DRAGON_PAINT`
   palette of 8 neon shades — hot pink, green, gold, blue, orange, crimson,
   violet, cyan — across the stored body/belly/plate/bone/membrane materials).
+  All dragon materials carry a faint self-illumination (`emissive` = own color,
+  0.35 body / 0.4 membrane, synced in `paintDragonPalette`) so the black base
+  stays readable against the black End sky without changing its colors.
   It breathes a
   long-reaching spray of fading purple cube fire from its mouth (about 3x the
   platform reach) — mostly while diving at the player (~60% of dives), with

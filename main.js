@@ -9606,7 +9606,7 @@ const dragon = {
   dying: 0, deathFlash: 0, deathIdx: 0,
 };
 const dragonMat = (color, opts = {}) =>
-  new THREE.MeshStandardMaterial(Object.assign({ color, roughness: 0.5, metalness: 0.08 }, opts));
+  new THREE.MeshStandardMaterial(Object.assign({ color, emissive: color, emissiveIntensity: 0.35, roughness: 0.5, metalness: 0.08 }, opts));
 let dragonUnitGeo = null;
 let dragonMemGeo = null;
 const dragonVec = new THREE.Vector3();
@@ -9667,7 +9667,7 @@ function spawnDragon() {
   const plateMat = dragonMat(0x20202a);
   const boneMat = dragonMat(0x2a2a36);
   const memMat = new THREE.MeshStandardMaterial({
-    color: 0x100f1a, roughness: 0.9, metalness: 0.02,
+    color: 0x100f1a, emissive: 0x100f1a, emissiveIntensity: 0.4, roughness: 0.9, metalness: 0.02,
     transparent: true, opacity: 0.92, side: THREE.DoubleSide, depthWrite: false,
   });
   const eyeMat = new THREE.MeshBasicMaterial({ color: 0xc86bff });
@@ -9807,11 +9807,11 @@ function spawnDragon() {
 
 function paintDragonPalette(c) {
   if (!dragon.mesh || !dragon.mats) return;
-  dragon.mats.bodyMat.color.setHex(c[0]);
-  dragon.mats.bellyMat.color.setHex(c[1]);
-  dragon.mats.plateMat.color.setHex(c[2]);
-  dragon.mats.boneMat.color.setHex(c[3]);
-  dragon.mats.memMat.color.setHex(c[4]);
+  dragon.mats.bodyMat.color.setHex(c[0]); dragon.mats.bodyMat.emissive.setHex(c[0]);
+  dragon.mats.bellyMat.color.setHex(c[1]); dragon.mats.bellyMat.emissive.setHex(c[1]);
+  dragon.mats.plateMat.color.setHex(c[2]); dragon.mats.plateMat.emissive.setHex(c[2]);
+  dragon.mats.boneMat.color.setHex(c[3]); dragon.mats.boneMat.emissive.setHex(c[3]);
+  dragon.mats.memMat.color.setHex(c[4]); dragon.mats.memMat.emissive.setHex(c[4]);
 }
 
 function paintDragon() {
