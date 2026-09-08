@@ -9606,7 +9606,7 @@ const dragon = {
   dying: 0, deathFlash: 0, deathIdx: 0,
 };
 const dragonMat = (color, opts = {}) =>
-  new THREE.MeshStandardMaterial(Object.assign({ color, emissive: color, emissiveIntensity: 0.35, roughness: 0.5, metalness: 0.08 }, opts));
+  new THREE.MeshStandardMaterial(Object.assign({ color, emissive: color, emissiveIntensity: 0.55, roughness: 0.5, metalness: 0.08 }, opts));
 let dragonUnitGeo = null;
 let dragonMemGeo = null;
 const dragonVec = new THREE.Vector3();
@@ -9667,7 +9667,7 @@ function spawnDragon() {
   const plateMat = dragonMat(0x20202a);
   const boneMat = dragonMat(0x2a2a36);
   const memMat = new THREE.MeshStandardMaterial({
-    color: 0x100f1a, emissive: 0x100f1a, emissiveIntensity: 0.4, roughness: 0.9, metalness: 0.02,
+    color: 0x100f1a, emissive: 0x100f1a, emissiveIntensity: 0.6, roughness: 0.9, metalness: 0.02,
     transparent: true, opacity: 0.92, side: THREE.DoubleSide, depthWrite: false,
   });
   const eyeMat = new THREE.MeshBasicMaterial({ color: 0xc86bff });
