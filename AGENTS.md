@@ -584,26 +584,53 @@ stays bright at distance, `placeable: true` so it
   slender black humanoid: two long legs, a torso, a head with two glowing
   purple eyes and two long arms that hang
   down past the legs (`makeEndermanMesh`). They stand still facing the player,
-  gently swaying their arms and bobbing, and teleport only when stared at:
-  - Classic "don't stare" behaviour: holding the crosshair on one for more than
-    `ENDERMAN_STARE_TIME` (0.3 s, look cone via `camera.getWorldDirection`)
-    angers it — in the End it teleports behind
-    the player (a `sin/cos(yaw)` offset capped to 1–4 blocks on the platform),
-    outside the End it blinks to a random spot 5 blocks in front of the player
-    (90° cone around the facing/motion heading, vertical free so it can land up
-    or down on local terrain, `endermanPickSpotOutside`), falling back behind
-    you only when the front is blocked by an obstacle or the level edge. The
-    escape
-    heading follows your motion: fast movement (horizontal speed > 5, e.g.
-    flying) aims it ahead of you so you can't overshoot it, otherwise behind
-    you — and shakes
-    its arms (eyes stay purple)
-    for `ENDERMAN_ANGRY_TIME` (0.5 s), then teleports away and
-   calms. No wander blinks, no proximity blinks: without a stare they never
-   move. Grabbed/hook-held endermen are excluded from the teleport separation
-   lists (`endermanOthers` skips `carryMob`/`carryGrappleMob`), so the rest of
-   the group picks destinations exactly as rigorously while you carry one as
-   without. Teleports are telegraphed by a small purple particle burst at both
+  gently swaying their arms and bobbing, and teleport only when stared at.
+  Their eyes turn red as soon as the crosshair touches them (`lookT > 0`) and
+  stay red for 0.5 s after the blink (`eyeRedT = ENDERMAN_RED_TIME`, set at
+  teleport, ticked in `updateEnderman`), purple otherwise; grabbed endermen
+  glow red too (pinned `eyeRedT` while held) and stay red 0.5 s after release —
+  the color goes through `setEndermanEyeColor`, which paints the live eye-mesh
+  materials (not the stale `eyeMat`: `setMobTransparent` clones materials on
+  first carry) so the cycle survives rinse & repeat — the 0.5 s arm-shake
+  (`angry > 0`) is separate:
+  - Classic "don't stare" behaviour: holding the crosshair on the enderman's
+    body for more than `ENDERMAN_STARE_TIME` (0.3 s, exact ray-vs-body hit via
+    `endermanAimed` — unexpanded AABB plus a block-occlusion march, so aiming
+    at the block at its feet or through a wall never counts; no max distance,
+    so anything you can aim at — including grab-grapple range — angers it)
+    angers it — it blinks once 5–10 blocks away in one of the 8 compass
+    directions (`endermanSpotFor` / `endermanPickSpotOutside` outside the End,
+    `endermanPickSpotEnd` in the End), then stays there until stared at again —
+    a single blink per stare, no second teleport when the 0.5 s arm-shake
+    (`ENDERMAN_ANGRY_TIME`) expires. Every destination is a real standable
+    surface, solid or liquid (`endermanSurfaceY`: `groundYForMob` validated
+    with a full-height AABB; water/lava/moon-water count as ground and liquid
+    landings snap straight to the half-float level in `endermanTeleport`, no
+    drop-in from above). The primary hop is strictly enforced: 5–10 blocks
+    horizontally, at most 5 blocks vertically either way, always at least 10
+    blocks from the player, and always at the periphery of the field of vision
+    (`endermanPeripheral`: max(yaw, pitch) fraction of the half-FOV between
+    2/3 and 1 — screen edges, never in the crosshair line), with a
+    ground-following path check outside the End (`endermanWalkable`: every
+    step moves at most 5 vertically with headroom, so hills pass but walls
+    block) and a straight-line clearance check in the End avoiding the return
+    portal.     If no primary hop qualifies, the relaxed search (`endermanRelaxedSpot`)
+    anchors on the closest available surface and pools every other valid
+    surface up to 10 blocks farther in 3D (`best + 10`, any direction
+    including up/down, rings 5–48 around its own position, no view or
+    player-distance constraint, vertical uncapped, 3-block separation still
+    enforced), then picks uniformly at random from the pool — so it usually
+    lands near but can land up to 10 blocks farther than the nearest surface,
+    possibly more than 5 blocks vertically, but never less than 5 blocks
+    horizontally; only an unreachable own-column backstop stays put, so a
+    stare always moves it. Separation (`endermanSeparated`, 3
+    blocks) is enforced on every path, so two endermen never land on each other.
+    No wander blinks, no
+    proximity blinks: without a stare they never move. Grabbed/hook-held
+    endermen are excluded from the teleport separation
+    lists (`endermanOthers` skips `carryMob`/`carryGrappleMob`), so the rest of
+    the group picks destinations exactly as rigorously while you carry one as
+    without. Teleports are telegraphed by a small purple particle burst at both
    the source and destination positions (`spawnEndermanBurst`, reusing the
    `bursts` effect system). End-dimension ones are deleted with the dragon when
    leaving the End / resetting dims; spawned fresh every End entry
@@ -616,14 +643,16 @@ stays bright at distance, `placeable: true` so it
   `waterSurfaceForMob`, `MOB_FLOAT_FRAC` half-height via `mobFloatTargetY` —
   `waterSurfaceForMob` scans down from the body top so a moon lake overhead
   never reads as the local surface).
-  Outside the End they blink to a spot ~5 blocks away (`endermanPickSpotOutside`,
-  a random angle in the 90° front cone at 5 blocks, then the mirrored back cone
-  when the front is blocked (obstacle or level edge), then the old 8-direction
-  dist-3 safety — so you can follow them; up or
-  down local terrain, clamped inside the level and never rocketing skyward
-  (`gy <= pos.y + 6`, so a `groundYForMob` moon-top fallback never fires),
-  `endermanFirmGround` requiring solid footing (never water/lava), staying put
-  when no spot is free).
+  Outside the End they blink 5–10 blocks away in one of the 8 compass directions
+  (`endermanPickSpotOutside`), always inside the field of vision (periphery
+  first) and never closer than 10 blocks from the player — so you can follow
+  them; vertical moves cap at 5 blocks up or down, clamped inside the level
+  and never rocketing skyward (so a `groundYForMob` moon-top fallback never
+  fires), hills pass but walls block the ground-following path
+  (`endermanWalkable`) —
+  the relaxed fallback (rings 5–48, solid or liquid, uniform pick among
+  surfaces within 3D nearest + 10) always lands it on the closest available
+  surface instead of leaving it stuck).
   Grab race: a carry-grab hook that connects before 0.3 s of continuous stare
   freezes the mob (`isMobFrozenByGrapple`, `lookT` reset, no teleport); past
   0.3 s it teleports away first. While your grab hook is inbound on an enderman

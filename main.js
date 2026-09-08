@@ -4036,6 +4036,7 @@ function restoreOverworldMobs(list, opts) {
       base.sc = 1;
       base.g = endermanVis.g;
       base.eyeMat = endermanVis.eyeMat;
+      base.eyes = endermanVis.eyes;
       base.armL = endermanVis.armL;
       base.armR = endermanVis.armR;
       base.head = endermanVis.head;
@@ -4249,6 +4250,7 @@ function updateMobs(dt) {
   const g = GRAVITY;
   for (let idx = mobs.length - 1; idx >= 0; idx--) {
     const m = mobs[idx];
+    if (m.kind === "enderman" && (m === carryMob || isMobFrozenByGrapple(m))) { updateEnderman(m, dt); continue; }
     if (m === carryMob) continue;
     if (isMobFrozenByGrapple(m)) continue;
     if (m.dim !== undefined && m.dim !== dim) {
@@ -10092,7 +10094,6 @@ const ENDERMEN_COUNT = 10;
 const endermen = [];
 let endermanGeo = null;
 let endermanBodyMat = null;
-const ENDERMAN_RANGE = 55;
 const ENDERMAN_ANGRY_TIME = 0.5;
 const ENDERMAN_STARE_TIME = 0.3;
 const ENDERMAN_HW = 0.31;
@@ -10122,7 +10123,8 @@ function makeEndermanMesh() {
   head.position.set(0, 2.45, 0);
   g.add(head);
   endermanBox(head, endermanBodyMat, 0.52, 0.5, 0.5, 0, 0, 0);
-  for (const sx of [1, -1]) endermanBox(head, eyeMat, 0.09, 0.16, 0.05, sx * 0.16, 0.03, 0.26);
+  const eyes = [];
+  for (const sx of [1, -1]) eyes.push(endermanBox(head, eyeMat, 0.09, 0.16, 0.05, sx * 0.16, 0.03, 0.26));
   const armL = new THREE.Group();
   armL.position.set(-0.42, 1.95, 0);
   g.add(armL);
@@ -10131,7 +10133,15 @@ function makeEndermanMesh() {
   armR.position.set(0.42, 1.95, 0);
   g.add(armR);
   endermanBox(armR, endermanBodyMat, 0.16, 1.75, 0.16, 0, -0.9, 0);
-  return { g, eyeMat, armL, armR, head, t: 0, angry: 0, teleportT: 0, lookT: 0 };
+  return { g, eyeMat, eyes, armL, armR, head, t: 0, angry: 0, teleportT: 0, lookT: 0 };
+}
+
+function setEndermanEyeColor(e, hex) {
+  if (e.eyeMat) e.eyeMat.color.setHex(hex);
+  if (e.eyes) for (const m of e.eyes) {
+    const mats = Array.isArray(m.material) ? m.material : [m.material];
+    for (const mm of mats) if (mm && mm.color) mm.color.setHex(hex);
+  }
 }
 
 function ensureEndermanAssets() {
@@ -10161,8 +10171,8 @@ function spawnEndermen() {
       yaw: v.g.rotation.y, yawTarget: v.g.rotation.y, villageBound: false, speed: WALK / 2,
       _stuckT: 0, _prevX: spot.x, _prevZ: spot.z,
       path: null, pathIdx: 0, pathKey: null, steerX: 0, steerZ: 0, steerCooldown: 0, lastTarget: null, _wasInWater: false, wolfInWater: false,
-      g: v.g, eyeMat: v.eyeMat, armL: v.armL, armR: v.armR, head: v.head,
-      t: 0, angry: 0, teleportT: v.teleportT, lookT: 0, baseY: END_PLATFORM_TOP + 1,
+      g: v.g, eyeMat: v.eyeMat, eyes: v.eyes, armL: v.armL, armR: v.armR, head: v.head,
+      t: 0, angry: 0, teleportT: v.teleportT, lookT: 0, eyeRedT: 0, baseY: END_PLATFORM_TOP + 1,
     };
     mobs.push(e);
     mobById.set(e.id, e);
@@ -10254,103 +10264,198 @@ function endermanTeleport(e, x, z, baseY) {
   spawnEndermanBurst(M.position.x, M.position.y + 1.35, M.position.z);
   M.position.x = x;
   M.position.z = z;
-  M.position.y = baseY != null ? baseY : END_PLATFORM_TOP + 1;
-  if (baseY != null) e.baseY = baseY;
+  let y = baseY != null ? baseY : END_PLATFORM_TOP + 1;
+  if (baseY != null) {
+    const isLiq = (id) => id === WATER || id === LAVA || id === MOON_WATER;
+    let surf = null;
+    if (isLiq(getBlock(x, Math.floor(y) - 1, z))) surf = Math.floor(y);
+    else if (isLiq(getBlock(x, Math.floor(y), z))) {
+      let s = Math.floor(y);
+      while (s + 1 <= MAX_Y && isLiq(getBlock(x, s + 1, z))) s++;
+      surf = s + 1;
+    }
+    if (surf != null) y = mobFloatTargetY(surf, ENDERMAN_H);
+  }
+  M.position.y = y;
+  if (baseY != null) e.baseY = y;
   e.pos.copy(M.position);
   spawnEndermanBurst(M.position.x, M.position.y + 1.35, M.position.z);
 }
 
-function endermanFirmGround(x, z, hw, y) {
-  if (!hasMobGround(x, z, hw, y)) return false;
-  const gy = Math.floor(y) - 1;
-  if (gy < 0) return false;
-  const x0 = Math.floor(x - hw), x1 = Math.floor(x + hw);
-  const z0 = Math.floor(z - hw), z1 = Math.floor(z + hw);
-  for (let bx = x0; bx <= x1; bx++) for (let bz = z0; bz <= z1; bz++) {
-    const ox0 = Math.max(x - hw, bx), ox1 = Math.min(x + hw, bx + 1);
-    const oz0 = Math.max(z - hw, bz), oz1 = Math.min(z + hw, bz + 1);
-    if (ox1 - ox0 > 0.02 && oz1 - oz0 > 0.02 && !isSolid(bx, gy, bz)) return false;
+const ENDERMAN_BLINK_DIST = 5;
+const ENDERMAN_BLINK_FAR = 10;
+const ENDERMAN_BLINK_UP = 5;
+const ENDERMAN_RED_TIME = 0.5;
+const ENDERMAN_DIRS = [[1, 0], [1, 1], [0, 1], [-1, 1], [-1, 0], [-1, -1], [0, -1], [1, -1]];
+
+function endermanShuffled8() {
+  const o = [0, 1, 2, 3, 4, 5, 6, 7];
+  for (let i = o.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    const t = o[i]; o[i] = o[j]; o[j] = t;
+  }
+  return o;
+}
+
+const endermanViewTmp = new THREE.Vector3();
+
+function endermanViewFrac(x, y, z) {
+  camera.getWorldDirection(endermanViewTmp);
+  const dx = x - pos.x, dy = (y + 1.35) - (pos.y + EYE), dz = z - pos.z;
+  const len = Math.hypot(dx, dy, dz) || 1;
+  let dyaw = Math.atan2(dx, dz) - Math.atan2(endermanViewTmp.x, endermanViewTmp.z);
+  while (dyaw > Math.PI) dyaw -= Math.PI * 2;
+  while (dyaw < -Math.PI) dyaw += Math.PI * 2;
+  const vHalf = THREE.MathUtils.degToRad(camera.fov / 2);
+  const hHalf = Math.atan(Math.tan(vHalf) * camera.aspect);
+  const pitchT = Math.asin(THREE.MathUtils.clamp(dy / len, -1, 1));
+  const pitchC = Math.asin(THREE.MathUtils.clamp(endermanViewTmp.y, -1, 1));
+  return { yaw: Math.abs(dyaw) / hHalf, pitch: Math.abs(pitchT - pitchC) / vHalf };
+}
+
+function endermanPeripheral(x, y, z) {
+  const f = endermanViewFrac(x, y, z);
+  const m = Math.max(f.yaw, f.pitch);
+  return m >= 2 / 3 && m <= 1;
+}
+
+function endermanWalkable(x0, y0, z0, x1, y1, z1, vmax) {
+  const n = Math.max(1, Math.ceil(Math.hypot(x1 - x0, z1 - z0)));
+  let py = y0;
+  for (let k = 1; k <= n; k++) {
+    const t = k / n;
+    const sx = x0 + (x1 - x0) * t, sz = z0 + (z1 - z0) * t;
+    const g = groundYForMob(sx, sz, py, ENDERMAN_HW);
+    if (g < 1 || g > MAX_Y - 3) return false;
+    if (Math.abs(g - py) > vmax) return false;
+    if (aabbCollidesWorld(sx, g, sz, ENDERMAN_HW, ENDERMAN_H)) return false;
+    py = g;
   }
   return true;
+}
+
+function endermanRingCells(cx, cz, d) {
+  const out = [];
+  for (let dx = -d; dx <= d; dx++) for (let dz = -d; dz <= d; dz++) {
+    if (Math.max(Math.abs(dx), Math.abs(dz)) !== d) continue;
+    out.push({ x: cx + dx, z: cz + dz });
+  }
+  for (let i = out.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    const t = out[i]; out[i] = out[j]; out[j] = t;
+  }
+  return out;
+}
+
+function endermanSeparated(others, x, z) {
+  for (const o of others) {
+    const ox = x - o.pos.x, oz = z - o.pos.z;
+    if (ox * ox + oz * oz < 9) return false;
+  }
+  return true;
+}
+
+function endermanSegmentFree(x0, y0, z0, x1, y1, z1, hw, h) {
+  const dist = Math.hypot(x1 - x0, y1 - y0, z1 - z0);
+  const n = Math.max(1, Math.ceil(dist / 0.5));
+  for (let k = 0; k <= n; k++) {
+    const t = k / n;
+    if (aabbCollidesWorld(x0 + (x1 - x0) * t, y0 + (y1 - y0) * t, z0 + (z1 - z0) * t, hw, h)) return false;
+  }
+  return true;
+}
+
+const ENDERMAN_LAST_RESORT_R = 48;
+
+function endermanSurfaceY(x, z, refY) {
+  const gy = groundYForMob(x, z, refY, ENDERMAN_HW);
+  if (gy < 1 || gy > MAX_Y - 3) return null;
+  if (aabbCollidesWorld(x, gy, z, ENDERMAN_HW, ENDERMAN_H)) return null;
+  return gy;
+}
+
+function endermanRelaxedSpot(e, others, landY, rMin, rMax) {
+  const ex = Math.round(e.pos.x), ez = Math.round(e.pos.z);
+  const ey = e.pos.y;
+  let pool = [];
+  let best = Infinity;
+  for (let d = rMin; d <= rMax; d++) {
+    if (d > best + 10) break;
+    for (const c of endermanRingCells(ex, ez, d)) {
+      const y = landY(c.x, c.z);
+      if (y == null) continue;
+      if (!endermanSeparated(others, c.x, c.z)) continue;
+      const dist = Math.hypot(c.x - ex, y - ey, c.z - ez);
+      if (dist > best + 10) continue;
+      if (dist < best) {
+        best = dist;
+        pool = pool.filter((s) => s.dist <= best + 10);
+      }
+      pool.push({ x: c.x, z: c.z, y, dist });
+    }
+  }
+  if (!pool.length) return null;
+  const s = pool[(Math.random() * pool.length) | 0];
+  return { x: s.x, z: s.z, y: s.y };
 }
 
 function endermanPickSpotOutside(e, cx, cz, px, pz) {
   const others = endermanOthers(e).filter((o) => o.dim === e.dim);
   const B = WORLD_RADIUS - 2;
-  const ccx = Math.round(cx), ccz = Math.round(cz);
-  const hasHead = px != null && pz != null && (px || pz);
-  const hsp = Math.hypot(vel.x, vel.z);
-  let fx = null, fz = null;
-  if (hsp > 5) { fx = vel.x / hsp; fz = vel.z / hsp; }
-  else if (hasHead) { fx = -px; fz = -pz; }
-  const frontAng = fx != null ? Math.atan2(fz, fx) : null;
-  const backAng = hasHead ? Math.atan2(pz, px) : (frontAng != null ? frontAng + Math.PI : null);
-  const tryCone = (ang, needFirm, needSep) => {
-    if (ang == null) return null;
-    for (let i = 0; i < 16; i++) {
-      const a = ang + (Math.random() * 2 - 1) * Math.PI / 4;
-      const x = ccx + Math.round(Math.cos(a) * 5), z = ccz + Math.round(Math.sin(a) * 5);
-      if (x < -B || x > B || z < -B || z > B) continue;
-      const gy = groundYForMob(x, z, e.pos.y, ENDERMAN_HW);
-      if (gy < 1 || gy > MAX_Y - 3) continue;
-      if (gy > e.pos.y + 6) continue;
-      if (aabbCollidesWorld(x, gy, z, ENDERMAN_HW, ENDERMAN_H)) continue;
-      if (needFirm && !endermanFirmGround(x, z, ENDERMAN_HW, gy)) continue;
-      if (needSep) {
-        let far = true;
-        for (const o of others) {
-          const ox = x - o.pos.x, oz = z - o.pos.z;
-          if (ox * ox + oz * oz < 9) { far = false; break; }
-        }
-        if (!far) continue;
-      }
-      return { x, z, y: gy };
-    }
-    return null;
+  const ex = e.pos.x, ez = e.pos.z;
+  const farFromPlayer = (x, z) => Math.hypot(x - pos.x, z - pos.z) >= 10;
+  const landY = (x, z) => {
+    if (x < -B || x > B || z < -B || z > B) return null;
+    return endermanSurfaceY(x, z, e.pos.y);
   };
-  const cone = tryCone(frontAng, true, true) || tryCone(frontAng, true, false)
-    || tryCone(backAng, true, true) || tryCone(backAng, true, false);
-  if (cone) return cone;
-  const dirs = [[1, 0], [1, 1], [0, 1], [-1, 1], [-1, 0], [-1, -1], [0, -1], [1, -1]];
-  if (px == null || pz == null) {
-    for (let i = dirs.length - 1; i > 0; i--) {
-      const j = Math.floor(Math.random() * (i + 1));
-      const tmp = dirs[i]; dirs[i] = dirs[j]; dirs[j] = tmp;
-    }
-  } else {
-    const pl = Math.hypot(px, pz) || 1;
-    dirs.sort((a, b) => (b[0] * px + b[1] * pz) / (Math.hypot(b[0], b[1]) * pl) - (a[0] * px + a[1] * pz) / (Math.hypot(a[0], a[1]) * pl));
+  for (const i of endermanShuffled8()) {
+    const dl = Math.hypot(ENDERMAN_DIRS[i][0], ENDERMAN_DIRS[i][1]);
+    const d = ENDERMAN_BLINK_DIST + Math.random() * (ENDERMAN_BLINK_FAR - ENDERMAN_BLINK_DIST);
+    const x = Math.round(ex + ENDERMAN_DIRS[i][0] / dl * d);
+    const z = Math.round(ez + ENDERMAN_DIRS[i][1] / dl * d);
+    if (Math.hypot(x - ex, z - ez) < ENDERMAN_BLINK_DIST || !farFromPlayer(x, z)) continue;
+    const y = landY(x, z);
+    if (y == null || Math.abs(y - e.pos.y) > ENDERMAN_BLINK_UP) continue;
+    if (!endermanPeripheral(x, y, z)) continue;
+    if (!endermanWalkable(ex, e.pos.y, ez, x, y, z, ENDERMAN_BLINK_UP)) continue;
+    if (!endermanSeparated(others, x, z)) continue;
+    return { x, z, y };
   }
-  for (let pass = 0; pass < 3; pass++) {
-    const needFirm = pass < 2, needSep = pass < 1;
-    for (const [dx, dz] of dirs) {
-      const r = 3 / Math.hypot(dx, dz);
-      const x = ccx + Math.round(dx * r), z = ccz + Math.round(dz * r);
-      if (x < -B || x > B || z < -B || z > B) continue;
-      const gy = groundYForMob(x, z, e.pos.y, ENDERMAN_HW);
-      if (gy < 1 || gy > MAX_Y - 3) continue;
-      if (gy > e.pos.y + 6) continue;
-      if (aabbCollidesWorld(x, gy, z, ENDERMAN_HW, ENDERMAN_H)) continue;
-      if (needFirm && !endermanFirmGround(x, z, ENDERMAN_HW, gy)) continue;
-      if (needSep) {
-        let far = true;
-        for (const o of others) {
-          const ox = x - o.pos.x, oz = z - o.pos.z;
-          if (ox * ox + oz * oz < 9) { far = false; break; }
-        }
-        if (!far) continue;
-      }
-      return { x, z, y: gy };
-    }
+  return endermanRelaxedSpot(e, others, landY, ENDERMAN_BLINK_DIST, ENDERMAN_LAST_RESORT_R)
+    || { x: THREE.MathUtils.clamp(Math.round(ex), -B, B), z: THREE.MathUtils.clamp(Math.round(ez), -B, B), y: endermanSurfaceY(Math.round(ex), Math.round(ez), e.pos.y) || Math.round(e.pos.y) };
+}
+
+function endermanPickSpotEnd(e, cx, cz, px, pz) {
+  const others = endermanOthers(e).filter((o) => o.dim === e.dim);
+  const R = END_PLATFORM_R - 4;
+  const ex = e.pos.x, ez = e.pos.z;
+  const farFromPlayer = (x, z) => Math.hypot(x - pos.x, z - pos.z) >= 10;
+  const landY = (x, z) => {
+    if (Math.abs(x) > R || Math.abs(z) > R) return null;
+    if (Math.abs(x) <= 3 && Math.abs(z - END_RETURN_Z) <= 3) return null;
+    if (isSolid(x, END_PLATFORM_TOP + 1, z) || isSolid(x, END_PLATFORM_TOP + 2, z)) return null;
+    return END_PLATFORM_TOP + 1;
+  };
+  for (const i of endermanShuffled8()) {
+    const dl = Math.hypot(ENDERMAN_DIRS[i][0], ENDERMAN_DIRS[i][1]);
+    const d = ENDERMAN_BLINK_DIST + Math.random() * (ENDERMAN_BLINK_FAR - ENDERMAN_BLINK_DIST);
+    const x = Math.round(ex + ENDERMAN_DIRS[i][0] / dl * d);
+    const z = Math.round(ez + ENDERMAN_DIRS[i][1] / dl * d);
+    if (Math.hypot(x - ex, z - ez) < ENDERMAN_BLINK_DIST || !farFromPlayer(x, z)) continue;
+    const y = landY(x, z);
+    if (y == null) continue;
+    if (!endermanSegmentFree(ex, e.pos.y, ez, x, y, z, ENDERMAN_HW, ENDERMAN_H)) continue;
+    if (!endermanPeripheral(x, y, z)) continue;
+    if (!endermanSeparated(others, x, z)) continue;
+    return { x, z, y };
   }
-  const sy = Math.max(1, Math.min(MAX_Y - 3, Math.round(e.pos.y)));
-  return { x: THREE.MathUtils.clamp(Math.round(e.pos.x), -B, B), z: THREE.MathUtils.clamp(Math.round(e.pos.z), -B, B), y: sy };
+  return endermanRelaxedSpot(e, others, landY, ENDERMAN_BLINK_DIST, R)
+    || { x: THREE.MathUtils.clamp(Math.round(ex), -R, R), z: THREE.MathUtils.clamp(Math.round(ez), -R, R), y: END_PLATFORM_TOP + 1 };
 }
 
 function endermanSpotFor(e, cx, cz, minDist, px, pz, maxDist) {
   if (dim === "end" && (e.dim === undefined || e.dim === "end")) {
-    const s = endermanPickSpot(cx, cz, minDist, endermanOthers(e), maxDist == null ? END_PLATFORM_R - 4 : maxDist, px, pz);
-    return { x: s.x, z: s.z, y: END_PLATFORM_TOP + 1 };
+    return endermanPickSpotEnd(e, cx, cz, px, pz);
   }
   return endermanPickSpotOutside(e, cx, cz, px, pz);
 }
@@ -10361,12 +10466,49 @@ function endermanOthers(e) {
 
 const endermanFwd = new THREE.Vector3();
 
+function endermanAimed(e, dir) {
+  const eye = camera.position;
+  const minX = e.pos.x - e.hw, maxX = e.pos.x + e.hw;
+  const minY = e.pos.y, maxY = e.pos.y + e.h;
+  const minZ = e.pos.z - e.hw, maxZ = e.pos.z + e.hw;
+  let tmin = -Infinity, tmax = Infinity;
+  if (Math.abs(dir.x) < 1e-6) {
+    if (eye.x < minX || eye.x > maxX) return false;
+  } else {
+    const tx1 = (minX - eye.x) / dir.x, tx2 = (maxX - eye.x) / dir.x;
+    tmin = Math.max(tmin, Math.min(tx1, tx2)); tmax = Math.min(tmax, Math.max(tx1, tx2));
+    if (tmin > tmax) return false;
+  }
+  if (Math.abs(dir.y) < 1e-6) {
+    if (eye.y < minY || eye.y > maxY) return false;
+  } else {
+    const ty1 = (minY - eye.y) / dir.y, ty2 = (maxY - eye.y) / dir.y;
+    tmin = Math.max(tmin, Math.min(ty1, ty2)); tmax = Math.min(tmax, Math.max(ty1, ty2));
+    if (tmin > tmax) return false;
+  }
+  if (Math.abs(dir.z) < 1e-6) {
+    if (eye.z < minZ || eye.z > maxZ) return false;
+  } else {
+    const tz1 = (minZ - eye.z) / dir.z, tz2 = (maxZ - eye.z) / dir.z;
+    tmin = Math.max(tmin, Math.min(tz1, tz2)); tmax = Math.min(tmax, Math.max(tz1, tz2));
+    if (tmin > tmax) return false;
+  }
+  if (tmax < 0) return false;
+  const tHit = Math.max(tmin, 0);
+  const steps = Math.max(1, Math.ceil(tHit / 0.25));
+  for (let k = 1; k < steps; k++) {
+    const t = tHit * k / steps;
+    if (isSolid(Math.floor(eye.x + dir.x * t), Math.floor(eye.y + dir.y * t), Math.floor(eye.z + dir.z * t))) return false;
+  }
+  return true;
+}
+
 function updateEndermen(dt) {
   for (let i = 0; i < endermen.length; i++) updateEnderman(endermen[i], dt);
 }
 
 function updateEnderman(e, dt) {
-  if (e === carryMob || isMobFrozenByGrapple(e)) { e.lookT = 0; return; }
+  if (e === carryMob || isMobFrozenByGrapple(e)) { e.lookT = 0; e.eyeRedT = ENDERMAN_RED_TIME; setEndermanEyeColor(e, 0xff2222); return; }
   if (e.dim !== undefined && e.dim !== dim) return;
   const inboundGrab = e === carryGrappleMob && carryGrappleMode === "grab" && (carryGrappleActive || carryGrapplePulling);
   const M = e.g;
@@ -10399,42 +10541,32 @@ function updateEnderman(e, dt) {
   const phase = shaking ? t * 16 : t * 1.8;
   e.armL.rotation.x = Math.sin(phase) * amp;
   e.armR.rotation.x = Math.sin(phase + 0.6) * amp;
-  e.eyeMat.color.setHex(0xb44cff);
+  setEndermanEyeColor(e, e.lookT > 0 || e.eyeRedT > 0 ? 0xff2222 : 0xb44cff);
+  if (e.eyeRedT > 0) e.eyeRedT -= dt;
   const hsp = Math.hypot(vel.x, vel.z);
   let headX = Math.sin(yaw), headZ = Math.cos(yaw);
   if (hsp > 5) { headX = vel.x / hsp; headZ = vel.z / hsp; }
 
   if (e.angry > 0) {
     e.angry -= dt;
-    if (e.angry <= 0) {
-      const spot = endermanSpotFor(e, Math.floor(pos.x), Math.floor(pos.z), 1, headX, headZ, 4);
-      endermanTeleport(e, spot.x, spot.z, spot.y);
-    }
     e.pos.copy(M.position);
     return;
   }
 
   camera.getWorldDirection(endermanFwd);
-  const ex = M.position.x, ey = M.position.y + 1.35, ez = M.position.z;
-  const vx = ex - pos.x, vy = ey - (pos.y + EYE), vz = ez - pos.z;
-  const dist = Math.hypot(vx, vy, vz);
-  if (dist < ENDERMAN_RANGE && !inboundGrab) {
-    const dot = (vx * endermanFwd.x + vy * endermanFwd.y + vz * endermanFwd.z) / dist;
-    if (dot > 0.995) {
-      e.lookT += dt;
-      if (e.lookT > ENDERMAN_STARE_TIME) {
-        e.lookT = 0;
-        e.angry = ENDERMAN_ANGRY_TIME;
-        const px = Math.floor(pos.x), pz = Math.floor(pos.z);
-        const spot = endermanSpotFor(e, px, pz, 1, headX, headZ, 4);
-        endermanTeleport(e, spot.x, spot.z, spot.y);
-        showMsg("An Enderman is angered — stop staring!");
-      }
-    } else {
-      e.lookT = Math.max(0, e.lookT - dt * 2);
+  if (!inboundGrab && endermanAimed(e, endermanFwd)) {
+    e.lookT += dt;
+    if (e.lookT > ENDERMAN_STARE_TIME) {
+      e.lookT = 0;
+      e.angry = ENDERMAN_ANGRY_TIME;
+      e.eyeRedT = ENDERMAN_RED_TIME;
+      const px = Math.floor(pos.x), pz = Math.floor(pos.z);
+      const spot = endermanSpotFor(e, px, pz, ENDERMAN_BLINK_DIST, headX, headZ, ENDERMAN_BLINK_DIST);
+      endermanTeleport(e, spot.x, spot.z, spot.y);
+      showMsg("An Enderman is angered — stop staring!");
     }
   } else {
-    e.lookT = 0;
+    e.lookT = Math.max(0, e.lookT - dt * 2);
   }
   e.pos.copy(M.position);
 }
