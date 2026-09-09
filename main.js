@@ -7931,6 +7931,22 @@ const DRAGON_STICK_DIST = 1.2;
 const tntBombGeo = new THREE.BoxGeometry(0.9, 0.9, 0.9);
 const tntBombMats = materialsFor(TNT);
 const tntLit = new Map();
+const tntEta = new Map();
+function tntBombDist(px, py, pz, m) {
+  return Math.hypot(m.pos.x - px, m.pos.y + m.h * 0.5 - py, m.pos.z - pz);
+}
+function tntSyncOnFire(mob, sx, sy, sz) {
+  const need = tntBombDist(sx, sy, sz, mob) / (TNT_HOME_SPEED * 4);
+  const cur = tntEta.get(mob);
+  const eta = cur === undefined ? need : Math.max(cur, need);
+  tntEta.set(mob, eta);
+  for (const t of tntLit.values()) if (t.pigeon === mob && t.mesh && !t.stuck) t.life = Math.max(t.life, eta + 0.5);
+  return eta;
+}
+function tntSyncClear(mob) {
+  for (const t of tntLit.values()) if (t.pigeon === mob && t.mesh && !t.stuck) return;
+  tntEta.delete(mob);
+}
 const bursts = [];
 const flashes = [];
 const explosionQueue = [];
@@ -8011,6 +8027,8 @@ function igniteTNT(bx, by, bz, fuse = FUSE_TIME) {
     }
   }
   if (t.pigeon) {
+    const syncEta = tntSyncOnFire(t.pigeon, bx + 0.5, by + 1.1, bz + 0.5);
+    t.life = Math.max(t.life, syncEta + 0.5);
     setBlock(bx, by, bz, AIR);
     refreshBlocks([[bx, by, bz]]);
     queueSave();
@@ -8139,7 +8157,9 @@ function fireTNTAtPigeon(mob) {
   const m = makeTNTBomb();
   m.position.set(sx, sy, sz);
   scene.add(m);
-  tntLit.set("fly" + (tntFlySeq++), { bx: 0, by: -1, bz: 0, px: sx, py: sy, pz: sz, fuse: FUSE_TIME, life: FUSE_TIME + 2, spr, mesh: m, stuck: false, ax: 0, ay: 0, az: 0, pigeon: mob });
+  const t = { bx: 0, by: -1, bz: 0, px: sx, py: sy, pz: sz, fuse: FUSE_TIME, life: FUSE_TIME + 2, spr, mesh: m, stuck: false, ax: 0, ay: 0, az: 0, pigeon: mob };
+  t.life = Math.max(t.life, tntSyncOnFire(mob, sx, sy, sz) + 0.5);
+  tntLit.set("fly" + (tntFlySeq++), t);
 }
 
 function makeFuseSprite() {
@@ -8182,13 +8202,23 @@ function updateTNTTarget(t, dt) {
       return;
     }
     if (d < 1e-6) return;
-    const sp = Math.min(d, TNT_HOME_SPEED * 4 * dt);
+    const rem = tntEta.get(m);
+    let sp;
+    if (rem === undefined) sp = Math.min(d, TNT_HOME_SPEED * 4 * dt);
+    else if (!(rem > 1e-3)) sp = d;
+    else sp = Math.min(d, ((d - DRAGON_STICK_DIST) / rem) * dt);
     t.px += (dx / d) * sp; t.py += (dy / d) * sp; t.pz += (dz / d) * sp;
     return;
   }
 }
 
 function tickTNT(dt) {
+  for (const [mob, v] of [...tntEta]) {
+    let live = false;
+    for (const t of tntLit.values()) if (t.pigeon === mob && t.mesh && !t.stuck) { live = true; break; }
+    if (!live) tntEta.delete(mob);
+    else tntEta.set(mob, v - dt);
+  }
   for (const [k, t] of [...tntLit]) {
     updateTNTTarget(t, dt);
     t.spr.position.set(t.px, t.py + 0.85, t.pz);
@@ -8197,6 +8227,7 @@ function tickTNT(dt) {
       if (t.stuck) {
         clearTNTVisual(t);
         tntLit.delete(k);
+        tntSyncClear(t.pigeon);
         const isPigeonBomb = t.pigeon && t.pigeon.kind === "pigeon";
         if (isPigeonBomb && mobs.includes(t.pigeon)) killPigeon(t.pigeon);
         if (isPigeonBomb) explodePigeon(t.px, t.py, t.pz, true);
@@ -8206,6 +8237,7 @@ function tickTNT(dt) {
         if (!mobs.includes(t.pigeon) || (t.life -= dt) <= 0) {
           clearTNTVisual(t);
           tntLit.delete(k);
+          tntSyncClear(t.pigeon);
           if (isPigeonBomb) explodePigeon(t.px, t.py, t.pz, false);
           else enqueueExplosion(t.px, t.py, t.pz, false, true);
         }
@@ -12063,7 +12095,7 @@ if (location.search.includes('test')) {
     get pos(){ return pos; }, get vel(){ return vel; }, get camera(){ return camera; }, get yaw(){ return yaw; }, set yaw(v){ yaw=v; }, get pitch(){ return pitch; }, set pitch(v){ pitch=v; },
     get carryMob(){ return carryMob; }, handleCarryEnterDown, handleCarryEnterUp, pickMob, get carryGrappleActive(){ return carryGrappleActive; }, get carryGrapplePulling(){ return carryGrapplePulling; }, get carryGrappleMob(){ return carryGrappleMob; }, get carryGrappleBlock(){ return carryGrappleBlock; }, get carryGrappleHookPos(){ return carryGrappleHookPos; }, get carryGrappleOffset(){ return carryGrappleOffset; }, get carryGrappleMode(){ return carryGrappleMode; }, get isMobFrozenByGrapple(){ return isMobFrozenByGrapple; }, get grappleMob(){ return grappleMob; }, get grappleMobOffset(){ return grappleMobOffset; }, get grappleHookPos(){ return grappleHookPos; }, get grappleTarget(){ return grappleTarget; }, updateCarryGrapple, get currentBlock(){ return currentBlock; }, updateTarget, hotbarList, placeBlock, breakBlock, get selected(){ return selected; }, set selected(v){ selected=v; }, toggleCarry: handleCarryEnterDown, findNearestMobForGrab: (...a)=>{ const d=new THREE.Vector3(); camera.getWorldDirection(d); return pickMob(d); }, get playerArms(){ return playerArms; }, get started(){ return started; }, set started(v){ started=v; }, get loading(){ return loading; }, get freeCam(){ return freeCam; }, set freeCam(v){ freeCam=v; }, get helpOpen(){ return helpOpen; },
     get WOLF_COUNT(){ return WOLF_COUNT; }, makeWolfMesh, villagerHW, villagerH, wolfHasMobGround, wolfBlockedAt, wolfProbeFree, wanderGoalForWolf, wolfFindPath, wolfInWater, mobInWater, waterSurfaceForMob, mobPhysicsStep, wolfPhysicsStep, updateMobs,     get isPigCow(){ return isPigCow; }, get pigOverlapsFence(){ return pigOverlapsFence; }, get MOB_FLOAT_FRAC(){ return MOB_FLOAT_FRAC; }, mobFloatTargetY, mobWaterExitJump, poolExitTarget, penPoolExitTarget, isInsidePenPool,
-    get PIGEON_COUNT(){ return PIGEON_COUNT; }, get PIGEON_MIN_Y(){ return PIGEON_MIN_Y; }, get PIGEON_MAX_Y(){ return PIGEON_MAX_Y; }, get PIGEON_SPEED(){ return PIGEON_SPEED; }, get TNT_HOME_SPEED(){ return TNT_HOME_SPEED; }, get PIGEON_AIM_DIST(){ return PIGEON_AIM_DIST; }, get PIGEON_LOCK_TIME(){ return PIGEON_LOCK_TIME; }, get pigeonLock(){ return pigeonLock; }, get pigeonLockT(){ return pigeonLockT; }, set pigeonLockT(v){ pigeonLockT = v; }, get pigeonLockShots(){ return pigeonLockShots; }, livePigeonLock, tntTargeted, tryFireLockedTNT, get chainBreaking(){ return chainBreaking; }, set chainBreaking(v){ chainBreaking = v; }, makePigeonMesh, spawnPigeons, spawnSinglePigeon, removePigeons, updatePigeon, updateCoopedPigeon, updatePerchedPigeon, updateToPerchPigeon, pigeonTakeoff, pigeonNextLeg, pigeonFindPerchSpot, pigeonCloudTopAt, pigeonTreeTopAt, pigeonRoofTopAt, pigeonPerchBand, pigeonPerchSupports, killPigeon, pigeonSpotOutOfView, pigeonProbeFree, pigeonRandomTarget, pigeonSeparate,     houseInteriorFor, houseSealState, holeFaceNormal, updateHoleExitPigeon, pigeonSegmentFree, bandReturnTarget, setMobTransparent,     get tntLit(){ return tntLit; }, igniteTNT, aimedPigeon, fireTNTAtPigeon, explodePigeon, spawnPigeonBurst, get bursts(){ return bursts; }, get flashes(){ return flashes; }, updateTNTTarget, tickTNT, fireGrapple, updateGrapple, updatePlayer, get grappleActive(){ return grappleActive; }, get grapplePulling(){ return grapplePulling; }, get grappleHooked(){ return grappleHooked; },
+    get PIGEON_COUNT(){ return PIGEON_COUNT; }, get PIGEON_MIN_Y(){ return PIGEON_MIN_Y; }, get PIGEON_MAX_Y(){ return PIGEON_MAX_Y; }, get PIGEON_SPEED(){ return PIGEON_SPEED; }, get TNT_HOME_SPEED(){ return TNT_HOME_SPEED; }, get PIGEON_AIM_DIST(){ return PIGEON_AIM_DIST; }, get PIGEON_LOCK_TIME(){ return PIGEON_LOCK_TIME; }, get pigeonLock(){ return pigeonLock; }, get pigeonLockT(){ return pigeonLockT; }, set pigeonLockT(v){ pigeonLockT = v; }, get pigeonLockShots(){ return pigeonLockShots; }, livePigeonLock, tntTargeted, tryFireLockedTNT, get chainBreaking(){ return chainBreaking; }, set chainBreaking(v){ chainBreaking = v; }, makePigeonMesh, spawnPigeons, spawnSinglePigeon, removePigeons, updatePigeon, updateCoopedPigeon, updatePerchedPigeon, updateToPerchPigeon, pigeonTakeoff, pigeonNextLeg, pigeonFindPerchSpot, pigeonCloudTopAt, pigeonTreeTopAt, pigeonRoofTopAt, pigeonPerchBand, pigeonPerchSupports, killPigeon, pigeonSpotOutOfView, pigeonProbeFree, pigeonRandomTarget, pigeonSeparate,     houseInteriorFor, houseSealState, holeFaceNormal, updateHoleExitPigeon, pigeonSegmentFree, bandReturnTarget, setMobTransparent,     get tntLit(){ return tntLit; }, get tntEta(){ return tntEta; }, igniteTNT, aimedPigeon, fireTNTAtPigeon, explodePigeon, spawnPigeonBurst, get bursts(){ return bursts; }, get flashes(){ return flashes; }, updateTNTTarget, tickTNT, fireGrapple, updateGrapple, updatePlayer, get grappleActive(){ return grappleActive; }, get grapplePulling(){ return grapplePulling; }, get grappleHooked(){ return grappleHooked; },
     get overPortalWin(){ return overPortalWin; }, get overPortalDir(){ return overPortalDir; }, get overPortalSpawn(){ return overPortalSpawn; }, get overPortalFace(){ return overPortalFace; },
     portalWinValid, portalFrameBBox, findReturnSpot, frameTopSpot, facePortalFrom, recordOverPortal, nearestReturnWin, resolveOverworldReturn, nearPortalSpawn, resolveSpawn, collectEndWins, collectNetherWins, collectReturnWins, insideEndInterior, insideNetherInterior, winCenter, windowDist, isSolid,
     get PORTAL(){ return PORTAL; }, get OBSIDIAN(){ return OBSIDIAN; }, get WORLD_RADIUS(){ return WORLD_RADIUS; }, get PLAYER_HW(){ return PLAYER_HW; }, get PLAYER_H(){ return PLAYER_H; }, get MOON(){ return MOON; }, get CLOUD(){ return CLOUD; }, get GRASS(){ return GRASS; }, get STONE(){ return STONE; }, get ENDSTONE(){ return ENDSTONE; }, get NETHERRACK(){ return NETHERRACK; }, get dim(){ return dim; },
