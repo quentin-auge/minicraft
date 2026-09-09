@@ -473,7 +473,7 @@ function keyXYZ(k) {
 const worlds = { over: new Map(), end: new Map(), nether: new Map() };
 // DEV ONLY: start dimension for new worlds. Set back to "over" to restore
 // the normal spawn behaviour.
-const DEV_START_DIM = "end";
+const DEV_START_DIM = "over";
 let dim = "over";
 let world = worlds.over;
 const getBlock = (x, y, z) => world.get(key(x, y, z)) || AIR;

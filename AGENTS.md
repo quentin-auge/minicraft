@@ -833,9 +833,8 @@ stays bright at distance, `placeable: true` so it
   End, spawns dragon + endermen and places the player on the platform, seeds a
   valid `overPortalSpawn` on real overworld ground so the trip back lands
   outside the terrain, and spawns no overworld mobs so the End holds only
-     dragon + endermen). It is
-  currently `"end"` for testing — set it back to `"over"` to restore the
-  original behaviour. `generateWorld` pins `dim = "over"` while it runs:
+     dragon + endermen). It is `"over"`: new worlds start in the Overworld —
+  set it to `"end"` to spawn in the End for testing. `generateWorld` pins `dim = "over"` while it runs:
   `setBlock` records column tops per `dim`, so generating with any other dim
   leaves `colTops.over` at zero and chunk meshing skips everything above y=0
   (invisible houses/trees/clouds on return).
