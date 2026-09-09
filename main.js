@@ -426,8 +426,8 @@ const STAIR_STEPS = 24;
 const ROOM_W = 11;
 const ROOM_H = 7;
 const ROOMS_PER_TUNNEL = 3;
-const END_PLATFORM_TOP = 20;
-const END_PLATFORM_R = 24;
+const END_PLATFORM_TOP = 0;
+const END_PLATFORM_R = 36;
 const END_RETURN_Z = 16;
 let seed = Math.floor(Math.random() * 100000);
 let endSeed = Math.floor(Math.random() * 100000);
@@ -5178,7 +5178,7 @@ function generateEnd() {
   const ct = colTops.end;
   for (let x = -R; x <= R; x++)
     for (let z = -R; z <= R; z++) {
-      for (let y = END_PLATFORM_TOP - 2; y <= END_PLATFORM_TOP; y++) w.set(key(x, y, z), ENDSTONE);
+      for (let y = END_PLATFORM_TOP; y <= END_PLATFORM_TOP; y++) w.set(key(x, y, z), ENDSTONE);
       const ci = colTopIdx(x, z);
       if (END_PLATFORM_TOP > ct[ci]) ct[ci] = END_PLATFORM_TOP;
     }
@@ -8113,6 +8113,7 @@ function tryFireLockedTNT() {
   if (lock && now - pigeonLockT < PIGEON_LOCK_TIME) {
     const cap = lock.kind === "dragon" ? dragonShotsCap() : 3;
     if (cap <= 0 || pigeonLockShots >= cap) return false;
+    if (lock.kind === "dragon" && !aimedDragon()) return false;
     let blockT = Infinity;
     if (currentBlock) {
       const eye = camera.position;
@@ -8254,11 +8255,13 @@ function processExplosionQueue() {
     const kShift = key(Math.floor(x), Math.floor(y), Math.floor(z));
     if (chainPending.has(kShift)) chainPending.delete(kShift);
     const cx = x + 0.5, cy = y + 0.5, cz = z + 0.5;
+    const dragonHit = dim === "end" && dragon.mesh && homing && pointBlank && !pigeon;
+    if (dragonHit) damageDragon(DRAGON_FULL_DMG);
     if (pigeon) spawnPigeonBurst(cx, cy, cz);
+    else if (pointBlank && dragonHit) spawnDragonBurst(cx, cy, cz, dragonBurstColor());
     else if (pointBlank) spawnDragonBurst(cx, cy, cz);
     else spawnExplosion(cx, cy, cz);
     if (mobs.length) handleMobExplosion(cx, cy, cz);
-    if (dim === "end" && dragon.mesh && homing && pointBlank && !pigeon) damageDragon(DRAGON_FULL_DMG);
     if (homing) { processed++; continue; }
     const bx = Math.floor(x), by = Math.floor(y), bz = Math.floor(z);
     const k0 = key(bx, by, bz);
@@ -8319,26 +8322,21 @@ function processExplosionQueue() {
 }
 
 function spawnDragonDeath(cx, cy, cz) {
-  const flash = new THREE.Mesh(
-    new THREE.SphereGeometry(4, 18, 12),
-    new THREE.MeshBasicMaterial({ color: 0xe8d6ff, transparent: true, opacity: 0.95 })
-  );
-  flash.position.set(cx, cy, cz);
-  scene.add(flash);
-  flashes.push({ mesh: flash, born: performance.now(), life: 0.6 });
-
-  const N = 220;
+  const SPECTRUM_BURST = [0x6e2a92, 0x1a5eb8, 0x188844, 0xd8a818, 0xc82828, 0xffffff];
+  const pickBurst = () => SPECTRUM_BURST[(Math.random() * SPECTRUM_BURST.length) | 0];
+  const N = 420;
   const posA = new Float32Array(N * 3);
   const colA = new Float32Array(N * 3);
   const vel = new Float32Array(N * 3);
   for (let i = 0; i < N; i++) {
     posA[i * 3] = cx; posA[i * 3 + 1] = cy; posA[i * 3 + 2] = cz;
-    colA[i * 3] = Math.random() * 0.35;
-    colA[i * 3 + 1] = Math.random() * 0.3;
-    colA[i * 3 + 2] = 0.7 + Math.random() * 0.3;
+    const c = pickBurst();
+    colA[i * 3] = Math.min(1.15, ((c >> 16) & 255) / 255 + (Math.random() - 0.5) * 0.2);
+    colA[i * 3 + 1] = Math.min(1.15, ((c >> 8) & 255) / 255 + (Math.random() - 0.5) * 0.2);
+    colA[i * 3 + 2] = Math.min(1.15, (c & 255) / 255 + (Math.random() - 0.5) * 0.2);
     const th = Math.random() * Math.PI * 2;
     const ph = Math.acos(2 * Math.random() - 1);
-    const s = 9 + Math.random() * 20;
+    const s = 9 + Math.random() * 24;
     vel[i * 3] = s * Math.sin(ph) * Math.cos(th);
     vel[i * 3 + 1] = s * Math.cos(ph) + 6;
     vel[i * 3 + 2] = s * Math.sin(ph) * Math.sin(th);
@@ -8381,10 +8379,13 @@ function spawnDragonDeath(cx, cy, cz) {
   bursts.push({ pts: ptsB, geo: geoB, mat: matB, vel: velB, life: 1.2, max: 1.2 });
 }
 
-function spawnDragonBurst(cx, cy, cz) {
+function dragonBurstColor() {
+  return DRAGON_HUES[Math.max(0, dragon.hitCount - 1) % DRAGON_HUES.length];
+}
+function spawnDragonBurst(cx, cy, cz, hex = 0xd06bff) {
   const flash = new THREE.Mesh(
     new THREE.SphereGeometry(1.6, 14, 10),
-    new THREE.MeshBasicMaterial({ color: 0xd06bff, transparent: true, opacity: 0.9 })
+    new THREE.MeshBasicMaterial({ color: hex, transparent: true, opacity: 0.9 })
   );
   flash.position.set(cx, cy, cz);
   scene.add(flash);
@@ -8394,11 +8395,13 @@ function spawnDragonBurst(cx, cy, cz) {
   const posA = new Float32Array(N * 3);
   const colA = new Float32Array(N * 3);
   const vel = new Float32Array(N * 3);
+  const br = ((hex >> 16) & 255) / 255, bg = ((hex >> 8) & 255) / 255, bb = (hex & 255) / 255;
+  const jit = () => (Math.random() - 0.5) * 0.24;
   for (let i = 0; i < N; i++) {
     posA[i * 3] = cx; posA[i * 3 + 1] = cy; posA[i * 3 + 2] = cz;
-    colA[i * 3] = 0.55 + Math.random() * 0.35;
-    colA[i * 3 + 1] = 0.25 + Math.random() * 0.25;
-    colA[i * 3 + 2] = 0.85 + Math.random() * 0.25;
+    colA[i * 3] = Math.min(1.15, Math.max(0, br + jit()));
+    colA[i * 3 + 1] = Math.min(1.15, Math.max(0, bg + jit()));
+    colA[i * 3 + 2] = Math.min(1.15, Math.max(0, bb + jit()));
     const th = Math.random() * Math.PI * 2;
     const ph = Math.acos(2 * Math.random() - 1);
     const s = 6 + Math.random() * 12;
@@ -8729,7 +8732,7 @@ function buildReturnPortal() {
     }
   for (let x = -END_PLATFORM_R; x <= END_PLATFORM_R; x++)
     for (let z = -END_PLATFORM_R; z <= END_PLATFORM_R; z++)
-      for (let y = END_PLATFORM_TOP - 2; y <= END_PLATFORM_TOP; y++)
+      for (let y = END_PLATFORM_TOP; y <= END_PLATFORM_TOP; y++)
         protectedBlocks.add(protKey(x, y, z));
   endReturnWin = { orient: "v", minX: -2, minY: END_RETURN_BASE_Y, minZ: END_RETURN_Z };
   refreshBlocks(coords);
@@ -9234,6 +9237,7 @@ function refreshPortalFills(bx, by, bz) {
     } else {
       for (const w of collectEndWins(bx, by, bz, R)) ensurePortalFill(w, false);
       for (const w of collectNetherWins(bx, by, bz, R)) ensurePortalFill(w, true);
+      if (endReturnWin) ensurePortalFill(endReturnWin, false);
     }
   } else if (dim === "nether") {
     for (const w of collectNetherWins(bx, by, bz, R)) ensurePortalFill(w, true);
@@ -9617,21 +9621,49 @@ const dragonA = new THREE.Vector3();
 const dragonB = new THREE.Vector3();
 const dragonFlee = new THREE.Vector3();
 const DRAGON_SPEED = 8;
-const DRAGON_SKIM_Y = END_PLATFORM_TOP + 2.2;
-const DRAGON_SOAR_Y = END_PLATFORM_TOP + 10;
+const DRAGON_MIN_Y = END_PLATFORM_TOP + 7;
+const DRAGON_MAX_Y = END_PLATFORM_TOP + 22;
 const DRAGON_FLEE_DIST = 16;
 const DRAGON_FLEE_SPEED = 11;
-const DRAGON_PAINT = [
-  [0x0d0d12, 0x16161e, 0x20202a, 0x2a2a36, 0x100f1a], // black (base)
-  [0x8c1851, 0x8c315c, 0x8c4163, 0x8c5870, 0x8c3c65], // dark pink
-  [0x217931, 0x2e7f3d, 0x40874d, 0x558c5f, 0x367f44], // dark green
-  [0x8c7219, 0x8c7831, 0x8c7d40, 0x8c8356, 0x8c7836], // dark gold
-  [0x215b8c, 0x32648c, 0x446e8c, 0x5a788c, 0x36668c], // dark blue
-  [0x8c5619, 0x8c602f, 0x8c6a40, 0x8c7456, 0x8c6336], // dark orange
-  [0x8c2131, 0x8c313f, 0x8c444f, 0x8c5a61, 0x8c3645], // dark crimson
-  [0x5b218c, 0x66328c, 0x70448c, 0x7b5a8c, 0x69368c], // dark violet
-  [0x197e76, 0x2f817c, 0x46857f, 0x608884, 0x36817b], // dark cyan
-];
+const DRAGON_BASE = [0x1a1426, 0x241a36, 0x322248, 0x8c8496, 0x201830]; // body, belly, plate, bone, membrane
+const DRAGON_FINISH = { rough: 0.6, metal: 0.05, emiBody: 0.45, emiMem: 0.5, memOpacity: 0.94, eye: 0xc86bff, breath: 0xb04dff };
+const DRAGON_HUES = [0x6e2a92, 0x1a5eb8, 0x188844, 0xd8a818, 0xc82828]; // violet, blue, green, yellow, red
+const DRAGON_SHADE_GREY = 0x9a9aa0;
+function dragonShade(hex, f) {
+  const r = Math.min(255, ((hex >> 16) & 255) * f) | 0;
+  const g = Math.min(255, ((hex >> 8) & 255) * f) | 0;
+  const b = Math.min(255, (hex & 255) * f) | 0;
+  return r * 65536 + g * 256 + b;
+}
+function dragonMix(a, b, t) {
+  const ar = (a >> 16) & 255, ag = (a >> 8) & 255, ab = a & 255;
+  const br = (b >> 16) & 255, bg = (b >> 8) & 255, bb = b & 255;
+  return (((ar + (br - ar) * t) | 0) * 65536 + ((ag + (bg - ag) * t) | 0) * 256 + ((ab + (bb - ab) * t) | 0));
+}
+function dragonHitPalette(k) {
+  if (k <= 0) return DRAGON_BASE;
+  const acc = DRAGON_HUES[(k - 1) % DRAGON_HUES.length];
+  return [
+    dragonShade(acc, 0.35),
+    dragonShade(acc, 0.5),
+    dragonMix(dragonShade(acc, 0.85), DRAGON_SHADE_GREY, 0.35),
+    dragonMix(acc, DRAGON_SHADE_GREY, 0.35),
+    dragonMix(dragonShade(acc, 0.65), DRAGON_SHADE_GREY, 0.175),
+  ];
+}
+function applyDragonBase() {
+  if (!dragon.mesh || !dragon.mats) return;
+  const f = DRAGON_FINISH;
+  paintDragonPalette(DRAGON_BASE);
+  for (const key of ["bodyMat", "bellyMat", "plateMat", "boneMat"]) {
+    const mt = dragon.mats[key];
+    mt.roughness = f.rough; mt.metalness = f.metal; mt.emissiveIntensity = f.emiBody;
+  }
+  dragon.mats.memMat.roughness = f.rough; dragon.mats.memMat.metalness = f.metal;
+  dragon.mats.memMat.emissiveIntensity = f.emiMem; dragon.mats.memMat.opacity = f.memOpacity;
+  if (dragon.mats.eye) dragon.mats.eye.color.setHex(f.eye);
+  if (dragon.parts) for (const q of dragon.parts) q.m.material.color.setHex(f.breath);
+}
 
 function dragonBox(parent, mat, sx, sy, sz, px, py, pz, rx = 0, ry = 0, rz = 0) {
   const m = new THREE.Mesh(dragonUnitGeo, mat);
@@ -9674,8 +9706,7 @@ function spawnDragon() {
     transparent: true, opacity: 0.92, side: THREE.DoubleSide, depthWrite: false,
   });
   const eyeMat = new THREE.MeshBasicMaterial({ color: 0xc86bff });
-  dragon.mats = { bodyMat, bellyMat, plateMat, boneMat, memMat };
-  dragon.hitCount = 0;
+  dragon.mats = { bodyMat, bellyMat, plateMat, boneMat, memMat, eye: eyeMat };
   dragon.flee = new THREE.Vector3();
 
   dragonBox(g, bodyMat, 1.95, 1.45, 3.9, 0, 0, 0);
@@ -9775,13 +9806,14 @@ function spawnDragon() {
   dragon.parts = parts;
 
   dragon.path = null; dragon.yaw = 0; dragon.pitch = 0; dragon.bank = 0; dragon.prevYaw = 0; dragon.t = 0;
-  dragon.mesh.position.set(0, END_PLATFORM_TOP + 3, 0);
+  dragon.mesh.position.set(0, DRAGON_MIN_Y + 2, 0);
   dragon.s = 0;
   dragon.nextRun = 2 + Math.random() * 3;
   dragon.spitTimer = 3 + Math.random() * 4;
   dragon.spitting = 0;
   dragon.surgeT = 0; dragon.surge = 1; dragon.speedMul = 1;
-  dragon.hp = 1;
+  dragon.maxHp = 8 * DRAGON_FULL_DMG;
+  dragon.hp = dragon.maxHp;
   dragon.dying = 0; dragon.deathFlash = 0; dragon.deathIdx = 0;
   if (!dragon.mob || !mobs.includes(dragon.mob)) {
     let gid = mobs.length ? Math.max(...mobs.map((m) => m.id)) + 1 : 0;
@@ -9805,6 +9837,9 @@ function spawnDragon() {
     if (!mobById.has(dragon.mob.id)) mobById.set(dragon.mob.id, dragon.mob);
   }
   updateBossBar();
+  dragon.hitCount = 1;
+  applyDragonBase();
+  paintDragon();
   buildDragonPath();
 }
 
@@ -9819,7 +9854,11 @@ function paintDragonPalette(c) {
 
 function paintDragon() {
   if (!dragon.mesh || !dragon.mats) return;
-  paintDragonPalette(DRAGON_PAINT[1 + (dragon.hitCount % (DRAGON_PAINT.length - 1))]);
+  const k = ((dragon.hitCount - 1) % DRAGON_HUES.length) + 1;
+  paintDragonPalette(dragonHitPalette(k));
+  const acc = DRAGON_HUES[k - 1];
+  if (dragon.mats.eye) dragon.mats.eye.color.setHex(acc);
+  if (dragon.parts) for (const q of dragon.parts) q.m.material.color.setHex(acc);
 }
 
 function removeDragon() {
@@ -9870,10 +9909,10 @@ function buildDragonPath() {
   for (let i = 0; i < N; i++) {
     const a = base + (i / N) * Math.PI * 2 + (Math.random() - 0.5) * 0.7;
     const wide = i % 2 === 0;
-    const r = wide ? 24 + Math.random() * 6 : 12 + Math.random() * 9;
+    const r = wide ? 26 + Math.random() * 10 : 10 + Math.random() * 10;
     pts.push(new THREE.Vector3(
       Math.cos(a) * r,
-      Math.random() < lowBias ? DRAGON_SKIM_Y + Math.random() * 1.2 : DRAGON_SOAR_Y + Math.random() * 6,
+      Math.random() < lowBias ? DRAGON_MIN_Y + Math.random() * 2 : DRAGON_MAX_Y - 6 + Math.random() * 6,
       Math.sin(a) * r
     ));
   }
@@ -9883,7 +9922,7 @@ function buildDragonPath() {
   for (let k = 0; k < n; k++) {
     const u = (k / n) * N, i = Math.floor(u), t = u - i;
     dragonCatmull(pts[(i - 1 + N) % N], pts[i % N], pts[(i + 1) % N], pts[(i + 2) % N], t, tmp);
-    tmp.y = Math.max(tmp.y, DRAGON_SKIM_Y);
+    tmp.y = Math.min(DRAGON_MAX_Y, Math.max(DRAGON_MIN_Y, tmp.y));
     const r2 = tmp.x * tmp.x + tmp.z * tmp.z;
     if (r2 > RMAX2) { const sc = Math.sqrt(RMAX2 / r2); tmp.x *= sc; tmp.z *= sc; }
     pos[k] = tmp.clone();
@@ -9972,20 +10011,24 @@ function updateDragon(dt) {
     dragon.dying -= dt;
     dragon.deathFlash -= dt;
     if (dragon.deathFlash <= 0) {
-      dragon.deathFlash = 0.08;
-      dragon.deathIdx = (dragon.deathIdx + 1) % DRAGON_PAINT.length;
-      paintDragonPalette(DRAGON_PAINT[dragon.deathIdx]);
+      dragon.deathFlash = 0.1;
+      dragon.deathIdx = (dragon.deathIdx + 1) % dragon.deathTotal;
+      paintDragonPalette(dragonHitPalette(dragon.deathIdx));
     }
-    M.position.x += (Math.random() - 0.5) * 0.3;
-    M.position.y += (Math.random() - 0.5) * 0.3;
-    M.position.z += (Math.random() - 0.5) * 0.3;
-    M.rotation.z = dragon.bank + (Math.random() - 0.5) * 0.5;
+    const w = (Math.sin(dragon.t * Math.PI * 2 * 7) * 0.6 + Math.sin(dragon.t * Math.PI * 2 * 13.1 + 1.3) * 0.35 + (Math.random() - 0.5) * 0.6) * 0.8;
+    M.position.x = dragon.deathX + w;
+    M.position.z = dragon.deathZ + w * 0.6;
+    M.position.y = dragon.deathY + Math.abs(w) * 0.5;
+    M.rotation.z = dragon.bank + w * 0.8;
     if (dragon.mob) { dragon.mob.pos.copy(M.position); dragon.mob.vel.set(0, 0, 0); }
     if (dragon.dying <= 0) {
       const dx = M.position.x, dy = M.position.y + 1, dz = M.position.z;
       removeDragon();
       endCleared = true;
       buildReturnPortal();
+      portalDirty = true;
+      if (endReturnWin) ensurePortalFill(endReturnWin, false);
+      updatePortalVisual();
       queueSave();
       spawnDragonDeath(dx, dy, dz);
       showMsg("Ender Dragon is defeated");
@@ -10056,7 +10099,8 @@ function updateDragon(dt) {
     dragon.flee.multiplyScalar(Math.max(0, 1 - dt * 4));
     M.position.addScaledVector(dragon.flee, DRAGON_FLEE_SPEED * dt);
   }
-  if (M.position.y < DRAGON_SKIM_Y) M.position.y = DRAGON_SKIM_Y;
+  if (M.position.y < DRAGON_MIN_Y) M.position.y = DRAGON_MIN_Y;
+  if (M.position.y > DRAGON_MAX_Y) M.position.y = DRAGON_MAX_Y;
   M.rotation.y = dragon.yaw;
   M.rotation.x = dragon.pitch;
   M.rotation.z = dragon.bank;
@@ -10911,7 +10955,7 @@ let toastTimer = 0;
 
 function updateBossBar() {
   if (!dragon.mesh || dragon.hp <= 0) { bossBarEl.style.display = "none"; return; }
-  bossFillEl.style.width = Math.max(0, Math.round(dragon.hp * 100)) + "%";
+  bossFillEl.style.width = Math.max(0, Math.round(dragon.hp / (dragon.maxHp || 1) * 100)) + "%";
   bossBarEl.style.display = "block";
 }
 
@@ -10928,9 +10972,15 @@ function damageDragon(amount) {
   paintDragon();
   updateBossBar();
   if (dragon.hp <= 0) {
-    dragon.dying = 1;
+    dragon.deathTotal = DRAGON_HUES.length + 1;
+    dragon.dying = 1.5;
     dragon.deathFlash = 0;
     dragon.deathIdx = 0;
+    dragon.deathX = dragon.mesh.position.x;
+    dragon.deathY = dragon.mesh.position.y;
+    dragon.deathZ = dragon.mesh.position.z;
+    dragon.spitting = 0;
+    if (dragon.parts) for (const q of dragon.parts) { q.life = q.ttl; q.m.visible = false; }
   }
 }
 

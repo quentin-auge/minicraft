@@ -244,7 +244,7 @@ stays bright at distance, `placeable: true` so it
   air speed (`SPRINT × AIR_SPRINT`, so sprinting jumps travel further), walking
   stays at `WALK`, blended via `AIR_STEER` = 2.5, and with no input the
   horizontal momentum coasts with a
-   slow `JUMP_FLING_DAMP` (6) decay until you land (jump inertia `jumpBoost` stacks on consecutive sprint jumps, `jumpIdle` resets when stalled or idle 0.12s). Jumping requires a fresh press — holding Shift/Space on the ground does not auto-repeat (`spaceJustPressed` sets `jumpBuffer` `JUMP_BUFFER` 0.2s, consumed only when `onGround`; `spaceJustReleased` halves upward velocity for variable height, the 200ms buffer keeps fast bunny-hops/`jumpBoost` responsive around landing time). Rebound on water/lava: falling into water/lava while holding Shift/Space while a recent jump is tracked (`jumpOriginY`/`jumpPeakY`/`lastSpaceDownY`/`jumpHoldContinuous`) bounces back to that height (`waterSurfaceTop` delta → `sqrt(2*GRAVITY*delta)`, sprint-boosted, `bounced` flag) instead of damping. Swimming: full-AABB water detection (`headInWater` checks `pos.y+0.01` to `pos.y+PLAYER_H-0.01` for WATER/LAVA), deep ascent `SWIM_ACCEL` 2.0, shallow hold at 65% immersed (`targetY = surface-1.17`, `err*4` spring with `SWIM_BRAKE*2`, `SWIM_AREA` 10) — player floats waist-chest deep, not feet-on-surface. Debug HUD (`#debugHud`, toggled with =/+) shows pos/vel/onGround.
+   slow `JUMP_FLING_DAMP` (6) decay until you land (jump inertia `jumpBoost` stacks on consecutive sprint jumps, `jumpIdle` resets when stalled or idle 0.12s). Jumping requires a fresh press — holding Shift/Space on the ground does not auto-repeat (`spaceJustPressed` sets `jumpBuffer` `JUMP_BUFFER` 0.2s, consumed only when `onGround`; `spaceJustReleased` halves upward velocity for variable height, the 200ms buffer keeps fast bunny-hops/`jumpBoost` responsive around landing time). Rebound on water/lava: falling into water/lava while holding Shift/Space while a recent jump is tracked (`jumpOriginY`/`jumpPeakY`/`lastSpaceDownY`/`jumpHoldContinuous`) bounces back to that height (`waterSurfaceTop` delta → `sqrt(2*GRAVITY*delta)`, sprint-boosted, `bounced` flag) instead of damping. Swimming: full-AABB water detection (`headInWater` checks `pos.y+0.01` to `pos.y+PLAYER_H-0.01` for WATER/LAVA), deep ascent `SWIM_ACCEL` 2.0, shallow hold at 65% immersed (`targetY = surface-1.17`, `err*4` spring with `SWIM_BRAKE*2`, `SWIM_AREA` 10) — player floats   waist-chest deep, not feet-on-surface. Debug HUD (`#boost`, toggled with =/+) shows jump speed while sprint-jumping.
   Respawn (`spawnPlayer`, used for new worlds, void falls and flying out of the
   level) scans the spawn column from `MAX_Y` down (skipping CLOUD/MOON) and stands
   on the top solid found, so the player never settles inside hills, mesas or
@@ -303,19 +303,22 @@ stays bright at distance, `placeable: true` so it
   explosions chain-react: a blast near another TNT block lights it, and a lit
   TNT caught in a blast (or re-broken) detonates immediately. In the End, a
   lit TNT targets the Ender Dragon: the TNT cube flies up at it, sticks onto
-  its body and detonates on contact with a big purple particle burst (each
-  stuck blast = 1/8 of its HP, so it takes 8 TNT to slay). Aim at the dragon
-  like at a pigeon (`aimedDragon` + `fireTNTAtPigeon`, same `PIGEON_AIM_DIST` 200
-  reach, `mobT <= blockT + 0.5` occlusion and `tntTargeted` single-live-bomb rule,
-  wired through both `tryFireLockedTNT` and the discrete-break `igniteTNT` path):
+  its body and detonates on contact with a burst in the dragon's new color
+  (`damageDragon` runs first so the repaint lands, then `spawnDragonBurst`
+  fires tinted by `dragonBurstColor`, the current hit accent — flash plus
+  particles; each stuck blast = `DRAGON_FULL_DMG` HP, so it takes 8 TNT to slay. Strict aim required: with TNT selected in the End, a bomb fires
+  only while the crosshair is on the dragon and nearer than any block
+  (`aimedDragon`, `mobT <= blockT + 0.5` occlusion, `tntTargeted`
+  single-live-bomb rule, wired through both `tryFireLockedTNT` and the
+  discrete-break `igniteTNT` path) — sky clicks never fire, and chained burst
+  shots stop the moment aim leaves the dragon:
   the per-lock shot cap is live (`dragonShotsCap` = `ceil(hp / DRAGON_FULL_DMG)`,
   8 at full health, fewer as it is hit) instead of the pigeon's fixed 3.
-  Placed TNT in the End only homes when the break aims at the dragon
-  (`igniteTNT` converts to a free bomb only when `t.pigeon` is set, like the
-  overworld pigeon path); otherwise it stays a normal fused block that explodes
-  in place and never touches the dragon — only TNT aimed at the dragon flies at
-  it and hits it. A dragon-homing blast deals dragon damage only (full 1/8 HP
-  per stuck blast) —
+  Breaking a placed TNT block in the End converts it to a dragon-homing
+  bomb only when the break aims at the dragon; otherwise it stays a normal
+  fused block that explodes in place and never touches the dragon — only TNT
+  aimed at the dragon flies at it and hits it. A dragon-homing blast deals
+  dragon damage only (full 1/8 HP per stuck blast) —
   it never destroys terrain, so no crater is left where the TNT launched; a
   homing bomb that never sticks fizzles in air after `life` (3s fuse + 2s chase)
   with no dragon damage.
@@ -344,7 +347,7 @@ stays bright at distance, `placeable: true` so it
   build your own End-frame return portal in either orientation. The return
   portal's frame blocks are indestructible (`protectedBlocks`, checked by
   `breakBlock` and the TNT blast loop), and so is the whole End platform
-  (all 3 platform layers, added in `buildReturnPortal`). Protection keys are
+  (its single surface layer at y 0, added in `buildReturnPortal`). Protection keys are
   dimension-scoped (`protKey`, `dim:key`), so End coordinates never
   shadow-protect same-coordinated Overworld/Nether blocks). Returning drops you no more than 3
   blocks from the Overworld portal frame (Chebyshev distance to any frame
@@ -390,7 +393,13 @@ stays bright at distance, `placeable: true` so it
   `portalFillGeo`
   and two `MeshBasicMaterial`s (purple `0x9b30ff` for Nether, black for End)
   with the same per-orientation `layoutPortalFill`; the purple glow marks an
-  active portal. Fills render as per-cube `Mesh`s in a `THREE.Group` and are
+  active portal. The End return portal's fill is exempt from proximity
+  registration: `refreshPortalFills` always registers `endReturnWin` once the
+  End is cleared, so its black stays rendered from anywhere on the platform
+  (distance culling at ≈182 blocks still covers the whole floor), and the
+  death sequence registers plus shows it synchronously
+  (`ensurePortalFill` + `updatePortalVisual` right after `buildReturnPortal`),
+  so the black is there the instant the dragon dies. Fills render as per-cube `Mesh`s in a `THREE.Group` and are
   culled per-frame: hidden when you're in another dimension, when beyond
   `PORTAL_FILL_DIST` (scales with render distance: 8 chunks × 16 × √2 ≈ 182
   blocks, so the glow stays lit as far as the frame itself is visible, plus
@@ -524,10 +533,13 @@ stays bright at distance, `placeable: true` so it
   back to the Overworld's last portal entry point.
 - **Ender Dragon**: ambient dragon that spawns in the End and flies along a
   random closed aerial path (arc-length-sampled Catmull-Rom spline through
-  random waypoints, low "skim the floor" runs and high soars (about twice the
-  platform height), banking turns and dives), re-picking a fresh trajectory
-  each lap; its loops alternate tight inner passes and wide sweeps that swing
-  past the platform edge (waypoint radii 12–30, clamped inside radius 30), so
+  random waypoints 7–22 above the platform (`DRAGON_MIN_Y`/
+  `DRAGON_MAX_Y`: low runs at +7–9, high runs at +16–22, clamped both ends
+  in `buildDragonPath` and per-frame in `updateDragon`), banking turns and
+  dives), re-picking a
+  fresh trajectory each lap; its loops alternate tight inner passes and wide
+  sweeps across the whole platform (waypoint radii 10–36, clamped inside
+  radius 42), so
   you get a clear view of it when TNT sticks and blows up on it. Its path is
   player-agnostic — it never aims at the player (it was changed to stop
   converging on them), flying a pure ambient circuit instead. It flees homing
@@ -537,12 +549,20 @@ stays bright at distance, `placeable: true` so it
   clamped above the platform surface, so it never clips through the platform. Built from Three.js primitives only — boxy, cubic
   style: a blocky torso/belly, box horns and five head spikes, glowing purple
   eyes (unlit), translucent purple bat-wing membranes (mirrored), and
-  segmented forked tail boxes; shared geometries/materials. It spawns black and
-  re-paints itself with every TNT hit (`paintDragon`, cycling the `DRAGON_PAINT`
-  palette of 8 dark shades — dark pink, green, gold, blue, orange, crimson,
-  violet, cyan — across the stored body/belly/plate/bone/membrane materials).
-  All dragon materials carry a faint self-illumination (`emissive` = own color,
-  0.45 body / 0.5 membrane, synced in `paintDragonPalette`) so the black base
+  segmented forked tail boxes; shared geometries/materials. It wears one dark
+  style — Dark Purple (`DRAGON_BASE`: near-black purple body `0x1a1426`, dark
+  purple belly/plates/membrane, grey-lavender bone `0x8c8496`, bright purple
+  eye `0xc86bff` and breath `0xb04dff`, matte finish `DRAGON_FINISH`) — it
+  spawns already violet (`hitCount = 1` + `paintDragon` at the end of
+  `spawnDragon`, so there is no base-grey phase) —
+  and every TNT hit re-paints it (`paintDragon` via `damageDragon`'s
+  `hitCount++`) through the spectrum (`DRAGON_HUES`: violet, blue, green,
+  yellow, red — first hit is violet, red wraps back to violet): each hue is
+  expanded to a 5-cell palette by `dragonHitPalette` (body/belly scaled toward
+  black, plate/bone/membrane mixed toward grey `0x9a9aa0`), and the eyes and
+  breath tint to the hit hue as well.
+  All dragon materials carry self-illumination (`emissive` = own color, synced
+  in `paintDragonPalette`, base restored by `applyDragonBase`) so the dark base
   stays readable against the black End sky without changing its colors.
   It breathes a
   long-reaching spray of fading purple cube fire from its mouth (about 3x the
@@ -552,12 +572,13 @@ stays bright at distance, `placeable: true` so it
   spline-driven yaw/pitch/bank orientation, wing flap with speed, neck/head
   sway, tail wave and body bob. It has a boss health bar (HUD) and can be
   killed with TNT blasts (see TNT). At 0 HP the dragon does not die instantly:
-  it freezes and rapidly stroboscopically flashes through every entry of the
-  `DRAGON_PAINT` palette (a new color every `0.08`s) while shaking in place for
-  1s (`dragon.dying`/`deathFlash`/`deathIdx`, driven inside `updateDragon` via
+  it freezes and steps through every entry of the
+  spectrum (a new color every `0.1`s, via `dragonHitPalette`) while shaking hard (layered 7 Hz + 13.1 Hz sines plus jitter around the death anchor) for
+  a fixed 1.5 s (`dragon.dying`/`deathFlash`/`deathIdx`, driven inside `updateDragon` via
   `paintDragonPalette`; `damageDragon` now only starts the countdown instead of
-   killing outright), then death triggers a huge double-layer purple
-   explosion, opens the return portal and removes the dragon. Resources are
+   killing outright, and clears any live breath cubes at kill time), then death triggers a huge multicolor explosion (420
+  spectrum-hued particles plus a white second layer via `spawnDragonDeath`,
+  no flash sphere), opens the return portal and removes the dragon. Resources are
   disposed when leaving the End. The dragon is a flying mob (`kind: "dragon"`
   in `mobs[]`, `hw` 1.5 `h` 3, `dim: "end"`, created in `spawnDragon` as
   `dragon.mob` and removed in `removeDragon`): `updateDragon` syncs `pos`/`vel`
@@ -812,7 +833,7 @@ stays bright at distance, `placeable: true` so it
   End, spawns dragon + endermen and places the player on the platform, seeds a
   valid `overPortalSpawn` on real overworld ground so the trip back lands
   outside the terrain, and spawns no overworld mobs so the End holds only
-  dragon + endermen). It is
+     dragon + endermen). It is
   currently `"end"` for testing — set it back to `"over"` to restore the
   original behaviour. `generateWorld` pins `dim = "over"` while it runs:
   `setBlock` records column tops per `dim`, so generating with any other dim
