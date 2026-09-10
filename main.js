@@ -1259,7 +1259,7 @@ function pigeonFindPerchSpot(m, nearMax = 0) {
 }
 function pigeonNextLeg(m) {
   m._decideT = 1.2;
-  if (Math.random() < PIGEON_PERCH_CHANCE) {
+  if (Math.random() < PIGEON_PERCH_CHANCE && !chainChild.has(m.id)) {
     const found = pigeonFindPerchSpot(m);
     if (found) {
       m.mode = "toPerch";
@@ -1285,7 +1285,7 @@ function pigeonTakeoff(m) {
   m.perchWanderT = 0;
   m.perchTimeout = 0;
   m.perchRetry = 0;
-  if (Math.random() < PIGEON_HOP_CHANCE) {
+  if (Math.random() < PIGEON_HOP_CHANCE && !chainChild.has(m.id)) {
     const found = pigeonFindPerchSpot(m, PIGEON_HOP_R);
     if (found) {
       m.mode = "toPerch";
@@ -1963,6 +1963,7 @@ function spawnSinglePigeon(outOfView = false, sx = null, sy = null, sz = null) {
     path: null, pathIdx: 0, pathKey: null, sc: 1, steerX: 0, steerZ: 0, steerCooldown: 0, lastTarget: null, _wasInWater: false, wolfInWater: false,
   };
   m.target = pigeonRandomTarget(m.pos);
+  stampSpawn(m);
   mobs.push(m);
   mobById.set(m.id, m);
   return m;
@@ -1985,6 +1986,124 @@ function removePigeons() {
   pigeonLock = null;
   pigeonLockT = 0;
   pigeonLockShots = 0;
+  pruneChains();
+}
+const CHAIN_SPAWN_KINDS = ["villager", "pig", "cow", "wolf"];
+function spawnChainMob(kind, sx, sy, sz) {
+  let mesh, hw, hh, canStep = false, speed = WALK / 2, extra = null;
+  if (kind === "pig") { mesh = makePigMesh(); hw = 0.32; hh = 0.92; speed = WALK / 2.2; }
+  else if (kind === "cow") { mesh = makeCowMesh(); hw = 0.32; hh = 1.30; speed = WALK / 2.2; }
+  else if (kind === "wolf") {
+    mesh = makeWolfMesh(WOLF_FUR, WOLF_COLLAR_COLORS[Math.floor(Math.random() * WOLF_COLLAR_COLORS.length)]);
+    hw = 0.30; hh = 0.90; canStep = true;
+    extra = { fur: WOLF_FUR, collar: mesh.userData.collarHex, wolfStepUp: false, wolfStepUpClearY: 0, wolfInWater: false, wasOnGroundWolf: false };
+  }
+  else if (kind === "pigeon") {
+    mesh = makePigeonMesh(); hw = 0.25; hh = 0.5; speed = PIGEON_SPEED;
+    extra = {
+      arc: null, targetMode: null, perchSpot: null, perchGroup: null, perchT: 0,
+      perchWander: null, perchWanderT: 0, perchTimeout: 0, perchRetry: 0,
+    };
+  }
+  else { mesh = makeVillagerMesh(false); hw = 0.27; hh = 1.82; }
+  let gid = mobs.length ? Math.max(...mobs.map((m) => m.id)) + 1 : 0;
+  const yaw = Math.random() * Math.PI * 2;
+  mesh.position.set(sx, sy, sz);
+  mesh.rotation.y = yaw;
+  scene.add(mesh);
+  const m = {
+    id: gid++, kind, canStep, homeId: -1, isBaby: false, parentId: -1, dim: "over",
+    pos: new THREE.Vector3(sx, sy, sz),
+    vel: new THREE.Vector3(0, 0, 0),
+    hw, h: hh, mesh, onGround: false,
+    target: null, mode: "wander", wanderT: 3 + Math.random() * 4, insideT: 0,
+    legPhase: Math.random() * Math.PI * 2, speed,
+    blockedT: 0, yaw, yawTarget: yaw, villageBound: false, penBound: false,
+    _stuckT: 0, _prevX: sx, _prevZ: sz,
+    path: null, pathIdx: 0, pathKey: null, sc: 1, steerX: 0, steerZ: 0, steerCooldown: 0, lastTarget: null, _wasInWater: false, wolfInWater: false,
+    ...(extra || {}),
+  };
+  if (kind === "villager") m.palIdx = mesh.userData.palIdx != null ? mesh.userData.palIdx : 0;
+  stampSpawn(m);
+  mobs.push(m);
+  mobById.set(m.id, m);
+  return m;
+}
+function spawnPigeonChain() {
+  if (dim !== "over") { showMsg("Pigeon chains only take off in the Overworld"); return false; }
+  const total = 3 + Math.floor(Math.random() * 6);
+  const kinds = [];
+  for (let i = 1; i < total; i++) kinds.push(CHAIN_SPAWN_KINDS[Math.floor(Math.random() * CHAIN_SPAWN_KINDS.length)]);
+  const sizes = { villager: [0.27, 1.82], pig: [0.32, 0.92], cow: [0.32, 1.30], wolf: [0.30, 0.90], pigeon: [0.25, 0.5] };
+  const aimDir = new THREE.Vector3();
+  camera.getWorldDirection(aimDir);
+  const aimHit = pickBlock(camera.position, aimDir, true);
+  const aimX = aimHit ? aimHit.x + aimHit.face[0] + 0.5 : null;
+  const aimZ = aimHit ? aimHit.z + aimHit.face[2] + 0.5 : null;
+  for (let attempt = 0; attempt < 12; attempt++) {
+    let ax, az, dx, dz;
+    if (aimX !== null && attempt < 8) {
+      const jx = attempt === 0 ? 0 : (Math.random() - 0.5) * 4;
+      const jz = attempt === 0 ? 0 : (Math.random() - 0.5) * 4;
+      ax = aimX + jx; az = aimZ + jz;
+      const rx = ax - pos.x, rz = az - pos.z;
+      const rl = Math.hypot(rx, rz);
+      if (rl > 0.5) { dx = rx / rl; dz = rz / rl; }
+      else { const ang = Math.random() * Math.PI * 2; dx = Math.cos(ang); dz = Math.sin(ang); }
+      if (attempt > 0) { const tw = (Math.random() - 0.5) * 1.2; const cx = Math.cos(tw), sx = Math.sin(tw); const ndx = dx * cx - dz * sx; dz = dx * sx + dz * cx; dx = ndx; }
+    } else {
+      const ang = Math.random() * Math.PI * 2;
+      dx = Math.cos(ang); dz = Math.sin(ang);
+      ax = pos.x + dx * 5; az = pos.z + dz * 5;
+    }
+    const spots = [];
+    let clear = true;
+    const allKinds = ["pigeon", ...kinds];
+    for (let i = 0; i < total; i++) {
+      const px = ax - dx * 2.6 * i, pz = az - dz * 2.6 * i;
+      if (Math.abs(px) > WORLD_RADIUS - 2 || Math.abs(pz) > WORLD_RADIUS - 2) { clear = false; break; }
+      const [hw, hh] = sizes[allKinds[i]];
+      const gy = groundYDown(px, pz, (aimHit ? aimHit.y : pos.y) + 2, hw);
+      if (gy == null || gy < 1) { clear = false; break; }
+      if (aabbCollidesWorld(px, gy, pz, hw, hh) || !hasMobGround(px, pz, hw, gy)) { clear = false; break; }
+      if (mobs.some((o) => (o.pos.x - px) ** 2 + (o.pos.z - pz) ** 2 < 1.44 && Math.abs(o.pos.y - gy) < 2.5)) { clear = false; break; }
+      spots.push([px, gy, pz]);
+    }
+    if (!clear) continue;
+    const lead = spawnChainMob("pigeon", spots[0][0], spots[0][1], spots[0][2]);
+    lead.vel.set(0, 0, 0);
+    lead.mode = "sit";
+    lead.target = null;
+    lead.targetMode = null;
+    lead.arc = null;
+    const spawned = [lead];
+    let front = lead, ok = true;
+    for (let i = 1; i < total; i++) {
+      const m = spawnChainMob(kinds[i - 1], spots[i][0], spots[i][1], spots[i][2]);
+      spawned.push(m);
+      if (!linkChain(front, m)) { ok = false; break; }
+      front = m;
+    }
+    if (!ok) {
+      for (const m of spawned) {
+        dropChainFrom(m);
+        if (m.mesh) scene.remove(m.mesh);
+        mobById.delete(m.id);
+        const ix = mobs.indexOf(m);
+        if (ix >= 0) mobs.splice(ix, 1);
+      }
+      showMsg("No room for a pigeon chain here");
+      return false;
+    }
+    showMsg("Pigeon chain assembled — takeoff!");
+    setTimeout(() => {
+      if (mobs.includes(lead) && chainChild.has(lead.id)) pigeonTakeoff(lead);
+    }, 2000);
+    queueSave();
+    return true;
+  }
+  showMsg("No room for a pigeon chain here");
+  return false;
 }
 function pigeonSpotOutOfView() {
   const fwd = new THREE.Vector3();
@@ -2019,16 +2138,163 @@ function killPigeon(m) {
   mobs.splice(i, 1);
   spawnSinglePigeon(true);
 }
+function chainRespawnFree(x, y, z, hw, h, selfId) {
+  if (aabbCollidesWorld(x, y, z, hw, h)) return false;
+  for (const o of mobs) {
+    if (o.id === selfId) continue;
+    if (o.dim !== undefined && o.dim !== "over") continue;
+    if (Math.abs(y - o.pos.y) > 1.2) continue;
+    const dx = x - o.pos.x, dz = z - o.pos.z;
+    const need = hw + (o.hw || 0.27) + 0.1;
+    if (dx * dx + dz * dz < need * need) return false;
+  }
+  return true;
+}
+function killChainMob(m) {
+  const i = mobs.indexOf(m);
+  if (i < 0) return;
+  if (m === carryMob || m === carryGrappleMob) return;
+  const snap = {
+    hw: m.hw, h: m.h,
+    ox: m.spawnX !== undefined ? m.spawnX : m.pos.x,
+    oy: m.spawnY !== undefined ? m.spawnY : m.pos.y,
+    oz: m.spawnZ !== undefined ? m.spawnZ : m.pos.z,
+  };
+  const carrierId = chainParent.get(m.id);
+  const childId = chainChild.get(m.id);
+  const front = carrierId === PLAYER_CHAIN_ID ? playerChainAvatar : mobById.get(carrierId);
+  const back = childId !== undefined ? mobById.get(childId) : null;
+  const backLive = !!(back && mobs.includes(back) && back !== m && !isMobHeld(back));
+  const frontLive = carrierId === PLAYER_CHAIN_ID ? playerInChain() : !!(front && mobs.includes(front));
+  if (carrierId !== undefined) {
+    if (carrierId === PLAYER_CHAIN_ID) chainChild.delete(PLAYER_CHAIN_ID);
+    else if (front && chainChild.get(carrierId) === m.id) chainChild.delete(carrierId);
+    chainParent.delete(m.id);
+  }
+  chainChild.delete(m.id);
+  const self = chainLinks.get(m.id);
+  if (self) {
+    scene.remove(self.rope);
+    scene.remove(self.head);
+    if (self.rope.dispose) self.rope.dispose();
+    chainLinks.delete(m.id);
+  }
+  if (back && mobs.includes(back) && back !== m) {
+    if (isMobHeld(back)) {
+      const bl = chainLinks.get(back.id);
+      if (bl) {
+        scene.remove(bl.rope);
+        scene.remove(bl.head);
+        if (bl.rope.dispose) bl.rope.dispose();
+        chainLinks.delete(back.id);
+      }
+      chainParent.delete(back.id);
+    } else {
+      freeChainRoot(back);
+    }
+  }
+  if (pigeonLock === m) pigeonLock = null;
+  if (grappleMob === m) detachDisplacementGrapple();
+  if (m.mesh) scene.remove(m.mesh);
+  if (m.fallMesh) scene.remove(m.fallMesh);
+  mobById.delete(m.id);
+  mobs.splice(i, 1);
+  const ei = endermen.indexOf(m);
+  if (ei >= 0) endermen.splice(ei, 1);
+  respawnChainMob(snap);
+}
+function unchainMob(m, fizzleKey) {
+  if (!mobs.includes(m)) return;
+  if (m === carryMob || m === carryGrappleMob) return;
+  if (m.kind === "dragon") return;
+  severChainMob(m);
+  resumeChainedMob(m);
+  m.villageBound = false;
+  m.penBound = false;
+  if (pigeonLock === m) pigeonLock = null;
+  if (grappleMob === m) detachDisplacementGrapple();
+  for (const [k, t] of [...tntLit]) {
+    if (k === fizzleKey || t.pigeon !== m || !t.mesh) continue;
+    clearTNTVisual(t);
+    tntLit.delete(k);
+    explodePigeon(t.px, t.py, t.pz, false);
+  }
+  tntSyncClear(m);
+}
+function respawnChainMob(snap) {
+  const hw = snap.hw || 0.27, h = snap.h || 1.82;
+  let px = snap.ox, py = snap.oy, pz = snap.oz;
+  let placed = false;
+  {
+    py = Math.max(PIGEON_MIN_Y + 1, Math.min(PIGEON_MAX_Y - 1, py));
+    if (pigeonProbeFree(px, py, pz)) placed = true;
+    if (!placed) {
+      for (let r = 1; r <= 4 && !placed; r++) {
+        for (let dx = -r; dx <= r && !placed; dx++) for (let dz = -r; dz <= r && !placed; dz++) {
+          if (Math.abs(dx) !== r && Math.abs(dz) !== r) continue;
+          for (const dy of [0, 3, -3, 6, -6]) {
+            const tx = px + dx * 2, ty = py + dy, tz = pz + dz * 2;
+            if (ty < PIGEON_MIN_Y + 1 || ty > PIGEON_MAX_Y - 1) continue;
+            if (pigeonProbeFree(tx, ty, tz) && chainRespawnFree(tx, ty, tz, hw, h, -1)) {
+              px = tx; py = ty; pz = tz; placed = true; break;
+            }
+          }
+        }
+      }
+    }
+    if (!placed) {
+      const spot = pigeonSpotOutOfView();
+      px = spot.x; py = spot.y; pz = spot.z;
+    }
+  }
+  let gid = mobs.length ? Math.max(...mobs.map((o) => o.id)) + 1 : 0;
+  const yaw = Math.random() * Math.PI * 2;
+  let mesh, m;
+  {
+    mesh = makePigeonMesh();
+    mesh.position.set(px, py, pz);
+    mesh.rotation.y = yaw;
+    scene.add(mesh);
+    m = {
+      id: gid++, kind: "pigeon", canStep: false, homeId: -1, isBaby: false, parentId: -1, dim: "over",
+      pos: new THREE.Vector3(px, py, pz),
+      vel: new THREE.Vector3(Math.cos(yaw) * PIGEON_SPEED, 0, Math.sin(yaw) * PIGEON_SPEED),
+      hw, h, mesh, onGround: false,
+      target: null, arc: null, mode: "straight", wanderT: 0,
+      perchSpot: null, perchGroup: null, perchT: 0, perchWander: null, perchWanderT: 0, perchTimeout: 0, perchRetry: 0,
+      legPhase: Math.random() * Math.PI * 2, speed: PIGEON_SPEED,
+      blockedT: 0, yaw, yawTarget: yaw, villageBound: false,
+      _stuckT: 0, _prevX: px, _prevZ: pz,
+      path: null, pathIdx: 0, pathKey: null, sc: 1, steerX: 0, steerZ: 0, steerCooldown: 0, lastTarget: null, _wasInWater: false, wolfInWater: false,
+    };
+    m.target = pigeonRandomTarget(m.pos);
+  }
+  m.spawnX = snap.ox;
+  m.spawnY = snap.oy;
+  m.spawnZ = snap.oz;
+  mobs.push(m);
+  mobById.set(m.id, m);
+  return m;
+}
 function pigeonProbeFree(x, y, z) {
   if (x < -WORLD_RADIUS + 1 || x > WORLD_RADIUS - 1 || z < -WORLD_RADIUS + 1 || z > WORLD_RADIUS - 1) return false;
   if (y < 1 || y > MAX_Y - 1) return false;
   return !aabbCollidesWorld(x, y, z, 0.25, 0.5);
+}
+function pigeonSameChain(a, b) {
+  if (!a || !b || a === b) return false;
+  if (a.kind !== "pigeon" || b.kind !== "pigeon") return false;
+  if (!isChained(a) && !isChainCarrier(a)) return false;
+  if (!isChained(b) && !isChainCarrier(b)) return false;
+  const ra = chainRootOf(a), rb = chainRootOf(b);
+  return !!ra && ra === rb;
 }
 function pigeonSeparate(m, dt, vel, sp) {
   const nearby = nearbyMobsFor(m.pos.x, m.pos.z, 1);
   for (const o of nearby) {
     if (o === m || o.kind !== "pigeon") continue;
     if (o.dim !== undefined && o.dim !== dim) continue;
+    if (pigeonSameChain(m, o)) continue;
     const ox = m.pos.x - o.pos.x, oy = m.pos.y - o.pos.y, oz = m.pos.z - o.pos.z;
     const d2 = ox * ox + oy * oy + oz * oz;
     if (d2 < PIGEON_SEP_DIST * PIGEON_SEP_DIST && d2 > 0.0001) {
@@ -2263,6 +2529,17 @@ function updatePigeon(m, dt) {
     m.targetMode = null;
     m.target = null;
   }
+  if (m.mode === "sit") {
+    pigeonResolvePenetration(m);
+    m.vel.set(0, 0, 0);
+    m.mesh.position.copy(m.pos);
+    m.mesh.rotation.y = m.yaw;
+    m.mesh.rotation.x = 0;
+    m.mesh.rotation.z = 0;
+    if (m.mesh.userData.wingL) m.mesh.userData.wingL.rotation.z = 0.12;
+    if (m.mesh.userData.wingR) m.mesh.userData.wingR.rotation.z = -0.12;
+    return;
+  }
   if (m.mode === "perch") { updatePerchedPigeon(m, dt); return; }
   if (m.mode === "toPerch") { updateToPerchPigeon(m, dt); return; }
   if (m.mode !== "straight" && m.mode !== "arc") { m.mode = "straight"; m.target = null; m.targetMode = null; m.perchRetry = 0; }
@@ -2438,6 +2715,12 @@ function groundYForMob(x, z, hintY, hw) {
   for (let y = MAX_Y; y >= 0; y--) if (!mobBlockedAt(x, z, hw, y)) return y;
   return Math.floor(hintY);
 }
+function groundYDown(x, z, hintY, hw) {
+  for (let y = Math.min(MAX_Y, Math.floor(hintY) + 1); y >= 0; y--) {
+    if (!mobBlockedAt(x, z, hw, y)) return y;
+  }
+  return null;
+}
 function mobInWater(m) {
   const hw = m.hw, hh = m.h;
   const y0 = Math.floor(m.pos.y + 0.01), y1 = Math.floor(m.pos.y + hh - 0.01);
@@ -2504,7 +2787,7 @@ function pickMob(dir, maxDist = 1000) {
   let best = null, bestT = Infinity;
   for (const m of mobs) {
     if (m.dim !== undefined && m.dim !== dim) continue;
-    if (m === carryMob || m === carryGrappleMob) continue;
+    if (isMobHeld(m)) continue;
     const falling = !m.onGround || (m.vel && Math.abs(m.vel.y) > 1);
     const expand = falling ? 0.45 : 0;
     const minX = m.pos.x - m.hw - expand, maxX = m.pos.x + m.hw + expand;
@@ -2590,10 +2873,1150 @@ const carryGrappleHookPos = new THREE.Vector3();
 const carryGrappleOffset = new THREE.Vector3();
 let carryGrappleRetracting = false;
 let carryGrapplePulling = false;
+let carryGrappleChainTarget = null;
+let chainAttachMode = "behind";
+let carryGrappleAttachMode = "behind";
 function isMobFrozenByGrapple(m) {
   if (m !== carryGrappleMob) return false;
   if (carryGrappleMode === "release") return carryGrappleActive || carryGrapplePulling || carryGrappleRetracting;
+  if (carryGrappleMode === "attach") return carryGrappleActive || carryGrapplePulling || carryGrappleRetracting;
   return carryGrapplePulling;
+}
+
+// Mob chains: pigeon-rooted linked lists. A carried mob can be attached onto
+// a pigeon (or onto the tail of an existing chain) with ENTER. Each persistent
+// link is a regular displacement hook (brown rope, tow-behind spring).
+// Session-only: cleared on world rebuild / dimension trips.
+const chainChild = new Map();
+const chainParent = new Map();
+const chainLinks = new Map();
+const CHAIN_LINK_CUBES = 128;
+const chainLinkGeo = new THREE.BoxGeometry(0.1, 0.1, 0.1);
+const chainLinkMat = new THREE.MeshBasicMaterial({ color: 0x8a6d3b });
+const chainLinkHeadGeo = new THREE.BoxGeometry(0.17, 0.17, 0.17);
+const chainLinkHeadMat = new THREE.MeshBasicMaterial({ color: 0x4a3a1e });
+const chainLinkMatrix = new THREE.Matrix4();
+const CHAIN_LINK_LEN = Math.hypot(2.5, 0.4);
+const CHAIN_TAUT_TIME = 0.5;
+const CHAIN_SPLIT_DY = 3, CHAIN_SPLIT_STRAIN_T = 1;
+const CHAIN_FLY_SPLIT_DY = 8;
+const CHAIN_CONVERGE_SPEED = 4.0;
+const CHAIN_TOW_KP = 5.0;
+const CHAIN_FLY_SNAP_MAX = 2.2, CHAIN_FLY_LEASH = 2.5, CHAIN_FLY_LEASH_T = 1.0;
+const PLAYER_CHAIN_ID = "player";
+const playerChainAvatar = {
+  id: PLAYER_CHAIN_ID,
+  kind: "player",
+  mesh: null,
+  get pos() { return pos; },
+  get vel() { return vel; },
+  get dim() { return dim; },
+  get h() { return PLAYER_H; },
+  get hw() { return PLAYER_HW; },
+  get speed() { return (grappleMob && grappleMob.speed) || PIGEON_SPEED; },
+};
+function playerInChain() {
+  return grappleActive && !grappleRetracting && grappleHooked && !!grappleMob &&
+    (isFlyingKind(grappleMob.kind) || isChained(grappleMob));
+}
+function isFlyingKind(kind) {
+  return kind === "pigeon" || kind === "dragon";
+}
+function isJumpingKind(kind) {
+  return kind === "wolf";
+}
+function chainAttachModeFor(carriedKind, target) {
+  if (isFlyingKind(carriedKind) && !isFlyingKind(target.kind) && chainRootOf(target) === target) {
+    return "prepend";
+  }
+  return "behind";
+}
+function chainMobById(id) {
+  return id === PLAYER_CHAIN_ID ? playerChainAvatar : mobById.get(id);
+}
+function chainFollowDist(carrier) {
+  if (carrier === playerChainAvatar) {
+    return grappleMob && grappleMob.kind === "dragon" ? DRAGON_FOLLOW_DIST : PIGEON_FOLLOW_DIST;
+  }
+  return carrier.kind === "dragon" ? DRAGON_FOLLOW_DIST : PIGEON_FOLLOW_DIST;
+}
+function isMobHeld(m) {
+  return !!m && (m === carryMob || m === carryGrappleMob);
+}
+function isChained(m) {
+  return !!m && chainParent.has(m.id);
+}
+function isChainCarrier(m) {
+  return !!m && chainChild.has(m.id);
+}
+function chainRootOf(m) {
+  if (!m) return null;
+  let cur = m;
+  const seen = new Set([cur.id]);
+  while (chainParent.has(cur.id)) {
+    const pid = chainParent.get(cur.id);
+    if (pid === PLAYER_CHAIN_ID) {
+      if (!playerInChain() || seen.has(PLAYER_CHAIN_ID)) break;
+      seen.add(PLAYER_CHAIN_ID);
+      if (!grappleMob || seen.has(grappleMob.id)) break;
+      seen.add(grappleMob.id);
+      cur = grappleMob;
+      continue;
+    }
+    const p = mobById.get(pid);
+    if (!p || seen.has(p.id)) break;
+    seen.add(p.id);
+    cur = p;
+  }
+  return cur;
+}
+function chainHasJumping(m) {
+  let cur = m;
+  const seen = new Set();
+  while (cur && !seen.has(cur.id)) {
+    seen.add(cur.id);
+    if (isJumpingKind(cur.kind)) return true;
+    const pid = chainParent.get(cur.id);
+    if (pid === undefined) return false;
+    if (pid === PLAYER_CHAIN_ID) {
+      if (!playerInChain() || !grappleMob) return false;
+      cur = grappleMob;
+      continue;
+    }
+    cur = mobById.get(pid);
+  }
+  return false;
+}
+function chainJumpLed(m) {
+  const r = chainRootOf(m);
+  return !!r && isJumpingKind(r.kind);
+}
+function chainPushCrumb(m) {
+  if (!m || !m.pos) return;
+  let t = m._trail;
+  if (!t) t = m._trail = [];
+  const last = t[t.length - 1];
+  if (last) {
+    const dx = m.pos.x - last.x, dy = m.pos.y - last.y, dz = m.pos.z - last.z;
+    const d2 = dx * dx + dy * dy + dz * dz;
+    if (d2 > 64) t.length = 0;
+    else if (d2 < 0.16) return;
+  }
+  t.push({ x: m.pos.x, y: m.pos.y, z: m.pos.z });
+  if (t.length > 80) t.splice(0, t.length - 80);
+}
+function chainTrailTarget(m, dist) {
+  const t = m._trail;
+  if (!t || t.length < 2) return null;
+  let acc = 0, px = m.pos.x, py = m.pos.y, pz = m.pos.z;
+  for (let i = t.length - 1; i >= 0; i--) {
+    const c = t[i];
+    const seg = Math.hypot(c.x - px, c.y - py, c.z - pz);
+    if (acc + seg >= dist) {
+      const f = seg > 1e-6 ? (dist - acc) / seg : 0;
+      return { x: px + (c.x - px) * f, y: py + (c.y - py) * f, z: pz + (c.z - pz) * f };
+    }
+    acc += seg;
+    px = c.x; py = c.y; pz = c.z;
+  }
+  return null;
+}
+function chainHeadingAxisOf(m) {
+  if (!m) return null;
+  if (m.vel) {
+    const sp = m.vel.length();
+    if (sp >= 0.5) {
+      let nx = m.vel.x / sp, ny = Math.max(-0.6, Math.min(0.6, m.vel.y / sp)), nz = m.vel.z / sp;
+      const nl = Math.hypot(nx, ny, nz) || 1;
+      if (!m._flyAxis) m._flyAxis = { x: 0, y: 0, z: 1 };
+      m._flyAxis.x = nx / nl; m._flyAxis.y = ny / nl; m._flyAxis.z = nz / nl;
+    }
+  }
+  return m._flyAxis || null;
+}
+function chainFlyVel(child, sx, sy, sz, ax, ay, az, leadSpd, ref, tautFrac, latMax, dt) {
+  const hx = child.pos.x, hy = child.pos.y + child.h, hz = child.pos.z;
+  const gcx = sx - hx, gcy = sy - hy, gcz = sz - hz;
+  const gcd = Math.hypot(gcx, gcy, gcz) || 1;
+  const ePar = gcx * ax + gcy * ay + gcz * az;
+  const qx = gcx - ax * ePar, qy = gcy - ay * ePar, qz = gcz - az * ePar;
+  const qd = Math.hypot(qx, qy, qz);
+  let latX = 0, latY = 0, latZ = 0;
+  if (qd > 1e-6 && dt > 1e-4) {
+    const s = Math.min(latMax, qd / dt) / qd;
+    latX = qx * s; latY = qy * s; latZ = qz * s;
+  }
+  const stretch = gcd / (ref || 1) - 1.5;
+  const catchUp = Math.max(0, Math.min(leadSpd + 8 - 2.5, stretch * 12));
+  const longMax = 2.5 + 1.5 * tautFrac + catchUp;
+  const longCorr = Math.max(-longMax, Math.min(longMax, ePar * 3));
+  child.vel.x = ax * (leadSpd + longCorr) + latX;
+  child.vel.y = ay * (leadSpd + longCorr) + latY;
+  child.vel.z = az * (leadSpd + longCorr) + latZ;
+}
+function chainLeadSpeedOf(m, dt) {
+  if (!m) return 0;
+  const inst = m.vel ? m.vel.length() : 0;
+  if (m._leadSpd === undefined) m._leadSpd = inst;
+  m._leadSpd += (inst - m._leadSpd) * Math.min(1, dt * 3);
+  return m._leadSpd;
+}
+function chainFlyingAxisSource(carrier, child) {
+  if (carrier === playerChainAvatar) return grappleMob || null;
+  const root = chainRootOf(child);
+  if (root === playerChainAvatar) {
+    if (grappleMob && isFlyingKind(grappleMob.kind)) return grappleMob;
+    return carrier;
+  }
+  if (root && isFlyingKind(root.kind)) return root;
+  return carrier;
+}
+function chainStationFromRoot(child, root) {
+  if (!child || !root) return null;
+  if (child === root) return 0;
+  const carriers = [];
+  let cur = child;
+  const seen = new Set([cur.id]);
+  let guard = 0;
+  while (cur && cur !== root && guard++ < 64) {
+    let front = null;
+    const pid = chainParent.get(cur.id);
+    if (pid !== undefined) front = chainMobById(pid);
+    else if (cur === playerChainAvatar && playerInChain() && grappleMob) front = grappleMob;
+    if (!front || seen.has(front.id)) return null;
+    carriers.push(front);
+    seen.add(front.id);
+    cur = front;
+  }
+  if (cur !== root) return null;
+  let station = 0;
+  for (let i = carriers.length - 1; i >= 0; i--) station += chainFollowDist(carriers[i]);
+  return station;
+}
+function chainTailOf(m) {
+  const root = chainRootOf(m);
+  if (!root) return null;
+  let cur = root;
+  const seen = new Set([cur.id]);
+  for (;;) {
+    if (chainChild.has(cur.id)) {
+      const c = chainMobById(chainChild.get(cur.id));
+      if (!c || seen.has(c.id)) break;
+      seen.add(c.id);
+      cur = c;
+      continue;
+    }
+    if (cur !== playerChainAvatar && cur === grappleMob && playerInChain() &&
+        chainChild.has(PLAYER_CHAIN_ID) && !seen.has(PLAYER_CHAIN_ID)) {
+      seen.add(PLAYER_CHAIN_ID);
+      cur = playerChainAvatar;
+      continue;
+    }
+    break;
+  }
+  return cur;
+}
+function stampSpawn(m) {
+  if (!m || !m.pos) return m;
+  if (m.spawnX === undefined) {
+    m.spawnX = m.pos.x;
+    m.spawnY = m.pos.y;
+    m.spawnZ = m.pos.z;
+  }
+  return m;
+}
+function seatChainChildOnCarrierSurface(carrier, child) {
+  const baseY = carrier.pos.y;
+  const spots = [
+    [child.pos.x, baseY, child.pos.z],
+    [carrier.pos.x + 0.9, baseY, carrier.pos.z],
+    [carrier.pos.x - 0.9, baseY, carrier.pos.z],
+    [carrier.pos.x, baseY, carrier.pos.z + 0.9],
+    [carrier.pos.x, baseY, carrier.pos.z - 0.9],
+    [child.pos.x, baseY + 1, child.pos.z],
+  ];
+  for (const s of spots) {
+    const sx = Math.max(-WORLD_RADIUS + 1, Math.min(WORLD_RADIUS - 1, s[0]));
+    const sy = Math.max(1, Math.min(MAX_Y - 1, s[1]));
+    const sz = Math.max(-WORLD_RADIUS + 1, Math.min(WORLD_RADIUS - 1, s[2]));
+    if (!aabbCollidesWorld(sx, sy, sz, child.hw, child.h)) {
+      child.pos.set(sx, sy, sz);
+      child.mesh.position.copy(child.pos);
+      return true;
+    }
+  }
+  return false;
+}
+function linkChain(carrier, child) {
+  if (!carrier || !child || carrier === child) return false;
+  const carrierIsPlayer = carrier === playerChainAvatar;
+  if (!carrierIsPlayer && !mobs.includes(carrier)) return false;
+  if (!mobs.includes(child)) return false;
+  if (child.kind === "dragon") return false;
+  if (isChained(child) || (chainChild.has(child.id) && chainParent.has(child.id))) return false;
+  if (child === carryMob || child === carryGrappleMob) return false;
+  if (carrier === carryMob || carrier === carryGrappleMob) return false;
+  if (chainChild.has(carrier.id)) return false;
+  if (aabbCollidesWorld(carrier.pos.x, carrier.pos.y, carrier.pos.z, carrier.hw, carrier.h)) return false;
+  if (aabbCollidesWorld(child.pos.x, child.pos.y, child.pos.z, child.hw, child.h) &&
+      !seatChainChildOnCarrierSurface(carrier, child) &&
+      !seatChainChildNearCarrier(carrier, child)) return false;
+  const root = carrierIsPlayer ? (playerInChain() ? chainRootOf(grappleMob) : null) : chainRootOf(carrier);
+  if (!root) return false;
+  const cd = carrier.dim || "over", chd = child.dim || "over";
+  if (cd !== chd) return false;
+  if (root.kind === "dragon") {
+    if (cd !== "end") return false;
+  } else if (cd !== "over" && cd !== "end") return false;
+  chainChild.set(carrier.id, child.id);
+  chainParent.set(child.id, carrier.id);
+  const rope = new THREE.InstancedMesh(chainLinkGeo, chainLinkMat, CHAIN_LINK_CUBES);
+  rope.frustumCulled = false;
+  rope.visible = true;
+  scene.add(rope);
+  const head = new THREE.Mesh(chainLinkHeadGeo, chainLinkHeadMat);
+  head.visible = true;
+  scene.add(head);
+  chainLinks.set(child.id, { carrierId: carrier.id, rope, head, towDir: new THREE.Vector3(0, 0, 1), towPos: new THREE.Vector3(), towInit: false, playerFrontId: carrierIsPlayer ? grappleMob.id : null, taut: 0, strained: false, strainT: 0, carrierAirT: 0, hopT: 0, farT: 0 });
+  if (child.vel) child.vel.set(0, 0, 0);
+  child.mode = "chained";
+  child.path = null;
+  child.target = null;
+  child.perchSpot = null;
+  child.perchGroup = null;
+  child.wanderT = 0;
+  child.blockedT = 0;
+  child._stuckT = 0;
+  setMobTransparent(child, 1);
+  return true;
+}
+function spliceChainLink(front, back) {
+  if (!front || !back || !mobs.includes(back) || !chainLinks.has(back.id)) return false;
+  if (front !== playerChainAvatar && !mobs.includes(front)) return false;
+  if (front === playerChainAvatar && !playerInChain()) return false;
+  let f = front;
+  let guard = 0;
+  while (chainChild.has(f.id) && chainChild.get(f.id) !== back.id && guard++ < 64) {
+    const nxt = chainMobById(chainChild.get(f.id));
+    if (!nxt || !mobs.includes(nxt) || nxt === back || nxt === front) break;
+    f = nxt;
+  }
+  const link = chainLinks.get(back.id);
+  chainParent.set(back.id, f.id);
+  chainChild.set(f.id, back.id);
+  link.carrierId = f.id;
+  link.playerFrontId = f === playerChainAvatar ? (grappleMob ? grappleMob.id : null) : null;
+  link.towInit = false;
+  link.taut = 0;
+  link.towPos.set(0, 0, 0);
+  link.prevAx = undefined;
+  link.farT = 0;
+  return true;
+}
+function seatChainChildNearCarrier(carrier, child) {
+  const spots = [];
+  for (const [ox, oz] of [[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [1, -1], [-1, 1], [-1, -1]]) {
+    for (const d of [1.0, 1.6]) {
+      for (const dy of [0, 1, 2]) {
+        spots.push([carrier.pos.x + ox * d, carrier.pos.y + dy, carrier.pos.z + oz * d]);
+      }
+    }
+  }
+  for (const s of spots) {
+    const sx = Math.max(-WORLD_RADIUS + 1, Math.min(WORLD_RADIUS - 1, s[0]));
+    const sy = Math.max(1, Math.min(MAX_Y - 1, s[1]));
+    const sz = Math.max(-WORLD_RADIUS + 1, Math.min(WORLD_RADIUS - 1, s[2]));
+    if (!aabbCollidesWorld(sx, sy, sz, child.hw, child.h)) {
+      child.pos.set(sx, sy, sz);
+      child.mesh.position.copy(child.pos);
+      return true;
+    }
+  }
+  return false;
+}
+function seatNewLeadNear(root, mob) {
+  const spots = [];
+  for (let dy = 1; dy <= 3; dy++) spots.push([root.pos.x, root.pos.y + dy, root.pos.z]);
+  for (const [ox, oz] of [[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [1, -1], [-1, 1], [-1, -1]]) {
+    for (const d of [1.2, 2.0]) {
+      spots.push([root.pos.x + ox * d, root.pos.y + 1, root.pos.z + oz * d]);
+      spots.push([root.pos.x + ox * d, root.pos.y, root.pos.z + oz * d]);
+    }
+  }
+  for (const s of spots) {
+    const sx = Math.max(-WORLD_RADIUS + 1, Math.min(WORLD_RADIUS - 1, s[0]));
+    const sy = Math.max(1, Math.min(MAX_Y - 1, s[1]));
+    const sz = Math.max(-WORLD_RADIUS + 1, Math.min(WORLD_RADIUS - 1, s[2]));
+    if (!aabbCollidesWorld(sx, sy, sz, mob.hw, mob.h)) {
+      mob.pos.set(sx, sy, sz);
+      mob.mesh.position.copy(mob.pos);
+      return true;
+    }
+  }
+  return false;
+}
+function prependChainLead(root, mob) {
+  if (!root || !mob || root === mob) return false;
+  if (!mobs.includes(root) || !mobs.includes(mob)) return false;
+  if (mob === carryMob || mob === carryGrappleMob) return false;
+  if (root === carryMob || root === carryGrappleMob) return false;
+  if (root.kind === "dragon") return false;
+  if ((mob.dim || "over") !== dim || (root.dim || "over") !== dim) return false;
+  if (aabbCollidesWorld(root.pos.x, root.pos.y, root.pos.z, root.hw, root.h)) return false;
+  if (!seatNewLeadNear(root, mob)) return false;
+  if (!linkChain(mob, root)) return false;
+  if (mob.kind === "pigeon") pigeonTakeoff(mob);
+  return true;
+}
+function insertChainBefore(aimed, mob) {
+  if (!aimed || !mob || aimed === mob) return false;
+  if (aimed.kind === "dragon") return insertChainBehind(aimed, mob);
+  if (!mobs.includes(aimed) || !mobs.includes(mob)) return false;
+  if (mob === carryMob || mob === carryGrappleMob) return false;
+  if (aimed === carryMob || aimed === carryGrappleMob) return false;
+  if ((mob.dim || "over") !== dim || (aimed.dim || "over") !== dim) return false;
+  const pid = chainParent.get(aimed.id);
+  const F = pid === PLAYER_CHAIN_ID ? playerChainAvatar : (pid !== undefined ? mobById.get(pid) : null);
+  const fLive = F === playerChainAvatar ? playerInChain() : !!(F && mobs.includes(F));
+  if (!fLive) {
+    if (chainChild.has(aimed.id)) return prependChainLead(aimed, mob);
+    return linkChain(aimed, mob);
+  }
+  if (pid === PLAYER_CHAIN_ID) chainChild.delete(PLAYER_CHAIN_ID);
+  else if (F && chainChild.get(F.id) === aimed.id) chainChild.delete(F.id);
+  chainParent.delete(aimed.id);
+  const seatOk = !aabbCollidesWorld(mob.pos.x, mob.pos.y, mob.pos.z, mob.hw, mob.h) ||
+    seatChainChildOnCarrierSurface(F, mob) || seatChainChildNearCarrier(F, mob);
+  if (!seatOk || !linkChain(F, mob)) {
+    if (!spliceChainLink(F, aimed)) {
+      const al = chainLinks.get(aimed.id);
+      if (al) {
+        scene.remove(al.rope);
+        scene.remove(al.head);
+        if (al.rope.dispose) al.rope.dispose();
+        chainLinks.delete(aimed.id);
+      }
+      resumeChainedMob(aimed);
+    }
+    return false;
+  }
+  if (!spliceChainLink(mob, aimed)) {
+    const al = chainLinks.get(aimed.id);
+    if (al) {
+      scene.remove(al.rope);
+      scene.remove(al.head);
+      if (al.rope.dispose) al.rope.dispose();
+      chainLinks.delete(aimed.id);
+    }
+    resumeChainedMob(aimed);
+    return true;
+  }
+  if (F !== playerChainAvatar && F.kind === "pigeon" && (F.mode === "perch" || F.mode === "toPerch")) pigeonTakeoff(F);
+  return true;
+}
+function insertChainBehind(aimed, mob) {
+  if (!aimed || !mob || aimed === mob) return false;
+  if (!mobs.includes(aimed) || !mobs.includes(mob)) return false;
+  if (mob === carryMob || mob === carryGrappleMob) return false;
+  if (aimed === carryMob || aimed === carryGrappleMob) return false;
+  if ((mob.dim || "over") !== dim || (aimed.dim || "over") !== dim) return false;
+  const bid = chainChild.get(aimed.id);
+  const B = bid !== undefined ? mobById.get(bid) : null;
+  const bLive = !!(B && mobs.includes(B) && B !== mob && !isMobHeld(B));
+  if (bid !== undefined) {
+    chainChild.delete(aimed.id);
+    chainParent.delete(bid);
+  }
+  const seatOk = !aabbCollidesWorld(mob.pos.x, mob.pos.y, mob.pos.z, mob.hw, mob.h) ||
+    seatChainChildOnCarrierSurface(aimed, mob) || seatChainChildNearCarrier(aimed, mob);
+  if (!seatOk || !linkChain(aimed, mob)) {
+    if (bLive) spliceChainLink(aimed, B);
+    return false;
+  }
+  if (bLive) {
+    if (!spliceChainLink(mob, B)) {
+      const bl = chainLinks.get(B.id);
+      if (bl) {
+        scene.remove(bl.rope);
+        scene.remove(bl.head);
+        if (bl.rope.dispose) bl.rope.dispose();
+        chainLinks.delete(B.id);
+      }
+      resumeChainedMob(B);
+    }
+  }
+  if (aimed.kind === "pigeon" && (aimed.mode === "perch" || aimed.mode === "toPerch")) pigeonTakeoff(aimed);
+  return true;
+}
+function insertBehindRide(bird, mob) {
+  if (!bird || !mob || bird === mob) return false;
+  if (!mobs.includes(bird) || !mobs.includes(mob)) return false;
+  if (mob === carryMob || mob === carryGrappleMob) return false;
+  if (bird === carryMob || bird === carryGrappleMob) return false;
+  if ((mob.dim || "over") !== dim || (bird.dim || "over") !== dim) return false;
+  const cid = chainChild.get(bird.id);
+  const C = cid !== undefined ? mobById.get(cid) : null;
+  if (cid !== undefined) {
+    if (C && mobs.includes(C) && C !== mob && !isMobHeld(C)) return insertChainBefore(C, mob);
+    if (C && isMobHeld(C)) return false;
+    chainChild.delete(bird.id);
+    chainParent.delete(cid);
+  }
+  return linkChain(bird, mob);
+}
+function dropChainFrom(m) {
+  if (!m) return;
+  let cur = mobs.includes(m) ? m : null;
+  if (cur && chainChild.has(cur.id)) {
+    const ids = [];
+    let c = mobById.get(chainChild.get(cur.id));
+    const seen = new Set([cur.id]);
+    while (c && !seen.has(c.id)) {
+      seen.add(c.id);
+      ids.push(c);
+      c = chainChild.has(c.id) ? mobById.get(chainChild.get(c.id)) : null;
+    }
+    chainChild.delete(cur.id);
+    for (const d of ids) {
+      chainParent.delete(d.id);
+      const link = chainLinks.get(d.id);
+      if (link) {
+        scene.remove(link.rope);
+        scene.remove(link.head);
+        if (link.rope.dispose) link.rope.dispose();
+        chainLinks.delete(d.id);
+      }
+      if (mobs.includes(d)) resumeChainedMob(d);
+    }
+  }
+  if (cur && chainParent.has(cur.id)) {
+    const p = mobById.get(chainParent.get(cur.id));
+    if (p && chainChild.get(p.id) === cur.id) chainChild.delete(p.id);
+    chainParent.delete(cur.id);
+    const link = chainLinks.get(cur.id);
+    if (link) {
+      scene.remove(link.rope);
+      scene.remove(link.head);
+      if (link.rope.dispose) link.rope.dispose();
+      chainLinks.delete(cur.id);
+    }
+  }
+}
+function resumeChainedMob(m) {
+  if (!mobs.includes(m)) return;
+  m.mode = isFlyingKind(m.kind) ? "straight" : "wander";
+  m.path = null;
+  m.pathKey = null;
+  m.blockedT = 0;
+  m._stuckT = 0;
+  m.perchSpot = null;
+  m.perchGroup = null;
+  m.perchT = 0;
+  m.perchWander = null;
+  m.perchWanderT = 0;
+  m.perchTimeout = 0;
+  m.perchRetry = 0;
+  if (m.vel) {
+    if (isFlyingKind(m.kind)) {
+      const yaw2 = Math.random() * Math.PI * 2;
+      m.vel.set(Math.cos(yaw2) * PIGEON_SPEED, 0, Math.sin(yaw2) * PIGEON_SPEED);
+      m.target = pigeonRandomTarget(m.pos);
+      m.yaw = yaw2;
+      m.yawTarget = yaw2;
+    } else m.vel.set(0, 0, 0);
+  }
+  if (m.kind === "enderman") { m.falling = true; m.fallV = 0; }
+  if (m._chainStep) { m.canStep = isJumpingKind(m.kind); delete m._chainStep; }
+  m._chainJumpT = 0;
+  m._wasInWater = false;
+  m.onGround = false;
+  if (m.mesh) m.mesh.rotation.x = 0;
+  setMobTransparent(m, 1);
+}
+function chainTakeForCarry(mob) {
+  if (!mob || !mobs.includes(mob)) return;
+  if (mob.kind === "dragon") return;
+  const carrierId = chainParent.get(mob.id);
+  const childId = chainChild.get(mob.id);
+  const front = carrierId === PLAYER_CHAIN_ID ? playerChainAvatar : mobById.get(carrierId);
+  const back = childId !== undefined ? mobById.get(childId) : null;
+  if (front === mob) return;
+  if (mob._chainStep) { mob.canStep = isJumpingKind(mob.kind); delete mob._chainStep; }
+  if (carrierId !== undefined) {
+    chainChild.delete(carrierId);
+    chainParent.delete(mob.id);
+  }
+  chainChild.delete(mob.id);
+  const link = chainLinks.get(mob.id);
+  if (link) {
+    scene.remove(link.rope);
+    scene.remove(link.head);
+    if (link.rope.dispose) link.rope.dispose();
+    chainLinks.delete(mob.id);
+  }
+  if (back && mobs.includes(back) && !isMobHeld(back)) {
+    if (front && spliceChainLink(front, back)) {
+      const se = chainLinks.get(back.id);
+      if (se) se.taut = CHAIN_TAUT_TIME;
+      return;
+    }
+    freeChainRoot(back);
+  }
+}
+function groundChainFrom(back) {
+  const ids = [];
+  const seen = new Set();
+  let c = back && mobs.includes(back) ? back : null;
+  while (c && !seen.has(c.id)) {
+    seen.add(c.id);
+    if (isMobHeld(c)) break;
+    ids.push(c);
+    const nxt = chainChild.has(c.id) ? mobById.get(chainChild.get(c.id)) : null;
+    c = nxt && mobs.includes(nxt) ? nxt : null;
+  }
+  for (const d of ids) {
+    chainParent.delete(d.id);
+    chainChild.delete(d.id);
+    const link = chainLinks.get(d.id);
+    if (link) {
+      scene.remove(link.rope);
+      scene.remove(link.head);
+      if (link.rope.dispose) link.rope.dispose();
+      chainLinks.delete(d.id);
+    }
+    resumeChainedMob(d);
+    d.villageBound = false;
+    d.penBound = false;
+    if (d.kind === "pigeon") {
+      if (d.vel) d.vel.set(0, -1, 0);
+      d._chainFall = true;
+    }
+  }
+  if (c && isMobHeld(c)) {
+    const hl = chainLinks.get(c.id);
+    if (hl) {
+      scene.remove(hl.rope);
+      scene.remove(hl.head);
+      if (hl.rope.dispose) hl.rope.dispose();
+      chainLinks.delete(c.id);
+    }
+    chainParent.delete(c.id);
+  }
+}
+function freeChainRoot(back) {
+  if (!back || !mobs.includes(back)) return;
+  const bl = chainLinks.get(back.id);
+  if (bl) {
+    scene.remove(bl.rope);
+    scene.remove(bl.head);
+    if (bl.rope.dispose) bl.rope.dispose();
+    chainLinks.delete(back.id);
+  }
+  chainParent.delete(back.id);
+  resumeChainedMob(back);
+  back.villageBound = false;
+  back.penBound = false;
+}
+function severChainMob(m) {
+  if (!m || !mobs.includes(m)) return;
+  if (m.kind === "dragon") return;
+  const carrierId = chainParent.get(m.id);
+  const childId = chainChild.get(m.id);
+  const front = carrierId === PLAYER_CHAIN_ID ? playerChainAvatar : mobById.get(carrierId);
+  const back = childId !== undefined ? mobById.get(childId) : null;
+  if (carrierId !== undefined) {
+    if (carrierId === PLAYER_CHAIN_ID) chainChild.delete(PLAYER_CHAIN_ID);
+    else if (front && chainChild.get(carrierId) === m.id) chainChild.delete(carrierId);
+    chainParent.delete(m.id);
+  }
+  chainChild.delete(m.id);
+  const self = chainLinks.get(m.id);
+  if (self) {
+    scene.remove(self.rope);
+    scene.remove(self.head);
+    if (self.rope.dispose) self.rope.dispose();
+    chainLinks.delete(m.id);
+  }
+  if (!back || !mobs.includes(back)) return;
+  if (isMobHeld(back)) {
+    const bl = chainLinks.get(back.id);
+    if (bl) {
+      scene.remove(bl.rope);
+      scene.remove(bl.head);
+      if (bl.rope.dispose) bl.rope.dispose();
+      chainLinks.delete(back.id);
+    }
+    chainParent.delete(back.id);
+    return;
+  }
+  freeChainRoot(back);
+}
+function pruneChains() {
+  for (const [childId, link] of [...chainLinks]) {
+    if (link.carrierId === PLAYER_CHAIN_ID) {
+      const child = mobById.get(childId);
+      if (playerInChain() && mobs.includes(grappleMob) && child && mobs.includes(child)) continue;
+      const front = mobById.get(link.playerFrontId);
+      chainChild.delete(PLAYER_CHAIN_ID);
+      if (child && mobs.includes(child)) {
+        if (front && mobs.includes(front) && spliceChainLink(front, child)) continue;
+        dropChainFrom(child);
+        resumeChainedMob(child);
+      } else {
+        scene.remove(link.rope);
+        scene.remove(link.head);
+        if (link.rope.dispose) link.rope.dispose();
+        chainLinks.delete(childId);
+        chainParent.delete(childId);
+      }
+      continue;
+    }
+    const child = mobById.get(childId);
+    const carrier = mobById.get(link.carrierId);
+    if (!child || !carrier || !mobs.includes(child) || !mobs.includes(carrier)) {
+      scene.remove(link.rope);
+      scene.remove(link.head);
+      if (link.rope.dispose) link.rope.dispose();
+      chainLinks.delete(childId);
+      chainParent.delete(childId);
+      if (carrier && chainChild.get(carrier.id) === childId) chainChild.delete(carrier.id);
+      if (child && mobs.includes(child) && child.mode === "chained") resumeChainedMob(child);
+    }
+  }
+  for (const [c, ch] of [...chainChild]) {
+    if (!chainLinks.has(ch)) chainChild.delete(c);
+  }
+  for (const [ch, c] of [...chainParent]) {
+    if (!chainLinks.has(ch)) chainParent.delete(ch);
+  }
+}
+function clearChains() {
+  for (const [, link] of chainLinks) {
+    scene.remove(link.rope);
+    scene.remove(link.head);
+    if (link.rope.dispose) link.rope.dispose();
+  }
+  chainLinks.clear();
+  chainChild.clear();
+  chainParent.clear();
+}
+function chainMoveAxis(m, dx, dy, dz) {
+  const blocked = { x: false, y: false, z: false };
+  const nx = m.pos.x + dx, ny = m.pos.y + dy, nz = m.pos.z + dz;
+  if (!aabbCollidesWorld(nx, ny, nz, m.hw, m.h)) {
+    m.pos.set(nx, ny, nz);
+    return blocked;
+  }
+  if (dx && !aabbCollidesWorld(m.pos.x + dx, m.pos.y, m.pos.z, m.hw, m.h)) m.pos.x += dx;
+  else if (dx) blocked.x = true;
+  if (dz && !aabbCollidesWorld(m.pos.x, m.pos.y, m.pos.z + dz, m.hw, m.h)) m.pos.z += dz;
+  else if (dz) blocked.z = true;
+  if (dy && !aabbCollidesWorld(m.pos.x, m.pos.y + dy, m.pos.z, m.hw, m.h)) m.pos.y += dy;
+  else if (dy) blocked.y = true;
+  return blocked;
+}
+function chainDepthOfId(childId) {
+  let depth = 0, cur = childId, guard = 0;
+  while (guard++ < 64) {
+    const pid = chainParent.get(cur);
+    if (pid === undefined) break;
+    depth++;
+    if (pid === PLAYER_CHAIN_ID) break;
+    cur = pid;
+  }
+  return depth;
+}
+function updateChains(dt) {
+  pruneChains();
+  if (dim !== "over" && dim !== "end") return;
+  dt = Math.min(0.05, dt);
+  const chainOrder = [...chainLinks];
+  chainOrder.sort((a, b) => chainDepthOfId(a[0]) - chainDepthOfId(b[0]));
+  for (const [childId, link] of chainOrder) {
+    const child = mobById.get(childId);
+    const carrier = chainMobById(link.carrierId);
+    if (!child || !carrier) continue;
+    if (child.dim !== undefined && child.dim !== dim) continue;
+    if (carrier === carryMob || carrier === carryGrappleMob) {
+      chainTakeForCarry(carrier);
+      continue;
+    }
+    if (carrier.kind === "pigeon") {
+      const inHouse = houseInteriorFor(carrier.pos.x, carrier.pos.y, carrier.pos.z);
+      if (inHouse && houseSealState(inHouse).sealed) {
+        dropChainFrom(child);
+        continue;
+      }
+    }
+    const followDist = chainFollowDist(carrier);
+    const towRoot = chainRootOf(child);
+    const towRootFlying = !!towRoot && towRoot !== playerChainAvatar && isFlyingKind(towRoot.kind);
+    const towAvatarFlying = carrier === playerChainAvatar && !!grappleMob && isFlyingKind(grappleMob.kind);
+    const legacyTow = towRootFlying || towAvatarFlying;
+    const linkLen = Math.hypot(followDist, 0.4);
+    const cvl = carrier.vel ? carrier.vel.length() : 0;
+    if (cvl > 1e-3) {
+      chainLinkTmp.set(carrier.vel.x / cvl, carrier.vel.y / cvl, carrier.vel.z / cvl);
+      chainLinkTmp.y = Math.max(-0.6, Math.min(0.6, chainLinkTmp.y));
+      chainLinkTmp.normalize();
+      if (!link.towInit) link.towDir.copy(chainLinkTmp);
+      else {
+        link.towDir.lerp(chainLinkTmp, Math.min(1, dt * 2.2));
+        if (link.towDir.lengthSq() < 1e-6) link.towDir.set(0, 0, 1);
+        link.towDir.normalize();
+      }
+      link.towInit = true;
+    } else if (!link.towInit) {
+      link.towDir.set(0, 0, 1);
+      link.towInit = true;
+    }
+    const desX = carrier.pos.x - link.towDir.x * followDist;
+    const desY = carrier.pos.y + carrier.h * 0.5 - link.towDir.y * followDist - 0.4;
+    const desZ = carrier.pos.z - link.towDir.z * followDist;
+    const crumb = chainTrailTarget(carrier, followDist);
+    const wantX = crumb ? crumb.x : desX;
+    const wantY = crumb ? crumb.y + carrier.h * 0.5 - 0.4 : desY;
+    const wantZ = crumb ? crumb.z : desZ;
+    if (link.towPos.lengthSq() < 1e-6) link.towPos.set(wantX, wantY, wantZ);
+    else link.towPos.lerp(chainLinkTmp.set(wantX, wantY, wantZ), Math.min(1, dt * 6));
+    if (!legacyTow) {
+      updateChainGroundLink(link, carrier, child, followDist, dt);
+    } else {
+    if (!child.vel) child.vel = new THREE.Vector3();
+    let lead = chainRootOf(child);
+    if (!lead || lead === playerChainAvatar || !isFlyingKind(lead.kind)) lead = carrier;
+    if (lead === playerChainAvatar) lead = (grappleMob && isFlyingKind(grappleMob.kind)) ? grappleMob : carrier;
+    if (!lead._chAx) {
+      lead._chAx = new THREE.Vector3(0, 0, 1);
+      lead._chAxP = new THREE.Vector3(0, 0, 1);
+      lead._chAxV = new THREE.Vector3();
+      lead._chFF = new THREE.Vector3();
+    }
+    const lvx = lead.vel ? lead.vel.x : 0;
+    const lvy = lead.vel ? lead.vel.y : 0;
+    const lvz = lead.vel ? lead.vel.z : 0;
+    const lspd = Math.hypot(lvx, lvy, lvz);
+    if (lspd > 0.5) {
+      const inx = lvx / lspd, iny = Math.max(-0.6, Math.min(0.6, lvy / lspd)), inz = lvz / lspd;
+      const inl = Math.hypot(inx, iny, inz) || 1;
+      lead._chAx.lerp(chainLinkTmp.set(inx / inl, iny / inl, inz / inl), Math.min(1, dt * 8));
+      if (lead._chAx.lengthSq() < 1e-6) lead._chAx.set(0, 0, 1);
+      lead._chAx.normalize();
+    }
+    if (dt > 1e-4) {
+      chainLinkTmp.set(
+        (lead._chAx.x - lead._chAxP.x) / dt,
+        (lead._chAx.y - lead._chAxP.y) / dt,
+        (lead._chAx.z - lead._chAxP.z) / dt);
+      lead._chAxV.lerp(chainLinkTmp, Math.min(1, dt * 3));
+      lead._chAxP.copy(lead._chAx);
+    }
+    let ffx = lvx, ffy = lvy, ffz = lvz;
+    if (lspd > 1e-3) {
+      const cny = Math.max(-0.6, Math.min(0.6, lvy / lspd));
+      const cnl = Math.hypot(lvx / lspd, cny, lvz / lspd) || 1;
+      ffx = lvx / lspd / cnl * lspd;
+      ffy = cny / cnl * lspd;
+      ffz = lvz / lspd / cnl * lspd;
+    }
+    lead._chFF.lerp(chainLinkTmp.set(ffx, ffy, ffz), Math.min(1, dt * 3));
+    const cvx = carrier.vel ? carrier.vel.x : 0;
+    const cvy = carrier.vel ? carrier.vel.y : 0;
+    const cvz = carrier.vel ? carrier.vel.z : 0;
+    const cvSpd = Math.hypot(cvx, cvy, cvz);
+    let csx = cvx, csy = cvy, csz = cvz;
+    if (cvSpd > 1e-3) {
+      const cny = Math.max(-0.6, Math.min(0.6, cvy / cvSpd));
+      const cnl = Math.hypot(cvx / cvSpd, cny, cvz / cvSpd) || 1;
+      csx = cvx / cvSpd / cnl * cvSpd;
+      csy = cny / cnl * cvSpd;
+      csz = cvz / cvSpd / cnl * cvSpd;
+    }
+    const ax = lead._chAx.x, ay = lead._chAx.y, az = lead._chAx.z;
+    const tx = carrier.pos.x - ax * followDist;
+    const ty = carrier.pos.y - ay * followDist;
+    const tz = carrier.pos.z - az * followDist;
+    const svx = csx - lead._chAxV.x * followDist;
+    const svy = csy - lead._chAxV.y * followDist;
+    const svz = csz - lead._chAxV.z * followDist;
+    const ex = tx - child.pos.x, ey = ty - child.pos.y, ez = tz - child.pos.z;
+    let dvx = svx + ex * CHAIN_TOW_KP;
+    let dvy = svy + ey * CHAIN_TOW_KP;
+    let dvz = svz + ez * CHAIN_TOW_KP;
+    const leadSpd = chainLeadSpeedOf(carrier, dt);
+    const maxSp = Math.max(12, leadSpd + 8);
+    const dl = Math.hypot(dvx, dvy, dvz);
+    if (dl > maxSp) {
+      const s = maxSp / dl;
+      dvx *= s; dvy *= s; dvz *= s;
+    }
+    child.vel.copy(chainLinkTmp.set(dvx, dvy, dvz));
+    const hit = chainMoveAxis(child, child.vel.x * dt, child.vel.y * dt, child.vel.z * dt);
+    if (hit.x) child.vel.x = 0;
+    if (hit.y) child.vel.y = 0;
+    if (hit.z) child.vel.z = 0;
+    if ((hit.x || hit.z) && chainHasJumping(child) && !mobInWater(child) && child.vel.y < 1) {
+      const by = Math.floor(child.pos.y);
+      let headroom = true;
+      for (let hbx = Math.floor(child.pos.x - child.hw + 0.001); headroom && hbx <= Math.floor(child.pos.x + child.hw - 0.001); hbx++)
+        for (let hbz = Math.floor(child.pos.z - child.hw + 0.001); headroom && hbz <= Math.floor(child.pos.z + child.hw - 0.001); hbz++)
+          if (isSolid(hbx, by + 1, hbz)) headroom = false;
+      if (headroom && !aabbCollidesWorld(child.pos.x, by + 1 + 0.001, child.pos.z, child.hw, child.h)) child.vel.y = JUMP_MIN + 2.5;
+    }
+    child.pos.x = Math.max(-WORLD_RADIUS + 1, Math.min(WORLD_RADIUS - 1, child.pos.x));
+    child.pos.z = Math.max(-WORLD_RADIUS + 1, Math.min(WORLD_RADIUS - 1, child.pos.z));
+    child.pos.y = Math.max(1, Math.min(MAX_Y - 1, child.pos.y));
+    const linkAx = carrier.pos.x, linkAy = carrier.pos.y + carrier.h * 0.5, linkAz = carrier.pos.z;
+    const linkDx = child.pos.x - linkAx, linkDy = child.pos.y + child.h - linkAy, linkDz = child.pos.z - linkAz;
+    const linkD = Math.hypot(linkDx, linkDy, linkDz);
+    const dyF = child.pos.y + child.h - (carrier.pos.y + carrier.h * 0.5);
+    link.flySplitT = Math.abs(dyF) > CHAIN_FLY_SPLIT_DY ? (link.flySplitT || 0) + dt : 0;
+    if (link.flySplitT > CHAIN_SPLIT_STRAIN_T) {
+      freeChainRoot(child);
+      continue;
+    }
+    link.farT = linkD > linkLen * CHAIN_FLY_LEASH ? (link.farT || 0) + dt : 0;
+    if (link.farT > CHAIN_FLY_LEASH_T) {
+      freeChainRoot(child);
+      continue;
+    }
+    if (linkD > linkLen * 1.5 && linkD <= linkLen * CHAIN_FLY_SNAP_MAX) {
+      if (!aabbCollidesWorld(tx, ty, tz, child.hw, child.h) &&
+          pigeonSegmentFree(child.pos.x, child.pos.y, child.pos.z, tx, ty, tz)) {
+        child.pos.set(tx, ty, tz);
+        child.vel.set(svx, svy, svz);
+      }
+    }
+    child.onGround = aabbCollidesWorld(child.pos.x, child.pos.y - 0.05, child.pos.z, child.hw, child.h);
+    }
+    chainPushCrumb(carrier);
+    chainPushCrumb(child);
+    child.mesh.position.copy(child.pos);
+    const faceSpd = Math.hypot(child.vel.x, child.vel.z);
+    if (faceSpd > 0.5) {
+      const targetYaw = Math.atan2(child.vel.x, child.vel.z);
+      let dyaw = targetYaw - child.mesh.rotation.y;
+      while (dyaw > Math.PI) dyaw -= Math.PI * 2;
+      while (dyaw < -Math.PI) dyaw += Math.PI * 2;
+      child.mesh.rotation.y += dyaw * Math.min(1, dt * 10);
+    }
+    renderChainLink(link, carrier, child);
+  }
+}
+function chainLinkDelta(carrier, child) {
+  const dx = child.pos.x - carrier.pos.x;
+  const dy = child.pos.y + child.h - (carrier.pos.y + carrier.h * 0.5);
+  const dz = child.pos.z - carrier.pos.z;
+  return { dx, dy, dz, d: Math.hypot(dx, dy, dz) };
+}
+function chainSlideToward(m, tx, ty, tz, maxTravel) {
+  const sx = tx - m.pos.x, sy = ty - m.pos.y, sz = tz - m.pos.z;
+  const dist = Math.hypot(sx, sy, sz);
+  if (dist < 1e-6) return 0;
+  const travel = Math.min(dist, maxTravel);
+  const steps = Math.max(1, Math.ceil(travel / 0.5));
+  for (let i = 0; i < steps; i++) {
+    const f = travel / steps / dist;
+    chainMoveAxis(m, sx * f, sy * f, sz * f);
+  }
+  return Math.hypot(tx - m.pos.x, ty - m.pos.y, tz - m.pos.z);
+}
+function updateChainGroundLink(link, carrier, child, followDist, dt) {
+  if (!child.vel) child.vel = new THREE.Vector3();
+  const floats = isFlyingKind(child.kind);
+  if (floats) { if (child._chainStep) { child.canStep = isJumpingKind(child.kind); delete child._chainStep; } }
+  else if (chainJumpLed(child)) {
+    if (child._chainStep === "suppress") delete child._chainStep;
+    if (!child.canStep) { child.canStep = true; child._chainStep = "grant"; }
+  } else {
+    if (child._chainStep === "grant") { child.canStep = isJumpingKind(child.kind); delete child._chainStep; }
+    else if (isJumpingKind(child.kind) && child.canStep && child._chainStep === undefined) { child.canStep = false; child._chainStep = "suppress"; }
+  }
+  const isAvatar = carrier === playerChainAvatar;
+  const baseLen = Math.hypot(followDist, 0.4);
+  const lo = baseLen * 0.5, hi = baseLen * 1.5, leash = baseLen * 2;
+  let sep = chainLinkDelta(carrier, child);
+  if (sep.d >= leash && sep.d > 1e-6) {
+    const nx = sep.dx / sep.d, ny = sep.dy / sep.d, nz = sep.dz / sep.d;
+    const sc = child.vel.x * nx + child.vel.y * ny + child.vel.z * nz;
+    if (sc > 0) { child.vel.x -= nx * sc; child.vel.y -= ny * sc; child.vel.z -= nz * sc; }
+    if (!isAvatar && carrier.vel) {
+      const sr = -(carrier.vel.x * nx + carrier.vel.y * ny + carrier.vel.z * nz);
+      if (sr > 0) { carrier.vel.x += nx * sr; carrier.vel.y += ny * sr; carrier.vel.z += nz * sr; }
+    }
+  }
+  if (!link.prevTow) link.prevTow = { x: link.towPos.x, y: link.towPos.y, z: link.towPos.z };
+  let ffX = (link.towPos.x - link.prevTow.x) / dt, ffZ = (link.towPos.z - link.prevTow.z) / dt;
+  const ffL = Math.hypot(ffX, ffZ);
+  if (ffL > 12) { ffX *= 12 / ffL; ffZ *= 12 / ffL; }
+  link.prevTow.x = link.towPos.x; link.prevTow.y = link.towPos.y; link.prevTow.z = link.towPos.z;
+  const noProgress = (link.strainD === undefined) || (sep.d >= link.strainD - 0.05);
+  link.strainD = sep.d;
+  link.strainT = (sep.d > hi * 0.9 && noProgress) ? (link.strainT || 0) + dt : 0;
+  const inWater = mobInWater(child);
+  link.carrierAirT = (carrier.onGround === false) ? (link.carrierAirT || 0) + dt : 0;
+  if (link.carrierAirT < 0.5 && Math.abs(sep.dy) > CHAIN_SPLIT_DY && sep.d > hi && link.strainT > CHAIN_SPLIT_STRAIN_T) {
+    freeChainRoot(child);
+    return;
+  }
+      const strained = sep.d > hi;
+      const spd = strained ? WALK * 2 : WALK / 2;
+      const sx = link.towPos.x - child.pos.x, sz = link.towPos.z - child.pos.z;
+      const sd = Math.hypot(sx, sz);
+      let desX = 0, desZ = 0;
+      if (sd > 0.25) { const s = Math.min(spd, sd * 3); desX = sx / sd * s; desZ = sz / sd * s; }
+      const k = Math.min(1, dt * (strained ? 2.5 : 5));
+      child.vel.x += (desX + ffX * 0.6 - child.vel.x) * k;
+      child.vel.z += (desZ + ffZ * 0.6 - child.vel.z) * k;
+      if (strained) {
+        if (link.taut > 0) link.taut = Math.max(0, link.taut - dt);
+        const taut = link.taut > 0;
+        const stiff = taut ? 36 : 18, damp = taut ? 14 : 11;
+        const ex = link.towPos.x - child.pos.x, ey = link.towPos.y - (child.pos.y + child.h), ez = link.towPos.z - child.pos.z;
+        const exl = Math.hypot(ex, ey, ez) || 1, ecl = Math.min(exl, 3);
+        const cvx = carrier.vel ? carrier.vel.x : 0, cvy = carrier.vel ? carrier.vel.y : 0, cvz = carrier.vel ? carrier.vel.z : 0;
+        child.vel.x += ((ex / exl * ecl) * stiff - (child.vel.x - cvx) * damp) * dt;
+        child.vel.y += ((ey / exl * ecl) * stiff - (child.vel.y - cvy) * damp) * dt;
+        child.vel.z += ((ez / exl * ecl) * stiff - (child.vel.z - cvz) * damp) * dt;
+        const airFollowCap = (link.carrierAirT || 0) > 0.2;
+        const maxSp = (airFollowCap ? PIGEON_SPEED : (carrier.speed || PIGEON_SPEED)) * 2.2 * (taut ? 1.5 : 1);
+        const spdNow = Math.hypot(child.vel.x, child.vel.y, child.vel.z);
+        if (spdNow > maxSp) { child.vel.x *= maxSp / spdNow; child.vel.y *= maxSp / spdNow; child.vel.z *= maxSp / spdNow; }
+        link.hopT = Math.max(0, (link.hopT || 0) - dt);
+        if (!floats && child.onGround && !inWater && link.hopT <= 0 && sd > 0.4) {
+          const px = child.pos.x + (sx / sd) * 0.6, pz = child.pos.z + (sz / sd) * 0.6;
+          if (aabbCollidesWorld(px, child.pos.y + 0.2, pz, child.hw, child.h) && !aabbCollidesWorld(child.pos.x, child.pos.y + 1.2, child.pos.z, child.hw, child.h)) {
+            child.vel.y = JUMP_MIN + 2.5;
+            child.onGround = false;
+            link.hopT = 0.8;
+          }
+        }
+      }
+      if (floats) {
+        const feetY = link.towPos.y - child.h;
+        const inWaterF = mobInWater(child);
+        if (inWaterF && !child._wasInWater && child.vel.y < 0) child.vel.y *= 0.3;
+        child._wasInWater = inWaterF;
+        if (inWaterF) {
+          const surface = waterSurfaceForMob(child);
+          if (surface === -Infinity) {
+            if (!child.onGround) child.vel.y -= GRAVITY * dt;
+          } else {
+            const err = mobFloatTargetY(surface, child.h) - child.pos.y;
+            if (err > SWIM_AREA) child.vel.y += SWIM_ACCEL * dt;
+            else child.vel.y += (err * 4 - child.vel.y) * Math.min(1, dt * SWIM_BRAKE * 2);
+          }
+          child.vel.y = Math.min(Math.max(child.vel.y, -SWIM_MAX), SWIM_MAX);
+        } else if (child._chainJumpT > 0) {
+          child._chainJumpT -= dt;
+          child.vel.y -= GRAVITY * dt;
+        } else {
+          const vyT = Math.max(-6, Math.min(6, (feetY - child.pos.y) * 6));
+          child.vel.y += (vyT - child.vel.y) * Math.min(1, dt * 6);
+        }
+        const mv = chainMoveAxis(child, child.vel.x * dt, child.vel.y * dt, child.vel.z * dt);
+        child.onGround = aabbCollidesWorld(child.pos.x, child.pos.y - 0.05, child.pos.z, child.hw, child.h);
+        if (inWaterF && (mv.x || mv.z)) {
+          const hl = Math.hypot(sx, sz) || 1;
+          const px = child.pos.x + (sx / hl) * 0.6, pz = child.pos.z + (sz / hl) * 0.6;
+          const fy = Math.floor(child.pos.y);
+          let jumped = false;
+          for (let by = Math.floor(child.pos.y + child.h); by >= fy && !jumped; by--) {
+            for (let bz = Math.floor(pz - child.hw); bz <= Math.floor(pz + child.hw) && !jumped; bz++) {
+              if (isSolid(Math.floor(px), by, bz) && (by === fy || by === fy + 1) && mobWaterExitJump(child, Math.floor(px), by, bz)) {
+                child._chainJumpT = 0.6;
+                jumped = true;
+              }
+            }
+          }
+        }
+      }
+      else if (child.canStep) wolfPhysicsStep(child, dt);
+      else mobPhysicsStep(child, dt);
+  child.pos.x = Math.max(-WORLD_RADIUS + 1, Math.min(WORLD_RADIUS - 1, child.pos.x));
+  child.pos.z = Math.max(-WORLD_RADIUS + 1, Math.min(WORLD_RADIUS - 1, child.pos.z));
+  child.pos.y = Math.max(1, Math.min(MAX_Y - 1, child.pos.y));
+  sep = chainLinkDelta(carrier, child);
+  link.strained = sep.d > hi + 0.15;
+  const cmx = carrier.pos.x, cmy = carrier.pos.y + carrier.h * 0.5, cmz = carrier.pos.z;
+  const hdBand = () => Math.hypot(child.pos.x - cmx, child.pos.z - cmz);
+  const airFollow = (link.carrierAirT || 0) > 0.2;
+  if (sep.d > hi && (airFollow || hdBand() > hi)) {
+    if (airFollow) {
+      const nx = sep.dx / sep.d, ny = sep.dy / sep.d, nz = sep.dz / sep.d;
+      chainSlideToward(child, cmx + nx * hi, cmy + ny * hi - child.h, cmz + nz * hi, 1);
+    } else {
+      const hd = hdBand(), s = hi / hd;
+      chainSlideToward(child, cmx + (child.pos.x - cmx) * s, child.pos.y, cmz + (child.pos.z - cmz) * s, 1);
+    }
+    sep = chainLinkDelta(carrier, child);
+  }
+  if (sep.d < lo && sep.d > 1e-6) {
+    const nx = sep.dx / sep.d, ny = sep.dy / sep.d, nz = sep.dz / sep.d;
+    chainSlideToward(child, cmx + nx * lo, cmy + ny * lo - child.h, cmz + nz * lo, 1.5);
+    sep = chainLinkDelta(carrier, child);
+  }
+  if (sep.d > leash && (airFollow || hdBand() > leash)) {
+    if (airFollow) {
+      const nx = sep.dx / sep.d, ny = sep.dy / sep.d, nz = sep.dz / sep.d;
+      chainSlideToward(child, cmx + nx * leash, cmy + ny * leash - child.h, cmz + nz * leash, 1.5);
+    } else {
+      const hd = hdBand(), s = leash / hd;
+      chainSlideToward(child, cmx + (child.pos.x - cmx) * s, child.pos.y, cmz + (child.pos.z - cmz) * s, 1.5);
+    }
+    sep = chainLinkDelta(carrier, child);
+  }
+  if (sep.d > 1e-6) {
+    const hd = Math.hypot(sep.dx, sep.dz);
+    if (hd > 1e-6 && Math.abs(hd - followDist) > 0.05) {
+      const s = followDist / hd;
+      const px = carrier.pos.x + sep.dx * s, pz = carrier.pos.z + sep.dz * s;
+      if (!aabbCollidesWorld(px, child.pos.y, pz, child.hw, child.h) &&
+          pigeonSegmentFree(child.pos.x, child.pos.y, child.pos.z, px, child.pos.y, pz)) {
+        child.pos.x = px; child.pos.z = pz;
+        sep = chainLinkDelta(carrier, child);
+      }
+    }
+  }
+  if (!isAvatar && !isChained(carrier) && !isFlyingKind(carrier.kind) && carrier.vel) {
+    if (sep.d >= leash) {
+      const f = Math.max(0, 1 - dt * 10);
+      carrier.vel.x *= f;
+      carrier.vel.z *= f;
+    } else if (link.strained) {
+      const f = Math.max(0, 1 - dt * 2.5);
+      carrier.vel.x *= f;
+      carrier.vel.z *= f;
+    }
+  }
+}
+const chainLinkTmp = new THREE.Vector3();
+
+function renderChainLink(link, carrier, child) {
+    const ax = carrier.pos.x, ay = carrier.pos.y + carrier.h * 0.5, az = carrier.pos.z;
+    const bx = child.pos.x, by = child.pos.y + child.h, bz = child.pos.z;
+    const dx = bx - ax, dy = by - ay, dz = bz - az;
+    const dist = Math.hypot(dx, dy, dz) || 0.001;
+    const n = Math.max(4, Math.min(CHAIN_LINK_CUBES, Math.round(dist / 0.15)));
+    link.rope.count = n;
+    const ux = dx / dist, uy = dy / dist, uz = dz / dist;
+    let vx = Math.abs(uy) < 0.99 ? uz : 1, vy = Math.abs(uy) < 0.99 ? 0 : 0, vz = Math.abs(uy) < 0.99 ? -ux : 0;
+    const vl = Math.hypot(vx, vy, vz) || 1;
+    vx /= vl; vy /= vl; vz /= vl;
+    const wx = uy * vz - uz * vy, wy = uz * vx - ux * vz, wz = ux * vy - uy * vx;
+    const baseLen = Math.hypot(chainFollowDist(carrier), 0.4);
+    const sag = Math.min(1, Math.max(0, 1 - dist / baseLen) * baseLen * 0.35);
+    for (let i = 0; i < n; i++) {
+      const f = (i + 0.5) / n;
+      chainLinkMatrix.setPosition(
+        ax + dx * f + vx * Math.sin(f * Math.PI * 4) * 0.15 + wx * Math.sin(f * Math.PI * 2) * 0.15,
+        ay + dy * f + vy * Math.sin(f * Math.PI * 4) * 0.15 + wy * Math.sin(f * Math.PI * 2) * 0.15 - Math.sin(f * Math.PI) * sag,
+        az + dz * f + vz * Math.sin(f * Math.PI * 4) * 0.15 + wz * Math.sin(f * Math.PI * 2) * 0.15
+      );
+      link.rope.setMatrixAt(i, chainLinkMatrix);
+    }
+    link.rope.instanceMatrix.needsUpdate = true;
+    link.head.position.set(bx, by, bz);
 }
 
 function releaseCarriedMobAt(px, py, pz) {
@@ -2808,6 +4231,82 @@ function startCarryReleaseGrapple() {
   return true;
 }
 
+function chainAttachTarget() {
+  chainAttachMode = "behind";
+  if ((dim !== "over" && dim !== "end") || !started || loading || helpOpen) return null;
+  const dir = new THREE.Vector3();
+  camera.getWorldDirection(dir);
+  const mob = pickMob(dir);
+  if (!mob || mob === carryMob || mob === carryGrappleMob) return null;
+  if ((mob.dim || "over") !== dim) return null;
+  const ck = (carryMob && carryMob.kind) || null;
+  if (playerInChain() && (mob === grappleMob || chainRootOf(mob) === chainRootOf(grappleMob))) {
+    if (mob === grappleMob) {
+      if (isFlyingKind(ck)) {
+        chainAttachMode = "ahead";
+        return grappleMob;
+      }
+      if (chainChild.has(PLAYER_CHAIN_ID)) {
+        const c = mobById.get(chainChild.get(PLAYER_CHAIN_ID));
+        const t = c && mobs.includes(c) ? chainTailOf(c) : null;
+        if (t && mobs.includes(t) && t !== carryMob && t !== carryGrappleMob) return t;
+        return null;
+      }
+      return playerChainAvatar;
+    }
+    if (!ck) {
+      if (mob.kind !== "dragon" && chainRootOf(mob) === mob && chainChild.has(mob.id)) chainAttachMode = "prepend";
+      else chainAttachMode = "before";
+    } else chainAttachMode = chainAttachModeFor(ck, mob);
+    return mob;
+  }
+  if (mob.kind === "dragon") {
+    if (dim !== "end") return null;
+    const dtail = isChainCarrier(mob) ? chainTailOf(mob) : mob;
+    if (!dtail || !mobs.includes(dtail)) return null;
+    if (dtail === carryMob || dtail === carryGrappleMob) return null;
+    chainAttachMode = ck ? chainAttachModeFor(ck, dtail) : "behind";
+    return dtail;
+  }
+  if (mob.kind === "enderman" && !isChained(mob) && !isChainCarrier(mob)) return null;
+  if (!ck) {
+    if (mob.kind !== "dragon" && chainRootOf(mob) === mob && chainChild.has(mob.id)) chainAttachMode = "prepend";
+    else chainAttachMode = "before";
+  } else chainAttachMode = chainAttachModeFor(ck, mob);
+  return mob;
+}
+
+function startCarryAttachGrapple(tail) {
+  if (carryGrappleActive || carryGrappleRetracting || carryGrapplePulling) return false;
+  if (!carryMob || !tail) return false;
+  if (!started || loading || helpOpen) return false;
+  const eye = camera.position;
+  const mob = carryMob;
+  carryGrappleOffset.set(0, mob.h * 0.5, 0);
+  carryGrappleMob = mob;
+  carryMob = null;
+  carryGrappleChainTarget = tail;
+  carryGrappleAttachMode = chainAttachMode;
+  carryGrappleMode = "attach";
+  carryGrappleBlock = null;
+  carryGrappleStart.copy(eye);
+  carryGrappleTarget.set(tail.pos.x, tail.pos.y + tail.h * 0.5, tail.pos.z);
+  carryGrappleDist = Math.hypot(carryGrappleTarget.x - eye.x, carryGrappleTarget.y - eye.y, carryGrappleTarget.z - eye.z);
+  if (carryGrappleDist < 0.3) {
+    carryMob = mob;
+    carryGrappleMob = null;
+    carryGrappleChainTarget = null;
+    carryGrappleAttachMode = "behind";
+    return false;
+  }
+  carryGrappleHookPos.copy(eye);
+  carryGrappleActive = true;
+  carryGrapplePulling = false;
+  carryGrappleRetracting = false;
+  setMobTransparent(mob, 1);
+  return true;
+}
+
 function updateCarryGrapple(dt) {
   if (carryGrappleRetracting) {
     const eye = new THREE.Vector3(pos.x, pos.y + 0.3, pos.z);
@@ -2883,6 +4382,7 @@ function updateCarryGrapple(dt) {
         carryGrappleActive = false;
         carryGrapplePulling = true;
         setMobTransparent(mob, 1);
+        chainTakeForCarry(mob);
         if (grappleMob === mob) detachDisplacementGrapple();
       } else {
         const move = Math.min(step, dist0);
@@ -2890,6 +4390,67 @@ function updateCarryGrapple(dt) {
         carryGrappleHookPos.x += dx0 * s;
         carryGrappleHookPos.y += dy0 * s;
         carryGrappleHookPos.z += dz0 * s;
+      }
+      return;
+    }
+    if (carryGrappleMode === "attach") {
+      const mob = carryGrappleMob;
+      const tail = carryGrappleChainTarget;
+      if (!mob || !tail || !mobs.includes(mob) || (tail !== playerChainAvatar && !mobs.includes(tail))) {
+        carryGrappleActive = false;
+        carryGrappleRetracting = true;
+        carryGrappleHookPos.copy(carryGrappleTarget);
+        if (mob && mobs.includes(mob)) {
+          carryGrappleMob = null;
+          carryMob = mob;
+          setMobTransparent(mob, 0.35);
+          mob.mode = "carried";
+        } else carryGrappleMob = null;
+        carryGrappleChainTarget = null;
+        carryGrappleAttachMode = "behind";
+        return;
+      }
+      const tx = tail.pos.x, ty = tail.pos.y + tail.h * 0.5, tz = tail.pos.z;
+      carryGrappleTarget.set(tx, ty, tz);
+      const dx = tx - carryGrappleHookPos.x, dy = ty - carryGrappleHookPos.y, dz = tz - carryGrappleHookPos.z;
+      const dist = Math.hypot(dx, dy, dz);
+      const b = grappleVertBoost(pos.y);
+      const isVert = Math.abs(ty - carryGrappleStart.y) > 2 * Math.abs(tx - carryGrappleStart.x);
+      const step = MOB_GRAPPLE_THROW * (isVert ? b : 1) * dt;
+      if (dist <= step + 0.05) {
+        carryGrappleHookPos.set(tx, ty, tz);
+        carryGrappleActive = false;
+        carryGrapplePulling = false;
+        carryGrappleRetracting = false;
+        carryGrappleCubes.visible = false;
+        carryGrappleHead.visible = false;
+        carryGrappleMob = null;
+        carryGrappleChainTarget = null;
+        const mode = carryGrappleAttachMode;
+        carryGrappleAttachMode = "behind";
+        if (mob.dim !== undefined) mob.dim = dim;
+        let linked = false;
+        if (tail === playerChainAvatar) linked = linkChain(tail, mob);
+        else if (mode === "ahead") linked = insertBehindRide(grappleMob, mob);
+        else if (mode === "prepend") linked = prependChainLead(tail, mob);
+        else if (mode === "before") linked = insertChainBefore(tail, mob);
+        else linked = insertChainBehind(tail, mob);
+        if (!linked) {
+          carryMob = mob;
+          setMobTransparent(mob, 0.35);
+          mob.mode = "carried";
+          mob.path = null;
+          mob.target = null;
+        }
+      } else {
+        const s = step / dist;
+        carryGrappleHookPos.x += dx * s;
+        carryGrappleHookPos.y += dy * s;
+        carryGrappleHookPos.z += dz * s;
+        mob.pos.set(carryGrappleHookPos.x - carryGrappleOffset.x, carryGrappleHookPos.y - carryGrappleOffset.y, carryGrappleHookPos.z - carryGrappleOffset.z);
+        mob.mesh.position.copy(mob.pos);
+        mob.mesh.rotation.y = yaw + Math.PI;
+        setMobTransparent(mob, 1);
       }
       return;
     }
@@ -3037,7 +4598,12 @@ function updateCarryGrapple(dt) {
 function handleCarryEnterDown() {
   if (carryGrappleActive || carryGrapplePulling || carryGrappleRetracting) return;
   if (carryMob) {
-    startCarryReleaseGrapple();
+    const tail = chainAttachTarget();
+    if (tail) {
+      if (!startCarryAttachGrapple(tail)) startCarryReleaseGrapple();
+    } else {
+      startCarryReleaseGrapple();
+    }
   } else {
     startCarryGrabGrapple();
   }
@@ -3056,6 +4622,20 @@ function handleCarryEnterUp() {
       carryGrappleBlock = null;
       const mob = carryGrappleMob;
       if (mob) setMobTransparent(mob, 1);
+    } else if (carryGrappleMode === "attach") {
+      const mob = carryGrappleMob;
+      carryGrappleActive = false;
+      carryGrappleRetracting = true;
+      carryGrappleChainTarget = null;
+      carryGrappleAttachMode = "behind";
+      if (mob) {
+        carryGrappleMob = null;
+        carryMob = mob;
+        setMobTransparent(mob, 0.35);
+        mob.mode = "carried";
+        mob.path = null;
+        mob.target = null;
+      }
     }
   } else if (carryGrapplePulling) {
     const mob = carryGrappleMob;
@@ -3100,6 +4680,16 @@ function randomInsidePoint(homeId) {
     return { x, z };
   }
   return { x: h.cx, z: h.cz };
+}
+function wanderNear(m) {
+  for (let t = 0; t < 8; t++) {
+    const ax = m.pos.x + (Math.random() - 0.5) * 10;
+    const az = m.pos.z + (Math.random() - 0.5) * 10;
+    if (aabbCollidesWorld(ax, m.pos.y, az, m.hw, m.h)) continue;
+    if (!hasMobGround(ax, az, m.hw, m.pos.y)) continue;
+    return { x: ax, z: az };
+  }
+  return { x: m.pos.x + (Math.random() - 0.5) * 4, z: m.pos.z + (Math.random() - 0.5) * 4 };
 }
 function wanderGoalFor(m) {
   let best = null, bestScore = Infinity;
@@ -3600,14 +5190,15 @@ function findVillagePath(sx, sz, tx, tz, hw, pyHint) {
   return out;
 }
 function mobCollidesOther(mob, nx, nz) {
-  if (mob === carryMob) return null;
+  if (isMobHeld(mob)) return null;
   if (mob.dim !== undefined && mob.dim !== dim) return null;
   const hw = villagerHW(mob);
   const y = mob.pos.y;
   const nearby = nearbyMobsFor(nx, nz, 1);
   const fleeing = mob.fleeUntil && performance.now() / 1000 < mob.fleeUntil;
   for (const o of nearby) {
-    if (o === mob || o === carryMob || o === carryGrappleMob) continue;
+    if (o === mob || isMobHeld(o)) continue;
+    if (isChained(o)) continue;
     if (o.kind === "dragon" || o.kind === "enderman") continue;
     if (o.dim !== undefined && o.dim !== dim) continue;
     let need = hw + villagerHW(o) + 0.04;
@@ -3689,6 +5280,7 @@ function spawnVillagers() {
         _stuckT: 0, _prevX: sx, _prevZ: sz,
         path: null, pathIdx: 0, pathKey: null, sc: isBaby ? 0.52 : 1, steerX: 0, steerZ: 0, steerCooldown: 0, lastTarget: null, _wasInWater: false, wolfInWater: false
       };
+      stampSpawn(m);
       mobs.push(m);
       mobById.set(m.id, m);
     }
@@ -3757,6 +5349,7 @@ function spawnVillagers() {
         _stuckT: 0, _prevX: sx, _prevZ: sz,
         path: null, pathIdx: 0, pathKey: null, sc: 1, steerX: 0, steerZ: 0, steerCooldown: 0, lastTarget: null, _wasInWater: false, wolfInWater: false
       };
+      stampSpawn(m);
       mobs.push(m);
       mobById.set(m.id, m);
     }
@@ -3812,6 +5405,7 @@ function spawnVillagers() {
         wolfStepUp: false, wolfStepUpClearY: 0, wolfInWater: false, wasOnGroundWolf: false, _wasInWater: false
       };
       m.target = wanderGoalForWolf(m);
+      stampSpawn(m);
       mobs.push(m);
       mobById.set(m.id, m);
     }
@@ -3836,9 +5430,11 @@ function removeVillagers() {
   if (!mobs.length && villagerGeo) { /* keep geo for reuse */ }
   mobStats = { worldCol: 0, mobCol: 0, playerCol: 0, stuck: 0, falls: 0, frames: 0, invariants: 0 };
   if (!keepCarry) playerArms.visible = false;
+  pruneChains();
 }
 let overworldMobCache = null;
 let pendingOverworldMobs = null;
+let pendingChainLinks = null;
 const MOB_SAVE_BYTES = 19;
 function mobKindCode(m) {
   if (m.kind === "pig") return 1;
@@ -3888,6 +5484,7 @@ function snapshotOverworldMobs(includeCarried) {
   const idxById = new Map();
   list.forEach((m, i) => idxById.set(m.id, i));
   return list.map((m) => ({
+    id: m.id,
     kind: mobKindCode(m),
     isBaby: !!m.isBaby,
     homeId: m.homeId != null ? m.homeId : -1,
@@ -3944,11 +5541,11 @@ function restoreOverworldMobs(list, opts) {
     const isBaby = !!e.isBaby && kind === "villager";
     const hw = kind === "pigeon" ? 0.25 : kind === "wolf" ? 0.30 : (kind === "pig" || kind === "cow") ? 0.32 : kind === "enderman" ? ENDERMAN_HW : (isBaby ? 0.16 : 0.27);
     const hh = kind === "pigeon" ? 0.5 : kind === "wolf" ? 0.90 : kind === "pig" ? 0.92 : kind === "cow" ? 1.30 : kind === "enderman" ? ENDERMAN_H : (isBaby ? 0.98 : 1.82);
-    const isWolf = kind === "wolf";
+    const isWolf = isJumpingKind(kind);
     let sx = e.x, sy = e.y, sz = e.z;
     if (!isFinite(sx) || !isFinite(sy) || !isFinite(sz)) continue;
     let spot = null;
-    if (kind === "pigeon") {
+    if (isFlyingKind(kind)) {
       sx = Math.max(-WORLD_RADIUS + 1, Math.min(WORLD_RADIUS - 1, sx));
       sz = Math.max(-WORLD_RADIUS + 1, Math.min(WORLD_RADIUS - 1, sz));
       sy = Math.max(1, Math.min(MAX_Y - 2, isFinite(sy) ? sy : PIGEON_MIN_Y + 20));
@@ -4077,8 +5674,17 @@ function restoreOverworldMobs(list, opts) {
     if (pid == null) return;
     cm.parentId = pid;
   });
+  if (pendingChainLinks && pendingChainLinks.length) {
+    for (const [a, b] of pendingChainLinks) {
+      if (a < 0 || b < 0 || a >= list.length || b >= list.length) continue;
+      const ca = mobById.get(idByListIdx[a]), cb = mobById.get(idByListIdx[b]);
+      if (!ca || !cb) continue;
+      linkChain(ca, cb);
+    }
+  }
+  pendingChainLinks = null;
   for (const m of created) {
-    if (m.kind === "pigeon") {
+    if (isFlyingKind(m.kind)) {
       m.target = pigeonRandomTarget(m.pos);
     } else {
       m.target = { x: m.pos.x, z: m.pos.z };
@@ -4093,7 +5699,9 @@ function restoreOverworldMobs(list, opts) {
 function intersectsMob(bx, by, bz) {
   const nearby = nearbyMobsFor(bx + 0.5, bz + 0.5, 1);
   for (const m of nearby) {
-    if (m === carryMob || m === carryGrappleMob) continue;
+    if (isFlyingKind(m.kind) && m.kind !== "dragon" && ignorePigeons) continue;
+    if (isMobHeld(m)) continue;
+    if (isChained(m)) continue;
     if (m.dim !== undefined && m.dim !== dim) continue;
     const hw = villagerHW(m) + 0.05, hh = villagerH(m);
     const mx = m.pos.x, my = m.pos.y, mz = m.pos.z;
@@ -4104,7 +5712,9 @@ function intersectsMob(bx, by, bz) {
 function isMobStandingOn(bx, by, bz) {
   const nearby = nearbyMobsFor(bx + 0.5, bz + 0.5, 1);
   for (const m of nearby) {
-    if (m === carryMob || m === carryGrappleMob) continue;
+    if (isFlyingKind(m.kind) && m.kind !== "dragon" && ignorePigeons) continue;
+    if (isMobHeld(m)) continue;
+    if (isChained(m)) continue;
     if (m.dim !== undefined && m.dim !== dim) continue;
     const hw = villagerHW(m);
     const mx = m.pos.x, my = m.pos.y, mz = m.pos.z;
@@ -4119,16 +5729,18 @@ function separateMobs() {
   for (let iter = 0; iter < 3; iter++) {
     let anyMoved = false;
     for (const m of mobs) {
-      if (m === carryMob) continue;
-      if (m.kind === "pigeon" || m.kind === "dragon" || m.kind === "enderman") continue;
+      if (isMobHeld(m)) continue;
+      if (isChained(m)) continue;
+      if (isFlyingKind(m.kind) || m.kind === "enderman") continue;
       if (isMobFrozenByGrapple(m)) continue;
       if (m.dim !== undefined && m.dim !== dim) continue;
       let sx = 0, sz = 0, cnt = 0;
       const nearby = nearbyMobsFor(m.pos.x, m.pos.z, 1);
       const fleeingSelf = m.fleeUntil && performance.now() / 1000 < m.fleeUntil;
       for (const o of nearby) {
-        if (o === m || o === carryMob) continue;
-        if (o.kind === "pigeon" || o.kind === "dragon" || o.kind === "enderman") continue;
+        if (o === m || isMobHeld(o)) continue;
+        if (isChained(o)) continue;
+        if (isFlyingKind(o.kind) || o.kind === "enderman") continue;
         if (isMobFrozenByGrapple(o)) continue;
         if (o.dim !== undefined && o.dim !== dim) continue;
         let need = villagerHW(m) + villagerHW(o) + 0.18;
@@ -4188,7 +5800,8 @@ function pushMobsFromPlayer() {
   if (Math.abs(pos.y - y) > 1.8) return;
   const nearby = nearbyMobsFor(pos.x, pos.z, 2);
   for (const m of nearby) {
-    if (m === carryMob) continue;
+    if (isMobHeld(m)) continue;
+    if (isChained(m)) continue;
     if (m.kind === "dragon" || m.kind === "enderman") continue;
     if (isMobFrozenByGrapple(m)) continue;
     if (m.dim !== undefined && m.dim !== dim) continue;
@@ -4213,13 +5826,14 @@ function pushMobsFromPlayer() {
   }
 }
 function mobWouldCollide(mob, nx, nz) {
-  if (mob === carryMob) return false;
+  if (isMobHeld(mob)) return false;
   const hw = villagerHW(mob);
   const y = mob.pos.y;
   const nearby = nearbyMobsFor(nx, nz, 1);
   const fleeingSelf = mob.fleeUntil && performance.now() / 1000 < mob.fleeUntil;
   for (const o of nearby) {
-    if (o === mob || o === carryMob || isMobFrozenByGrapple(o)) continue;
+    if (o === mob || isMobHeld(o) || isMobFrozenByGrapple(o)) continue;
+    if (isChained(o)) continue;
     if (o.kind === "dragon" || o.kind === "enderman") continue;
     if (o.dim !== undefined && o.dim !== dim) continue;
     let need = hw + villagerHW(o) + 0.04;
@@ -4234,6 +5848,25 @@ function mobWouldCollide(mob, nx, nz) {
     if (dx * dx + dz * dz < need * need) return true;
   }
   return false;
+}
+function obstacleTurnDir(m, probeFree, dist) {
+  const d = dist || 2.2;
+  let hx = m.vel ? m.vel.x : 0, hz = m.vel ? m.vel.z : 0;
+  if (Math.hypot(hx, hz) < 0.3) {
+    const yaw = m.mesh ? m.mesh.rotation.y : 0;
+    hx = Math.sin(yaw); hz = Math.cos(yaw);
+  }
+  const hl = Math.hypot(hx, hz) || 1;
+  hx /= hl; hz /= hl;
+  const fl = probeFree(m.pos.x, m.pos.z, hz, -hx, d, m.hw, m.pos.y);
+  const fr = probeFree(m.pos.x, m.pos.z, -hz, hx, d, m.hw, m.pos.y);
+  if (fl >= 0.35 || fr >= 0.35) {
+    if (fl > fr + 0.05) return { x: hz, z: -hx };
+    if (fr > fl + 0.05) return { x: -hz, z: hx };
+    m._turnSide = !m._turnSide;
+    return m._turnSide ? { x: hz, z: -hx } : { x: -hz, z: hx };
+  }
+  return { x: -hx, z: -hz };
 }
 function updateMobs(dt) {
   if (!mobs.length) return;
@@ -4251,10 +5884,11 @@ function updateMobs(dt) {
   for (let idx = mobs.length - 1; idx >= 0; idx--) {
     const m = mobs[idx];
     if (m.kind === "enderman" && (m === carryMob || isMobFrozenByGrapple(m))) { updateEnderman(m, dt); continue; }
-    if (m === carryMob) continue;
+    if (isMobHeld(m)) continue;
+    if (isChained(m)) { m.mesh.position.copy(m.pos); continue; }
     if (isMobFrozenByGrapple(m)) continue;
     if (m.dim !== undefined && m.dim !== dim) {
-      if (m.kind === "pigeon" || m.kind === "enderman") { m.mesh.position.copy(m.pos); continue; }
+      if (isFlyingKind(m.kind) || m.kind === "enderman") { m.mesh.position.copy(m.pos); continue; }
       if (m.pos.y < -15) { scene.remove(m.mesh); mobById.delete(m.id); mobs.splice(idx, 1); continue; }
       if (m.vel == null) m.vel = new THREE.Vector3(0,0,0);
       const footY2 = Math.floor(m.pos.y);
@@ -4281,6 +5915,28 @@ function updateMobs(dt) {
     if (m.kind === "enderman") { updateEnderman(m, dt); continue; }
     if (m.kind === "pigeon") {
       if (dim !== "over") { m.mesh.position.copy(m.pos); continue; }
+      if (m._chainFall) {
+        if (m.vel == null) m.vel = new THREE.Vector3(0, 0, 0);
+        m.vel.y -= GRAVITY * dt;
+        m.pos.y += m.vel.y * dt;
+        const fb = Math.floor(m.pos.y);
+        if (isSolid(Math.floor(m.pos.x), fb - 1, Math.floor(m.pos.z))) {
+          let gg = fb - 1;
+          while (gg > 0 && !isSolid(Math.floor(m.pos.x), gg, Math.floor(m.pos.z))) gg--;
+          m.pos.y = gg + 1;
+          m.vel.y = 0;
+          m._chainFall = false;
+          resumeChainedMob(m);
+        } else if (m.pos.y < -15) {
+          const gy = groundYForMob(m.pos.x, m.pos.z, 30, m.hw);
+          m.pos.set(m.pos.x, gy, m.pos.z);
+          m.vel.set(0, 0, 0);
+          m._chainFall = false;
+          resumeChainedMob(m);
+        }
+        m.mesh.position.copy(m.pos);
+        continue;
+      }
       updatePigeon(m, dt);
       continue;
     }
@@ -4330,7 +5986,7 @@ function updateMobs(dt) {
         else if (m.fleeUntil) { m.fleeUntil = 0; m.speed = WALK / 2; } else m.speed = WALK / 2;
         m.wanderT -= dt;
         if (!m.target || Math.hypot(m.target.x - m.pos.x, m.target.z - m.pos.z) < 0.6 || m.wanderT <= 0) {
-          m.target = wanderGoalForWolf(m);
+          m.target = m.villageBound === false ? wanderNear(m) : wanderGoalForWolf(m);
           m.wanderT = 3 + Math.random() * 4; m.path = null; m.pathKey = null; m.steerCooldown = 0;
         }
       }
@@ -4416,7 +6072,7 @@ function updateMobs(dt) {
                 m.target = randomAroundPenPoint(m);
               }
             } else {
-              m.target = wantsPen ? wanderGoalForPen(m) : wanderGoalFor(m);
+              m.target = m.penBound === false ? wanderNear(m) : (wantsPen ? wanderGoalForPen(m) : wanderGoalFor(m));
             }
             m.wanderT = 3 + Math.random() * 4; m.path = null; m.pathKey = null; m.steerCooldown = 0;
           }
@@ -4470,16 +6126,7 @@ function updateMobs(dt) {
       if (m.wanderT <= 0 && m.mode === "wander" && (m.villageBound === false || !m.isBaby)) {
         if (m.villageBound === false) {
           // outside village: wander near current pos
-          let near = null;
-          for (let t = 0; t < 8; t++) {
-            const ax = m.pos.x + (Math.random() - 0.5) * 10;
-            const az = m.pos.z + (Math.random() - 0.5) * 10;
-            if (aabbCollidesWorld(ax, m.pos.y, az, m.hw, m.h)) continue;
-            if (!hasMobGround(ax, az, m.hw, m.pos.y)) continue;
-            near = { x: ax, z: az };
-            break;
-          }
-          m.target = near || { x: m.pos.x + (Math.random() - 0.5) * 4, z: m.pos.z + (Math.random() - 0.5) * 4 };
+          m.target = wanderNear(m);
           m.wanderT = 3 + Math.random() * 4;
         } else if (Math.random() < 0.25) {
           m.mode = "goHome";
@@ -4492,16 +6139,7 @@ function updateMobs(dt) {
       if (m.target && Math.hypot(m.target.x - m.pos.x, m.target.z - m.pos.z) < 0.6) {
         if (m.mode === "wander") {
           if (m.villageBound === false) {
-            let near = null;
-            for (let t = 0; t < 8; t++) {
-              const ax = m.pos.x + (Math.random() - 0.5) * 10;
-              const az = m.pos.z + (Math.random() - 0.5) * 10;
-              if (aabbCollidesWorld(ax, m.pos.y, az, m.hw, m.h)) continue;
-              if (!hasMobGround(ax, az, m.hw, m.pos.y)) continue;
-              near = { x: ax, z: az };
-              break;
-            }
-            m.target = near || wanderGoalFor(m);
+            m.target = wanderNear(m);
           } else {
             m.target = wanderGoalFor(m);
           }
@@ -4649,7 +6287,7 @@ function updateMobs(dt) {
       let repX = 0, repZ = 0, cnt = 0;
       const nearby = nearbyMobsFor(m.pos.x, m.pos.z, 2);
       for (const o of nearby) {
-        if (o === m || o === carryMob || isMobFrozenByGrapple(o)) continue;
+        if (o === m || isMobHeld(o) || isMobFrozenByGrapple(o)) continue;
         if (o.dim !== undefined && o.dim !== dim) continue;
         let need = villagerHW(m) + villagerHW(o) + 0.50;
         const fleeingSelf = m.fleeUntil && performance.now() / 1000 < m.fleeUntil;
@@ -4720,33 +6358,19 @@ function updateMobs(dt) {
       } else if ((m.kind === "pig" || m.kind === "cow") && isInsidePen(m.pos.x, m.pos.z)) {
         m.target = wanderGoalForPen(m);
         m.path = null; m.pathKey = null;
-        const ang = Math.random() * Math.PI * 2;
-        m.vel.x = Math.cos(ang) * (WALK / 2) * 0.6; m.vel.z = Math.sin(ang) * (WALK / 2) * 0.6;
+        const td = obstacleTurnDir(m, probeFree);
+        m.vel.x = td.x * (WALK / 2) * 0.6; m.vel.z = td.z * (WALK / 2) * 0.6;
         m.steerX = m.vel.x; m.steerZ = m.vel.z; m.steerCooldown = 0.6;
-      } else if (m.canStep && m.kind === "wolf") {
+      } else if (m.canStep && isJumpingKind(m.kind)) {
         m.target = wanderGoalForWolf(m);
         m.path = null; m.pathKey = null;
-        const ang = Math.random() * Math.PI * 2;
-        m.vel.x = Math.cos(ang) * (WALK / 2) * 0.6; m.vel.z = Math.sin(ang) * (WALK / 2) * 0.6;
+        const td = obstacleTurnDir(m, probeFree);
+        m.vel.x = td.x * (WALK / 2) * 0.6; m.vel.z = td.z * (WALK / 2) * 0.6;
         m.steerX = m.vel.x; m.steerZ = m.vel.z; m.steerCooldown = 0.6;
       } else {
-        let bestF = -1, bx = 0, bz = 0;
-        for (let a = 0; a < 360; a += 45) {
-          const rad = a * Math.PI / 180;
-          const cx = Math.cos(rad), cz = Math.sin(rad);
-          const free = probeFree(m.pos.x, m.pos.z, cx, cz, 2.2, m.hw, m.pos.y);
-          // penalize directions crowded with mobs
-          let mobFactor = 0;
-          const testX = m.pos.x + cx * 1.1, testZ = m.pos.z + cz * 1.1;
-          for (const o of mobs) {
-            if (o === m || (o.dim !== undefined && o.dim !== dim)) continue;
-            const d2 = (testX - o.pos.x) * (testX - o.pos.x) + (testZ - o.pos.z) * (testZ - o.pos.z);
-            if (d2 < 1.2 * 1.2) mobFactor += 0.5;
-          }
-          const eff = free - mobFactor * 0.6;
-          if (eff > bestF) { bestF = eff; bx = cx; bz = cz; }
-          else if (free > bestF) { bestF = free; bx = cx; bz = cz; }
-        }
+        const td = obstacleTurnDir(m, probeFree);
+        const bestF = probeFree(m.pos.x, m.pos.z, td.x, td.z, 2.2, m.hw, m.pos.y);
+        const bx = td.x, bz = td.z;
         if (bestF > 0.35) {
           const tx2 = m.pos.x + bx * (1.5 + Math.random()*2.5);
           const tz2 = m.pos.z + bz * (1.5 + Math.random()*2.5);
@@ -4769,8 +6393,7 @@ function updateMobs(dt) {
         } else {
           m.target = goalFor(m);
           m.path = null; m.pathKey = null;
-          const ang = Math.random()*Math.PI*2;
-          m.vel.x = Math.cos(ang)*(WALK/2)*0.5; m.vel.z = Math.sin(ang)*(WALK/2)*0.5;
+          m.vel.x = bx * (WALK / 2) * 0.5; m.vel.z = bz * (WALK / 2) * 0.5;
           m.steerX = m.vel.x; m.steerZ = m.vel.z; m.steerCooldown = 0.5;
         }
       }
@@ -4778,16 +6401,11 @@ function updateMobs(dt) {
       m._stuckT = 0;
       if (mobStats) mobStats.stuck++;
     } else if (wantMove > 0.05 && moved < 0.02 && probeFree(m.pos.x, m.pos.z, wantX/(m.speed||1), wantZ/(m.speed||1), 0.5, m.hw, m.pos.y) < 0.15) {
-      let bestF = -1, bx = 0, bz = 0;
-      for (let a = 0; a < 360; a += 45) {
-        const rad = a * Math.PI / 180;
-        const cx = Math.cos(rad), cz = Math.sin(rad);
-        const free = probeFree(m.pos.x, m.pos.z, cx, cz, 1.4, m.hw, m.pos.y);
-        if (free > bestF) { bestF = free; bx = cx; bz = cz; }
-      }
+      const td = obstacleTurnDir(m, probeFree, 1.4);
+      const bestF = probeFree(m.pos.x, m.pos.z, td.x, td.z, 1.4, m.hw, m.pos.y);
       if (bestF > 0.35) {
-        m.vel.x = bx * (WALK/2) * 0.5; m.vel.z = bz * (WALK/2) * 0.5;
-        m.mesh.rotation.y = Math.atan2(bx, bz);
+        m.vel.x = td.x * (WALK/2) * 0.5; m.vel.z = td.z * (WALK/2) * 0.5;
+        m.mesh.rotation.y = Math.atan2(td.x, td.z);
         m.steerX = m.vel.x; m.steerZ = m.vel.z; m.steerCooldown = 0.5;
       }
     }
@@ -4827,7 +6445,8 @@ function panicVillagers(cx, cy, cz) {
   if (Math.abs(cy - villageCenter.y) > CLOUD_BASE / 2) return;
   const now = performance.now() / 1000;
   for (const m of mobs) {
-    if (m === carryMob || m === carryGrappleMob) continue;
+    if (isMobHeld(m)) continue;
+    if (isChained(m)) continue;
     if (m.dim !== undefined && m.dim !== dim) continue;
     if (m.homeId < 0) continue;
     const stagger = Math.random() * 3;
@@ -4853,7 +6472,8 @@ function panicPenMobs(cx, cy, cz) {
   const insideVillage = dim !== "over" || ((cx - villageCenter.x) ** 2 + (cz - villageCenter.z) ** 2 <= (VILLAGE_RADIUS + 15) ** 2);
   if (insideVillage) {
     for (const m of mobs) {
-      if (m === carryMob || m === carryGrappleMob) continue;
+      if (isMobHeld(m)) continue;
+      if (isChained(m)) continue;
       if (m.dim !== undefined && m.dim !== dim) continue;
       if (m.kind !== "pig" && m.kind !== "cow") continue;
       const stagger = Math.random() * 3;
@@ -4883,7 +6503,8 @@ function panicPenMobs(cx, cy, cz) {
     }
   } else {
     for (const m of mobs) {
-      if (m === carryMob || m === carryGrappleMob) continue;
+      if (isMobHeld(m)) continue;
+      if (isChained(m)) continue;
       if (m.dim !== undefined && m.dim !== dim) continue;
       if (m.kind !== "pig" && m.kind !== "cow") continue;
       const dx = m.pos.x - cx, dz = m.pos.z - cz;
@@ -4905,7 +6526,8 @@ function panicWolves(cx, cy, cz) {
   const insideVillage = dim !== "over" || ((cx - villageCenter.x) ** 2 + (cz - villageCenter.z) ** 2 <= (VILLAGE_RADIUS + 15) ** 2);
   if (insideVillage) {
     for (const m of mobs) {
-      if (m === carryMob || m === carryGrappleMob) continue;
+      if (isMobHeld(m)) continue;
+      if (isChained(m)) continue;
       if (m.dim !== undefined && m.dim !== dim) continue;
       if (m.kind !== "wolf") continue;
       const stagger = Math.random() * 3;
@@ -4939,7 +6561,8 @@ function panicWolves(cx, cy, cz) {
     }
   } else {
     for (const m of mobs) {
-      if (m === carryMob || m === carryGrappleMob) continue;
+      if (isMobHeld(m)) continue;
+      if (isChained(m)) continue;
       if (m.dim !== undefined && m.dim !== dim) continue;
       if (m.kind !== "wolf") continue;
       const dx = m.pos.x - cx, dz = m.pos.z - cz;
@@ -6490,7 +8113,7 @@ function moveMobAxisX(mob, dx) {
     if (wouldOld) {
       const nearby = nearbyMobsFor(mob.pos.x, mob.pos.z, 1);
       for (const o of nearby) {
-        if (o === mob || o === carryMob || isMobFrozenByGrapple(o)) continue;
+        if (o === mob || isMobHeld(o) || isMobFrozenByGrapple(o)) continue;
         if (o.dim !== undefined && o.dim !== dim) continue;
         let need = villagerHW(mob) + villagerHW(o) + 0.04;
         const fleeingSelf = mob.fleeUntil && performance.now() / 1000 < mob.fleeUntil;
@@ -6562,7 +8185,7 @@ function moveMobAxisZ(mob, dz) {
     if (wouldOld) {
       const nearby = nearbyMobsFor(mob.pos.x, mob.pos.z, 1);
       for (const o of nearby) {
-        if (o === mob || o === carryMob || isMobFrozenByGrapple(o)) continue;
+        if (o === mob || isMobHeld(o) || isMobFrozenByGrapple(o)) continue;
         if (o.dim !== undefined && o.dim !== dim) continue;
         let need = villagerHW(mob) + villagerHW(o) + 0.04;
         const fleeingSelf = mob.fleeUntil && performance.now() / 1000 < mob.fleeUntil;
@@ -6728,7 +8351,7 @@ function wolfMoveAxisX(mob, dx) {
     if (wouldOld) {
       const nearby = nearbyMobsFor(mob.pos.x, mob.pos.z, 1);
       for (const o of nearby) {
-        if (o === mob || o === carryMob || isMobFrozenByGrapple(o)) continue;
+        if (o === mob || isMobHeld(o) || isMobFrozenByGrapple(o)) continue;
         if (o.dim !== undefined && o.dim !== dim) continue;
         let need = villagerHW(mob) + villagerHW(o) + 0.04;
         const fleeingSelf = mob.fleeUntil && performance.now() / 1000 < mob.fleeUntil;
@@ -6774,7 +8397,7 @@ function wolfMoveAxisZ(mob, dz) {
     if (wouldOld) {
       const nearby = nearbyMobsFor(mob.pos.x, mob.pos.z, 1);
       for (const o of nearby) {
-        if (o === mob || o === carryMob || isMobFrozenByGrapple(o)) continue;
+        if (o === mob || isMobHeld(o) || isMobFrozenByGrapple(o)) continue;
         if (o.dim !== undefined && o.dim !== dim) continue;
         let need = villagerHW(mob) + villagerHW(o) + 0.04;
         const fleeingSelf = mob.fleeUntil && performance.now() / 1000 < mob.fleeUntil;
@@ -6884,7 +8507,7 @@ function moveAxisX(dx) {
     }
   const nearX = mobGrid.size ? nearbyMobsFor(pos.x, pos.z, 1) : mobs;
   for (const m of nearX) {
-    if (m === carryMob) continue;
+    if (isMobHeld(m)) continue;
     if (isMobFrozenByGrapple(m)) continue;
     if (m.dim !== undefined && m.dim !== dim) continue;
     const hw = villagerHW(m), hh = villagerH(m);
@@ -6927,7 +8550,7 @@ function moveAxisZ(dz) {
     }
   const nearZ = mobGrid.size ? nearbyMobsFor(pos.x, pos.z, 1) : mobs;
   for (const m of nearZ) {
-    if (m === carryMob) continue;
+    if (isMobHeld(m)) continue;
     if (isMobFrozenByGrapple(m)) continue;
     if (m.dim !== undefined && m.dim !== dim) continue;
     const hw = villagerHW(m), hh = villagerH(m);
@@ -7009,8 +8632,16 @@ function fireGrapple() {
       blockDist = Math.hypot(tx - sx, ty - sy, tz - sz);
     }
   }
-  const mob = pickMob(dir, blockDist);
-  if (mob && mob.kind === "enderman") return;
+  const mob0 = pickMob(dir, blockDist);
+  let mob = mob0;
+  if (mob && (isChained(mob) || isChainCarrier(mob))) {
+    const tail = chainTailOf(mob);
+    if (tail && tail !== mob && tail !== carryMob && tail !== carryGrappleMob) {
+      mob = tail;
+    }
+  }
+  if (mob && playerInChain() && (mob === grappleMob || chainRootOf(mob) === chainRootOf(grappleMob))) return;
+  if (mob && mob.kind === "enderman" && !isChained(mob) && !isChainCarrier(mob)) return;
   if (mob) {
     const off = getMobHitOffset(eye, dir, mob);
     const mx = off ? mob.pos.x + off.x : mob.pos.x;
@@ -7064,6 +8695,27 @@ function fireGrapple() {
   jumpCount = 1;
   jumpIdle = 0;
   stepDown = false;
+}
+
+function latchPlayerTo(mob) {
+  if (!mob || !mobs.includes(mob) || freeCam) return false;
+  grappleMob = mob;
+  grappleBlock = null;
+  grappleMobOffset.set(0, mob.h + 0.001, 0);
+  grappleTarget.set(mob.pos.x, mob.pos.y + grappleMobOffset.y, mob.pos.z);
+  grappleStart.set(pos.x, pos.y + 0.3, pos.z);
+  grapplingDist = 1;
+  grappleHookPos.copy(grappleTarget);
+  grappleFly = 1;
+  grappleHooked = true;
+  grappleArrived = false;
+  grapplePulling = false;
+  grapplePass = true;
+  grappleActive = true;
+  grappleRetracting = false;
+  grappleTowInit = false;
+  grappleTowPos.set(0, 0, 0);
+  return true;
 }
 
 function blockedBody(px, py, pz) {
@@ -7195,7 +8847,8 @@ function updateGrapple(dt) {
       grappleTopY = grappleBlock.y;
     }
   }
-  if (grappleMob && (grappleMob.kind === "pigeon" || grappleMob.kind === "dragon") && grappleHooked) {
+  const grappleChainTail = grappleMob && grappleHooked && !chainChild.has(grappleMob.id) && (isChained(grappleMob) || isChainCarrier(grappleMob));
+  if (grappleMob && grappleHooked && (isFlyingKind(grappleMob.kind) || grappleChainTail)) {
     const pm = grappleMob;
     const followDist = pm.kind === "dragon" ? DRAGON_FOLLOW_DIST : PIGEON_FOLLOW_DIST;
     const pdx = grappleTarget.x - pos.x, pdy = grappleTarget.y - pos.y, pdz = grappleTarget.z - pos.z;
@@ -7214,7 +8867,7 @@ function updateGrapple(dt) {
       const desX = pm.pos.x - grappleTowDir.x * followDist, desY = pm.pos.y - grappleTowDir.y * followDist - 0.4, desZ = pm.pos.z - grappleTowDir.z * followDist;
       if (grappleTowPos.lengthSq() < 1e-6) grappleTowPos.set(desX, desY, desZ);
       else grappleTowPos.lerp(grappleTowTmp.set(desX, desY, desZ), Math.min(1, dt * 6));
-      const stiff = 18, damp = 11;
+    const stiff = 18, damp = 11;
       const ex = grappleTowPos.x - pos.x, ey = grappleTowPos.y - pos.y, ez = grappleTowPos.z - pos.z;
       const exl = Math.hypot(ex, ey, ez) || 1;
       const ecl = Math.min(exl, 3);
@@ -7240,6 +8893,19 @@ function updateGrapple(dt) {
       if (blockedY) vel.y = 0;
       if (blockedX) vel.x = 0;
       if (blockedZ) vel.z = 0;
+      if (grappleChainTail) {
+        const tAx = pm.pos.x, tAy = pm.pos.y + pm.h * 0.5, tAz = pm.pos.z;
+        const eDx = pos.x - tAx, eDy = pos.y + 0.3 - tAy, eDz = pos.z - tAz;
+        const eD = Math.hypot(eDx, eDy, eDz);
+        if (eD > 1e-6) {
+          const qx = tAx + (eDx / eD) * CHAIN_LINK_LEN;
+          const qy = tAy + (eDy / eD) * CHAIN_LINK_LEN - 0.3;
+          const qz = tAz + (eDz / eD) * CHAIN_LINK_LEN;
+          const ox = pos.x, oy = pos.y, oz = pos.z;
+          pos.set(qx, qy, qz);
+          if (blockedBody(pos.x, pos.y, pos.z)) pos.set(ox, oy, oz);
+        }
+      }
       onGround = false;
       stepDown = false;
       grapplePulling = true;
@@ -7966,12 +9632,39 @@ function clearTNTVisual(t) {
 }
 
 const CHAIN_FUSE = 0.05;
+function tntFizzleAim(bx, by, bz) {
+  if (dim !== "over" && dim !== "end" || chainBreaking) return null;
+  const dir = new THREE.Vector3();
+  camera.getWorldDirection(dir);
+  const eye = camera.position;
+  const mob = pickMob(dir, PIGEON_AIM_DIST);
+  if (!mob) return null;
+  if (mob.kind === "dragon") {
+    if (dim !== "end" || !dragon.mesh || !dragon.mob) return null;
+  } else if (!isFlyingKind(mob.kind) && !isChained(mob) && !isChainCarrier(mob)) return null;
+  const off = getMobHitOffset(eye, dir, mob);
+  const hx = off ? mob.pos.x + off.x : mob.pos.x, hy = off ? mob.pos.y + off.y : mob.pos.y + mob.h * 0.5, hz = off ? mob.pos.z + off.z : mob.pos.z;
+  const mobT = Math.hypot(hx - eye.x, hy - eye.y, hz - eye.z);
+  const blockT = Math.hypot(bx + 0.5 - eye.x, by + 0.5 - eye.y, bz + 0.5 - eye.z);
+  if (mobT > blockT + 0.5) return null;
+  return mob;
+}
+function fizzleTNT(bx, by, bz) {
+  setBlock(bx, by, bz, AIR);
+  refreshBlocks([[bx, by, bz]]);
+  queueSave();
+  spawnPigeonBurst(bx + 0.5, by + 0.5, bz + 0.5);
+}
 function igniteTNT(bx, by, bz, fuse = FUSE_TIME) {
   const k = key(bx, by, bz);
   if (tntLit.has(k)) {
     const t = tntLit.get(k);
     clearTNTVisual(t);
     tntLit.delete(k);
+    if (tntFizzleAim(bx, by, bz)) {
+      fizzleTNT(bx, by, bz);
+      return;
+    }
     explodeTNT(bx, by, bz, t.stuck);
     return;
   }
@@ -7979,12 +9672,13 @@ function igniteTNT(bx, by, bz, fuse = FUSE_TIME) {
   spr.position.set(bx + 0.5, by + 1.35, bz + 0.5);
   scene.add(spr);
   const t = { bx, by, bz, px: bx + 0.5, py: by + 1.1, pz: bz + 0.5, fuse, life: fuse + 2, spr, mesh: null, stuck: false, ax: 0, ay: 0, az: 0, pigeon: null };
-  if (dim === "over" && !chainBreaking) {
+  let aimed = null;
+  if ((dim === "over" || dim === "end") && !chainBreaking) {
     const dir = new THREE.Vector3();
     camera.getWorldDirection(dir);
     const eye = camera.position;
     const mob = pickMob(dir, PIGEON_AIM_DIST);
-    if (mob && mob.kind === "pigeon") {
+    if (mob && (isFlyingKind(mob.kind) || isChained(mob) || isChainCarrier(mob)) && (dim === "over" || mob.kind !== "dragon")) {
       const off = getMobHitOffset(eye, dir, mob);
       const hx = off ? mob.pos.x + off.x : mob.pos.x, hy = off ? mob.pos.y + off.y : mob.pos.y + mob.h * 0.5, hz = off ? mob.pos.z + off.z : mob.pos.z;
       const mobT = Math.hypot(hx - eye.x, hy - eye.y, hz - eye.z);
@@ -7998,7 +9692,7 @@ function igniteTNT(bx, by, bz, fuse = FUSE_TIME) {
           pigeonLockT = nowI;
           if (!freshI) pigeonLockShots = 0;
           pigeonLockShots++;
-        }
+        } else aimed = mob;
       }
     }
   }
@@ -8022,7 +9716,7 @@ function igniteTNT(bx, by, bz, fuse = FUSE_TIME) {
           pigeonLockT = nowI;
           if (!freshI) pigeonLockShots = 0;
           pigeonLockShots++;
-        }
+        } else aimed = mob;
       }
     }
   }
@@ -8036,6 +9730,10 @@ function igniteTNT(bx, by, bz, fuse = FUSE_TIME) {
     m.position.set(bx + 0.5, by + 1.1, bz + 0.5);
     scene.add(m);
     t.mesh = m;
+  } else if (aimed) {
+    clearTNTVisual(t);
+    fizzleTNT(bx, by, bz);
+    return;
   }
   tntLit.set(k, t);
 }
@@ -8048,12 +9746,15 @@ let pigeonLock = null;
 let pigeonLockT = 0;
 let pigeonLockShots = 0;
 function aimedPigeon() {
-  if (dim !== "over") return null;
+  if (dim !== "over" && dim !== "end") return null;
   const dir = new THREE.Vector3();
   camera.getWorldDirection(dir);
   const eye = camera.position;
   const mob = pickMob(dir, PIGEON_AIM_DIST);
-  if (!mob || mob.kind !== "pigeon") return null;
+  if (!mob) return null;
+  if (dim === "end") {
+    if (mob.kind === "dragon" || (!isFlyingKind(mob.kind) && !isChained(mob) && !isChainCarrier(mob))) return null;
+  } else if (!isFlyingKind(mob.kind) && !isChained(mob) && !isChainCarrier(mob)) return null;
   const off = getMobHitOffset(eye, dir, mob);
   const hx = off ? mob.pos.x + off.x : mob.pos.x, hy = off ? mob.pos.y + off.y : mob.pos.y + mob.h * 0.5, hz = off ? mob.pos.z + off.z : mob.pos.z;
   const mobT = Math.hypot(hx - eye.x, hy - eye.y, hz - eye.z);
@@ -8228,18 +9929,31 @@ function tickTNT(dt) {
         clearTNTVisual(t);
         tntLit.delete(k);
         tntSyncClear(t.pigeon);
-        const isPigeonBomb = t.pigeon && t.pigeon.kind === "pigeon";
-        if (isPigeonBomb && mobs.includes(t.pigeon)) killPigeon(t.pigeon);
-        if (isPigeonBomb) explodePigeon(t.px, t.py, t.pz, true);
+        const v = t.pigeon;
+        const victimChained = v && v.kind !== "dragon" && (!isFlyingKind(v.kind) || isChained(v) || isChainCarrier(v));
+        if (victimChained && mobs.includes(v)) {
+          if (isFlyingKind(v.kind)) killChainMob(v);
+          else unchainMob(v, k);
+        }
+        else {
+          const isPigeonBomb = t.pigeon && isFlyingKind(t.pigeon.kind) && t.pigeon.kind !== "dragon";
+          if (isPigeonBomb && mobs.includes(t.pigeon)) killPigeon(t.pigeon);
+        }
+        if (t.pigeon && t.pigeon.kind !== "dragon") explodePigeon(t.px, t.py, t.pz, true);
         else enqueueExplosion(t.px, t.py, t.pz, true, true);
       } else if (t.pigeon) {
-        const isPigeonBomb = t.pigeon.kind === "pigeon";
-        if (!mobs.includes(t.pigeon) || (t.life -= dt) <= 0) {
+        const v = t.pigeon;
+        const victimChained = v.kind !== "dragon" && (!isFlyingKind(v.kind) || isChained(v) || isChainCarrier(v));
+        if (!mobs.includes(v) || (t.life -= dt) <= 0) {
           clearTNTVisual(t);
           tntLit.delete(k);
-          tntSyncClear(t.pigeon);
-          if (isPigeonBomb) explodePigeon(t.px, t.py, t.pz, false);
-          else enqueueExplosion(t.px, t.py, t.pz, false, true);
+          tntSyncClear(v);
+          if (victimChained && mobs.includes(v)) {
+            if (isFlyingKind(v.kind)) killChainMob(v);
+            else unchainMob(v, k);
+          }
+          if (v.kind === "dragon") enqueueExplosion(t.px, t.py, t.pz, false, true);
+          else explodePigeon(t.px, t.py, t.pz, false);
         }
       } else if (!dragon.mesh) {
         clearTNTVisual(t);
@@ -8826,6 +10540,7 @@ function setDimensionEnv() {
 }
 
 function goToDimension(name, sx, sy, sz) {
+  clearChains();
   dim = name;
   world = worlds[name];
   clearGlowLights();
@@ -9896,6 +11611,7 @@ function paintDragon() {
 function removeDragon() {
   if (!dragon.mesh) return;
   if (dragon.mob) {
+    dropChainFrom(dragon.mob);
     if (pigeonLock === dragon.mob) { pigeonLock = null; pigeonLockT = 0; pigeonLockShots = 0; }
     mobById.delete(dragon.mob.id);
     const mi = mobs.indexOf(dragon.mob);
@@ -10253,6 +11969,7 @@ function spawnEndermen() {
       g: v.g, eyeMat: v.eyeMat, eyes: v.eyes, armL: v.armL, armR: v.armR, head: v.head,
       t: 0, angry: 0, teleportT: v.teleportT, lookT: 0, eyeRedT: 0, baseY: END_PLATFORM_TOP + 1,
     };
+    stampSpawn(e);
     mobs.push(e);
     mobById.set(e.id, e);
     endermen.push(e);
@@ -10272,6 +11989,7 @@ function removeEndermen() {
   }
   endermen.length = 0;
   for (const k of keep) endermen.push(k);
+  pruneChains();
   if (!endermen.length) {
     if (endermanGeo) { endermanGeo.dispose(); endermanGeo = null; }
     if (endermanBodyMat) { endermanBodyMat.dispose(); endermanBodyMat = null; }
@@ -10447,8 +12165,8 @@ function endermanSegmentFree(x0, y0, z0, x1, y1, z1, hw, h) {
 const ENDERMAN_LAST_RESORT_R = 48;
 
 function endermanSurfaceY(x, z, refY) {
-  const gy = groundYForMob(x, z, refY, ENDERMAN_HW);
-  if (gy < 1 || gy > MAX_Y - 3) return null;
+  const gy = groundYDown(x, z, refY, ENDERMAN_HW);
+  if (gy == null || gy < 1 || gy > MAX_Y - 3) return null;
   if (aabbCollidesWorld(x, gy, z, ENDERMAN_HW, ENDERMAN_H)) return null;
   return gy;
 }
@@ -10583,7 +12301,10 @@ function endermanAimed(e, dir) {
 }
 
 function updateEndermen(dt) {
-  for (let i = 0; i < endermen.length; i++) updateEnderman(endermen[i], dt);
+  for (let i = 0; i < endermen.length; i++) {
+    if (isChained(endermen[i])) continue;
+    updateEnderman(endermen[i], dt);
+  }
 }
 
 function updateEnderman(e, dt) {
@@ -10592,6 +12313,20 @@ function updateEnderman(e, dt) {
   const inboundGrab = e === carryGrappleMob && carryGrappleMode === "grab" && (carryGrappleActive || carryGrapplePulling);
   const M = e.g;
   const t = (e.t += dt);
+  if (e.falling) {
+    if (mobInWater(e)) { e.falling = false; e.fallV = 0; }
+    else {
+      e.fallV = Math.max(-20, (e.fallV || 0) - GRAVITY * dt);
+      M.position.y += e.fallV * dt;
+      let landed = false;
+      try {
+        const gy = groundYDown(M.position.x, M.position.z, M.position.y + 0.5, ENDERMAN_HW);
+        if (gy != null && M.position.y <= gy + 0.02) { M.position.y = Math.max(1, gy); landed = true; }
+      } catch {}
+      if (M.position.y < -15) { e.falling = false; e.fallV = 0; }
+      else if (landed) { e.falling = false; e.fallV = 0; e.baseY = M.position.y; }
+    }
+  }
   const baseY = e.baseY != null ? e.baseY : END_PLATFORM_TOP + 1;
   let hoverY = baseY + Math.sin(t * 1.3) * 0.02;
   if (mobInWater(e)) {
@@ -10601,7 +12336,7 @@ function updateEnderman(e, dt) {
       e.baseY = hoverY;
     }
   }
-  M.position.y += (hoverY - M.position.y) * Math.min(1, dt * 8);
+  if (!e.falling) M.position.y += (hoverY - M.position.y) * Math.min(1, dt * 8);
 
   const dx = pos.x - M.position.x;
   const dz = pos.z - M.position.z;
@@ -10633,7 +12368,7 @@ function updateEnderman(e, dt) {
   }
 
   camera.getWorldDirection(endermanFwd);
-  if (!inboundGrab && endermanAimed(e, endermanFwd)) {
+  if (!inboundGrab && !e.falling && endermanAimed(e, endermanFwd)) {
     e.lookT += dt;
     if (e.lookT > ENDERMAN_STARE_TIME) {
       e.lookT = 0;
@@ -10693,11 +12428,21 @@ function serialize() {
   const winLen = overPortalWin ? 12 : 1;
   const overMobs = dim === "over" ? snapshotOverworldMobs(true) : (overworldMobCache || []);
   const mobN = overMobs.length;
-  const buf = new ArrayBuffer(117 + (on + en + nn) * 5 + m * 6 + (gov + gev + gnv) * 5 + winLen + 16 + 4 + mobN * MOB_SAVE_BYTES);
+  let chainPairs = [];
+  if (dim === "over" && mobN) {
+    const idxById = new Map();
+    overMobs.forEach((e, i) => { if (e.id != null) idxById.set(e.id, i); });
+    for (const [carrierId, childId] of chainChild) {
+      const a = idxById.get(carrierId), b = idxById.get(childId);
+      if (a == null || b == null || a >= 65535 || b >= 65535) continue;
+      chainPairs.push([a, b]);
+    }
+  }
+  const buf = new ArrayBuffer(117 + (on + en + nn) * 5 + m * 6 + (gov + gev + gnv) * 5 + winLen + 16 + 4 + mobN * MOB_SAVE_BYTES + 24 + 4 + chainPairs.length * 4);
   const dv = new DataView(buf);
   let o = 0;
   new Uint8Array(buf, o, 9).set(SAVE_MAGIC); o += 9;
-  dv.setUint8(o++, 13); // format version
+  dv.setUint8(o++, 14); // format version
   dv.setUint8(o++, dim === "end" ? 1 : dim === "nether" ? 2 : 0);
   dv.setInt32(o, seed, true); o += 4;
   dv.setInt32(o, endSeed, true); o += 4;
@@ -10777,6 +12522,14 @@ function serialize() {
     dv.setUint8(o++, encodeMobYaw(em.yaw || 0));
     dv.setUint8(o++, em.look & 255);
   }
+  dv.setFloat64(o, vel.x, true); o += 8;
+  dv.setFloat64(o, vel.y, true); o += 8;
+  dv.setFloat64(o, vel.z, true); o += 8;
+  dv.setUint32(o, chainPairs.length, true); o += 4;
+  for (const [a, b] of chainPairs) {
+    dv.setUint16(o, a, true); o += 2;
+    dv.setUint16(o, b, true); o += 2;
+  }
   return buf;
 }
 
@@ -10786,7 +12539,7 @@ function deserialize(buf) {
   for (let i = 0; i < 9; i++) if (new Uint8Array(buf, o, 9)[i] !== SAVE_MAGIC[i]) throw new Error("Not a MiniCraft save");
   o += 9;
   const ver = dv.getUint8(o++);
-  if (ver !== 1 && ver !== 2 && ver !== 3 && ver !== 4 && ver !== 5 && ver !== 6 && ver !== 7 && ver !== 8 && ver !== 9 && ver !== 10 && ver !== 11 && ver !== 12 && ver !== 13) throw new Error("Unsupported save version");
+  if (ver !== 1 && ver !== 2 && ver !== 3 && ver !== 4 && ver !== 5 && ver !== 6 && ver !== 7 && ver !== 8 && ver !== 9 && ver !== 10 && ver !== 11 && ver !== 12 && ver !== 13 && ver !== 14) throw new Error("Unsupported save version");
   const yWidth = ver >= 8 ? 2 : 1;
   const readY = () => { const y = yWidth === 2 ? dv.getUint16(o, true) : dv.getUint8(o); o += yWidth; return y; };
   placedFlowers.clear();
@@ -10795,6 +12548,7 @@ function deserialize(buf) {
   glowVariants.nether.clear();
   pendingOverworldMobs = null;
   overworldMobCache = null;
+  pendingChainLinks = null;
   let dimFlag = 0, endSeedVal = endSeed;
   if (ver >= 2) dimFlag = dv.getUint8(o++);
   if (ver >= 4) {
@@ -10945,6 +12699,16 @@ function deserialize(buf) {
     }
     pendingOverworldMobs = arr;
     overworldMobCache = arr.map((e) => ({ ...e }));
+  }
+  if (ver >= 14) {
+    vel.set(dv.getFloat64(o, true), dv.getFloat64(o + 8, true), dv.getFloat64(o + 16, true)); o += 24;
+    const cn = dv.getUint32(o, true); o += 4;
+    pendingChainLinks = [];
+    for (let i = 0; i < cn; i++) {
+      const a = dv.getUint16(o, true); o += 2;
+      const b = dv.getUint16(o, true); o += 2;
+      pendingChainLinks.push([a, b]);
+    }
   }
   freeCam = flyFlag && dim !== "end";
   if (freeCam) camPos.copy(pos);
@@ -11243,6 +13007,7 @@ async function restoreSave(buf) {
     } else {
       removeVillagers();
     }
+    pendingChainLinks = null;
     scanWorldPortals();
     lastManualSave = Date.now();
     return true;
@@ -11340,6 +13105,7 @@ function resetDims() {
   endCleared = false;
   netReturnWin = null;
   protectedBlocks.clear();
+  clearChains();
   removeEndEntities();
   removeVillagers();
   overworldMobCache = null;
@@ -11589,11 +13355,14 @@ document.addEventListener("mouseup", (e) => {
   if (!grappleActive) return;
   if (grapplePulling) {
     const fdx = grappleTarget.x - pos.x, fdy = grappleTarget.y - pos.y, fdz = grappleTarget.z - pos.z;
-    if (grappleMob && (grappleMob.kind === "pigeon" || grappleMob.kind === "dragon") && grappleHooked &&
-        (grappleTowInit || Math.hypot(fdx, fdy, fdz) <= (grappleMob.kind === "dragon" ? DRAGON_FOLLOW_DIST : PIGEON_FOLLOW_DIST) + 0.5)) {
-      const sp = Math.hypot(vel.x, vel.y, vel.z) || 1;
-      if (sp > GRAPPLE_FLING) { vel.x *= GRAPPLE_FLING / sp; vel.y *= GRAPPLE_FLING / sp; vel.z *= GRAPPLE_FLING / sp; }
-      flingActive = true;
+    const mob = grappleMob;
+    const followDist = !mob ? 0 : mob.kind === "dragon" ? DRAGON_FOLLOW_DIST : PIGEON_FOLLOW_DIST;
+    const mobFollow = mob && grappleHooked &&
+      (isFlyingKind(mob.kind) || ((isChained(mob) || isChainCarrier(mob)) && !chainChild.has(mob.id))) &&
+      (grappleTowInit || Math.hypot(fdx, fdy, fdz) <= followDist + 0.5);
+    if (mobFollow) {
+      if (mob.vel) vel.copy(mob.vel);
+      flingActive = false;
       stepDown = false;
       wasOnGround = false;
       onGround = false;
@@ -11700,6 +13469,7 @@ document.addEventListener("keydown", (e) => {
   if (e.code === "KeyK" && !loading) select(selected - 1);
   if (e.code === "KeyL" && !loading) select(selected + 1);
   if (e.code === "KeyF" && dim !== "end") { freeCam = !freeCam; if (freeCam) camPos.copy(camera.position); else exitFreeCam(); }
+  if (e.code === "KeyV" && !loading) { spawnPigeonChain(); }
   if (e.code === "Escape") {
     if (started) {
       saveToFile();
@@ -11993,6 +13763,7 @@ function loop(now) {
     if (simActive) checkPortal();
     if (dim === "end" && simActive) updateDragon(dt);
     if (locked && started && !helpOpen) updateMobs(dt);
+    if (locked && started && !helpOpen) updateChains(dt);
     if (toastTimer > 0) { toastTimer -= dt; if (toastTimer <= 0) toastEl.style.opacity = "0"; }
 
     if (dim === "over") {
@@ -12101,16 +13872,16 @@ if (location.search.includes('test')) {
     get villageCenter(){ return villageCenter; }, get villageHouses(){ return villageHouses; }, get villagePen(){ return villagePen; }, get villagePool(){ return villagePool; }, get isInsidePen(){ return isInsidePen; }, get isInsidePool(){ return isInsidePool; }, get isInsidePenPool(){ return isInsidePenPool; }, get poolExitTarget(){ return poolExitTarget; }, get penPoolExitTarget(){ return penPoolExitTarget; }, get LOG(){ return LOG; }, findPenGaps, nearestPenGap, penGapInside, penGapOutside, hasMobGround, mobBlockedAt, aabbCollidesWorld, mobProbeFree, randomPenPoint, randomAroundPenPoint, groundYForMob, get CLOUD_BASE(){ return CLOUD_BASE; }, get CLOUD_TOP(){ return CLOUD_TOP; }, get MAX_Y(){ return MAX_Y; },
     getTypeMats, get typeMats(){ return typeMats; }, buildWorld, generateWorld, computeVillageLayout, spawnVillagers, refreshBlocks, get boxGeo(){ return boxGeo; }, THREE,
     get pos(){ return pos; }, get vel(){ return vel; }, get camera(){ return camera; }, get yaw(){ return yaw; }, set yaw(v){ yaw=v; }, get pitch(){ return pitch; }, set pitch(v){ pitch=v; },
-    get carryMob(){ return carryMob; }, handleCarryEnterDown, handleCarryEnterUp, pickMob, get carryGrappleActive(){ return carryGrappleActive; }, get carryGrapplePulling(){ return carryGrapplePulling; }, get carryGrappleMob(){ return carryGrappleMob; }, get carryGrappleBlock(){ return carryGrappleBlock; }, get carryGrappleHookPos(){ return carryGrappleHookPos; }, get carryGrappleOffset(){ return carryGrappleOffset; }, get carryGrappleMode(){ return carryGrappleMode; }, get isMobFrozenByGrapple(){ return isMobFrozenByGrapple; }, get grappleMob(){ return grappleMob; }, get grappleMobOffset(){ return grappleMobOffset; }, get grappleHookPos(){ return grappleHookPos; }, get grappleTarget(){ return grappleTarget; }, updateCarryGrapple, get currentBlock(){ return currentBlock; }, updateTarget, hotbarList, placeBlock, breakBlock, get selected(){ return selected; }, set selected(v){ selected=v; }, toggleCarry: handleCarryEnterDown, findNearestMobForGrab: (...a)=>{ const d=new THREE.Vector3(); camera.getWorldDirection(d); return pickMob(d); }, get playerArms(){ return playerArms; }, get started(){ return started; }, set started(v){ started=v; }, get loading(){ return loading; }, get freeCam(){ return freeCam; }, set freeCam(v){ freeCam=v; }, get helpOpen(){ return helpOpen; },
-    get WOLF_COUNT(){ return WOLF_COUNT; }, makeWolfMesh, villagerHW, villagerH, wolfHasMobGround, wolfBlockedAt, wolfProbeFree, wanderGoalForWolf, wolfFindPath, wolfInWater, mobInWater, waterSurfaceForMob, mobPhysicsStep, wolfPhysicsStep, updateMobs,     get isPigCow(){ return isPigCow; }, get pigOverlapsFence(){ return pigOverlapsFence; }, get MOB_FLOAT_FRAC(){ return MOB_FLOAT_FRAC; }, mobFloatTargetY, mobWaterExitJump, poolExitTarget, penPoolExitTarget, isInsidePenPool,
-    get PIGEON_COUNT(){ return PIGEON_COUNT; }, get PIGEON_MIN_Y(){ return PIGEON_MIN_Y; }, get PIGEON_MAX_Y(){ return PIGEON_MAX_Y; }, get PIGEON_SPEED(){ return PIGEON_SPEED; }, get TNT_HOME_SPEED(){ return TNT_HOME_SPEED; }, get PIGEON_AIM_DIST(){ return PIGEON_AIM_DIST; }, get PIGEON_LOCK_TIME(){ return PIGEON_LOCK_TIME; }, get pigeonLock(){ return pigeonLock; }, get pigeonLockT(){ return pigeonLockT; }, set pigeonLockT(v){ pigeonLockT = v; }, get pigeonLockShots(){ return pigeonLockShots; }, livePigeonLock, tntTargeted, tryFireLockedTNT, get chainBreaking(){ return chainBreaking; }, set chainBreaking(v){ chainBreaking = v; }, makePigeonMesh, spawnPigeons, spawnSinglePigeon, removePigeons, updatePigeon, updateCoopedPigeon, updatePerchedPigeon, updateToPerchPigeon, pigeonTakeoff, pigeonNextLeg, pigeonFindPerchSpot, pigeonCloudTopAt, pigeonTreeTopAt, pigeonRoofTopAt, pigeonPerchBand, pigeonPerchSupports, killPigeon, pigeonSpotOutOfView, pigeonProbeFree, pigeonRandomTarget, pigeonSeparate,     houseInteriorFor, houseSealState, holeFaceNormal, updateHoleExitPigeon, pigeonSegmentFree, bandReturnTarget, setMobTransparent,     get tntLit(){ return tntLit; }, get tntEta(){ return tntEta; }, igniteTNT, aimedPigeon, fireTNTAtPigeon, explodePigeon, spawnPigeonBurst, get bursts(){ return bursts; }, get flashes(){ return flashes; }, updateTNTTarget, tickTNT, fireGrapple, updateGrapple, updatePlayer, get grappleActive(){ return grappleActive; }, get grapplePulling(){ return grapplePulling; }, get grappleHooked(){ return grappleHooked; },
+    get carryMob(){ return carryMob; }, handleCarryEnterDown, handleCarryEnterUp, pickMob, get carryGrappleActive(){ return carryGrappleActive; }, get carryGrapplePulling(){ return carryGrapplePulling; }, get carryGrappleMob(){ return carryGrappleMob; }, get carryGrappleBlock(){ return carryGrappleBlock; }, get carryGrappleHookPos(){ return carryGrappleHookPos; }, get carryGrappleOffset(){ return carryGrappleOffset; }, get carryGrappleMode(){ return carryGrappleMode; }, get isMobFrozenByGrapple(){ return isMobFrozenByGrapple; }, isChained, isChainCarrier, chainRootOf, chainTailOf, linkChain, dropChainFrom, chainTakeForCarry, severChainMob, groundChainFrom, insertChainBefore, insertChainBehind, insertBehindRide, prependChainLead, clearChains, pruneChains, updateChains, chainAttachTarget, startCarryAttachGrapple, killChainMob, respawnChainMob, unchainMob, get chainLinks(){ return chainLinks; }, get chainParent(){ return chainParent; }, get chainChild(){ return chainChild; }, playerChainAvatar, playerInChain, PLAYER_CHAIN_ID, spliceChainLink, chainHasJumping, chainPushCrumb, chainTrailTarget, latchPlayerTo, fireGrapple, detachDisplacementGrapple, get grappleActive(){ return grappleActive; }, get grappleHooked(){ return grappleHooked; }, get grappleRetracting(){ return grappleRetracting; }, get grappleMob(){ return grappleMob; }, get grappleMobOffset(){ return grappleMobOffset; }, get grappleHookPos(){ return grappleHookPos; }, get grappleTarget(){ return grappleTarget; }, updateCarryGrapple, get currentBlock(){ return currentBlock; }, updateTarget, hotbarList, placeBlock, breakBlock, get selected(){ return selected; }, set selected(v){ selected=v; }, toggleCarry: handleCarryEnterDown, findNearestMobForGrab: (...a)=>{ const d=new THREE.Vector3(); camera.getWorldDirection(d); return pickMob(d); }, get playerArms(){ return playerArms; }, get started(){ return started; }, set started(v){ started=v; }, get loading(){ return loading; }, get freeCam(){ return freeCam; }, set freeCam(v){ freeCam=v; }, get helpOpen(){ return helpOpen; },
+    get WOLF_COUNT(){ return WOLF_COUNT; }, makeWolfMesh, villagerHW, villagerH, wolfHasMobGround, wolfBlockedAt, wolfProbeFree, wanderGoalForWolf, wolfFindPath, wolfInWater, mobInWater, waterSurfaceForMob, mobPhysicsStep, wolfPhysicsStep, updateMobs, obstacleTurnDir, buildMobGrid,     get isPigCow(){ return isPigCow; }, get pigOverlapsFence(){ return pigOverlapsFence; }, get MOB_FLOAT_FRAC(){ return MOB_FLOAT_FRAC; }, mobFloatTargetY, mobWaterExitJump, poolExitTarget, penPoolExitTarget, isInsidePenPool,
+    get PIGEON_COUNT(){ return PIGEON_COUNT; }, get PIGEON_MIN_Y(){ return PIGEON_MIN_Y; }, get PIGEON_MAX_Y(){ return PIGEON_MAX_Y; }, get PIGEON_SPEED(){ return PIGEON_SPEED; }, get TNT_HOME_SPEED(){ return TNT_HOME_SPEED; }, get PIGEON_AIM_DIST(){ return PIGEON_AIM_DIST; }, get PIGEON_LOCK_TIME(){ return PIGEON_LOCK_TIME; }, get pigeonLock(){ return pigeonLock; }, get pigeonLockT(){ return pigeonLockT; }, set pigeonLockT(v){ pigeonLockT = v; }, get pigeonLockShots(){ return pigeonLockShots; }, livePigeonLock, tntTargeted, tryFireLockedTNT, get chainBreaking(){ return chainBreaking; }, set chainBreaking(v){ chainBreaking = v; },     makePigeonMesh, spawnPigeons, spawnSinglePigeon, removePigeons, spawnPigeonChain, updatePigeon, updatePerchedPigeon, updateToPerchPigeon, pigeonTakeoff, pigeonNextLeg, pigeonFindPerchSpot, pigeonCloudTopAt, pigeonTreeTopAt, pigeonRoofTopAt, pigeonPerchBand, pigeonPerchSupports, killPigeon, pigeonSpotOutOfView, pigeonProbeFree, pigeonRandomTarget, pigeonSeparate,     houseInteriorFor, houseMouths, pigeonCoopTarget,     pigeonSegmentFree, pigeonClearance, pigeonBestSteer, pigeonMillHop, pigeonConfinedSteer, pigeonMoveSlide, bandReturnTarget, pigeonNoticeBreak, setMobTransparent, pigeonIsConfined, pigeonTunnelPlan, updateTunnelPigeon, pigeonTunnelSeparate, get PIGEON_TUNNEL_SCALE(){ return PIGEON_TUNNEL_SCALE; }, get PIGEON_COL_HW(){ return PIGEON_COL_HW; }, get PIGEON_COL_H(){ return PIGEON_COL_H; },     get tntLit(){ return tntLit; }, get tntEta(){ return tntEta; }, igniteTNT, aimedPigeon, fireTNTAtPigeon, explodePigeon, spawnPigeonBurst, get bursts(){ return bursts; }, get flashes(){ return flashes; }, updateTNTTarget, tickTNT, fireGrapple, updateGrapple, updatePlayer, get grappleActive(){ return grappleActive; }, get grapplePulling(){ return grapplePulling; }, get grappleHooked(){ return grappleHooked; },
     get overPortalWin(){ return overPortalWin; }, get overPortalDir(){ return overPortalDir; }, get overPortalSpawn(){ return overPortalSpawn; }, get overPortalFace(){ return overPortalFace; },
     portalWinValid, portalFrameBBox, findReturnSpot, frameTopSpot, facePortalFrom, recordOverPortal, nearestReturnWin, resolveOverworldReturn, nearPortalSpawn, resolveSpawn, collectEndWins, collectNetherWins, collectReturnWins, insideEndInterior, insideNetherInterior, winCenter, windowDist, isSolid,
     get PORTAL(){ return PORTAL; }, get OBSIDIAN(){ return OBSIDIAN; }, get WORLD_RADIUS(){ return WORLD_RADIUS; }, get PLAYER_HW(){ return PLAYER_HW; }, get PLAYER_H(){ return PLAYER_H; }, get MOON(){ return MOON; }, get CLOUD(){ return CLOUD; }, get GRASS(){ return GRASS; }, get STONE(){ return STONE; }, get ENDSTONE(){ return ENDSTONE; }, get NETHERRACK(){ return NETHERRACK; }, get dim(){ return dim; },
-    serialize, deserialize, snapshotOverworldMobs, restoreOverworldMobs, get overworldMobCache(){ return overworldMobCache; }, get pendingOverworldMobs(){ return pendingOverworldMobs; },
+    serialize, deserialize, snapshotOverworldMobs, restoreOverworldMobs, get overworldMobCache(){ return overworldMobCache; }, get pendingOverworldMobs(){ return pendingOverworldMobs; }, get pendingChainLinks(){ return pendingChainLinks; },
     goToDimension, removeVillagers,
     get DEV_START_DIM(){ return DEV_START_DIM; },
-    get dragon(){ return dragon; }, spawnDragon, removeDragon, updateDragon, paintDragon, damageDragon, dragonShotsCap, aimedDragon, get DRAGON_FULL_DMG(){ return DRAGON_FULL_DMG; }, get DRAGON_SPEED(){ return DRAGON_SPEED; },
+    get dragon(){ return dragon; }, spawnDragon, removeDragon, updateDragon, paintDragon, damageDragon, dragonShotsCap, aimedDragon, get DRAGON_FULL_DMG(){ return DRAGON_FULL_DMG; }, get DRAGON_SPEED(){ return DRAGON_SPEED; }, get DRAGON_FOLLOW_DIST(){ return DRAGON_FOLLOW_DIST; },
     get endermen(){ return endermen; }, get ENDERMEN_COUNT(){ return ENDERMEN_COUNT; }, get ENDERMAN_STARE_TIME(){ return ENDERMAN_STARE_TIME; }, get ENDERMAN_ANGRY_TIME(){ return ENDERMAN_ANGRY_TIME; }, spawnEndermen, removeEndermen, updateEnderman, updateEndermen, endermanTeleport, endermanPickSpot, endermanSpotFor, ensureEndermanAssets, makeEndermanMesh,
   };
 }
