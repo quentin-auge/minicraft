@@ -11767,24 +11767,30 @@ function loop(now) {
   last = now;
 
   if (!loading) {
+    // Freeze gameplay simulation while the pause menu (or help panel) is open:
+    // same condition that already freezes mobs and chains below, so Resume
+    // finds the player exactly where ESC left them.
+    const simActive = !started || (locked && !helpOpen);
     if (freeCam) {
-      updateFreeCam(dt);
+      if (simActive) updateFreeCam(dt);
       camera.position.copy(camPos);
       // While flying, the build anchor follows the camera, so placing and
       // breaking target live terrain and the hold-chain builds from where you
       // actually are instead of the stale ground position.
       pos.copy(camPos);
     } else {
-      updatePlayer(dt);
+      if (simActive) {
+        updatePlayer(dt);
+        if (pos.y < -20) { vel.set(0, 0, 0); spawnPlayer(); }
+      }
       camera.position.set(pos.x, pos.y + EYE, pos.z);
-      if (pos.y < -20) { vel.set(0, 0, 0); spawnPlayer(); }
     }
     camera.rotation.set(pitch, yaw, 0);
     const moon = onMoon();
     if (moon !== hotbarMoon) { hotbarMoon = moon; rebuildHotbar(); }
     updateTarget();
     updateCarry(dt);
-    updateCarryGrapple(dt);
+    if (simActive) updateCarryGrapple(dt);
     if (hudEnabled && jumpBoost > 1.01) { boostEl.textContent = "Speed x" + jumpBoost.toFixed(1); boostEl.style.display = "block"; }
     else boostEl.style.display = "none";
     if (locked) {
@@ -11976,14 +11982,16 @@ function loop(now) {
       carryGrappleCubes.visible = false;
       carryGrappleHead.visible = false;
     }
-    tickTNT(dt);
-    processExplosionQueue();
+    if (simActive) {
+      tickTNT(dt);
+      processExplosionQueue();
+    }
     tickEffects(dt);
     syncGlowLights(dt);
     if (portalCd > 0) portalCd -= dt;
     updatePortalVisual();
-    checkPortal();
-    if (dim === "end") updateDragon(dt);
+    if (simActive) checkPortal();
+    if (dim === "end" && simActive) updateDragon(dt);
     if (locked && started && !helpOpen) updateMobs(dt);
     if (toastTimer > 0) { toastTimer -= dt; if (toastTimer <= 0) toastEl.style.opacity = "0"; }
 
