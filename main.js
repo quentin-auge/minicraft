@@ -3877,8 +3877,7 @@ const playerChainAvatar = {
   get speed() { return (grappleMob && grappleMob.speed) || PIGEON_SPEED; },
 };
 function playerInChain() {
-  return grappleActive && !grappleRetracting && grappleHooked && !!grappleMob &&
-    (isFlyingKind(grappleMob.kind) || isChained(grappleMob));
+  return grappleActive && !grappleRetracting && grappleHooked && !!grappleMob;
 }
 function isFlyingKind(kind) {
   return kind === "pigeon" || kind === "dragon";
@@ -5285,17 +5284,16 @@ function chainAttachTarget() {
   const ck = (carryMob && carryMob.kind) || null;
   if (playerInChain() && (mob === grappleMob || chainRootOf(mob) === chainRootOf(grappleMob))) {
     if (mob === grappleMob) {
-      if (isFlyingKind(ck)) {
-        chainAttachMode = "ahead";
+      if (chainAttachModeFor(ck, mob) === "prepend") {
+        chainAttachMode = "prepend";
         return grappleMob;
       }
-      if (chainChild.has(PLAYER_CHAIN_ID)) {
-        const c = mobById.get(chainChild.get(PLAYER_CHAIN_ID));
-        const t = c && mobs.includes(c) ? chainTailOf(c) : null;
-        if (t && mobs.includes(t) && t !== carryMob && t !== carryGrappleMob) return t;
-        return null;
-      }
+      chainAttachMode = "playerAhead";
       return playerChainAvatar;
+    }
+    if (chainParent.get(mob.id) === PLAYER_CHAIN_ID) {
+      chainAttachMode = "playerBehind";
+      return mob;
     }
     if (!ck) {
       if (mob.kind !== "dragon" && chainRootOf(mob) === mob && chainChild.has(mob.id)) chainAttachMode = "prepend";
@@ -5305,11 +5303,10 @@ function chainAttachTarget() {
   }
   if (mob.kind === "dragon") {
     if (dim !== "end") return null;
-    const dtail = isChainCarrier(mob) ? chainTailOf(mob) : mob;
-    if (!dtail || !mobs.includes(dtail)) return null;
-    if (dtail === carryMob || dtail === carryGrappleMob) return null;
-    chainAttachMode = ck ? chainAttachModeFor(ck, dtail) : "behind";
-    return dtail;
+    if (!mobs.includes(mob)) return null;
+    if (mob === carryMob || mob === carryGrappleMob) return null;
+    chainAttachMode = ck ? chainAttachModeFor(ck, mob) : "behind";
+    return mob;
   }
   if (mob.kind === "enderman" && !isChained(mob) && !isChainCarrier(mob)) return null;
   if (!ck) {
@@ -5474,8 +5471,9 @@ function updateCarryGrapple(dt) {
         carryGrappleAttachMode = "behind";
         if (mob.dim !== undefined) mob.dim = dim;
         let linked = false;
-        if (tail === playerChainAvatar) linked = linkChain(tail, mob);
-        else if (mode === "ahead") linked = insertBehindRide(grappleMob, mob);
+        if (mode === "playerAhead") linked = insertChainAheadOfPlayer(mob);
+        else if (mode === "playerBehind") linked = insertChainBehindPlayer(tail, mob);
+        else if (tail === playerChainAvatar) linked = linkChain(tail, mob);
         else if (mode === "prepend") linked = prependChainLead(tail, mob);
         else if (mode === "before") linked = insertChainBefore(tail, mob);
         else linked = insertChainBehind(tail, mob);
@@ -9121,6 +9119,7 @@ const grappleTowDir = new THREE.Vector3(0, 0, 1);
 const grappleTowPos = new THREE.Vector3();
 let grappleTowInit = false;
 const grappleTowTmp = new THREE.Vector3();
+let grapplePendingInsert = null;
 let flingActive = false;
 const vel = new THREE.Vector3();
 const camPos = new THREE.Vector3();
@@ -9714,6 +9713,7 @@ function collide() {
 
 function detachDisplacementGrapple() {
   if (!grappleActive) return;
+  grapplePendingInsert = null;
   grappleRetracting = true;
   grappleTowInit = false;
   grappleTowPos.set(0, 0, 0);
@@ -9742,14 +9742,7 @@ function fireGrapple() {
     }
   }
   const mob0 = pickMob(dir, blockDist);
-  let mob = mob0;
-  if (mob && (isChained(mob) || isChainCarrier(mob))) {
-    const tail = chainTailOf(mob);
-    if (tail && tail !== mob && tail !== carryMob && tail !== carryGrappleMob) {
-      mob = tail;
-    }
-  }
-  if (mob && playerInChain() && (mob === grappleMob || chainRootOf(mob) === chainRootOf(grappleMob))) return;
+  const mob = mob0;
   if (mob && mob.kind === "enderman" && !isChained(mob) && !isChainCarrier(mob)) return;
   if (mob) {
     const off = getMobHitOffset(eye, dir, mob);
@@ -9761,6 +9754,8 @@ function fireGrapple() {
     const distMob = Math.hypot(mx - sx, my - sy, mz - sz);
     if (distMob < 0.3) return;
     if (!b || distMob < blockDist) {
+      if (mob === carryMob || mob === carryGrappleMob) return;
+      grapplePendingInsert = (isChainCarrier(mob) || playerInChain()) ? mob.id : null;
       grappleMob = mob;
       grappleBlock = null;
       if (mob.kind !== "dragon" && mob !== carryMob && mob !== carryGrappleMob) setMobTransparent(mob, 1);
@@ -9786,6 +9781,7 @@ function fireGrapple() {
   if (!b) return;
   if ((b.id === MOON || b.id === MOON_WATER) && eye.y < MOON_FADE_START) return;
   if (blockDist < 0.3) return;
+  grapplePendingInsert = null;
   grappleMob = null;
   grappleBlock = b;
   grappleTarget.set(tx, ty, tz);
@@ -9808,6 +9804,7 @@ function fireGrapple() {
 
 function latchPlayerTo(mob) {
   if (!mob || !mobs.includes(mob) || freeCam) return false;
+  grapplePendingInsert = null;
   grappleMob = mob;
   grappleBlock = null;
   grappleMobOffset.set(0, mob.h + 0.001, 0);
@@ -9825,6 +9822,125 @@ function latchPlayerTo(mob) {
   grappleTowInit = false;
   grappleTowPos.set(0, 0, 0);
   return true;
+}
+
+function playerInsertCutAndLink(mob) {
+  if (!mob || !mobs.includes(mob)) return false;
+  if (grappleMob !== mob || !playerInChain()) return false;
+  const backId = chainChild.get(mob.id);
+  const back = backId !== undefined ? mobById.get(backId) : null;
+  if (!back || !mobs.includes(back) || back === mob || isMobHeld(back)) return true;
+  chainChild.delete(mob.id);
+  chainParent.delete(backId);
+  const bl = chainLinks.get(backId);
+  if (bl) {
+    scene.remove(bl.rope);
+    scene.remove(bl.head);
+    if (bl.rope.dispose) bl.rope.dispose();
+    chainLinks.delete(backId);
+  }
+  if (!linkChain(playerChainAvatar, back)) {
+    if (!spliceChainLink(mob, back)) freeChainRoot(back);
+  }
+  return true;
+}
+
+function latchPlayerInMiddle(mob) {
+  if (!mob || !mobs.includes(mob) || freeCam) return false;
+  if (isMobHeld(mob)) return false;
+  if (mob.kind === "enderman" && !isChained(mob) && !isChainCarrier(mob)) return false;
+  if (playerInChain() && grappleMob === mob) return true;
+  if (playerInChain() && grappleMob) {
+    const oldBackId = chainChild.get(PLAYER_CHAIN_ID);
+    const oldBack = oldBackId !== undefined ? mobById.get(oldBackId) : null;
+    const oldFront = grappleMob;
+    if (oldBackId !== undefined) {
+      chainChild.delete(PLAYER_CHAIN_ID);
+      chainParent.delete(oldBackId);
+      const ol = chainLinks.get(oldBackId);
+      if (ol) {
+        scene.remove(ol.rope);
+        scene.remove(ol.head);
+        if (ol.rope.dispose) ol.rope.dispose();
+        chainLinks.delete(oldBackId);
+      }
+      if (oldBack && mobs.includes(oldBack) && !isMobHeld(oldBack) &&
+          oldFront && mobs.includes(oldFront) &&
+          !chainChild.has(oldFront.id)) {
+        linkChain(oldFront, oldBack);
+      } else if (oldBack && mobs.includes(oldBack)) {
+        freeChainRoot(oldBack);
+      }
+    }
+  }
+  const backId = chainChild.get(mob.id);
+  const back = backId !== undefined ? mobById.get(backId) : null;
+  const backLive = !!(back && mobs.includes(back) && back !== mob && !isMobHeld(back));
+  if (backId !== undefined && backLive) {
+    chainChild.delete(mob.id);
+    chainParent.delete(backId);
+    const bl = chainLinks.get(backId);
+    if (bl) {
+      scene.remove(bl.rope);
+      scene.remove(bl.head);
+      if (bl.rope.dispose) bl.rope.dispose();
+      chainLinks.delete(backId);
+    }
+  }
+  if (!latchPlayerTo(mob)) {
+    if (backLive) spliceChainLink(mob, back);
+    return false;
+  }
+  if (backLive && !linkChain(playerChainAvatar, back)) {
+    if (!spliceChainLink(mob, back)) freeChainRoot(back);
+  }
+  return true;
+}
+
+function insertChainAheadOfPlayer(mob) {
+  if (!mob || !mobs.includes(mob) || !playerInChain() || !grappleMob) return false;
+  if (isMobHeld(mob)) return false;
+  const ride = grappleMob;
+  if ((mob.dim || "over") !== dim || (ride.dim || "over") !== dim) return false;
+  if (chainChild.has(ride.id)) {
+    if (!insertChainBehind(ride, mob)) return false;
+  } else if (!linkChain(ride, mob)) return false;
+  if (ride.kind === "pigeon" && (ride.mode === "perch" || ride.mode === "toPerch")) pigeonTakeoff(ride);
+  grappleMob = mob;
+  grappleMobOffset.set(0, mob.h + 0.001, 0);
+  grappleTarget.set(mob.pos.x, mob.pos.y + grappleMobOffset.y, mob.pos.z);
+  grappleHookPos.copy(grappleTarget);
+  grappleTowInit = false;
+  grappleTowPos.set(0, 0, 0);
+  const backId = chainChild.get(PLAYER_CHAIN_ID);
+  const pl = backId !== undefined ? chainLinks.get(backId) : null;
+  if (pl) pl.playerFrontId = mob.id;
+  return true;
+}
+
+function insertChainBehindPlayer(aimed, mob) {
+  if (!aimed || !mob || aimed === mob) return false;
+  if (!mobs.includes(aimed) || !mobs.includes(mob)) return false;
+  if (!playerInChain()) return false;
+  if (chainParent.get(aimed.id) !== PLAYER_CHAIN_ID || chainChild.get(PLAYER_CHAIN_ID) !== aimed.id)
+    return insertChainBehind(aimed, mob);
+  if (isMobHeld(mob)) return false;
+  if ((mob.dim || "over") !== dim || (aimed.dim || "over") !== dim) return false;
+  chainChild.delete(PLAYER_CHAIN_ID);
+  chainParent.delete(aimed.id);
+  seatChainChildNearCarrier(playerChainAvatar, mob);
+  if (linkChain(playerChainAvatar, mob) && spliceChainLink(mob, aimed)) return true;
+  const ml = chainLinks.get(mob.id);
+  if (ml) {
+    scene.remove(ml.rope);
+    scene.remove(ml.head);
+    if (ml.rope.dispose) ml.rope.dispose();
+    chainLinks.delete(mob.id);
+  }
+  chainParent.delete(mob.id);
+  if (chainChild.get(PLAYER_CHAIN_ID) === mob.id) chainChild.delete(PLAYER_CHAIN_ID);
+  if (!spliceChainLink(playerChainAvatar, aimed) && !linkChain(playerChainAvatar, aimed)) freeChainRoot(aimed);
+  return false;
 }
 
 function blockedBody(px, py, pz) {
@@ -9906,6 +10022,7 @@ function updateGrapple(dt) {
     if (!mobs.includes(grappleMob) || (grappleMob.dim !== undefined && grappleMob.dim !== dim)) {
       grappleActive = false;
       grappleMob = null;
+      grapplePendingInsert = null;
       grappleRetracting = true;
       grappleHookPos.copy(grappleTarget);
       return false;
@@ -9925,6 +10042,11 @@ function updateGrapple(dt) {
       if (dist0 <= hitR) {
         grappleHookPos.copy(grappleTarget);
         grappleHooked = true;
+        if (grapplePendingInsert !== null) {
+          const im = mobById.get(grapplePendingInsert);
+          grapplePendingInsert = null;
+          if (im) playerInsertCutAndLink(im);
+        }
       } else {
         const move = Math.min(step, dist0);
         const s = move / dist0;
@@ -9957,7 +10079,7 @@ function updateGrapple(dt) {
     }
   }
   const grappleChainTail = grappleMob && grappleHooked && !chainChild.has(grappleMob.id) && (isChained(grappleMob) || isChainCarrier(grappleMob));
-  if (grappleMob && grappleHooked && (isFlyingKind(grappleMob.kind) || grappleChainTail)) {
+  if (grappleMob && grappleHooked) {
     const pm = grappleMob;
     const followDist = pm.kind === "dragon" ? DRAGON_FOLLOW_DIST : PIGEON_FOLLOW_DIST;
     const pdx = grappleTarget.x - pos.x, pdy = grappleTarget.y - pos.y, pdz = grappleTarget.z - pos.z;
@@ -10002,6 +10124,17 @@ function updateGrapple(dt) {
       if (blockedY) vel.y = 0;
       if (blockedX) vel.x = 0;
       if (blockedZ) vel.z = 0;
+      if ((blockedX || blockedZ) && pm && !isFlyingKind(pm.kind)) {
+        const by = Math.floor(pos.y);
+        let headroom = true;
+        for (let hbx = Math.floor(pos.x - PLAYER_HW + 0.001); headroom && hbx <= Math.floor(pos.x + PLAYER_HW - 0.001); hbx++)
+          for (let hbz = Math.floor(pos.z - PLAYER_HW + 0.001); headroom && hbz <= Math.floor(pos.z + PLAYER_HW - 0.001); hbz++)
+            if (isSolid(hbx, by + 1, hbz)) headroom = false;
+        if (headroom && !aabbCollidesWorld(pos.x, by + 1 + 0.001, pos.z, PLAYER_HW, PLAYER_H)) {
+          if (isJumpingKind(pm.kind)) vel.y = JUMP_MIN + 2.5;
+          else pos.y = by + 1 + 0.001;
+        }
+      }
       if (grappleChainTail) {
         const tAx = pm.pos.x, tAy = pm.pos.y + pm.h * 0.5, tAz = pm.pos.z;
         const eDx = pos.x - tAx, eDy = pos.y + 0.3 - tAy, eDz = pos.z - tAz;
@@ -13555,7 +13688,13 @@ function serialize() {
     const idxById = new Map();
     overMobs.forEach((e, i) => { if (e.id != null) idxById.set(e.id, i); });
     for (const [carrierId, childId] of chainChild) {
-      const a = idxById.get(carrierId), b = idxById.get(childId);
+      let a = idxById.get(carrierId);
+      const b = idxById.get(childId);
+      if (carrierId === PLAYER_CHAIN_ID) {
+        const link = chainLinks.get(childId);
+        const front = (playerInChain() && grappleMob) ? grappleMob : (link ? mobById.get(link.playerFrontId) : null);
+        a = front ? idxById.get(front.id) : null;
+      }
       if (a == null || b == null || a >= 65535 || b >= 65535) continue;
       chainPairs.push([a, b]);
     }
@@ -14511,7 +14650,6 @@ document.addEventListener("mouseup", (e) => {
     const mob = grappleMob;
     const followDist = !mob ? 0 : mob.kind === "dragon" ? DRAGON_FOLLOW_DIST : PIGEON_FOLLOW_DIST;
     const mobFollow = mob && grappleHooked &&
-      (isFlyingKind(mob.kind) || ((isChained(mob) || isChainCarrier(mob)) && !chainChild.has(mob.id))) &&
       (grappleTowInit || Math.hypot(fdx, fdy, fdz) <= followDist + 0.5);
     if (mobFollow) {
       if (mob.vel) vel.copy(mob.vel);
@@ -14532,6 +14670,7 @@ document.addEventListener("mouseup", (e) => {
     stepDown = false;
   }
   grappleRetracting = true;
+  grapplePendingInsert = null;
   grappleTowInit = false;
   grappleTowPos.set(0, 0, 0);
   if (grappleMob) {
@@ -15025,7 +15164,7 @@ if (location.search.includes('test')) {
     get villageCenter(){ return villageCenter; }, get villageHouses(){ return villageHouses; }, get villagePen(){ return villagePen; }, get villagePool(){ return villagePool; }, get isInsidePen(){ return isInsidePen; }, get isInsidePool(){ return isInsidePool; }, get isInsidePenPool(){ return isInsidePenPool; }, get poolExitTarget(){ return poolExitTarget; }, get penPoolExitTarget(){ return penPoolExitTarget; }, get LOG(){ return LOG; }, findPenGaps, nearestPenGap, penGapInside, penGapOutside, hasMobGround, mobBlockedAt, aabbCollidesWorld, mobProbeFree, randomPenPoint, randomAroundPenPoint, groundYForMob, get CLOUD_BASE(){ return CLOUD_BASE; }, get CLOUD_TOP(){ return CLOUD_TOP; }, get MAX_Y(){ return MAX_Y; },
     getTypeMats, get typeMats(){ return typeMats; }, buildWorld, generateWorld, computeVillageLayout, spawnVillagers, refreshBlocks, get boxGeo(){ return boxGeo; }, THREE,
     get pos(){ return pos; }, get vel(){ return vel; }, get camera(){ return camera; }, get yaw(){ return yaw; }, set yaw(v){ yaw=v; }, get pitch(){ return pitch; }, set pitch(v){ pitch=v; },
-    get carryMob(){ return carryMob; }, handleCarryEnterDown, handleCarryEnterUp, pickMob, get carryGrappleActive(){ return carryGrappleActive; }, get carryGrapplePulling(){ return carryGrapplePulling; }, get carryGrappleMob(){ return carryGrappleMob; }, get carryGrappleBlock(){ return carryGrappleBlock; }, get carryGrappleHookPos(){ return carryGrappleHookPos; }, get carryGrappleOffset(){ return carryGrappleOffset; }, get carryGrappleMode(){ return carryGrappleMode; }, get isMobFrozenByGrapple(){ return isMobFrozenByGrapple; }, isChained, isChainCarrier, chainRootOf, chainTailOf, linkChain, dropChainFrom, chainTakeForCarry, severChainMob, groundChainFrom, insertChainBefore, insertChainBehind, insertBehindRide, prependChainLead, clearChains, pruneChains, updateChains, chainAttachTarget, startCarryAttachGrapple, killChainMob, respawnChainMob, unchainMob, get chainLinks(){ return chainLinks; }, get chainParent(){ return chainParent; }, get chainChild(){ return chainChild; }, playerChainAvatar, playerInChain, PLAYER_CHAIN_ID, spliceChainLink, chainHasJumping, chainPushCrumb, chainTrailTarget, latchPlayerTo, fireGrapple, detachDisplacementGrapple, get grappleActive(){ return grappleActive; }, get grappleHooked(){ return grappleHooked; }, get grappleRetracting(){ return grappleRetracting; }, get grappleMob(){ return grappleMob; }, get grappleMobOffset(){ return grappleMobOffset; }, get grappleHookPos(){ return grappleHookPos; }, get grappleTarget(){ return grappleTarget; }, updateCarryGrapple, updateCarry, get currentBlock(){ return currentBlock; }, updateTarget, hotbarList, placeBlock, breakBlock, get selected(){ return selected; }, set selected(v){ selected=v; }, toggleCarry: handleCarryEnterDown, findNearestMobForGrab: (...a)=>{ const d=new THREE.Vector3(); camera.getWorldDirection(d); return pickMob(d); }, get playerArms(){ return playerArms; }, get started(){ return started; }, set started(v){ started=v; }, get loading(){ return loading; }, get freeCam(){ return freeCam; }, set freeCam(v){ freeCam=v; }, get helpOpen(){ return helpOpen; },
+    get carryMob(){ return carryMob; }, handleCarryEnterDown, handleCarryEnterUp, pickMob, get carryGrappleActive(){ return carryGrappleActive; }, get carryGrapplePulling(){ return carryGrapplePulling; }, get carryGrappleMob(){ return carryGrappleMob; }, get carryGrappleBlock(){ return carryGrappleBlock; }, get carryGrappleHookPos(){ return carryGrappleHookPos; }, get carryGrappleOffset(){ return carryGrappleOffset; }, get carryGrappleMode(){ return carryGrappleMode; }, get isMobFrozenByGrapple(){ return isMobFrozenByGrapple; }, isChained, isChainCarrier, chainRootOf, chainTailOf, linkChain, dropChainFrom, chainTakeForCarry, severChainMob, groundChainFrom, insertChainBefore, insertChainBehind, insertBehindRide, prependChainLead, clearChains, pruneChains, updateChains, chainAttachTarget, startCarryAttachGrapple, killChainMob, respawnChainMob, unchainMob, get chainLinks(){ return chainLinks; }, get chainParent(){ return chainParent; }, get chainChild(){ return chainChild; }, playerChainAvatar, playerInChain, PLAYER_CHAIN_ID, spliceChainLink, chainHasJumping, chainPushCrumb, chainTrailTarget, latchPlayerTo, latchPlayerInMiddle, playerInsertCutAndLink, insertChainAheadOfPlayer, insertChainBehindPlayer, fireGrapple, detachDisplacementGrapple, get grappleActive(){ return grappleActive; }, get grappleHooked(){ return grappleHooked; }, get grappleRetracting(){ return grappleRetracting; }, get grappleMob(){ return grappleMob; }, get grappleMobOffset(){ return grappleMobOffset; }, get grappleHookPos(){ return grappleHookPos; }, get grappleTarget(){ return grappleTarget; }, updateCarryGrapple, updateCarry, get currentBlock(){ return currentBlock; }, updateTarget, hotbarList, placeBlock, breakBlock, get selected(){ return selected; }, set selected(v){ selected=v; }, toggleCarry: handleCarryEnterDown, findNearestMobForGrab: (...a)=>{ const d=new THREE.Vector3(); camera.getWorldDirection(d); return pickMob(d); }, get playerArms(){ return playerArms; }, get started(){ return started; }, set started(v){ started=v; }, get loading(){ return loading; }, get freeCam(){ return freeCam; }, set freeCam(v){ freeCam=v; }, get helpOpen(){ return helpOpen; },
     get WOLF_COUNT(){ return WOLF_COUNT; }, makeWolfMesh, villagerHW, villagerH, wolfHasMobGround, wolfBlockedAt, wolfProbeFree, wanderGoalForWolf, wolfFindPath, wolfInWater, mobInWater, waterSurfaceForMob, mobPhysicsStep, wolfPhysicsStep, updateMobs, obstacleTurnDir, buildMobGrid,     get isPigCow(){ return isPigCow; }, get pigOverlapsFence(){ return pigOverlapsFence; }, get MOB_FLOAT_FRAC(){ return MOB_FLOAT_FRAC; }, mobFloatTargetY, mobWaterExitJump, poolExitTarget, penPoolExitTarget, isInsidePenPool,
     get PIGEON_COUNT(){ return PIGEON_COUNT; }, get PIGEON_MIN_Y(){ return PIGEON_MIN_Y; }, get PIGEON_MAX_Y(){ return PIGEON_MAX_Y; }, get PIGEON_SPEED(){ return PIGEON_SPEED; }, get TNT_HOME_SPEED(){ return TNT_HOME_SPEED; }, get PIGEON_AIM_DIST(){ return PIGEON_AIM_DIST; }, get PIGEON_LOCK_TIME(){ return PIGEON_LOCK_TIME; }, get pigeonLock(){ return pigeonLock; }, get pigeonLockT(){ return pigeonLockT; }, set pigeonLockT(v){ pigeonLockT = v; }, get pigeonLockShots(){ return pigeonLockShots; }, livePigeonLock, tntTargeted, tryFireLockedTNT, get chainBreaking(){ return chainBreaking; }, set chainBreaking(v){ chainBreaking = v; },     makePigeonMesh, spawnPigeons, spawnSinglePigeon, removePigeons, spawnPigeonChain, updatePigeon, updatePerchedPigeon, updateToPerchPigeon, pigeonTakeoff, pigeonNextLeg, pigeonFindPerchSpot, pigeonCloudTopAt, pigeonTreeTopAt, pigeonRoofTopAt, pigeonPerchBand, pigeonPerchSupports, killPigeon, pigeonSpotOutOfView, pigeonProbeFree, pigeonRandomTarget, pigeonSeparate,     houseInteriorFor, houseMouths, pigeonCoopTarget,     pigeonSegmentFree, pigeonClearance, pigeonBestSteer, pigeonMillHop, pigeonConfinedSteer, pigeonMoveSlide, bandReturnTarget, pigeonNoticeBreak, setMobTransparent, pigeonIsConfined, pigeonHoleCell, chainSegmentFree, chainThreadRide, pigeonTunnelPlan, updateTunnelPigeon, pigeonTunnelSeparate, pigeonSkyClear, pigeonSidestep, pigeonUTurn, pigeonNarrow, pigeonColHW, pigeonColH, get PIGEON_NARROW_SCALE(){ return PIGEON_NARROW_SCALE; }, get PIGEON_SKY_CLEAR(){ return PIGEON_SKY_CLEAR; }, get PIGEON_TUNNEL_SCALE(){ return PIGEON_TUNNEL_SCALE; }, get PIGEON_COL_HW(){ return PIGEON_COL_HW; }, get PIGEON_COL_H(){ return PIGEON_COL_H; },     get tntLit(){ return tntLit; }, get tntEta(){ return tntEta; }, igniteTNT, aimedPigeon, fireTNTAtPigeon, explodePigeon, spawnPigeonBurst, get bursts(){ return bursts; }, get flashes(){ return flashes; }, updateTNTTarget, tickTNT, fireGrapple, updateGrapple, updatePlayer, get grappleActive(){ return grappleActive; }, get grapplePulling(){ return grapplePulling; }, get grappleHooked(){ return grappleHooked; },
     get overPortalWin(){ return overPortalWin; }, get overPortalDir(){ return overPortalDir; }, get overPortalSpawn(){ return overPortalSpawn; }, get overPortalFace(){ return overPortalFace; },
