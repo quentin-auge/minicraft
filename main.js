@@ -3666,12 +3666,15 @@ function isInsideHome(mob) {
   return x > h.minX + 0.2 && x < h.maxX - 0.2 && z > h.minZ + 0.2 && z < h.maxZ - 0.2;
 }
 function groundYForMob(x, z, hintY, hw) {
-  for (let y = Math.floor(hintY) + 4; y >= Math.floor(hintY) - 24; y--) {
+  const h = Math.floor(hintY);
+  for (let y = h + 4; y >= h - 24; y--) {
     if (y < 0 || y > MAX_Y) continue;
     if (!mobBlockedAt(x, z, hw, y)) return y;
   }
-  for (let y = MAX_Y; y >= 0; y--) if (!mobBlockedAt(x, z, hw, y)) return y;
-  return Math.floor(hintY);
+  for (let y = h - 25; y >= 0; y--) {
+    if (!mobBlockedAt(x, z, hw, y)) return y;
+  }
+  return h;
 }
 function groundYDown(x, z, hintY, hw) {
   for (let y = Math.min(MAX_Y, Math.floor(hintY) + 1); y >= 0; y--) {
