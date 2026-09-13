@@ -1000,7 +1000,12 @@ or phase. Step-up is root-gated by jumping leadership: when the chain root is a 
   19 bytes each, in v10 with bounds bits added in v11
   via `snapshotOverworldMobs`/`restoreOverworldMobs`); chain links as
   (carrier, child) overworld-mob index pairs (`pendingChainLinks`, relinked via
-  `linkChain` after mob restore, failures skipped; only written when saving from
+  `linkChain` after mob restore, failures skipped; chained members keep their saved
+  altitude (`chainedIdx` skips the `settleMobSpot` ground snap via a same-height
+  `freeChainSpot` nudge, and the post-restore target reset skips `isChained`
+  followers so the pigeon lead keeps flying and the formation resumes in the air;
+  the 3 s autosave also fires while any chain link exists, so flying chains reach
+  disk via ESC, autosave or page-hide alike; only written when saving from
   the Overworld — End/Nether saves store none since dimension entry already
   broke them, and the End rebuilds dragon + endermen fresh on every entry);
   the held mob (`carryMob`) is stored as an overworld-mob index (`pendingCarriedIdx`,

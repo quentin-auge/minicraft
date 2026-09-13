@@ -6588,6 +6588,32 @@ function restoreOverworldMobs(list, opts) {
   const usedXZ = mobs.map((m) => [m.pos.x, m.pos.z]);
   const idByListIdx = new Array(list.length).fill(null);
   const created = [];
+  const chainedIdx = new Set();
+  if (pendingChainLinks && pendingChainLinks.length) {
+    for (const [a, b] of pendingChainLinks) {
+      if (a === carriedIdx || b === carriedIdx) continue;
+      if (a < 0 || b < 0 || a >= list.length || b >= list.length) continue;
+      chainedIdx.add(a);
+      chainedIdx.add(b);
+    }
+  }
+  const freeChainSpot = (sx, sy, sz, hw, hh) => {
+    const cx = Math.max(-WORLD_RADIUS + 1, Math.min(WORLD_RADIUS - 1, sx));
+    const cz = Math.max(-WORLD_RADIUS + 1, Math.min(WORLD_RADIUS - 1, sz));
+    const cy = Math.max(1, Math.min(MAX_Y - 2, sy));
+    if (!aabbCollidesWorld(cx, cy, cz, hw, hh)) return { x: cx, y: cy, z: cz };
+    for (const [ox, oz] of [[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [1, -1], [-1, 1], [-1, -1]]) {
+      for (const d of [1, 2]) {
+        for (const yOff of [0, 1, 2, -1, -2]) {
+          const nx = Math.max(-WORLD_RADIUS + 1, Math.min(WORLD_RADIUS - 1, cx + ox * d));
+          const nz = Math.max(-WORLD_RADIUS + 1, Math.min(WORLD_RADIUS - 1, cz + oz * d));
+          const ny = Math.max(1, Math.min(MAX_Y - 2, cy + yOff));
+          if (!aabbCollidesWorld(nx, ny, nz, hw, hh)) return { x: nx, y: ny, z: nz };
+        }
+      }
+    }
+    return null;
+  };
   for (let i = 0; i < list.length; i++) {
     const e = list[i];
     const kind = mobKindFromCode(e.kind);
@@ -6613,6 +6639,11 @@ function restoreOverworldMobs(list, opts) {
         sx = alt.x; sy = alt.y; sz = alt.z;
       }
       spot = { x: sx, y: sy, z: sz };
+    } else if (chainedIdx.has(i)) {
+      sx = Math.max(-WORLD_RADIUS + 1, Math.min(WORLD_RADIUS - 1, sx));
+      sz = Math.max(-WORLD_RADIUS + 1, Math.min(WORLD_RADIUS - 1, sz));
+      sy = Math.max(1, Math.min(MAX_Y - 2, isFinite(sy) ? sy : PIGEON_MIN_Y + 20));
+      spot = freeChainSpot(sx, sy, sz, hw, hh) || settleMobSpot(sx, sy, sz, hw, hh, isWolf);
     } else {
     if (usedXZ.some((u) => (u[0] - sx) * (u[0] - sx) + (u[1] - sz) * (u[1] - sz) < 1.4)) {
       const fixed = settleMobSpot(sx + 1.5, sy, sz + 1.5, hw, hh, isWolf);
@@ -6744,8 +6775,9 @@ function restoreOverworldMobs(list, opts) {
   }
   pendingChainLinks = null;
   for (const m of created) {
+    if (isChained(m)) continue;
     if (isFlyingKind(m.kind)) {
-      m.target = pigeonRandomTarget(m.pos);
+      if (!m.target) m.target = pigeonRandomTarget(m.pos);
     } else {
       m.target = { x: m.pos.x, z: m.pos.z };
     }
@@ -14331,7 +14363,7 @@ function requestLock() {
   if (p && p.catch) p.catch(() => {});
 }
 
-setInterval(() => { if (canSave() && started && (worldDirty || carryMob)) saveToFile(); }, 3000);
+setInterval(() => { if (canSave() && started && (worldDirty || carryMob || chainLinks.size)) saveToFile(); }, 3000);
 addEventListener("pagehide", () => { if (canSave()) saveToFile({ keepalive: true }); });
 document.addEventListener("visibilitychange", () => { if (document.hidden && canSave()) saveToFile({ keepalive: true }); });
 
