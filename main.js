@@ -4138,7 +4138,7 @@ function linkChain(carrier, child) {
   const head = new THREE.Mesh(chainLinkHeadGeo, chainLinkHeadMat);
   head.visible = true;
   scene.add(head);
-  chainLinks.set(child.id, { carrierId: carrier.id, rope, head, towDir: new THREE.Vector3(0, 0, 1), towPos: new THREE.Vector3(), towInit: false, playerFrontId: carrierIsPlayer ? grappleMob.id : null, taut: 0, strained: false, strainT: 0, carrierAirT: 0, hopT: 0, farT: 0 });
+  chainLinks.set(child.id, { carrierId: carrier.id, rope, head, towDir: new THREE.Vector3(0, 0, 1), towPos: new THREE.Vector3(), towInit: false, playerFrontId: carrierIsPlayer ? grappleMob.id : null, taut: 0, strained: false, strainT: 0, carrierAirT: 0, hopT: 0, farT: 0, snapT: 0.4, loiter: false, freeT: 0 });
   if (child.vel) child.vel.set(0, 0, 0);
   child.mode = "chained";
   child.path = null;
@@ -4170,6 +4170,13 @@ function spliceChainLink(front, back) {
   link.towInit = false;
   link.taut = 0;
   link.towPos.set(0, 0, 0);
+  link.hoverY = undefined;
+  link.snapT = 0.4;
+  link.scvX = undefined;
+  link.scvZ = undefined;
+  link.faceYaw = undefined;
+  link.loiter = false;
+  link.freeT = 0;
   link.prevAx = undefined;
   link.farT = 0;
   return true;
@@ -4628,9 +4635,10 @@ function updateChains(dt) {
     const desY = carrier.pos.y + carrier.h * 0.5 - link.towDir.y * followDist - 0.4;
     const desZ = carrier.pos.z - link.towDir.z * followDist;
     const crumb = chainTrailTarget(carrier, followDist);
-    const wantX = crumb ? crumb.x : desX;
-    const wantY = crumb ? crumb.y + carrier.h * 0.5 - 0.4 : desY;
-    const wantZ = crumb ? crumb.z : desZ;
+    const directSlot = !legacyTow && isFlyingKind(child.kind);
+    const wantX = crumb && !directSlot ? crumb.x : desX;
+    const wantY = crumb && !directSlot ? crumb.y + carrier.h * 0.5 - 0.4 : desY;
+    const wantZ = crumb && !directSlot ? crumb.z : desZ;
     if (link.towPos.lengthSq() < 1e-6) link.towPos.set(wantX, wantY, wantZ);
     else link.towPos.lerp(chainLinkTmp.set(wantX, wantY, wantZ), Math.min(1, dt * 6));
     if (!legacyTow) {
@@ -4705,7 +4713,7 @@ function updateChains(dt) {
       dvx *= s; dvy *= s; dvz *= s;
     }
     const threadSep = chainLinkDelta(carrier, child);
-    const threading = threadSep.d > linkLen * 1.5 && chainThreadRide(link, carrier, child, dt);
+    const threading = !isFlyingKind(child.kind) && threadSep.d > linkLen * 1.5 && chainThreadRide(link, carrier, child, dt);
     link.threadT = threading ? (link.threadT || 0) + dt : 0;
     if (threading) {
       link.farT = 0;
@@ -4755,12 +4763,25 @@ function updateChains(dt) {
     chainPushCrumb(child);
     child.mesh.position.copy(child.pos);
     const faceSpd = Math.hypot(child.vel.x, child.vel.z);
-    if (faceSpd > 0.5) {
+    const faceFlying = isFlyingKind(child.kind);
+    if (faceSpd > (faceFlying ? 1.0 : 0.5)) {
       const targetYaw = Math.atan2(child.vel.x, child.vel.z);
-      let dyaw = targetYaw - child.mesh.rotation.y;
-      while (dyaw > Math.PI) dyaw -= Math.PI * 2;
-      while (dyaw < -Math.PI) dyaw += Math.PI * 2;
-      child.mesh.rotation.y += dyaw * Math.min(1, dt * 10);
+      if (faceFlying) {
+        if (link.faceYaw === undefined) link.faceYaw = child.mesh.rotation.y;
+        let dface = targetYaw - link.faceYaw;
+        while (dface > Math.PI) dface -= Math.PI * 2;
+        while (dface < -Math.PI) dface += Math.PI * 2;
+        link.faceYaw += dface * Math.min(1, dt * 5);
+        let dm = link.faceYaw - child.mesh.rotation.y;
+        while (dm > Math.PI) dm -= Math.PI * 2;
+        while (dm < -Math.PI) dm += Math.PI * 2;
+        child.mesh.rotation.y += dm * Math.min(1, dt * 10);
+      } else {
+        let dyaw = targetYaw - child.mesh.rotation.y;
+        while (dyaw > Math.PI) dyaw -= Math.PI * 2;
+        while (dyaw < -Math.PI) dyaw += Math.PI * 2;
+        child.mesh.rotation.y += dyaw * Math.min(1, dt * 10);
+      }
     }
     renderChainLink(link, carrier, child);
   }
@@ -4815,9 +4836,10 @@ function updateChainGroundLink(link, carrier, child, followDist, dt) {
   const noProgress = (link.strainD === undefined) || (sep.d >= link.strainD - 0.05);
   link.strainD = sep.d;
   link.strainT = (sep.d > hi * 0.9 && noProgress) ? (link.strainT || 0) + dt : 0;
+  link.snapT = Math.max(0, (link.snapT || 0) - dt);
   const inWater = mobInWater(child);
   link.carrierAirT = (carrier.onGround === false) ? (link.carrierAirT || 0) + dt : 0;
-  let threading = sep.d > hi && chainThreadRide(link, carrier, child, dt);
+  let threading = !floats && sep.d > hi && chainThreadRide(link, carrier, child, dt);
   if (threading) {
     link.strainT = 0;
     link.threadT = (link.threadT || 0) + dt;
@@ -4833,15 +4855,42 @@ function updateChainGroundLink(link, carrier, child, followDist, dt) {
       const spd = strained ? WALK * 2 : WALK / 2;
       const sx = link.towPos.x - child.pos.x, sz = link.towPos.z - child.pos.z;
       const sd = Math.hypot(sx, sz);
-      let desX = 0, desZ = 0;
-      if (sd > 0.25) { const s = Math.min(spd, sd * 3); desX = sx / sd * s; desZ = sz / sd * s; }
-      const k = Math.min(1, dt * (strained ? 2.5 : 5));
-      child.vel.x += (desX + ffX * 0.6 - child.vel.x) * k;
-      child.vel.z += (desZ + ffZ * 0.6 - child.vel.z) * k;
-      if (strained) {
+      const evx = child.vel.x, evy = child.vel.y, evz = child.vel.z;
+      link.freeT = sep.d <= hi ? 0.5 : Math.max(0, (link.freeT || 0) - dt);
+      let loiter = false;
+      if (floats && strained && (sep.d > hi) &&
+          !chainSegmentFree(child, child.pos.x, child.pos.y, child.pos.z, carrier.pos.x, carrier.pos.y, carrier.pos.z))
+        loiter = (link.freeT || 0) > 0 || !!link.loiter;
+      link.loiter = loiter;
+      if (floats && loiter) {
+        const kl = Math.min(1, dt * 2.5);
+        child.vel.x += (0 - child.vel.x) * kl;
+        child.vel.z += (0 - child.vel.z) * kl;
+      } else if (floats) {
+        const cvx = carrier.vel ? carrier.vel.x : 0;
+        const cvz = carrier.vel ? carrier.vel.z : 0;
+        if (link.scvX === undefined) { link.scvX = cvx; link.scvZ = cvz; }
+        const sc = Math.min(1, dt * 3);
+        link.scvX += (cvx - link.scvX) * sc;
+        link.scvZ += (cvz - link.scvZ) * sc;
+        let dvx = sx * 1.6 + link.scvX, dvz = sz * 1.6 + link.scvZ;
+        const fcap = (strained ? WALK * 2 : WALK) + 2;
+        const fdl = Math.hypot(dvx, dvz);
+        if (fdl > fcap) { dvx *= fcap / fdl; dvz *= fcap / fdl; }
+        const kf = Math.min(1, dt * 2.5);
+        child.vel.x += (dvx - child.vel.x) * kf;
+        child.vel.z += (dvz - child.vel.z) * kf;
+      } else {
+        let desX = 0, desZ = 0;
+        if (sd > 0.25) { const s = Math.min(spd, sd * 3); desX = sx / sd * s; desZ = sz / sd * s; }
+        const k = Math.min(1, dt * (strained ? 2.5 : 5));
+        child.vel.x += (desX + ffX * 0.6 - child.vel.x) * k;
+        child.vel.z += (desZ + ffZ * 0.6 - child.vel.z) * k;
+      }
+      if (strained && !link.loiter) {
         if (link.taut > 0) link.taut = Math.max(0, link.taut - dt);
         const taut = link.taut > 0;
-        const stiff = taut ? 36 : 18, damp = taut ? 14 : 11;
+        const stiff = floats ? 6 : (taut ? 36 : 18), damp = floats ? 7 : (taut ? 14 : 11);
         const ex = link.towPos.x - child.pos.x, ey = link.towPos.y - (child.pos.y + child.h), ez = link.towPos.z - child.pos.z;
         const exl = Math.hypot(ex, ey, ez) || 1, ecl = Math.min(exl, 3);
         const cvx = carrier.vel ? carrier.vel.x : 0, cvy = carrier.vel ? carrier.vel.y : 0, cvz = carrier.vel ? carrier.vel.z : 0;
@@ -4863,7 +4912,10 @@ function updateChainGroundLink(link, carrier, child, followDist, dt) {
         }
       }
       if (floats) {
-        const feetY = link.towPos.y - child.h;
+        const hoverTgt = carrier.pos.y + 0.9;
+        if (link.hoverY === undefined) link.hoverY = hoverTgt;
+        else link.hoverY += (hoverTgt - link.hoverY) * Math.min(1, dt * 5);
+        const feetY = Math.max(link.towPos.y - child.h, link.hoverY);
         const inWaterF = mobInWater(child);
         if (inWaterF && !child._wasInWater && child.vel.y < 0) child.vel.y *= 0.3;
         child._wasInWater = inWaterF;
@@ -4881,8 +4933,20 @@ function updateChainGroundLink(link, carrier, child, followDist, dt) {
           child._chainJumpT -= dt;
           child.vel.y -= GRAVITY * dt;
         } else {
-          const vyT = Math.max(-6, Math.min(6, (feetY - child.pos.y) * 6));
-          child.vel.y += (vyT - child.vel.y) * Math.min(1, dt * 6);
+          const ferr = feetY - child.pos.y;
+          const vyT = Math.abs(ferr) < 0.12 ? 0 : Math.max(-6, Math.min(6, ferr * 4));
+          child.vel.y += (vyT - child.vel.y) * Math.min(1, dt * 4.5);
+        }
+        {
+          const msl = 12 * dt;
+          const qx = child.vel.x - evx, qy = child.vel.y - evy, qz = child.vel.z - evz;
+          const ql = Math.hypot(qx, qy, qz);
+          if (ql > msl) {
+            const qs = msl / ql;
+            child.vel.x = evx + qx * qs;
+            child.vel.y = evy + qy * qs;
+            child.vel.z = evz + qz * qs;
+          }
         }
         const mv = chainMoveAxis(child, child.vel.x * dt, child.vel.y * dt, child.vel.z * dt);
         child.onGround = aabbCollidesWorld(child.pos.x, child.pos.y - 0.05, child.pos.z, child.hw, child.h);
@@ -4912,7 +4976,7 @@ function updateChainGroundLink(link, carrier, child, followDist, dt) {
   const cmx = carrier.pos.x, cmy = carrier.pos.y + carrier.h * 0.5, cmz = carrier.pos.z;
   const hdBand = () => Math.hypot(child.pos.x - cmx, child.pos.z - cmz);
   const airFollow = (link.carrierAirT || 0) > 0.2;
-  if (sep.d > hi && (airFollow || hdBand() > hi)) {
+  if (!floats && sep.d > hi && (airFollow || hdBand() > hi)) {
     if (airFollow) {
       const nx = sep.dx / sep.d, ny = sep.dy / sep.d, nz = sep.dz / sep.d;
       chainSlideToward(child, cmx + nx * hi, cmy + ny * hi - child.h, cmz + nz * hi, 1);
@@ -4922,7 +4986,7 @@ function updateChainGroundLink(link, carrier, child, followDist, dt) {
     }
     sep = chainLinkDelta(carrier, child);
   }
-  if (sep.d < lo && sep.d > 1e-6) {
+  if (!floats && sep.d < lo && sep.d > 1e-6) {
     const nx = sep.dx / sep.d, ny = sep.dy / sep.d, nz = sep.dz / sep.d;
     chainSlideToward(child, cmx + nx * lo, cmy + ny * lo - child.h, cmz + nz * lo, 1.5);
     sep = chainLinkDelta(carrier, child);
@@ -4939,7 +5003,7 @@ function updateChainGroundLink(link, carrier, child, followDist, dt) {
   }
   if (sep.d > 1e-6) {
     const hd = Math.hypot(sep.dx, sep.dz);
-    if (hd > 1e-6 && Math.abs(hd - followDist) > 0.05) {
+    if (hd > 1e-6 && Math.abs(hd - followDist) > (floats ? (link.snapT > 0 ? 0.05 : Infinity) : 0.05)) {
       const s = followDist / hd;
       const px = carrier.pos.x + sep.dx * s, pz = carrier.pos.z + sep.dz * s;
       if (!aabbCollidesWorld(px, child.pos.y, pz, child.hw, child.h) &&
