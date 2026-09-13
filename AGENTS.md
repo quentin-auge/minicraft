@@ -703,7 +703,17 @@ or phase. Step-up is root-gated by jumping leadership: when the chain root is a 
   `PIGEON_SPEED` (`WALK*2` = 8.8) inside the day-sky band Y 50–235
   (`PIGEON_MIN_Y`/`PIGEON_MAX_Y = SKY_SPACE_START`, so the ceiling is exactly
   where night starts falling; below `SKY_SPACE_START` the sky stays
-  day). Boxy grey mesh with flapping wings (`makePigeonMesh`, `hw` 0.25 `h` 0.5).
+  day). Any flying mob (`isFlyingKind`: pigeons, dragons) inside the moon dome or
+  on its surface (`inMoonZone`: any `y > MOON_Y` counts regardless of horizontal
+  position, with no upper cap; at/below it the 3D distance
+  from `(0, MOON_Y, 0)` must be at or under `MOON_R-2.5`, i.e. the hollow
+  interior plus 2.5 blocks into the shell — anything on the exterior reads OUT; `flyingMobOnMoon`/`pigeonOnMoon`) stays there instead of band-returning:
+  pigeons wander locally at moon height (short 10–40-block straight/arc legs via
+  `pigeonMoonTarget`, all targets zone-validated with hover fallback, tighter
+  arc radii, no band pull, no `bandReturnTarget`, no perch) and only resume the
+  band return once outside the zone (below/under/beside the moon goes down);
+  a flying mob released from hand inside the zone gets a free-air release.
+  Boxy grey mesh with flapping wings (`makePigeonMesh`, `hw` 0.25 `h` 0.5).
   Flight is a straight/arc state machine (`updatePigeon`, called from `updateMobs`):
   `straight` legs toward random band targets (`pigeonRandomTarget`, 40–90 blocks)
   alternate with `arc` circle segments (`pigeonNewArc`, radius 6–20, sweep 1.5–4.5 rad,

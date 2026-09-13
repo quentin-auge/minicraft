@@ -1949,7 +1949,7 @@ function pigeonFindPerchSpot(m, nearMax = 0) {
 }
 function pigeonNextLeg(m) {
   m._decideT = 1.2;
-  if (Math.random() < PIGEON_PERCH_CHANCE && !chainChild.has(m.id)) {
+  if (!pigeonOnMoon(m) && Math.random() < PIGEON_PERCH_CHANCE && !chainChild.has(m.id)) {
     const found = pigeonFindPerchSpot(m);
     if (found) {
       m.mode = "toPerch";
@@ -1985,7 +1985,7 @@ function pigeonTakeoff(m) {
   m.perchWanderT = 0;
   m.perchTimeout = 0;
   m.perchRetry = 0;
-  if (Math.random() < PIGEON_HOP_CHANCE && !chainChild.has(m.id)) {
+  if (!pigeonOnMoon(m) && Math.random() < PIGEON_HOP_CHANCE && !chainChild.has(m.id)) {
     const found = pigeonFindPerchSpot(m, PIGEON_HOP_R);
     if (found) {
       m.mode = "toPerch";
@@ -2592,7 +2592,44 @@ function makePigeonMesh() {
   g.userData = { wingL, wingR, body, head, kind: "pigeon" };
   return g;
 }
+function inMoonZone(x, y, z) {
+  if (dim !== "over") return false;
+  if (y > MOON_Y) return true;
+  const hd = Math.hypot(x, z);
+  const dy = MOON_Y - y;
+  return Math.sqrt(hd * hd + dy * dy) <= MOON_R - 2.5;
+}
+function flyingMobOnMoon(m) {
+  return !!m && isFlyingKind(m.kind) && inMoonZone(m.pos.x, m.pos.y, m.pos.z);
+}
+function pigeonOnMoon(m) {
+  return flyingMobOnMoon(m);
+}
+function pigeonMoonY(from) {
+  return Math.max(MOON_BOTTOM, Math.min(MAX_Y - 1, from.y + (Math.random() - 0.5) * 12));
+}
+function pigeonMoonTarget(from, minDist = 10, maxDist = 40) {
+  for (let t = 0; t < 12; t++) {
+    const a = Math.random() * Math.PI * 2;
+    const d = minDist + Math.random() * (maxDist - minDist);
+    const x = Math.max(-WORLD_RADIUS + 2, Math.min(WORLD_RADIUS - 2, from.x + Math.cos(a) * d));
+    const z = Math.max(-WORLD_RADIUS + 2, Math.min(WORLD_RADIUS - 2, from.z + Math.cos(a + 1.7) * d));
+    const y = pigeonMoonY(from);
+    if (Math.hypot(x - from.x, z - from.z) < 8) continue;
+    if (!inMoonZone(x, y, z)) continue;
+    if (!pigeonProbeFree(x, y, z)) continue;
+    if (!pigeonSegmentFree(from.x, from.y, from.z, x, y, z)) continue;
+    return new THREE.Vector3(x, y, z);
+  }
+  return null;
+}
 function pigeonRandomTarget(from, minDist = 40, maxDist = 90) {
+  const moon = dim === "over" && inMoonZone(from.x, from.y, from.z);
+  if (moon) {
+    const t = pigeonMoonTarget(from, Math.min(minDist, 10), Math.min(Math.max(maxDist, 20), 40));
+    if (t) return t;
+    return new THREE.Vector3(from.x, from.y, from.z);
+  }
   for (let t = 0; t < 12; t++) {
     const a = Math.random() * Math.PI * 2;
     const d = minDist + Math.random() * (maxDist - minDist);
@@ -2609,12 +2646,16 @@ function pigeonRandomTarget(from, minDist = 40, maxDist = 90) {
 }
 function pigeonReachableTarget(m, minDist = 40, maxDist = 90) {
   let best = null, bestScore = -Infinity;
+  const moon = pigeonOnMoon(m);
   for (let t = 0; t < 12; t++) {
     const a = Math.random() * Math.PI * 2;
-    const d = minDist + Math.random() * (maxDist - minDist);
+    const d = moon ? 10 + Math.random() * 30 : minDist + Math.random() * (maxDist - minDist);
     const x = Math.max(-WORLD_RADIUS + 2, Math.min(WORLD_RADIUS - 2, m.pos.x + Math.cos(a) * d));
     const z = Math.max(-WORLD_RADIUS + 2, Math.min(WORLD_RADIUS - 2, m.pos.z + Math.sin(a + 1.7) * d));
-    const y = Math.max(1.5, Math.min(MAX_Y - 1, PIGEON_MIN_Y + 5 + Math.random() * (PIGEON_MAX_Y - PIGEON_MIN_Y - 10)));
+    const y = moon
+      ? Math.max(MOON_BOTTOM, Math.min(MAX_Y - 1, m.pos.y + (Math.random() - 0.5) * 12))
+      : Math.max(1.5, Math.min(MAX_Y - 1, PIGEON_MIN_Y + 5 + Math.random() * (PIGEON_MAX_Y - PIGEON_MIN_Y - 10)));
+    if (moon && !inMoonZone(x, y, z)) continue;
     if (!pigeonProbeFree(x, y, z)) continue;
     if (!pigeonSegmentFree(m.pos.x, m.pos.y, m.pos.z, x, y, z)) continue;
     const dx = x - m.pos.x, dy = y - m.pos.y, dz = z - m.pos.z;
@@ -2632,6 +2673,7 @@ function pigeonReachableTarget(m, minDist = 40, maxDist = 90) {
       const x = Math.max(-WORLD_RADIUS + 2, Math.min(WORLD_RADIUS - 2, m.pos.x + dx * d));
       const z = Math.max(-WORLD_RADIUS + 2, Math.min(WORLD_RADIUS - 2, m.pos.z + dz * d));
       const y = Math.max(1.5, Math.min(MAX_Y - 1, m.pos.y + (Math.random() - 0.5) * 6));
+      if (moon && !inMoonZone(x, y, z)) continue;
       if (!pigeonProbeFree(x, y, z)) continue;
       if (!pigeonSegmentFree(m.pos.x, m.pos.y, m.pos.z, x, y, z)) continue;
       const dl = Math.hypot(x - m.pos.x, y - m.pos.y, z - m.pos.z) || 1;
@@ -2640,16 +2682,20 @@ function pigeonReachableTarget(m, minDist = 40, maxDist = 90) {
       if (score > bestScore) { bestScore = score; best = new THREE.Vector3(x, y, z); }
     }
   }
+  if (!best && moon) return new THREE.Vector3(m.pos.x, m.pos.y, m.pos.z);
   return best;
 }
 function pigeonNewArc(m) {
+  const moonCy = pigeonOnMoon(m);
   const side = Math.random() < 0.5 ? 1 : -1;
-  const r = 6 + Math.random() * 14;
+  const r = moonCy ? 4 + Math.random() * 6 : 6 + Math.random() * 14;
   const v = m.vel.length() || PIGEON_SPEED;
   const fwd = v > 0.01 ? m.vel.clone().normalize() : new THREE.Vector3(Math.cos(m.yaw), 0, Math.sin(m.yaw));
   const cx = m.pos.x - fwd.z * side * r + (Math.random() - 0.5) * 8;
   const cz = m.pos.z + fwd.x * side * r + (Math.random() - 0.5) * 8;
-  const cy = Math.max(PIGEON_MIN_Y + 3, Math.min(PIGEON_MAX_Y - 3, m.pos.y + (Math.random() - 0.5) * 12));
+  const cy = moonCy
+    ? Math.max(MOON_BOTTOM, Math.min(MAX_Y - 1, m.pos.y + (Math.random() - 0.5) * 12))
+    : Math.max(PIGEON_MIN_Y + 3, Math.min(PIGEON_MAX_Y - 3, m.pos.y + (Math.random() - 0.5) * 12));
   m.arc = {
     cx: Math.max(-WORLD_RADIUS + 2, Math.min(WORLD_RADIUS - 2, cx)),
     cz: Math.max(-WORLD_RADIUS + 2, Math.min(WORLD_RADIUS - 2, cz)),
@@ -3369,8 +3415,11 @@ function updatePigeon(m, dt) {
     if (m.mesh.userData.wingR) m.mesh.userData.wingR.rotation.z = -0.12;
     return;
   }
-  if (m.mode === "perch") { updatePerchedPigeon(m, dt); return; }
-  if (m.mode === "toPerch") { updateToPerchPigeon(m, dt); return; }
+  if (m.mode === "perch" || m.mode === "toPerch") {
+    if (pigeonOnMoon(m)) { pigeonTakeoff(m); }
+    else if (m.mode === "perch") { updatePerchedPigeon(m, dt); return; }
+    else { updateToPerchPigeon(m, dt); return; }
+  }
   if (m.mode !== "straight" && m.mode !== "arc") { m.mode = "straight"; m.target = null; m.targetMode = null; m.perchRetry = 0; }
   if (confined) {
     m._tunnel = true; m._tFree = 0;
@@ -3386,13 +3435,16 @@ function updatePigeon(m, dt) {
     m.target = null; m.targetMode = null; m._decideT = 0;
   }
   m._decideT = Math.max(0, (m._decideT || 0) - dt);
-  const outBand = m.pos.y < PIGEON_MIN_Y || m.pos.y > PIGEON_MAX_Y;
+  const moon = pigeonOnMoon(m);
+  const outBand = !moon && (m.pos.y < PIGEON_MIN_Y || m.pos.y > PIGEON_MAX_Y);
   const sp = PIGEON_SPEED;
   let vx = m.vel.x, vy = m.vel.y, vz = m.vel.z;
   const vl = Math.hypot(vx, vy, vz) || 1;
   let dx = vx / vl, dy = vy / vl, dz = vz / vl;
-  if (m.pos.y < PIGEON_MIN_Y + 5) dy += (PIGEON_MIN_Y + 5 - m.pos.y) * 0.08;
-  else if (m.pos.y > PIGEON_MAX_Y - 5) dy -= (m.pos.y - (PIGEON_MAX_Y - 5)) * 0.08;
+  if (!moon) {
+    if (m.pos.y < PIGEON_MIN_Y + 5) dy += (PIGEON_MIN_Y + 5 - m.pos.y) * 0.08;
+    else if (m.pos.y > PIGEON_MAX_Y - 5) dy -= (m.pos.y - (PIGEON_MAX_Y - 5)) * 0.08;
+  }
   const edge = WORLD_RADIUS - 6;
   if (m.pos.x < -edge || m.pos.x > edge || m.pos.z < -edge || m.pos.z > edge) {
     // near the world boundary: steer back in, and never circle — the arc tangent
@@ -4939,7 +4991,7 @@ function releaseCarriedMobAt(px, py, pz) {
   if (!carryMob) return;
   const m = carryMob;
   const hw = m.hw;
-  if (m.kind === "pigeon") {
+  if (m.kind === "pigeon" || (isFlyingKind(m.kind) && inMoonZone(px + 0.5, py, pz + 0.5))) {
     let nx = Math.max(-WORLD_RADIUS + 1, Math.min(WORLD_RADIUS - 1, px + 0.5));
     let nz = Math.max(-WORLD_RADIUS + 1, Math.min(WORLD_RADIUS - 1, pz + 0.5));
     let ny = Math.max(1, Math.min(MAX_Y - 2, Math.round(py)));
