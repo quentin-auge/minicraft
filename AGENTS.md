@@ -974,7 +974,7 @@ or phase. Step-up is root-gated by jumping leadership: when the chain root is a 
   retries via `perchRetry`), and every leg re-pick goes through `pigeonNextLeg`
   (perch roll `PIGEON_PERCH_CHANCE` 0.65, min 1.2 s between full decisions via `_decideT`),
   so flight legs stay short and duty cycle holds across worlds.
-- **Save/load**: binary format (`SAVE_MAGIC`, version 14) capturing world
+- **Save/load**: binary format (`SAVE_MAGIC`, version 15) capturing world
   blocks (over/end/nether), dim, seeds (over/end/nether), player pos/yaw/pitch,
   player velocity (`vel`, so a save made mid-air resumes at the exact spot still
   falling),
@@ -993,7 +993,14 @@ or phase. Step-up is root-gated by jumping leadership: when the chain root is a 
   `linkChain` after mob restore, failures skipped; only written when saving from
   the Overworld — End/Nether saves store none since dimension entry already
   broke them, and the End rebuilds dragon + endermen fresh on every entry);
-  pre-v14 saves load with velocity untouched and no chains; older v1/v2/v3
+  the held mob (`carryMob`) is stored as an overworld-mob index (`pendingCarriedIdx`,
+  appended Int32, -1 when empty-handed; saves from the Nether/End append the live
+  held overworld mob so it survives) and restored still in hands (`mode="carried"`,
+  ghost transparency, arms visible; chain pairs touching it are skipped);
+  New World always starts empty-handed (a held or hook-riding mob is despawned
+  during regen, never carried into the fresh world; `spawnVillagers` skips held
+  mobs on the load/dimension-return paths);
+  pre-v15 saves load with velocity untouched, no chains and no held mob; older v1/v2/v3
   saves still load, and v5 saves from the briefly-lived torch era are tolerated
   and read past their torch entries. Saves older than v10 respawn mobs fresh (v10 entries
   default bounds by kind on restore); pre-v12 saves respawn their 50 pigeons fresh
@@ -1009,7 +1016,8 @@ or phase. Step-up is root-gated by jumping leadership: when the chain root is a 
   API); nothing is ever kept in browser storage except the remembered
   save-directory handle (`getSaveDir`/IDB key `savedir`). Autosave
   runs every 3 s while the world is dirty (plus on pause/Escape and on page
-  hide), via `queueSave()` / the 3-second timer; world regen resets to new
+  hide), via `queueSave()` / the 3-second timer (which also fires while a mob is
+  held, and grabbing/releasing dirties the world, so the hold always reaches disk); world regen resets to new
   seeds (`regenerate`).
 - **HUD/UI**: crosshair, hotbar with slot icons (wheel or K/L selects), dimension
   label, toasts; pause overlay (Resume/New

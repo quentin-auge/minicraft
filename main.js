@@ -5035,6 +5035,7 @@ function releaseCarriedMobAt(px, py, pz) {
   m.mesh.visible = true;
   setMobTransparent(m, 1);
   carryMob = null;
+  worldDirty = true;
 }
 
 function releaseCarriedMob() {
@@ -5251,6 +5252,7 @@ function updateCarryGrapple(dt) {
         if (mob.isBaby) mob._followDetourUntil = 0;
         carryGrappleMob = null;
         carryMob = mob;
+        worldDirty = true;
         carryGrappleRetracting = false;
         carryGrappleCubes.visible = false;
         carryGrappleHead.visible = false;
@@ -6208,11 +6210,15 @@ function spawnVillagers() {
       mobById.set(m.id, m);
     }
   }
-  for (const m of mobs) if (m.isBaby) {
-    const sibs = mobs.filter((o) => o.homeId === m.homeId && !o.isBaby);
-    if (sibs.length) m.parentId = sibs[Math.floor(Math.random() * sibs.length)].id;
+  for (const m of mobs) {
+    if (isMobHeld(m)) continue;
+    if (m.isBaby) {
+      const sibs = mobs.filter((o) => o.homeId === m.homeId && !o.isBaby);
+      if (sibs.length) m.parentId = sibs[Math.floor(Math.random() * sibs.length)].id;
+    }
   }
   for (const m of mobs) {
+    if (isMobHeld(m)) continue;
     if (m.isBaby) {
       const p = mobById.get(m.parentId);
       if (p) m.target = { x: p.pos.x, z: p.pos.z };
@@ -6358,6 +6364,7 @@ function removeVillagers() {
 let overworldMobCache = null;
 let pendingOverworldMobs = null;
 let pendingChainLinks = null;
+let pendingCarriedIdx = null;
 const MOB_SAVE_BYTES = 19;
 function mobKindCode(m) {
   if (m.kind === "pig") return 1;
@@ -6443,6 +6450,9 @@ function settleMobSpot(sx, sy, sz, hw, h, isWolf) {
 }
 function restoreOverworldMobs(list, opts) {
   const keepCarried = !opts || opts.keepCarried !== false;
+  let carriedIdx = (opts && opts.carriedIdx != null) ? opts.carriedIdx : pendingCarriedIdx;
+  pendingCarriedIdx = null;
+  if (!Number.isInteger(carriedIdx) || carriedIdx < 0 || !list || carriedIdx >= list.length) carriedIdx = -1;
   if (!list || !list.length) return 0;
   if (!villageHouses.length) computeVillageLayout();
   if (!keepCarried && carryMob) {
@@ -6454,6 +6464,7 @@ function restoreOverworldMobs(list, opts) {
     playerArms.visible = false;
   }
   removeVillagers();
+  if (keepCarried && carryMob && mobs.includes(carryMob)) carriedIdx = -1;
   let gid = mobs.length ? Math.max(...mobs.map((m) => m.id)) + 1 : 0;
   const usedXZ = mobs.map((m) => [m.pos.x, m.pos.z]);
   const idByListIdx = new Array(list.length).fill(null);
@@ -6468,7 +6479,13 @@ function restoreOverworldMobs(list, opts) {
     let sx = e.x, sy = e.y, sz = e.z;
     if (!isFinite(sx) || !isFinite(sy) || !isFinite(sz)) continue;
     let spot = null;
-    if (isFlyingKind(kind)) {
+    if (i === carriedIdx) {
+      spot = {
+        x: Math.max(-WORLD_RADIUS + 1, Math.min(WORLD_RADIUS - 1, sx)),
+        y: Math.max(1, Math.min(MAX_Y - 2, sy)),
+        z: Math.max(-WORLD_RADIUS + 1, Math.min(WORLD_RADIUS - 1, sz)),
+      };
+    } else if (isFlyingKind(kind)) {
       sx = Math.max(-WORLD_RADIUS + 1, Math.min(WORLD_RADIUS - 1, sx));
       sz = Math.max(-WORLD_RADIUS + 1, Math.min(WORLD_RADIUS - 1, sz));
       sy = Math.max(1, Math.min(MAX_Y - 2, isFinite(sy) ? sy : PIGEON_MIN_Y + 20));
@@ -6599,6 +6616,7 @@ function restoreOverworldMobs(list, opts) {
   });
   if (pendingChainLinks && pendingChainLinks.length) {
     for (const [a, b] of pendingChainLinks) {
+      if (a === carriedIdx || b === carriedIdx) continue;
       if (a < 0 || b < 0 || a >= list.length || b >= list.length) continue;
       const ca = mobById.get(idByListIdx[a]), cb = mobById.get(idByListIdx[b]);
       if (!ca || !cb) continue;
@@ -6613,6 +6631,23 @@ function restoreOverworldMobs(list, opts) {
       m.target = { x: m.pos.x, z: m.pos.z };
     }
     m.wanderT = 3 + Math.random() * 4;
+  }
+  if (carriedIdx >= 0 && idByListIdx[carriedIdx] != null) {
+    const held = mobById.get(idByListIdx[carriedIdx]);
+    if (held) {
+      held.mode = "carried";
+      held.vel.set(0, 0, 0);
+      held.target = null;
+      held.path = null;
+      held.pathKey = null;
+      held.blockedT = 0;
+      held._stuckT = 0;
+      if (held.isBaby) held._followDetourUntil = 0;
+      held.mesh.visible = true;
+      setMobTransparent(held, 0.35);
+      carryMob = held;
+      playerArms.visible = true;
+    }
   }
   buildMobGrid();
   spawnVillagers();
@@ -11475,6 +11510,7 @@ function goToDimension(name, sx, sy, sz) {
   removeEndEntities();
   if (dim !== "over") {
     overworldMobCache = snapshotOverworldMobs(false);
+    pendingCarriedIdx = null;
     removeVillagers();
   }
   else {
@@ -11483,6 +11519,7 @@ function goToDimension(name, sx, sy, sz) {
     if (overworldMobCache && overworldMobCache.length && liveOver < overworldMobCache.length) {
       restoreOverworldMobs(overworldMobCache, { keepCarried: true });
     } else if (!liveOver) spawnVillagers();
+    pendingCarriedIdx = null;
     spawnPigeons();
   }
   for (const m of mobs) m.mesh.visible = (m.dim === dim || m.dim === undefined) || m === carryMob || m === carryGrappleMob;
@@ -13350,7 +13387,17 @@ function serialize() {
   const m = placedFlowers.size;
   const gov = glowVariants.over.size, gev = glowVariants.end.size, gnv = glowVariants.nether.size;
   const winLen = overPortalWin ? 12 : 1;
-  const overMobs = dim === "over" ? snapshotOverworldMobs(true) : (overworldMobCache || []);
+  let overMobs = dim === "over" ? snapshotOverworldMobs(true) : (overworldMobCache || []).slice();
+  let carriedIdx = -1;
+  if (dim === "over") {
+    if (carryMob && mobs.includes(carryMob)) {
+      const ci = overMobs.findIndex((e) => e.id === carryMob.id);
+      if (ci >= 0) carriedIdx = ci;
+    }
+  } else if (carryMob && mobs.includes(carryMob) && (carryMob.dim === "over" || carryMob.dim === undefined)) {
+    const live = snapshotOverworldMobs(true).find((e) => e.id === carryMob.id);
+    if (live) { overMobs.push(live); carriedIdx = overMobs.length - 1; }
+  }
   const mobN = overMobs.length;
   let chainPairs = [];
   if (dim === "over" && mobN) {
@@ -13362,11 +13409,11 @@ function serialize() {
       chainPairs.push([a, b]);
     }
   }
-  const buf = new ArrayBuffer(117 + (on + en + nn) * 5 + m * 6 + (gov + gev + gnv) * 5 + winLen + 16 + 4 + mobN * MOB_SAVE_BYTES + 24 + 4 + chainPairs.length * 4);
+  const buf = new ArrayBuffer(117 + (on + en + nn) * 5 + m * 6 + (gov + gev + gnv) * 5 + winLen + 16 + 4 + mobN * MOB_SAVE_BYTES + 24 + 4 + chainPairs.length * 4 + 4);
   const dv = new DataView(buf);
   let o = 0;
   new Uint8Array(buf, o, 9).set(SAVE_MAGIC); o += 9;
-  dv.setUint8(o++, 14); // format version
+  dv.setUint8(o++, 15); // format version
   dv.setUint8(o++, dim === "end" ? 1 : dim === "nether" ? 2 : 0);
   dv.setInt32(o, seed, true); o += 4;
   dv.setInt32(o, endSeed, true); o += 4;
@@ -13454,6 +13501,7 @@ function serialize() {
     dv.setUint16(o, a, true); o += 2;
     dv.setUint16(o, b, true); o += 2;
   }
+  dv.setInt32(o, carriedIdx, true); o += 4;
   return buf;
 }
 
@@ -13463,7 +13511,7 @@ function deserialize(buf) {
   for (let i = 0; i < 9; i++) if (new Uint8Array(buf, o, 9)[i] !== SAVE_MAGIC[i]) throw new Error("Not a MiniCraft save");
   o += 9;
   const ver = dv.getUint8(o++);
-  if (ver !== 1 && ver !== 2 && ver !== 3 && ver !== 4 && ver !== 5 && ver !== 6 && ver !== 7 && ver !== 8 && ver !== 9 && ver !== 10 && ver !== 11 && ver !== 12 && ver !== 13 && ver !== 14) throw new Error("Unsupported save version");
+  if (ver !== 1 && ver !== 2 && ver !== 3 && ver !== 4 && ver !== 5 && ver !== 6 && ver !== 7 && ver !== 8 && ver !== 9 && ver !== 10 && ver !== 11 && ver !== 12 && ver !== 13 && ver !== 14 && ver !== 15) throw new Error("Unsupported save version");
   const yWidth = ver >= 8 ? 2 : 1;
   const readY = () => { const y = yWidth === 2 ? dv.getUint16(o, true) : dv.getUint8(o); o += yWidth; return y; };
   placedFlowers.clear();
@@ -13473,6 +13521,7 @@ function deserialize(buf) {
   pendingOverworldMobs = null;
   overworldMobCache = null;
   pendingChainLinks = null;
+  pendingCarriedIdx = null;
   let dimFlag = 0, endSeedVal = endSeed;
   if (ver >= 2) dimFlag = dv.getUint8(o++);
   if (ver >= 4) {
@@ -13633,6 +13682,10 @@ function deserialize(buf) {
       const b = dv.getUint16(o, true); o += 2;
       pendingChainLinks.push([a, b]);
     }
+  }
+  if (ver >= 15) {
+    const ci = dv.getInt32(o, true); o += 4;
+    pendingCarriedIdx = (ci >= 0 && pendingOverworldMobs && ci < pendingOverworldMobs.length) ? ci : null;
   }
   freeCam = flyFlag && dim !== "end";
   if (freeCam) camPos.copy(pos);
@@ -14034,6 +14087,7 @@ function resetDims() {
   removeVillagers();
   overworldMobCache = null;
   pendingOverworldMobs = null;
+  pendingCarriedIdx = null;
   setDimensionEnv();
   updateDimLabel();
 }
@@ -14043,6 +14097,30 @@ async function buildWorld() {
   requestLock();
   await new Promise((r) => setTimeout(r, 30));
   try {
+    carryGrappleActive = false;
+    carryGrapplePulling = false;
+    carryGrappleRetracting = false;
+    carryGrappleBlock = null;
+    carryGrappleChainTarget = null;
+    carryGrappleAttachMode = "behind";
+    if (carryGrappleCubes) carryGrappleCubes.visible = false;
+    if (carryGrappleHead) carryGrappleHead.visible = false;
+    for (const gm of [carryMob, carryGrappleMob]) {
+      if (gm && mobs.includes(gm)) {
+        if (gm.mesh) scene.remove(gm.mesh);
+        if (gm.fallMesh) scene.remove(gm.fallMesh);
+        if (gm.eyeMat) gm.eyeMat.dispose();
+        const ei = endermen.indexOf(gm);
+        if (ei >= 0) endermen.splice(ei, 1);
+        mobById.delete(gm.id);
+        const gi = mobs.indexOf(gm);
+        if (gi >= 0) mobs.splice(gi, 1);
+        if (pigeonLock === gm) { pigeonLock = null; pigeonLockT = 0; pigeonLockShots = 0; }
+      }
+    }
+    carryMob = null;
+    carryGrappleMob = null;
+    playerArms.visible = false;
     resetDims();
     seed = Math.floor(Math.random() * 100000);
     endSeed = Math.floor(Math.random() * 100000);
@@ -14134,7 +14212,7 @@ function requestLock() {
   if (p && p.catch) p.catch(() => {});
 }
 
-setInterval(() => { if (canSave() && started && worldDirty) saveToFile(); }, 3000);
+setInterval(() => { if (canSave() && started && (worldDirty || carryMob)) saveToFile(); }, 3000);
 addEventListener("pagehide", () => { if (canSave()) saveToFile({ keepalive: true }); });
 document.addEventListener("visibilitychange", () => { if (document.hidden && canSave()) saveToFile({ keepalive: true }); });
 
@@ -14796,13 +14874,13 @@ if (location.search.includes('test')) {
     get villageCenter(){ return villageCenter; }, get villageHouses(){ return villageHouses; }, get villagePen(){ return villagePen; }, get villagePool(){ return villagePool; }, get isInsidePen(){ return isInsidePen; }, get isInsidePool(){ return isInsidePool; }, get isInsidePenPool(){ return isInsidePenPool; }, get poolExitTarget(){ return poolExitTarget; }, get penPoolExitTarget(){ return penPoolExitTarget; }, get LOG(){ return LOG; }, findPenGaps, nearestPenGap, penGapInside, penGapOutside, hasMobGround, mobBlockedAt, aabbCollidesWorld, mobProbeFree, randomPenPoint, randomAroundPenPoint, groundYForMob, get CLOUD_BASE(){ return CLOUD_BASE; }, get CLOUD_TOP(){ return CLOUD_TOP; }, get MAX_Y(){ return MAX_Y; },
     getTypeMats, get typeMats(){ return typeMats; }, buildWorld, generateWorld, computeVillageLayout, spawnVillagers, refreshBlocks, get boxGeo(){ return boxGeo; }, THREE,
     get pos(){ return pos; }, get vel(){ return vel; }, get camera(){ return camera; }, get yaw(){ return yaw; }, set yaw(v){ yaw=v; }, get pitch(){ return pitch; }, set pitch(v){ pitch=v; },
-    get carryMob(){ return carryMob; }, handleCarryEnterDown, handleCarryEnterUp, pickMob, get carryGrappleActive(){ return carryGrappleActive; }, get carryGrapplePulling(){ return carryGrapplePulling; }, get carryGrappleMob(){ return carryGrappleMob; }, get carryGrappleBlock(){ return carryGrappleBlock; }, get carryGrappleHookPos(){ return carryGrappleHookPos; }, get carryGrappleOffset(){ return carryGrappleOffset; }, get carryGrappleMode(){ return carryGrappleMode; }, get isMobFrozenByGrapple(){ return isMobFrozenByGrapple; }, isChained, isChainCarrier, chainRootOf, chainTailOf, linkChain, dropChainFrom, chainTakeForCarry, severChainMob, groundChainFrom, insertChainBefore, insertChainBehind, insertBehindRide, prependChainLead, clearChains, pruneChains, updateChains, chainAttachTarget, startCarryAttachGrapple, killChainMob, respawnChainMob, unchainMob, get chainLinks(){ return chainLinks; }, get chainParent(){ return chainParent; }, get chainChild(){ return chainChild; }, playerChainAvatar, playerInChain, PLAYER_CHAIN_ID, spliceChainLink, chainHasJumping, chainPushCrumb, chainTrailTarget, latchPlayerTo, fireGrapple, detachDisplacementGrapple, get grappleActive(){ return grappleActive; }, get grappleHooked(){ return grappleHooked; }, get grappleRetracting(){ return grappleRetracting; }, get grappleMob(){ return grappleMob; }, get grappleMobOffset(){ return grappleMobOffset; }, get grappleHookPos(){ return grappleHookPos; }, get grappleTarget(){ return grappleTarget; }, updateCarryGrapple, get currentBlock(){ return currentBlock; }, updateTarget, hotbarList, placeBlock, breakBlock, get selected(){ return selected; }, set selected(v){ selected=v; }, toggleCarry: handleCarryEnterDown, findNearestMobForGrab: (...a)=>{ const d=new THREE.Vector3(); camera.getWorldDirection(d); return pickMob(d); }, get playerArms(){ return playerArms; }, get started(){ return started; }, set started(v){ started=v; }, get loading(){ return loading; }, get freeCam(){ return freeCam; }, set freeCam(v){ freeCam=v; }, get helpOpen(){ return helpOpen; },
+    get carryMob(){ return carryMob; }, handleCarryEnterDown, handleCarryEnterUp, pickMob, get carryGrappleActive(){ return carryGrappleActive; }, get carryGrapplePulling(){ return carryGrapplePulling; }, get carryGrappleMob(){ return carryGrappleMob; }, get carryGrappleBlock(){ return carryGrappleBlock; }, get carryGrappleHookPos(){ return carryGrappleHookPos; }, get carryGrappleOffset(){ return carryGrappleOffset; }, get carryGrappleMode(){ return carryGrappleMode; }, get isMobFrozenByGrapple(){ return isMobFrozenByGrapple; }, isChained, isChainCarrier, chainRootOf, chainTailOf, linkChain, dropChainFrom, chainTakeForCarry, severChainMob, groundChainFrom, insertChainBefore, insertChainBehind, insertBehindRide, prependChainLead, clearChains, pruneChains, updateChains, chainAttachTarget, startCarryAttachGrapple, killChainMob, respawnChainMob, unchainMob, get chainLinks(){ return chainLinks; }, get chainParent(){ return chainParent; }, get chainChild(){ return chainChild; }, playerChainAvatar, playerInChain, PLAYER_CHAIN_ID, spliceChainLink, chainHasJumping, chainPushCrumb, chainTrailTarget, latchPlayerTo, fireGrapple, detachDisplacementGrapple, get grappleActive(){ return grappleActive; }, get grappleHooked(){ return grappleHooked; }, get grappleRetracting(){ return grappleRetracting; }, get grappleMob(){ return grappleMob; }, get grappleMobOffset(){ return grappleMobOffset; }, get grappleHookPos(){ return grappleHookPos; }, get grappleTarget(){ return grappleTarget; }, updateCarryGrapple, updateCarry, get currentBlock(){ return currentBlock; }, updateTarget, hotbarList, placeBlock, breakBlock, get selected(){ return selected; }, set selected(v){ selected=v; }, toggleCarry: handleCarryEnterDown, findNearestMobForGrab: (...a)=>{ const d=new THREE.Vector3(); camera.getWorldDirection(d); return pickMob(d); }, get playerArms(){ return playerArms; }, get started(){ return started; }, set started(v){ started=v; }, get loading(){ return loading; }, get freeCam(){ return freeCam; }, set freeCam(v){ freeCam=v; }, get helpOpen(){ return helpOpen; },
     get WOLF_COUNT(){ return WOLF_COUNT; }, makeWolfMesh, villagerHW, villagerH, wolfHasMobGround, wolfBlockedAt, wolfProbeFree, wanderGoalForWolf, wolfFindPath, wolfInWater, mobInWater, waterSurfaceForMob, mobPhysicsStep, wolfPhysicsStep, updateMobs, obstacleTurnDir, buildMobGrid,     get isPigCow(){ return isPigCow; }, get pigOverlapsFence(){ return pigOverlapsFence; }, get MOB_FLOAT_FRAC(){ return MOB_FLOAT_FRAC; }, mobFloatTargetY, mobWaterExitJump, poolExitTarget, penPoolExitTarget, isInsidePenPool,
     get PIGEON_COUNT(){ return PIGEON_COUNT; }, get PIGEON_MIN_Y(){ return PIGEON_MIN_Y; }, get PIGEON_MAX_Y(){ return PIGEON_MAX_Y; }, get PIGEON_SPEED(){ return PIGEON_SPEED; }, get TNT_HOME_SPEED(){ return TNT_HOME_SPEED; }, get PIGEON_AIM_DIST(){ return PIGEON_AIM_DIST; }, get PIGEON_LOCK_TIME(){ return PIGEON_LOCK_TIME; }, get pigeonLock(){ return pigeonLock; }, get pigeonLockT(){ return pigeonLockT; }, set pigeonLockT(v){ pigeonLockT = v; }, get pigeonLockShots(){ return pigeonLockShots; }, livePigeonLock, tntTargeted, tryFireLockedTNT, get chainBreaking(){ return chainBreaking; }, set chainBreaking(v){ chainBreaking = v; },     makePigeonMesh, spawnPigeons, spawnSinglePigeon, removePigeons, spawnPigeonChain, updatePigeon, updatePerchedPigeon, updateToPerchPigeon, pigeonTakeoff, pigeonNextLeg, pigeonFindPerchSpot, pigeonCloudTopAt, pigeonTreeTopAt, pigeonRoofTopAt, pigeonPerchBand, pigeonPerchSupports, killPigeon, pigeonSpotOutOfView, pigeonProbeFree, pigeonRandomTarget, pigeonSeparate,     houseInteriorFor, houseMouths, pigeonCoopTarget,     pigeonSegmentFree, pigeonClearance, pigeonBestSteer, pigeonMillHop, pigeonConfinedSteer, pigeonMoveSlide, bandReturnTarget, pigeonNoticeBreak, setMobTransparent, pigeonIsConfined, pigeonHoleCell, chainSegmentFree, chainThreadRide, pigeonTunnelPlan, updateTunnelPigeon, pigeonTunnelSeparate, pigeonSkyClear, pigeonSidestep, pigeonUTurn, pigeonNarrow, pigeonColHW, pigeonColH, get PIGEON_NARROW_SCALE(){ return PIGEON_NARROW_SCALE; }, get PIGEON_SKY_CLEAR(){ return PIGEON_SKY_CLEAR; }, get PIGEON_TUNNEL_SCALE(){ return PIGEON_TUNNEL_SCALE; }, get PIGEON_COL_HW(){ return PIGEON_COL_HW; }, get PIGEON_COL_H(){ return PIGEON_COL_H; },     get tntLit(){ return tntLit; }, get tntEta(){ return tntEta; }, igniteTNT, aimedPigeon, fireTNTAtPigeon, explodePigeon, spawnPigeonBurst, get bursts(){ return bursts; }, get flashes(){ return flashes; }, updateTNTTarget, tickTNT, fireGrapple, updateGrapple, updatePlayer, get grappleActive(){ return grappleActive; }, get grapplePulling(){ return grapplePulling; }, get grappleHooked(){ return grappleHooked; },
     get overPortalWin(){ return overPortalWin; }, get overPortalDir(){ return overPortalDir; }, get overPortalSpawn(){ return overPortalSpawn; }, get overPortalFace(){ return overPortalFace; },
     portalWinValid, portalFrameBBox, findReturnSpot, frameTopSpot, facePortalFrom, recordOverPortal, nearestReturnWin, resolveOverworldReturn, nearPortalSpawn, resolveSpawn, collectEndWins, collectNetherWins, collectReturnWins, insideEndInterior, insideNetherInterior, winCenter, windowDist, isSolid,
     get PORTAL(){ return PORTAL; }, get OBSIDIAN(){ return OBSIDIAN; }, get WORLD_RADIUS(){ return WORLD_RADIUS; }, get PLAYER_HW(){ return PLAYER_HW; }, get PLAYER_H(){ return PLAYER_H; }, get MOON(){ return MOON; }, get CLOUD(){ return CLOUD; }, get GRASS(){ return GRASS; }, get STONE(){ return STONE; }, get ENDSTONE(){ return ENDSTONE; }, get NETHERRACK(){ return NETHERRACK; }, get dim(){ return dim; },
-    serialize, deserialize, snapshotOverworldMobs, restoreOverworldMobs, get overworldMobCache(){ return overworldMobCache; }, get pendingOverworldMobs(){ return pendingOverworldMobs; }, get pendingChainLinks(){ return pendingChainLinks; },
+    serialize, deserialize, restoreSave, snapshotOverworldMobs, restoreOverworldMobs, get overworldMobCache(){ return overworldMobCache; }, get pendingOverworldMobs(){ return pendingOverworldMobs; }, get pendingChainLinks(){ return pendingChainLinks; }, get pendingCarriedIdx(){ return pendingCarriedIdx; },
     goToDimension, removeVillagers,
     get DEV_START_DIM(){ return DEV_START_DIM; },
     get dragon(){ return dragon; }, spawnDragon, removeDragon, updateDragon, paintDragon, damageDragon, dragonShotsCap, aimedDragon, get DRAGON_FULL_DMG(){ return DRAGON_FULL_DMG; }, get DRAGON_SPEED(){ return DRAGON_SPEED; }, get DRAGON_FOLLOW_DIST(){ return DRAGON_FOLLOW_DIST; },
