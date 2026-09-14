@@ -3165,6 +3165,24 @@ function unchainMob(m, fizzleKey) {
   }
   tntSyncClear(m);
 }
+function severGroundedChainVictim(m, fizzleKey) {
+  if (!mobs.includes(m)) return;
+  if (m === carryMob || m === carryGrappleMob) return;
+  if (m.kind === "dragon") return;
+  severChainMob(m);
+  resumeChainedMob(m);
+  m.villageBound = false;
+  m.penBound = false;
+  if (pigeonLock === m) pigeonLock = null;
+  if (grappleMob === m) detachDisplacementGrapple();
+  for (const [k, t] of [...tntLit]) {
+    if (k === fizzleKey || t.pigeon !== m || !t.mesh) continue;
+    clearTNTVisual(t);
+    tntLit.delete(k);
+    explodePigeon(t.px, t.py, t.pz, false);
+  }
+  tntSyncClear(m);
+}
 function respawnChainMob(snap) {
   const hw = snap.hw || 0.27, h = snap.h || 1.82;
   let px = snap.ox, py = snap.oy, pz = snap.oz;
@@ -4127,6 +4145,12 @@ function isChained(m) {
 }
 function isChainCarrier(m) {
   return !!m && chainChild.has(m.id);
+}
+function isGroundedChainVictim(m) {
+  if (!m || (!isChained(m) && !isChainCarrier(m))) return false;
+  if (!isFlyingKind(m.kind)) return true;
+  if (m.kind !== "pigeon") return false;
+  return m.onGround === true || m.mode === "perch" || m.mode === "toPerch" || m.mode === "sit" || m.mode === "cooped";
 }
 function chainRootOf(m) {
   if (!m) return null;
@@ -11107,6 +11131,7 @@ let leftMoved = false;
 let leftTimer = 0;
 let leftStairs = false;
 let leftEverMoved = false;
+let leftNoPlace = false;
 let rightMoved = false;
 // Accumulated pointer-lock pixels since right press: the hold only skips the
 // 1s gate once this passes RIGHT_MOVE_PX, so tiny jitter never starts a dig.
@@ -11454,6 +11479,17 @@ function livePigeonLock() {
   pigeonLock = null;
   return null;
 }
+function tntChainAimMob() {
+  if (dim !== "over" && dim !== "end") return null;
+  const dir = new THREE.Vector3();
+  camera.getWorldDirection(dir);
+  const mob = pickMob(dir, PIGEON_AIM_DIST);
+  if (!mob || !mobs.includes(mob) || mob.kind === "dragon") return null;
+  if (isGroundedChainVictim(mob)) return mob;
+  if (livePigeonLock() === mob) return mob;
+  if (!isFlyingKind(mob.kind) && tntTargeted(mob)) return mob;
+  return null;
+}
 function tntTargeted(mob) {
   for (const t of tntLit.values()) if (t.pigeon === mob) return true;
   return false;
@@ -11616,16 +11652,21 @@ function tickTNT(dt) {
         tntSyncClear(t.pigeon);
         const v = t.pigeon;
         const victimChained = v && v.kind !== "dragon" && (!isFlyingKind(v.kind) || isChained(v) || isChainCarrier(v));
-        if (victimChained && mobs.includes(v)) {
-          if (isFlyingKind(v.kind)) killChainMob(v);
-          else unchainMob(v, k);
+        if (victimChained && mobs.includes(v) && isGroundedChainVictim(v)) {
+          severGroundedChainVictim(v, k);
+          explodePigeon(t.px, t.py, t.pz, true);
+        } else {
+          if (victimChained && mobs.includes(v)) {
+            if (isFlyingKind(v.kind)) killChainMob(v);
+            else unchainMob(v, k);
+          }
+          else {
+            const isPigeonBomb = t.pigeon && isFlyingKind(t.pigeon.kind) && t.pigeon.kind !== "dragon";
+            if (isPigeonBomb && mobs.includes(t.pigeon)) killPigeon(t.pigeon);
+          }
+          if (t.pigeon && t.pigeon.kind !== "dragon") explodePigeon(t.px, t.py, t.pz, true);
+          else enqueueExplosion(t.px, t.py, t.pz, true, true);
         }
-        else {
-          const isPigeonBomb = t.pigeon && isFlyingKind(t.pigeon.kind) && t.pigeon.kind !== "dragon";
-          if (isPigeonBomb && mobs.includes(t.pigeon)) killPigeon(t.pigeon);
-        }
-        if (t.pigeon && t.pigeon.kind !== "dragon") explodePigeon(t.px, t.py, t.pz, true);
-        else enqueueExplosion(t.px, t.py, t.pz, true, true);
       } else if (t.pigeon) {
         const v = t.pigeon;
         const victimChained = v.kind !== "dragon" && (!isFlyingKind(v.kind) || isChained(v) || isChainCarrier(v));
@@ -11633,12 +11674,17 @@ function tickTNT(dt) {
           clearTNTVisual(t);
           tntLit.delete(k);
           tntSyncClear(v);
-          if (victimChained && mobs.includes(v)) {
-            if (isFlyingKind(v.kind)) killChainMob(v);
-            else unchainMob(v, k);
+          if (victimChained && mobs.includes(v) && isGroundedChainVictim(v)) {
+            severGroundedChainVictim(v, k);
+            explodePigeon(t.px, t.py, t.pz, false);
+          } else {
+            if (victimChained && mobs.includes(v)) {
+              if (isFlyingKind(v.kind)) killChainMob(v);
+              else unchainMob(v, k);
+            }
+            if (v.kind === "dragon") enqueueExplosion(t.px, t.py, t.pz, false, true);
+            else explodePigeon(t.px, t.py, t.pz, false);
           }
-          if (v.kind === "dragon") enqueueExplosion(t.px, t.py, t.pz, false, true);
-          else explodePigeon(t.px, t.py, t.pz, false);
         }
       } else if (!dragon.mesh) {
         clearTNTVisual(t);
@@ -15124,10 +15170,12 @@ document.addEventListener("mousedown", (e) => {
     h.t = 0;
     h.acc = 0;
     if (e.button === 0) {
-      leftMoved = false; leftTimer = 0; leftStairs = false; leftEverMoved = false; clickAnchors = [];
+      leftMoved = false; leftTimer = 0; leftStairs = false; leftEverMoved = false; leftNoPlace = false; clickAnchors = [];
       const sel = hotbarList()[selected];
       if (sel === TNT) {
-        if (!tryFireLockedTNT() && placeBlock(sel)) clickAnchors.push([currentBlock.x + currentBlock.face[0], currentBlock.y + currentBlock.face[1], currentBlock.z + currentBlock.face[2]]);
+        const fired = tryFireLockedTNT();
+        leftNoPlace = fired || !!tntChainAimMob();
+        if (!fired && !leftNoPlace && placeBlock(sel)) clickAnchors.push([currentBlock.x + currentBlock.face[0], currentBlock.y + currentBlock.face[1], currentBlock.z + currentBlock.face[2]]);
       } else if (placeBlock(sel)) clickAnchors.push([currentBlock.x + currentBlock.face[0], currentBlock.y + currentBlock.face[1], currentBlock.z + currentBlock.face[2]]);
     } else {
       rightMoved = false; rightMoveAcc = 0; clickAnchors = [];
@@ -15143,7 +15191,7 @@ document.addEventListener("mouseup", (e) => {
     h.down = false;
     h.t = 0;
     h.acc = 0;
-    if (e.button === 0) { chainHome = null; chainPlat = null; chainSpin = 0; leftStairs = false; leftTimer = 0; clickAnchors = []; }
+    if (e.button === 0) { chainHome = null; chainPlat = null; chainSpin = 0; leftStairs = false; leftTimer = 0; leftNoPlace = false; clickAnchors = []; }
     else { rightMoved = false; rightMoveAcc = 0; clickAnchors = []; }
   }
   if (e.button !== 1 || loading) return;
@@ -15372,7 +15420,7 @@ function loop(now) {
             leftTimer = 0;
           }
         }
-        if (leftStairs) {
+        if (leftStairs && !leftNoPlace) {
           let didChain = false;
           const h = editHold[0];
           h.t += dt;
@@ -15387,7 +15435,7 @@ function loop(now) {
             }
           }
           if (didChain) endPlaceBatch();
-        } else if (leftMoved && currentBlock && currentBlock.id !== hotbarList()[selected]) {
+        } else if (!leftNoPlace && leftMoved && currentBlock && currentBlock.id !== hotbarList()[selected]) {
           // Paint phase: place where aimed, only onto a block of a different
           // kind, within CHAIN_RANGE of the last block placed on this click.
           const wx = currentBlock.x + currentBlock.face[0];
@@ -15667,9 +15715,9 @@ if (location.search.includes('test')) {
     get villageCenter(){ return villageCenter; }, get villageHouses(){ return villageHouses; }, get villagePen(){ return villagePen; }, get villagePool(){ return villagePool; }, get isInsidePen(){ return isInsidePen; }, get isInsidePool(){ return isInsidePool; }, get isInsidePenPool(){ return isInsidePenPool; }, get poolExitTarget(){ return poolExitTarget; }, get penPoolExitTarget(){ return penPoolExitTarget; }, get LOG(){ return LOG; }, findPenGaps, nearestPenGap, penGapInside, penGapOutside, hasMobGround, mobBlockedAt, aabbCollidesWorld, mobProbeFree, randomPenPoint, randomAroundPenPoint, groundYForMob, get CLOUD_BASE(){ return CLOUD_BASE; }, get CLOUD_TOP(){ return CLOUD_TOP; }, get MAX_Y(){ return MAX_Y; },
     getTypeMats, get typeMats(){ return typeMats; }, buildWorld, generateWorld, computeVillageLayout, spawnVillagers, refreshBlocks, get boxGeo(){ return boxGeo; }, THREE,
     get pos(){ return pos; }, get vel(){ return vel; }, get camera(){ return camera; }, get yaw(){ return yaw; }, set yaw(v){ yaw=v; }, get pitch(){ return pitch; }, set pitch(v){ pitch=v; },
-    get carryMob(){ return carryMob; }, handleCarryEnterDown, handleCarryEnterUp, pickMob, get carryGrappleActive(){ return carryGrappleActive; }, get carryGrapplePulling(){ return carryGrapplePulling; }, get carryGrappleMob(){ return carryGrappleMob; }, get carryGrappleBlock(){ return carryGrappleBlock; }, get carryGrappleHookPos(){ return carryGrappleHookPos; }, get carryGrappleOffset(){ return carryGrappleOffset; }, get carryGrappleMode(){ return carryGrappleMode; }, get isMobFrozenByGrapple(){ return isMobFrozenByGrapple; }, isChained, isChainCarrier, chainRootOf, chainTailOf, linkChain, dropChainFrom, chainTakeForCarry, severChainMob, groundChainFrom, insertChainBefore, insertChainBehind, insertBehindRide, prependChainLead, clearChains, pruneChains, updateChains, syncChainLinkColor, syncChainLinkColors, stampSpawn, get mobById(){ return mobById; }, chainAttachTarget, startCarryAttachGrapple, killChainMob, respawnChainMob, unchainMob, get chainLinks(){ return chainLinks; }, get chainParent(){ return chainParent; }, get chainChild(){ return chainChild; }, playerChainAvatar, playerInChain, PLAYER_CHAIN_ID, spliceChainLink, chainHasJumping, chainPushCrumb, chainTrailTarget, latchPlayerTo, latchPlayerInMiddle, playerInsertCutAndLink, insertChainAheadOfPlayer, insertChainBehindPlayer, playerLeadLink, dropPlayerLeadEntry, readyLeadForLatch, leadAwareLatchInsert, appendCutFollowerBehindLeadTail, grabRideForCarry, fireGrapple, detachDisplacementGrapple, get grappleActive(){ return grappleActive; }, get grappleHooked(){ return grappleHooked; }, get grappleRetracting(){ return grappleRetracting; }, get grappleMob(){ return grappleMob; }, get grappleMobOffset(){ return grappleMobOffset; }, get grappleHookPos(){ return grappleHookPos; }, get grappleTarget(){ return grappleTarget; }, updateCarryGrapple, updateCarry, get currentBlock(){ return currentBlock; }, updateTarget, hotbarList, placeBlock, breakBlock, get selected(){ return selected; }, set selected(v){ selected=v; }, toggleCarry: handleCarryEnterDown, findNearestMobForGrab: (...a)=>{ const d=new THREE.Vector3(); camera.getWorldDirection(d); return pickMob(d); }, get playerArms(){ return playerArms; }, get started(){ return started; }, set started(v){ started=v; }, get loading(){ return loading; }, get freeCam(){ return freeCam; }, set freeCam(v){ freeCam=v; }, get helpOpen(){ return helpOpen; },
+    get carryMob(){ return carryMob; }, handleCarryEnterDown, handleCarryEnterUp, pickMob, get carryGrappleActive(){ return carryGrappleActive; }, get carryGrapplePulling(){ return carryGrapplePulling; }, get carryGrappleMob(){ return carryGrappleMob; }, get carryGrappleBlock(){ return carryGrappleBlock; }, get carryGrappleHookPos(){ return carryGrappleHookPos; }, get carryGrappleOffset(){ return carryGrappleOffset; }, get carryGrappleMode(){ return carryGrappleMode; }, get isMobFrozenByGrapple(){ return isMobFrozenByGrapple; }, isChained, isChainCarrier, chainRootOf, chainTailOf, linkChain, dropChainFrom, chainTakeForCarry, severChainMob, groundChainFrom, insertChainBefore, insertChainBehind, insertBehindRide, prependChainLead, clearChains, pruneChains, updateChains, syncChainLinkColor, syncChainLinkColors, stampSpawn, get mobById(){ return mobById; }, chainAttachTarget, startCarryAttachGrapple, killChainMob, respawnChainMob, unchainMob, severGroundedChainVictim, isGroundedChainVictim, get chainLinks(){ return chainLinks; }, get chainParent(){ return chainParent; }, get chainChild(){ return chainChild; }, playerChainAvatar, playerInChain, PLAYER_CHAIN_ID, spliceChainLink, chainHasJumping, chainPushCrumb, chainTrailTarget, latchPlayerTo, latchPlayerInMiddle, playerInsertCutAndLink, insertChainAheadOfPlayer, insertChainBehindPlayer, playerLeadLink, dropPlayerLeadEntry, readyLeadForLatch, leadAwareLatchInsert, appendCutFollowerBehindLeadTail, grabRideForCarry, fireGrapple, detachDisplacementGrapple, get grappleActive(){ return grappleActive; }, get grappleHooked(){ return grappleHooked; }, get grappleRetracting(){ return grappleRetracting; }, get grappleMob(){ return grappleMob; }, get grappleMobOffset(){ return grappleMobOffset; }, get grappleHookPos(){ return grappleHookPos; }, get grappleTarget(){ return grappleTarget; }, updateCarryGrapple, updateCarry, get currentBlock(){ return currentBlock; }, updateTarget, hotbarList, placeBlock, breakBlock, get selected(){ return selected; }, set selected(v){ selected=v; }, toggleCarry: handleCarryEnterDown, findNearestMobForGrab: (...a)=>{ const d=new THREE.Vector3(); camera.getWorldDirection(d); return pickMob(d); }, get playerArms(){ return playerArms; }, get started(){ return started; }, set started(v){ started=v; }, get loading(){ return loading; }, get freeCam(){ return freeCam; }, set freeCam(v){ freeCam=v; }, get helpOpen(){ return helpOpen; },
     get WOLF_COUNT(){ return WOLF_COUNT; }, makeWolfMesh, villagerHW, villagerH, wolfHasMobGround, wolfBlockedAt, wolfProbeFree, wanderGoalForWolf, wolfFindPath, wolfInWater, mobInWater, waterSurfaceForMob, mobPhysicsStep, wolfPhysicsStep, updateMobs, obstacleTurnDir, buildMobGrid,     get isPigCow(){ return isPigCow; }, get pigOverlapsFence(){ return pigOverlapsFence; }, get MOB_FLOAT_FRAC(){ return MOB_FLOAT_FRAC; }, mobFloatTargetY, mobWaterExitJump, poolExitTarget, penPoolExitTarget, isInsidePenPool,
-    get PIGEON_COUNT(){ return PIGEON_COUNT; }, get PIGEON_MIN_Y(){ return PIGEON_MIN_Y; }, get PIGEON_MAX_Y(){ return PIGEON_MAX_Y; }, get PIGEON_SPEED(){ return PIGEON_SPEED; }, get TNT_HOME_SPEED(){ return TNT_HOME_SPEED; }, get PIGEON_AIM_DIST(){ return PIGEON_AIM_DIST; }, get PIGEON_LOCK_TIME(){ return PIGEON_LOCK_TIME; }, get pigeonLock(){ return pigeonLock; }, get pigeonLockT(){ return pigeonLockT; }, set pigeonLockT(v){ pigeonLockT = v; }, get pigeonLockShots(){ return pigeonLockShots; }, livePigeonLock, tntTargeted, tryFireLockedTNT, get chainBreaking(){ return chainBreaking; }, set chainBreaking(v){ chainBreaking = v; },     makePigeonMesh, spawnPigeons, spawnSinglePigeon, removePigeons, spawnPigeonChain, updatePigeon, updatePerchedPigeon, updateToPerchPigeon, pigeonTakeoff, pigeonNextLeg, pigeonFindPerchSpot, pigeonCloudTopAt, pigeonTreeTopAt, pigeonRoofTopAt, pigeonPerchBand, pigeonPerchSupports, killPigeon, pigeonSpotOutOfView, pigeonProbeFree, pigeonRandomTarget, pigeonSeparate,     houseInteriorFor, houseMouths, pigeonCoopTarget,     pigeonSegmentFree, pigeonClearance, pigeonBestSteer, pigeonMillHop, pigeonConfinedSteer, pigeonMoveSlide, bandReturnTarget, pigeonNoticeBreak, setMobTransparent, pigeonIsConfined, pigeonHoleCell, chainSegmentFree, chainThreadRide, pigeonTunnelPlan, updateTunnelPigeon, pigeonTunnelSeparate, pigeonSkyClear, pigeonSidestep, pigeonUTurn, pigeonNarrow, pigeonColHW, pigeonColH, get PIGEON_NARROW_SCALE(){ return PIGEON_NARROW_SCALE; }, get PIGEON_SKY_CLEAR(){ return PIGEON_SKY_CLEAR; }, get PIGEON_TUNNEL_SCALE(){ return PIGEON_TUNNEL_SCALE; }, get PIGEON_COL_HW(){ return PIGEON_COL_HW; }, get PIGEON_COL_H(){ return PIGEON_COL_H; },     get tntLit(){ return tntLit; }, get tntEta(){ return tntEta; }, igniteTNT, aimedPigeon, fireTNTAtPigeon, explodePigeon, spawnPigeonBurst, get bursts(){ return bursts; }, get flashes(){ return flashes; }, updateTNTTarget, tickTNT, fireGrapple, updateGrapple, updatePlayer, get grappleActive(){ return grappleActive; }, get grapplePulling(){ return grapplePulling; }, get grappleHooked(){ return grappleHooked; },
+    get PIGEON_COUNT(){ return PIGEON_COUNT; }, get PIGEON_MIN_Y(){ return PIGEON_MIN_Y; }, get PIGEON_MAX_Y(){ return PIGEON_MAX_Y; }, get PIGEON_SPEED(){ return PIGEON_SPEED; }, get TNT_HOME_SPEED(){ return TNT_HOME_SPEED; }, get PIGEON_AIM_DIST(){ return PIGEON_AIM_DIST; }, get PIGEON_LOCK_TIME(){ return PIGEON_LOCK_TIME; }, get pigeonLock(){ return pigeonLock; }, get pigeonLockT(){ return pigeonLockT; }, set pigeonLockT(v){ pigeonLockT = v; }, get pigeonLockShots(){ return pigeonLockShots; }, livePigeonLock, tntTargeted, tryFireLockedTNT, tntChainAimMob, get chainBreaking(){ return chainBreaking; }, set chainBreaking(v){ chainBreaking = v; },     makePigeonMesh, spawnPigeons, spawnSinglePigeon, removePigeons, spawnPigeonChain, updatePigeon, updatePerchedPigeon, updateToPerchPigeon, pigeonTakeoff, pigeonNextLeg, pigeonFindPerchSpot, pigeonCloudTopAt, pigeonTreeTopAt, pigeonRoofTopAt, pigeonPerchBand, pigeonPerchSupports, killPigeon, pigeonSpotOutOfView, pigeonProbeFree, pigeonRandomTarget, pigeonSeparate,     houseInteriorFor, houseMouths, pigeonCoopTarget,     pigeonSegmentFree, pigeonClearance, pigeonBestSteer, pigeonMillHop, pigeonConfinedSteer, pigeonMoveSlide, bandReturnTarget, pigeonNoticeBreak, setMobTransparent, pigeonIsConfined, pigeonHoleCell, chainSegmentFree, chainThreadRide, pigeonTunnelPlan, updateTunnelPigeon, pigeonTunnelSeparate, pigeonSkyClear, pigeonSidestep, pigeonUTurn, pigeonNarrow, pigeonColHW, pigeonColH, get PIGEON_NARROW_SCALE(){ return PIGEON_NARROW_SCALE; }, get PIGEON_SKY_CLEAR(){ return PIGEON_SKY_CLEAR; }, get PIGEON_TUNNEL_SCALE(){ return PIGEON_TUNNEL_SCALE; }, get PIGEON_COL_HW(){ return PIGEON_COL_HW; }, get PIGEON_COL_H(){ return PIGEON_COL_H; },     get tntLit(){ return tntLit; }, get tntEta(){ return tntEta; }, igniteTNT, aimedPigeon, fireTNTAtPigeon, explodePigeon, spawnPigeonBurst, get bursts(){ return bursts; }, get flashes(){ return flashes; }, updateTNTTarget, tickTNT, fireGrapple, updateGrapple, updatePlayer, get grappleActive(){ return grappleActive; }, get grapplePulling(){ return grapplePulling; }, get grappleHooked(){ return grappleHooked; },
     get overPortalWin(){ return overPortalWin; }, get overPortalDir(){ return overPortalDir; }, get overPortalSpawn(){ return overPortalSpawn; }, get overPortalFace(){ return overPortalFace; },
     portalWinValid, portalFrameBBox, findReturnSpot, frameTopSpot, facePortalFrom, recordOverPortal, nearestReturnWin, resolveOverworldReturn, nearPortalSpawn, resolveSpawn, collectEndWins, collectNetherWins, collectReturnWins, insideEndInterior, insideNetherInterior, winCenter, windowDist, isSolid,
     get PORTAL(){ return PORTAL; }, get OBSIDIAN(){ return OBSIDIAN; }, get WORLD_RADIUS(){ return WORLD_RADIUS; }, get PLAYER_HW(){ return PLAYER_HW; }, get PLAYER_H(){ return PLAYER_H; }, get MOON(){ return MOON; }, get CLOUD(){ return CLOUD; }, get GRASS(){ return GRASS; }, get STONE(){ return STONE; }, get ENDSTONE(){ return ENDSTONE; }, get NETHERRACK(){ return NETHERRACK; }, get dim(){ return dim; },
