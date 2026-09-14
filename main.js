@@ -3887,7 +3887,7 @@ function syncChainLinkColors() {
   for (const childId of chainLinks.keys()) syncChainLinkColor(childId);
 }
 const chainLinkMatrix = new THREE.Matrix4();
-const CHAIN_LINK_LEN = Math.hypot(2.5, 0.4);
+const CHAIN_LINK_LEN = 2.5;
 const CHAIN_TAUT_TIME = 0.5;
 const CHAIN_SPLIT_DY = 3, CHAIN_SPLIT_STRAIN_T = 1;
 const CHAIN_FLY_SPLIT_DY = 8;
@@ -3930,6 +3930,9 @@ function chainFollowDist(carrier) {
     return grappleMob && grappleMob.kind === "dragon" ? DRAGON_FOLLOW_DIST : PIGEON_FOLLOW_DIST;
   }
   return carrier.kind === "dragon" ? DRAGON_FOLLOW_DIST : PIGEON_FOLLOW_DIST;
+}
+function chainMidY(m) {
+  return m.pos.y + m.h * 0.5;
 }
 function isMobHeld(m) {
   return !!m && (m === carryMob || m === carryGrappleMob);
@@ -4026,7 +4029,7 @@ function chainHeadingAxisOf(m) {
   return m._flyAxis || null;
 }
 function chainFlyVel(child, sx, sy, sz, ax, ay, az, leadSpd, ref, tautFrac, latMax, dt) {
-  const hx = child.pos.x, hy = child.pos.y + child.h, hz = child.pos.z;
+  const hx = child.pos.x, hy = child.pos.y + child.h * 0.5, hz = child.pos.z;
   const gcx = sx - hx, gcy = sy - hy, gcz = sz - hz;
   const gcd = Math.hypot(gcx, gcy, gcz) || 1;
   const ePar = gcx * ax + gcy * ay + gcz * az;
@@ -4668,7 +4671,7 @@ function updateChains(dt) {
     const towRootFlying = !!towRoot && towRoot !== playerChainAvatar && isFlyingKind(towRoot.kind);
     const towAvatarFlying = carrier === playerChainAvatar && !!grappleMob && isFlyingKind(grappleMob.kind);
     const legacyTow = towRootFlying || towAvatarFlying;
-    const linkLen = Math.hypot(followDist, 0.4);
+    const linkLen = followDist;
     const cvl = carrier.vel ? carrier.vel.length() : 0;
     if (cvl > 1e-3) {
       chainLinkTmp.set(carrier.vel.x / cvl, carrier.vel.y / cvl, carrier.vel.z / cvl);
@@ -4686,12 +4689,12 @@ function updateChains(dt) {
       link.towInit = true;
     }
     const desX = carrier.pos.x - link.towDir.x * followDist;
-    const desY = carrier.pos.y + carrier.h * 0.5 - link.towDir.y * followDist - 0.4;
+    const desY = chainMidY(carrier) - link.towDir.y * followDist - child.h * 0.5;
     const desZ = carrier.pos.z - link.towDir.z * followDist;
     const crumb = chainTrailTarget(carrier, followDist);
     const directSlot = !legacyTow && isFlyingKind(child.kind);
     const wantX = crumb && !directSlot ? crumb.x : desX;
-    const wantY = crumb && !directSlot ? crumb.y + carrier.h * 0.5 - 0.4 : desY;
+    const wantY = crumb && !directSlot ? crumb.y + carrier.h * 0.5 - child.h * 0.5 : desY;
     const wantZ = crumb && !directSlot ? crumb.z : desZ;
     if (link.towPos.lengthSq() < 1e-6) link.towPos.set(wantX, wantY, wantZ);
     else link.towPos.lerp(chainLinkTmp.set(wantX, wantY, wantZ), Math.min(1, dt * 6));
@@ -4750,7 +4753,7 @@ function updateChains(dt) {
     }
     const ax = lead._chAx.x, ay = lead._chAx.y, az = lead._chAx.z;
     const tx = carrier.pos.x - ax * followDist;
-    const ty = carrier.pos.y - ay * followDist;
+    const ty = chainMidY(carrier) - ay * followDist - child.h * 0.5;
     const tz = carrier.pos.z - az * followDist;
     const svx = csx - lead._chAxV.x * followDist;
     const svy = csy - lead._chAxV.y * followDist;
@@ -4790,10 +4793,10 @@ function updateChains(dt) {
     child.pos.x = Math.max(-WORLD_RADIUS + 1, Math.min(WORLD_RADIUS - 1, child.pos.x));
     child.pos.z = Math.max(-WORLD_RADIUS + 1, Math.min(WORLD_RADIUS - 1, child.pos.z));
     child.pos.y = Math.max(1, Math.min(MAX_Y - 1, child.pos.y));
-    const linkAx = carrier.pos.x, linkAy = carrier.pos.y + carrier.h * 0.5, linkAz = carrier.pos.z;
-    const linkDx = child.pos.x - linkAx, linkDy = child.pos.y + child.h - linkAy, linkDz = child.pos.z - linkAz;
+    const linkAx = carrier.pos.x, linkAy = chainMidY(carrier), linkAz = carrier.pos.z;
+    const linkDx = child.pos.x - linkAx, linkDy = chainMidY(child) - linkAy, linkDz = child.pos.z - linkAz;
     const linkD = Math.hypot(linkDx, linkDy, linkDz);
-    const dyF = child.pos.y + child.h - (carrier.pos.y + carrier.h * 0.5);
+    const dyF = chainMidY(child) - chainMidY(carrier);
     link.flySplitT = Math.abs(dyF) > CHAIN_FLY_SPLIT_DY ? (link.flySplitT || 0) + dt : 0;
     if (!threading && link.flySplitT > CHAIN_SPLIT_STRAIN_T) {
       freeChainRoot(child);
@@ -4843,7 +4846,7 @@ function updateChains(dt) {
 }
 function chainLinkDelta(carrier, child) {
   const dx = child.pos.x - carrier.pos.x;
-  const dy = child.pos.y + child.h - (carrier.pos.y + carrier.h * 0.5);
+  const dy = chainMidY(child) - chainMidY(carrier);
   const dz = child.pos.z - carrier.pos.z;
   return { dx, dy, dz, d: Math.hypot(dx, dy, dz) };
 }
@@ -4871,7 +4874,7 @@ function updateChainGroundLink(link, carrier, child, followDist, dt) {
     else if (isJumpingKind(child.kind) && child.canStep && child._chainStep === undefined) { child.canStep = false; child._chainStep = "suppress"; }
   }
   const isAvatar = carrier === playerChainAvatar;
-  const baseLen = Math.hypot(followDist, 0.4);
+  const baseLen = followDist;
   const lo = baseLen * 0.5, hi = baseLen * 1.5, leash = baseLen * 2;
   let sep = chainLinkDelta(carrier, child);
   const hdOf = () => Math.hypot(sep.dx, sep.dz);
@@ -4948,7 +4951,7 @@ function updateChainGroundLink(link, carrier, child, followDist, dt) {
         if (link.taut > 0) link.taut = Math.max(0, link.taut - dt);
         const taut = link.taut > 0;
         const stiff = floats ? 6 : (taut ? 36 : 18), damp = floats ? 7 : (taut ? 14 : 11);
-        const ex = link.towPos.x - child.pos.x, ey = link.towPos.y - (child.pos.y + child.h), ez = link.towPos.z - child.pos.z;
+        const ex = link.towPos.x - child.pos.x, ey = link.towPos.y - child.pos.y, ez = link.towPos.z - child.pos.z;
         const exl = Math.hypot(ex, ey, ez) || 1, ecl = Math.min(exl, 3);
         const cvx = carrier.vel ? carrier.vel.x : 0, cvy = carrier.vel ? carrier.vel.y : 0, cvz = carrier.vel ? carrier.vel.z : 0;
         child.vel.x += ((ex / exl * ecl) * stiff - (child.vel.x - cvx) * damp) * dt;
@@ -4972,7 +4975,7 @@ function updateChainGroundLink(link, carrier, child, followDist, dt) {
         const hoverTgt = carrier.pos.y + 0.9;
         if (link.hoverY === undefined) link.hoverY = hoverTgt;
         else link.hoverY += (hoverTgt - link.hoverY) * Math.min(1, dt * 5);
-        const feetY = Math.max(link.towPos.y - child.h, link.hoverY);
+        const feetY = Math.max(link.towPos.y, link.hoverY);
         const inWaterF = mobInWater(child);
         if (inWaterF && !child._wasInWater && child.vel.y < 0) child.vel.y *= 0.3;
         child._wasInWater = inWaterF;
@@ -5030,13 +5033,13 @@ function updateChainGroundLink(link, carrier, child, followDist, dt) {
   child.pos.y = Math.max(1, Math.min(MAX_Y - 1, child.pos.y));
   sep = chainLinkDelta(carrier, child);
   link.strained = hdOf() > hi + 0.15;
-  const cmx = carrier.pos.x, cmy = carrier.pos.y + carrier.h * 0.5, cmz = carrier.pos.z;
+  const cmx = carrier.pos.x, cmy = chainMidY(carrier), cmz = carrier.pos.z;
   const hdBand = () => Math.hypot(child.pos.x - cmx, child.pos.z - cmz);
   const airFollow = (link.carrierAirT || 0) > 0.2;
   if (!floats && (airFollow ? sep.d > hi : hdOf() > hi) && (airFollow || hdBand() > hi)) {
     if (airFollow) {
       const nx = sep.dx / sep.d, ny = sep.dy / sep.d, nz = sep.dz / sep.d;
-      chainSlideToward(child, cmx + nx * hi, cmy + ny * hi - child.h, cmz + nz * hi, 1);
+      chainSlideToward(child, cmx + nx * hi, cmy + ny * hi - child.h * 0.5, cmz + nz * hi, 1);
     } else {
       const hd = hdBand(), s = hi / hd;
       chainSlideToward(child, cmx + (child.pos.x - cmx) * s, child.pos.y, cmz + (child.pos.z - cmz) * s, 1);
@@ -5045,13 +5048,13 @@ function updateChainGroundLink(link, carrier, child, followDist, dt) {
   }
   if (!floats && hdOf() < lo && hdOf() > 1e-6) {
     const nx = sep.dx / sep.d, ny = sep.dy / sep.d, nz = sep.dz / sep.d;
-    chainSlideToward(child, cmx + nx * lo, cmy + ny * lo - child.h, cmz + nz * lo, 1.5);
+    chainSlideToward(child, cmx + nx * lo, cmy + ny * lo - child.h * 0.5, cmz + nz * lo, 1.5);
     sep = chainLinkDelta(carrier, child);
   }
   if ((airFollow ? sep.d > leash : hdOf() > leash) && (airFollow || hdBand() > leash)) {
     if (airFollow) {
       const nx = sep.dx / sep.d, ny = sep.dy / sep.d, nz = sep.dz / sep.d;
-      chainSlideToward(child, cmx + nx * leash, cmy + ny * leash - child.h, cmz + nz * leash, 1.5);
+      chainSlideToward(child, cmx + nx * leash, cmy + ny * leash - child.h * 0.5, cmz + nz * leash, 1.5);
     } else {
       const hd = hdBand(), s = leash / hd;
       chainSlideToward(child, cmx + (child.pos.x - cmx) * s, child.pos.y, cmz + (child.pos.z - cmz) * s, 1.5);
@@ -5085,8 +5088,8 @@ function updateChainGroundLink(link, carrier, child, followDist, dt) {
 const chainLinkTmp = new THREE.Vector3();
 
 function renderChainLink(link, carrier, child) {
-    const ax = carrier.pos.x, ay = carrier.pos.y + carrier.h * 0.5, az = carrier.pos.z;
-    const bx = child.pos.x, by = child.pos.y + child.h, bz = child.pos.z;
+    const ax = carrier.pos.x, ay = chainMidY(carrier), az = carrier.pos.z;
+    const bx = child.pos.x, by = chainMidY(child), bz = child.pos.z;
     const dx = bx - ax, dy = by - ay, dz = bz - az;
     const dist = Math.hypot(dx, dy, dz) || 0.001;
     const n = Math.max(4, Math.min(CHAIN_LINK_CUBES, Math.round(dist / 0.15)));
@@ -5096,7 +5099,7 @@ function renderChainLink(link, carrier, child) {
     const vl = Math.hypot(vx, vy, vz) || 1;
     vx /= vl; vy /= vl; vz /= vl;
     const wx = uy * vz - uz * vy, wy = uz * vx - ux * vz, wz = ux * vy - uy * vx;
-    const baseLen = Math.hypot(chainFollowDist(carrier), 0.4);
+    const baseLen = chainFollowDist(carrier);
     const sag = Math.min(1, Math.max(0, 1 - dist / baseLen) * baseLen * 0.35);
     for (let i = 0; i < n; i++) {
       const f = (i + 0.5) / n;
@@ -10274,7 +10277,7 @@ function updateGrapple(dt) {
         if (!grappleTowInit) { grappleTowDir.copy(grappleTowTmp); grappleTowInit = true; }
         else { grappleTowDir.lerp(grappleTowTmp, Math.min(1, dt * 2.2)); if (grappleTowDir.lengthSq() < 1e-6) grappleTowDir.set(0, 0, 1); grappleTowDir.normalize(); }
       } else if (!grappleTowInit) { grappleTowDir.set(0, 0, 1); grappleTowInit = true; }
-      const desX = pm.pos.x - grappleTowDir.x * followDist, desY = pm.pos.y - grappleTowDir.y * followDist - 0.4, desZ = pm.pos.z - grappleTowDir.z * followDist;
+      const desX = pm.pos.x - grappleTowDir.x * followDist, desY = pm.pos.y + pm.h * 0.5 - grappleTowDir.y * followDist - PLAYER_H * 0.5, desZ = pm.pos.z - grappleTowDir.z * followDist;
       if (grappleTowPos.lengthSq() < 1e-6) grappleTowPos.set(desX, desY, desZ);
       else grappleTowPos.lerp(grappleTowTmp.set(desX, desY, desZ), Math.min(1, dt * 6));
     const stiff = 18, damp = 11;
@@ -10316,11 +10319,11 @@ function updateGrapple(dt) {
       }
       if (grappleChainTail) {
         const tAx = pm.pos.x, tAy = pm.pos.y + pm.h * 0.5, tAz = pm.pos.z;
-        const eDx = pos.x - tAx, eDy = pos.y + 0.3 - tAy, eDz = pos.z - tAz;
+        const eDx = pos.x - tAx, eDy = pos.y + PLAYER_H * 0.5 - tAy, eDz = pos.z - tAz;
         const eD = Math.hypot(eDx, eDy, eDz);
         if (eD > 1e-6) {
           const qx = tAx + (eDx / eD) * CHAIN_LINK_LEN;
-          const qy = tAy + (eDy / eD) * CHAIN_LINK_LEN - 0.3;
+          const qy = tAy + (eDy / eD) * CHAIN_LINK_LEN - PLAYER_H * 0.5;
           const qz = tAz + (eDz / eD) * CHAIN_LINK_LEN;
           const ox = pos.x, oy = pos.y, oz = pos.z;
           pos.set(qx, qy, qz);
