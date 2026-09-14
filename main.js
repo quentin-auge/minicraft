@@ -4834,7 +4834,8 @@ function updateChains(dt) {
         let dyaw = targetYaw - child.mesh.rotation.y;
         while (dyaw > Math.PI) dyaw -= Math.PI * 2;
         while (dyaw < -Math.PI) dyaw += Math.PI * 2;
-        child.mesh.rotation.y += dyaw * Math.min(1, dt * 10);
+        const faceDead = (child.h >= 2 && faceSpd < 2) ? 0.08 : 0;
+        if (Math.abs(dyaw) > faceDead) child.mesh.rotation.y += dyaw * Math.min(1, dt * 10);
       }
     }
     renderChainLink(link, carrier, child);
@@ -4873,7 +4874,9 @@ function updateChainGroundLink(link, carrier, child, followDist, dt) {
   const baseLen = Math.hypot(followDist, 0.4);
   const lo = baseLen * 0.5, hi = baseLen * 1.5, leash = baseLen * 2;
   let sep = chainLinkDelta(carrier, child);
-  if (sep.d >= leash && sep.d > 1e-6) {
+  const hdOf = () => Math.hypot(sep.dx, sep.dz);
+  const vSep = () => Math.abs(child.pos.y - carrier.pos.y) > CHAIN_SPLIT_DY;
+  if (hdOf() >= leash && sep.d > 1e-6) {
     const nx = sep.dx / sep.d, ny = sep.dy / sep.d, nz = sep.dz / sep.d;
     const sc = child.vel.x * nx + child.vel.y * ny + child.vel.z * nz;
     if (sc > 0) { child.vel.x -= nx * sc; child.vel.y -= ny * sc; child.vel.z -= nz * sc; }
@@ -4887,32 +4890,32 @@ function updateChainGroundLink(link, carrier, child, followDist, dt) {
   const ffL = Math.hypot(ffX, ffZ);
   if (ffL > 12) { ffX *= 12 / ffL; ffZ *= 12 / ffL; }
   link.prevTow.x = link.towPos.x; link.prevTow.y = link.towPos.y; link.prevTow.z = link.towPos.z;
-  const noProgress = (link.strainD === undefined) || (sep.d >= link.strainD - 0.05);
-  link.strainD = sep.d;
-  link.strainT = (sep.d > hi * 0.9 && noProgress) ? (link.strainT || 0) + dt : 0;
+  const noProgress = (link.strainD === undefined) || (hdOf() >= link.strainD - 0.05);
+  link.strainD = hdOf();
+  link.strainT = ((hdOf() > hi * 0.9 || vSep()) && noProgress) ? (link.strainT || 0) + dt : 0;
   link.snapT = Math.max(0, (link.snapT || 0) - dt);
   const inWater = mobInWater(child);
   link.carrierAirT = (carrier.onGround === false) ? (link.carrierAirT || 0) + dt : 0;
-  let threading = !floats && sep.d > hi && chainThreadRide(link, carrier, child, dt);
+  let threading = !floats && hdOf() > hi && chainThreadRide(link, carrier, child, dt);
   if (threading) {
     link.strainT = 0;
     link.threadT = (link.threadT || 0) + dt;
   } else link.threadT = 0;
-  if (!threading && link.carrierAirT < 0.5 && Math.abs(sep.dy) > CHAIN_SPLIT_DY && sep.d > hi && link.strainT > CHAIN_SPLIT_STRAIN_T) {
+  if (!threading && link.carrierAirT < 0.5 && vSep() && link.strainT > CHAIN_SPLIT_STRAIN_T) {
     freeChainRoot(child);
     return;
   }
   if (threading) {
     child.onGround = aabbCollidesWorld(child.pos.x, child.pos.y - 0.05, child.pos.z, child.hw, child.h);
   } else {
-      const strained = sep.d > hi;
+      const strained = hdOf() > hi;
       const spd = strained ? WALK * 2 : WALK / 2;
       const sx = link.towPos.x - child.pos.x, sz = link.towPos.z - child.pos.z;
       const sd = Math.hypot(sx, sz);
       const evx = child.vel.x, evy = child.vel.y, evz = child.vel.z;
-      link.freeT = sep.d <= hi ? 0.5 : Math.max(0, (link.freeT || 0) - dt);
+      link.freeT = hdOf() <= hi ? 0.5 : Math.max(0, (link.freeT || 0) - dt);
       let loiter = false;
-      if (floats && strained && (sep.d > hi) &&
+      if (floats && strained && (hdOf() > hi) &&
           !chainSegmentFree(child, child.pos.x, child.pos.y, child.pos.z, carrier.pos.x, carrier.pos.y, carrier.pos.z))
         loiter = (link.freeT || 0) > 0 || !!link.loiter;
       link.loiter = loiter;
@@ -5026,11 +5029,11 @@ function updateChainGroundLink(link, carrier, child, followDist, dt) {
   child.pos.z = Math.max(-WORLD_RADIUS + 1, Math.min(WORLD_RADIUS - 1, child.pos.z));
   child.pos.y = Math.max(1, Math.min(MAX_Y - 1, child.pos.y));
   sep = chainLinkDelta(carrier, child);
-  link.strained = sep.d > hi + 0.15;
+  link.strained = hdOf() > hi + 0.15;
   const cmx = carrier.pos.x, cmy = carrier.pos.y + carrier.h * 0.5, cmz = carrier.pos.z;
   const hdBand = () => Math.hypot(child.pos.x - cmx, child.pos.z - cmz);
   const airFollow = (link.carrierAirT || 0) > 0.2;
-  if (!floats && sep.d > hi && (airFollow || hdBand() > hi)) {
+  if (!floats && (airFollow ? sep.d > hi : hdOf() > hi) && (airFollow || hdBand() > hi)) {
     if (airFollow) {
       const nx = sep.dx / sep.d, ny = sep.dy / sep.d, nz = sep.dz / sep.d;
       chainSlideToward(child, cmx + nx * hi, cmy + ny * hi - child.h, cmz + nz * hi, 1);
@@ -5040,12 +5043,12 @@ function updateChainGroundLink(link, carrier, child, followDist, dt) {
     }
     sep = chainLinkDelta(carrier, child);
   }
-  if (!floats && sep.d < lo && sep.d > 1e-6) {
+  if (!floats && hdOf() < lo && hdOf() > 1e-6) {
     const nx = sep.dx / sep.d, ny = sep.dy / sep.d, nz = sep.dz / sep.d;
     chainSlideToward(child, cmx + nx * lo, cmy + ny * lo - child.h, cmz + nz * lo, 1.5);
     sep = chainLinkDelta(carrier, child);
   }
-  if (sep.d > leash && (airFollow || hdBand() > leash)) {
+  if ((airFollow ? sep.d > leash : hdOf() > leash) && (airFollow || hdBand() > leash)) {
     if (airFollow) {
       const nx = sep.dx / sep.d, ny = sep.dy / sep.d, nz = sep.dz / sep.d;
       chainSlideToward(child, cmx + nx * leash, cmy + ny * leash - child.h, cmz + nz * leash, 1.5);
@@ -5068,7 +5071,7 @@ function updateChainGroundLink(link, carrier, child, followDist, dt) {
     }
   }
   if (!isAvatar && !isChained(carrier) && !isFlyingKind(carrier.kind) && carrier.vel) {
-    if (sep.d >= leash) {
+    if (hdOf() >= leash) {
       const f = Math.max(0, 1 - dt * 10);
       carrier.vel.x *= f;
       carrier.vel.z *= f;
@@ -5275,11 +5278,12 @@ function startCarryGrabGrapple() {
   if (mob.kind === "dragon") { showMsg("The dragon is too powerful to grab"); return false; }
   const eye = camera.position;
   const off = getMobHitOffset(eye, dir, mob);
-  const mx = off ? mob.pos.x + off.x : mob.pos.x;
-  const my = off ? mob.pos.y + off.y : mob.pos.y + mob.h * 0.5;
-  const mz = off ? mob.pos.z + off.z : mob.pos.z;
-  if (off) carryGrappleOffset.copy(off);
+  if (mob.kind === "enderman") carryGrappleOffset.set(0, mob.h * 0.5, 0);
+  else if (off) carryGrappleOffset.copy(off);
   else carryGrappleOffset.set(0, mob.h * 0.5, 0);
+  const mx = mob.pos.x + carryGrappleOffset.x;
+  const my = mob.pos.y + carryGrappleOffset.y;
+  const mz = mob.pos.z + carryGrappleOffset.z;
   carryGrappleMob = mob;
   carryGrappleMode = "grab";
   carryGrappleStart.copy(eye);
@@ -13398,7 +13402,7 @@ function syncEndermanHalos() {
 function ensureEndermanAssets() {
   if (!endermanGeo) endermanGeo = new THREE.BoxGeometry(1, 1, 1);
   if (!endermanBodyMat) endermanBodyMat = new THREE.MeshStandardMaterial({ color: 0x0c0a12, roughness: 0.85, metalness: 0.05 });
-  if (!endermanHaloMat) endermanHaloMat = new THREE.MeshBasicMaterial({ color: DRAGON_FINISH.eye, transparent: true, opacity: 0.4, side: THREE.BackSide, fog: false, depthWrite: false });
+  if (!endermanHaloMat) endermanHaloMat = new THREE.MeshBasicMaterial({ color: DRAGON_FINISH.eye, transparent: true, opacity: 0.35, side: THREE.BackSide, fog: false, depthWrite: false, blending: THREE.AdditiveBlending });
 }
 
 function spawnEndermen() {
@@ -15388,7 +15392,7 @@ if (location.search.includes('test')) {
     get villageCenter(){ return villageCenter; }, get villageHouses(){ return villageHouses; }, get villagePen(){ return villagePen; }, get villagePool(){ return villagePool; }, get isInsidePen(){ return isInsidePen; }, get isInsidePool(){ return isInsidePool; }, get isInsidePenPool(){ return isInsidePenPool; }, get poolExitTarget(){ return poolExitTarget; }, get penPoolExitTarget(){ return penPoolExitTarget; }, get LOG(){ return LOG; }, findPenGaps, nearestPenGap, penGapInside, penGapOutside, hasMobGround, mobBlockedAt, aabbCollidesWorld, mobProbeFree, randomPenPoint, randomAroundPenPoint, groundYForMob, get CLOUD_BASE(){ return CLOUD_BASE; }, get CLOUD_TOP(){ return CLOUD_TOP; }, get MAX_Y(){ return MAX_Y; },
     getTypeMats, get typeMats(){ return typeMats; }, buildWorld, generateWorld, computeVillageLayout, spawnVillagers, refreshBlocks, get boxGeo(){ return boxGeo; }, THREE,
     get pos(){ return pos; }, get vel(){ return vel; }, get camera(){ return camera; }, get yaw(){ return yaw; }, set yaw(v){ yaw=v; }, get pitch(){ return pitch; }, set pitch(v){ pitch=v; },
-    get carryMob(){ return carryMob; }, handleCarryEnterDown, handleCarryEnterUp, pickMob, get carryGrappleActive(){ return carryGrappleActive; }, get carryGrapplePulling(){ return carryGrapplePulling; }, get carryGrappleMob(){ return carryGrappleMob; }, get carryGrappleBlock(){ return carryGrappleBlock; }, get carryGrappleHookPos(){ return carryGrappleHookPos; }, get carryGrappleOffset(){ return carryGrappleOffset; }, get carryGrappleMode(){ return carryGrappleMode; }, get isMobFrozenByGrapple(){ return isMobFrozenByGrapple; }, isChained, isChainCarrier, chainRootOf, chainTailOf, linkChain, dropChainFrom, chainTakeForCarry, severChainMob, groundChainFrom, insertChainBefore, insertChainBehind, insertBehindRide, prependChainLead, clearChains, pruneChains, updateChains, syncChainLinkColor, syncChainLinkColors, chainAttachTarget, startCarryAttachGrapple, killChainMob, respawnChainMob, unchainMob, get chainLinks(){ return chainLinks; }, get chainParent(){ return chainParent; }, get chainChild(){ return chainChild; }, playerChainAvatar, playerInChain, PLAYER_CHAIN_ID, spliceChainLink, chainHasJumping, chainPushCrumb, chainTrailTarget, latchPlayerTo, latchPlayerInMiddle, playerInsertCutAndLink, insertChainAheadOfPlayer, insertChainBehindPlayer, playerLeadLink, dropPlayerLeadEntry, readyLeadForLatch, leadAwareLatchInsert, appendCutFollowerBehindLeadTail, grabRideForCarry, fireGrapple, detachDisplacementGrapple, get grappleActive(){ return grappleActive; }, get grappleHooked(){ return grappleHooked; }, get grappleRetracting(){ return grappleRetracting; }, get grappleMob(){ return grappleMob; }, get grappleMobOffset(){ return grappleMobOffset; }, get grappleHookPos(){ return grappleHookPos; }, get grappleTarget(){ return grappleTarget; }, updateCarryGrapple, updateCarry, get currentBlock(){ return currentBlock; }, updateTarget, hotbarList, placeBlock, breakBlock, get selected(){ return selected; }, set selected(v){ selected=v; }, toggleCarry: handleCarryEnterDown, findNearestMobForGrab: (...a)=>{ const d=new THREE.Vector3(); camera.getWorldDirection(d); return pickMob(d); }, get playerArms(){ return playerArms; }, get started(){ return started; }, set started(v){ started=v; }, get loading(){ return loading; }, get freeCam(){ return freeCam; }, set freeCam(v){ freeCam=v; }, get helpOpen(){ return helpOpen; },
+    get carryMob(){ return carryMob; }, handleCarryEnterDown, handleCarryEnterUp, pickMob, get carryGrappleActive(){ return carryGrappleActive; }, get carryGrapplePulling(){ return carryGrapplePulling; }, get carryGrappleMob(){ return carryGrappleMob; }, get carryGrappleBlock(){ return carryGrappleBlock; }, get carryGrappleHookPos(){ return carryGrappleHookPos; }, get carryGrappleOffset(){ return carryGrappleOffset; }, get carryGrappleMode(){ return carryGrappleMode; }, get isMobFrozenByGrapple(){ return isMobFrozenByGrapple; }, isChained, isChainCarrier, chainRootOf, chainTailOf, linkChain, dropChainFrom, chainTakeForCarry, severChainMob, groundChainFrom, insertChainBefore, insertChainBehind, insertBehindRide, prependChainLead, clearChains, pruneChains, updateChains, syncChainLinkColor, syncChainLinkColors, stampSpawn, get mobById(){ return mobById; }, chainAttachTarget, startCarryAttachGrapple, killChainMob, respawnChainMob, unchainMob, get chainLinks(){ return chainLinks; }, get chainParent(){ return chainParent; }, get chainChild(){ return chainChild; }, playerChainAvatar, playerInChain, PLAYER_CHAIN_ID, spliceChainLink, chainHasJumping, chainPushCrumb, chainTrailTarget, latchPlayerTo, latchPlayerInMiddle, playerInsertCutAndLink, insertChainAheadOfPlayer, insertChainBehindPlayer, playerLeadLink, dropPlayerLeadEntry, readyLeadForLatch, leadAwareLatchInsert, appendCutFollowerBehindLeadTail, grabRideForCarry, fireGrapple, detachDisplacementGrapple, get grappleActive(){ return grappleActive; }, get grappleHooked(){ return grappleHooked; }, get grappleRetracting(){ return grappleRetracting; }, get grappleMob(){ return grappleMob; }, get grappleMobOffset(){ return grappleMobOffset; }, get grappleHookPos(){ return grappleHookPos; }, get grappleTarget(){ return grappleTarget; }, updateCarryGrapple, updateCarry, get currentBlock(){ return currentBlock; }, updateTarget, hotbarList, placeBlock, breakBlock, get selected(){ return selected; }, set selected(v){ selected=v; }, toggleCarry: handleCarryEnterDown, findNearestMobForGrab: (...a)=>{ const d=new THREE.Vector3(); camera.getWorldDirection(d); return pickMob(d); }, get playerArms(){ return playerArms; }, get started(){ return started; }, set started(v){ started=v; }, get loading(){ return loading; }, get freeCam(){ return freeCam; }, set freeCam(v){ freeCam=v; }, get helpOpen(){ return helpOpen; },
     get WOLF_COUNT(){ return WOLF_COUNT; }, makeWolfMesh, villagerHW, villagerH, wolfHasMobGround, wolfBlockedAt, wolfProbeFree, wanderGoalForWolf, wolfFindPath, wolfInWater, mobInWater, waterSurfaceForMob, mobPhysicsStep, wolfPhysicsStep, updateMobs, obstacleTurnDir, buildMobGrid,     get isPigCow(){ return isPigCow; }, get pigOverlapsFence(){ return pigOverlapsFence; }, get MOB_FLOAT_FRAC(){ return MOB_FLOAT_FRAC; }, mobFloatTargetY, mobWaterExitJump, poolExitTarget, penPoolExitTarget, isInsidePenPool,
     get PIGEON_COUNT(){ return PIGEON_COUNT; }, get PIGEON_MIN_Y(){ return PIGEON_MIN_Y; }, get PIGEON_MAX_Y(){ return PIGEON_MAX_Y; }, get PIGEON_SPEED(){ return PIGEON_SPEED; }, get TNT_HOME_SPEED(){ return TNT_HOME_SPEED; }, get PIGEON_AIM_DIST(){ return PIGEON_AIM_DIST; }, get PIGEON_LOCK_TIME(){ return PIGEON_LOCK_TIME; }, get pigeonLock(){ return pigeonLock; }, get pigeonLockT(){ return pigeonLockT; }, set pigeonLockT(v){ pigeonLockT = v; }, get pigeonLockShots(){ return pigeonLockShots; }, livePigeonLock, tntTargeted, tryFireLockedTNT, get chainBreaking(){ return chainBreaking; }, set chainBreaking(v){ chainBreaking = v; },     makePigeonMesh, spawnPigeons, spawnSinglePigeon, removePigeons, spawnPigeonChain, updatePigeon, updatePerchedPigeon, updateToPerchPigeon, pigeonTakeoff, pigeonNextLeg, pigeonFindPerchSpot, pigeonCloudTopAt, pigeonTreeTopAt, pigeonRoofTopAt, pigeonPerchBand, pigeonPerchSupports, killPigeon, pigeonSpotOutOfView, pigeonProbeFree, pigeonRandomTarget, pigeonSeparate,     houseInteriorFor, houseMouths, pigeonCoopTarget,     pigeonSegmentFree, pigeonClearance, pigeonBestSteer, pigeonMillHop, pigeonConfinedSteer, pigeonMoveSlide, bandReturnTarget, pigeonNoticeBreak, setMobTransparent, pigeonIsConfined, pigeonHoleCell, chainSegmentFree, chainThreadRide, pigeonTunnelPlan, updateTunnelPigeon, pigeonTunnelSeparate, pigeonSkyClear, pigeonSidestep, pigeonUTurn, pigeonNarrow, pigeonColHW, pigeonColH, get PIGEON_NARROW_SCALE(){ return PIGEON_NARROW_SCALE; }, get PIGEON_SKY_CLEAR(){ return PIGEON_SKY_CLEAR; }, get PIGEON_TUNNEL_SCALE(){ return PIGEON_TUNNEL_SCALE; }, get PIGEON_COL_HW(){ return PIGEON_COL_HW; }, get PIGEON_COL_H(){ return PIGEON_COL_H; },     get tntLit(){ return tntLit; }, get tntEta(){ return tntEta; }, igniteTNT, aimedPigeon, fireTNTAtPigeon, explodePigeon, spawnPigeonBurst, get bursts(){ return bursts; }, get flashes(){ return flashes; }, updateTNTTarget, tickTNT, fireGrapple, updateGrapple, updatePlayer, get grappleActive(){ return grappleActive; }, get grapplePulling(){ return grapplePulling; }, get grappleHooked(){ return grappleHooked; },
     get overPortalWin(){ return overPortalWin; }, get overPortalDir(){ return overPortalDir; }, get overPortalSpawn(){ return overPortalSpawn; }, get overPortalFace(){ return overPortalFace; },
