@@ -268,7 +268,7 @@ stays bright at distance, `placeable: true` so it
   so aiming at water/lava/moon water targets the solid block behind it, and placing
   replaces the liquid cell in front of that block (any placeable block; a solid is
   refused inside the player's or a mob's body, while non-solids — water, lava,
-  moon water, flowers — place freely there). Left click places, right click breaks (both work while flying — build anchor tracks camera). Holding left click is two-phase: while the mouse moves, it paints — each movement event places one block where the cursor aims, but only onto a block of a different kind than the selected one, and only within `CHAIN_RANGE` (4) blocks of any block already placed during this hold (`clickAnchors`, reset per press). If the mouse never moved during the hold, after 1s without moving (`leftTimer`) the hold latches into bridge mode (`leftStairs`): the staircase builder below starts immediately and keeps building until release — mouse movement mid-bridge is ignored, and once the mouse has moved during a hold (`leftEverMoved`) the bridge can never engage for that hold. Holding right
+  moon water, flowers — place freely there). Left click places, right click breaks (both work while flying — build anchor tracks camera). Holding left click is two-phase: while the mouse moves, it paints — each movement event places one block where the cursor aims, but only onto a block of a different kind than the selected one, and only within `CHAIN_RANGE` (4) blocks of any block already placed during this hold (`clickAnchors`, reset per press). If the mouse never moved during the hold, after 1s without moving (`leftTimer`) the hold latches into bridge mode (`leftStairs`): the staircase builder below starts immediately and keeps building until release — mouse movement mid-bridge is ignored, and once the mouse has moved during a hold (`leftEverMoved`) the bridge can never engage for that hold. Placing or breaking any block while the crosshair is on a mob does nothing: `placeBlock`, `breakBlock` (including TNT ignition) and the paint phase refuse via `aimOnMob` (any mob including flying pigeons and the dragon, mob hit must be nearer than the targeted block; bridge stairs and homing-TNT fire exempt). Holding right
   digs a straight tunnel: each repeat breaks the live raycast `currentBlock`, so
   removing one block exposes the next one behind it; the dig starts only after holding still 1s or after ~15px of deliberate mouse travel (`rightMoveAcc`/`RIGHT_MOVE_PX`, so jitter never skips the `CHAIN_HOLD` gate), and chained breaks are limited to `CHAIN_RANGE` (4) blocks of any block already removed during this hold (`clickAnchors`). Holding either button chains the action after 1s
   (`CHAIN_HOLD`) at `CHAIN_RATE` (10/s):
@@ -943,7 +943,9 @@ or phase. Step-up is root-gated by jumping leadership: when the chain root is a 
   for 1 s — is fail-cached for 10 s and the bird reverts to exploring, cycling
   through remaining mouths round-robin, so cooped birds never sit blocked.
   Pigeons never block editing either: breaking a block a pigeon touches or
-  perches on is allowed, and so is placing a solid block onto a pigeon
+  perches on is allowed when aiming at the block (aiming at the bird itself
+  refuses via `aimOnMob`), and so is placing a solid block onto a pigeon
+  only when the crosshair is not on it
   (`breakBlock`/`tryPlace` both skip `kind === "pigeon"` in the mob guards) —
   collision resolution (`pigeonResolvePenetration`, run at the top of every
   `updatePigeon`: nearest free spot within 2 blocks on 6 axes, else straight up)
