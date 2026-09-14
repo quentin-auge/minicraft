@@ -2794,7 +2794,7 @@ function spawnChainMob(kind, sx, sy, sz) {
   mesh.rotation.y = yaw;
   scene.add(mesh);
   const m = {
-    id: gid++, kind, canStep, homeId: -1, isBaby: false, parentId: -1, dim: "over",
+    id: gid++, kind, canStep, homeId: -1, isBaby: false, parentId: -1, dim,
     pos: new THREE.Vector3(sx, sy, sz),
     vel: new THREE.Vector3(0, 0, 0),
     hw, h: hh, mesh, onGround: false,
@@ -2812,7 +2812,7 @@ function spawnChainMob(kind, sx, sy, sz) {
   return m;
 }
 function spawnPigeonChain() {
-  if (dim !== "over") { showMsg("Pigeon chains only take off in the Overworld"); return false; }
+  if (dim !== "over" && dim !== "end") { showMsg("Pigeon chains only take off in the Overworld"); return false; }
   const total = 3 + Math.floor(Math.random() * 6);
   const kinds = [];
   for (let i = 1; i < total; i++) kinds.push(CHAIN_SPAWN_KINDS[Math.floor(Math.random() * CHAIN_SPAWN_KINDS.length)]);
@@ -7077,7 +7077,7 @@ function updateMobs(dt) {
     if (m.kind === "dragon") continue;
     if (m.kind === "enderman") { updateEnderman(m, dt); continue; }
     if (m.kind === "pigeon") {
-      if (dim !== "over") { m.mesh.position.copy(m.pos); continue; }
+      if (dim !== "over" && dim !== "end") { m.mesh.position.copy(m.pos); continue; }
       if (m._chainFall) {
         if (m.vel == null) m.vel = new THREE.Vector3(0, 0, 0);
         m.vel.y -= GRAVITY * dt;
@@ -14240,6 +14240,15 @@ function updateBossBar() {
 function removeEndEntities() {
   if (dragon.mesh) removeDragon();
   if (endermen.length) removeEndermen();
+  for (let i = mobs.length - 1; i >= 0; i--) {
+    const m = mobs[i];
+    if (m.dim !== "end" || m.kind === "dragon" || m.kind === "enderman") continue;
+    if (m === carryMob || m === carryGrappleMob) continue;
+    if (m.mesh) scene.remove(m.mesh);
+    if (m.fallMesh) scene.remove(m.fallMesh);
+    mobById.delete(m.id);
+    mobs.splice(i, 1);
+  }
   bossBarEl.style.display = "none";
 }
 
