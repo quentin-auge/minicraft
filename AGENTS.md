@@ -539,7 +539,7 @@ stays bright at distance, `placeable: true` so it
   dives), re-picking a
   fresh trajectory each lap; its loops alternate tight inner passes and wide
   sweeps across the whole platform (waypoint radii 10–36, clamped inside
-  radius 42), so
+  radius 42 = `END_MOB_R`, the shared limit every End mob obeys), so
   you get a clear view of it when TNT sticks and blows up on it. Its path is
   player-agnostic — it never aims at the player (it was changed to stop
   converging on them), flying a pure ambient circuit instead. It flees homing
@@ -660,6 +660,10 @@ or phase. Step-up is root-gated by jumping leadership: when the chain root is a 
     horizontally; only an unreachable own-column backstop stays put, so a
     stare always moves it. Separation (`endermanSeparated`, 3
     blocks) is enforced on every path, so two endermen never land on each other.
+    In the End every destination is clamped to the dragon's radial limit
+    (`END_MOB_R` = `END_PLATFORM_R` + 6: `endermanPickSpotEnd`/`endermanPickSpot`
+    bounds, the relaxed-search radius, the fallback spot and `endermanTeleport`
+    itself), so endermen share the platform limit with the dragon and pigeons.
     No wander blinks, no
     proximity blinks: without a stare they never move. Grabbed/hook-held
     endermen are excluded from the teleport separation
@@ -707,7 +711,22 @@ or phase. Step-up is root-gated by jumping leadership: when the chain root is a 
   `PIGEON_SPEED` (`WALK*2` = 8.8) inside the day-sky band Y 50–235
   (`PIGEON_MIN_Y`/`PIGEON_MAX_Y = SKY_SPACE_START`, so the ceiling is exactly
   where night starts falling; below `SKY_SPACE_START` the sky stays
-  day). Any flying mob (`isFlyingKind`: pigeons, dragons) inside the moon dome or
+  day). In the End every flying mob shares the dragon's cylinder (`END_MOB_R` =
+  `END_PLATFORM_R` + 6, `DRAGON_MIN_Y..DRAGON_MAX_Y` = platform +7..+22, via
+  `endMobInEnd`/`endClampXZPos`/`endClampYFlying`/`endClampTargetVec`): cruise/arc/
+  detour/return targets are sampled inside it and steering pulls back toward it
+  (`pigeonRandomTarget`/`pigeonReachableTarget`/`pigeonNewArc`/`pigeonDetourTarget`/
+  `bandReturnTarget` End branches), positions are hard-clamped after integration
+  (`updatePigeon`, `updateToPerchPigeon`, both `updateChains` tow branches plus the
+  fly-snap slot), End respawns land inside it (`pigeonSpotOutOfView`,
+  `spawnSinglePigeon` stamps the live `dim`), and End pigeons perch on the
+  auto-built return-portal frame only (`pigeonEndPortalTopAt` frame-top spots,
+  `pigeonPerchSupports` End branch, `pigeonFindPerchSpot` End branch with the same
+  join-group rules; perch-spot dedup is dim-aware via `pigeonPerchSpotTaken`).
+  Grounded mobs released or chained in the End stay on the platform instead:
+  wander targets are clamped into the cylinder and positions hard-clamped after
+  physics (outward radial velocity stripped, Y capped at `DRAGON_MAX_Y`), with the
+  same clamp on carry-release (`releaseCarriedMobAt`). Any flying mob (`isFlyingKind`: pigeons, dragons) inside the moon dome or
   on its surface (`inMoonZone`: any `y > MOON_Y` counts regardless of horizontal
   position, with no upper cap; at/below it the 3D distance
   from `(0, MOON_Y, 0)` must be at or under `MOON_R-2.5`, i.e. the hollow
