@@ -713,12 +713,17 @@ or phase. Step-up is root-gated by jumping leadership: when the chain root is a 
   where night starts falling; below `SKY_SPACE_START` the sky stays
   day). In the End every flying mob shares the dragon's cylinder (`END_MOB_R` =
   `END_PLATFORM_R` + 6, `DRAGON_MIN_Y..DRAGON_MAX_Y` = platform +7..+22, via
-  `endMobInEnd`/`endClampXZPos`/`endClampYFlying`/`endClampTargetVec`): cruise/arc/
+  `endMobInEnd`/`endClampXZPos`, `endClampYFlying`/`endClampTargetVec` kept only
+  for compat): cruise/arc/
   detour/return targets are sampled inside it and steering pulls back toward it
   (`pigeonRandomTarget`/`pigeonReachableTarget`/`pigeonNewArc`/`pigeonDetourTarget`/
-  `bandReturnTarget` End branches), positions are hard-clamped after integration
-  (`updatePigeon`, `updateToPerchPigeon`, both `updateChains` tow branches plus the
-  fly-snap slot), End respawns land inside it (`pigeonSpotOutOfView`,
+  `bandReturnTarget` End branches); like the Overworld, out-of-band flyers glide
+  back smoothly from where they are (soft vertical push toward the band plus
+  `bandReturnTarget` homing, no per-frame Y snap — only the radial XZ clamp and
+  the absolute `[1, MAX_Y-1]` safety apply after integration in `updatePigeon`,
+  `updateToPerchPigeon`, both `updateChains` tow branches plus the fly-snap slot,
+  and flyer carry-release `releaseCarriedMobAt` drops at the aimed height),
+  End respawns land inside it (`pigeonSpotOutOfView`,
   `spawnSinglePigeon` stamps the live `dim`), and End pigeons perch on the
   auto-built return-portal frame only (`pigeonEndPortalTopAt` frame-top spots,
   `pigeonPerchSupports` End branch, `pigeonFindPerchSpot` End branch with the same

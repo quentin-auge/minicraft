@@ -3571,8 +3571,7 @@ function updateToPerchPigeon(m, dt) {
   m.vel.set(vx, vy, vz);
   if (endMobInEnd(m)) {
     endClampXZPos(m.pos);
-    if (m.perchSpot) m.pos.y = Math.max(1, Math.min(DRAGON_MAX_Y, m.pos.y));
-    else m.pos.y = endClampYFlying(m.pos.y);
+    m.pos.y = Math.max(1, Math.min(MAX_Y - 1, m.pos.y));
   }
   pigeonAnimate(m, dt, vx, vy, vz, sp);
 }
@@ -3835,9 +3834,12 @@ function updatePigeon(m, dt) {
   m.vel.set(vx, vy, vz);
   if (inEnd) {
     endClampXZPos(m.pos);
-    const cy = endClampYFlying(m.pos.y);
-    if (cy !== m.pos.y) { m.pos.y = cy; if (m.vel.y > 0 && m.pos.y >= DRAGON_MAX_Y) m.vel.y = Math.min(m.vel.y, 0); if (m.vel.y < 0 && m.pos.y <= DRAGON_MIN_Y) m.vel.y = Math.max(m.vel.y, 0); }
-    if (m.target) endClampTargetVec(m.target);
+    m.pos.y = Math.max(1, Math.min(MAX_Y - 1, m.pos.y));
+    if (m.target) {
+      const tr = Math.hypot(m.target.x, m.target.z);
+      if (tr > END_MOB_R) { const s = END_MOB_R / tr; m.target.x *= s; m.target.z *= s; }
+      m.target.y = Math.max(1, Math.min(MAX_Y - 1, m.target.y));
+    }
   }
   pigeonAnimate(m, dt, vx, vy, vz, sp);
 }
@@ -5033,8 +5035,7 @@ function updateChains(dt) {
     child.pos.y = Math.max(1, Math.min(MAX_Y - 1, child.pos.y));
     if (dim === "end") {
       endClampXZPos(child.pos);
-      if (isFlyingKind(child.kind)) child.pos.y = endClampYFlying(child.pos.y);
-      else child.pos.y = Math.max(1, Math.min(DRAGON_MAX_Y, child.pos.y));
+      if (!isFlyingKind(child.kind)) child.pos.y = Math.max(1, Math.min(DRAGON_MAX_Y, child.pos.y));
     }
     const linkAx = carrier.pos.x, linkAy = chainMidY(carrier), linkAz = carrier.pos.z;
     const linkDx = child.pos.x - linkAx, linkDy = chainMidY(child) - linkAy, linkDz = child.pos.z - linkAz;
@@ -5055,7 +5056,7 @@ function updateChains(dt) {
       if (dim === "end") {
         const rr = Math.hypot(sx2, sz2);
         if (rr > END_MOB_R) { const s = END_MOB_R / rr; sx2 *= s; sz2 *= s; }
-        if (isFlyingKind(child.kind)) sy2 = endClampYFlying(sy2);
+        if (isFlyingKind(child.kind)) sy2 = Math.max(1, Math.min(MAX_Y - 1, sy2));
       }
       if (!aabbCollidesWorld(sx2, sy2, sz2, child.hw, child.h) &&
           pigeonSegmentFree(child.pos.x, child.pos.y, child.pos.z, sx2, sy2, sz2)) {
@@ -5282,8 +5283,7 @@ function updateChainGroundLink(link, carrier, child, followDist, dt) {
   child.pos.y = Math.max(1, Math.min(MAX_Y - 1, child.pos.y));
   if (dim === "end") {
     endClampXZPos(child.pos);
-    if (isFlyingKind(child.kind)) child.pos.y = endClampYFlying(child.pos.y);
-    else child.pos.y = Math.max(1, Math.min(DRAGON_MAX_Y, child.pos.y));
+    if (!isFlyingKind(child.kind)) child.pos.y = Math.max(1, Math.min(DRAGON_MAX_Y, child.pos.y));
   }
   sep = chainLinkDelta(carrier, child);
   link.strained = hdOf() > hi + 0.15;
@@ -5379,7 +5379,6 @@ function releaseCarriedMobAt(px, py, pz) {
     if (dim === "end") {
       const r0 = Math.hypot(nx, nz);
       if (r0 > END_MOB_R) { const s = END_MOB_R / r0; nx *= s; nz *= s; }
-      ny = Math.max(DRAGON_MIN_Y, Math.min(DRAGON_MAX_Y, ny));
     }
     for (let t = 0; t < 8 && aabbCollidesWorld(nx, ny, nz, hw, m.h); t++) ny++;
     if (aabbCollidesWorld(nx, ny, nz, hw, m.h)) { nx = m.pos.x; ny = m.pos.y; nz = m.pos.z; }
