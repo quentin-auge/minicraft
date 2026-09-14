@@ -10761,7 +10761,6 @@ function updateGrapple(dt) {
 
 function updatePlayer(dt) {
   if (grappleActive && updateGrapple(dt)) return;
-  if (dim === "end") flying = false;
   const g = (dim === "over" && pos.y >= MOON_Y - MOON_R) ? GRAVITY * 0.5 : GRAVITY;
   const fwd = new THREE.Vector3(-Math.sin(yaw), 0, -Math.cos(yaw));
   const right = new THREE.Vector3(Math.cos(yaw), 0, -Math.sin(yaw));
@@ -12297,7 +12296,6 @@ function updateVolcanoEmbers(dt, time) {
 // Portals & The End dimension
 // ---------------------------------------------------------------------------
 let portalCd = 0;
-let prePortalFly = false;
 let overPortalSpawn = { x: 0.5, y: 1.01, z: 0.5 };
 let overPortalFace = null;
 let overPortalWin = null;
@@ -12418,8 +12416,6 @@ function goToDimension(name, sx, sy, sz) {
     spawnDragon();
     spawnEndermen();
     setDimensionEnv();
-    prePortalFly = flying;
-    flying = false;
     yaw = 0;
     pitch = 0;
   } else if (name === "nether") {
@@ -12431,7 +12427,6 @@ function goToDimension(name, sx, sy, sz) {
     pitch = 0;
   } else {
     setDimensionEnv();
-    flying = prePortalFly;
     const ret = resolveOverworldReturn();
     yaw = ret.yaw;
     sx = ret.spot.x; sy = ret.spot.y; sz = ret.spot.z;
@@ -14632,7 +14627,7 @@ function deserialize(buf) {
     const ci = dv.getInt32(o, true); o += 4;
     pendingCarriedIdx = (ci >= 0 && pendingOverworldMobs && ci < pendingOverworldMobs.length) ? ci : null;
   }
-  freeCam = flyFlag && dim !== "end";
+  freeCam = flyFlag;
   if (freeCam) camPos.copy(pos);
   worldDirty = true;
   rebuildColTops();
@@ -15426,7 +15421,7 @@ document.addEventListener("keydown", (e) => {
   if (e.code === "ShiftLeft" || e.code === "ShiftRight" || e.code === "Space" || e.key === " ") jumpBuffer = Math.max(jumpBuffer, JUMP_BUFFER + 0.02);
   if (e.code === "KeyK" && !loading) select(selected - 1);
   if (e.code === "KeyL" && !loading) select(selected + 1);
-  if (e.code === "KeyF" && dim !== "end") { freeCam = !freeCam; if (freeCam) camPos.copy(camera.position); else exitFreeCam(); }
+  if (e.code === "KeyF") { freeCam = !freeCam; if (freeCam) camPos.copy(camera.position); else exitFreeCam(); }
   if (e.code === "KeyV" && !loading) { spawnPigeonChain(); }
   if (e.code === "Escape") {
     if (started) {

@@ -363,9 +363,7 @@ stays bright at distance, `placeable: true` so it
   (`frameTopSpot`), and a destroyed frame falls back to a tight r≤3 search
   around the recorded point (`resolveSpawn`) or the nearest live frame; the
   final yaw is recomputed from the landing spot toward the frame centre
-  (`facePortalFrom`), flying is forbidden in the
-  End, and free-cam
-  (F) is disabled there; you land just short of the return portal (cooldown +
+  (`facePortalFrom`); you land just short of the return portal (cooldown +
   zeroed movement prevent an instant round-trip).
   Nether portals work in either orientation too. Upright frames can be 5 wide ×
   4 tall (3×2 air interior), 4 wide × 5 tall (2×3 air interior, the classic
