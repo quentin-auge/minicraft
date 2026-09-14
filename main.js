@@ -3724,14 +3724,14 @@ function setMobTransparent(m, alpha) {
   if (!m.mesh.userData.matsCloned) {
     m.mesh.userData.matsCloned = true;
     m.mesh.traverse((obj) => {
-      if (obj.isMesh && obj.material) {
+      if (obj.isMesh && obj.material && !obj.userData.halo) {
         if (Array.isArray(obj.material)) obj.material = obj.material.map((mm) => mm.clone());
         else obj.material = obj.material.clone();
       }
     });
   }
   m.mesh.traverse((obj) => {
-    if (obj.isMesh && obj.material) {
+    if (obj.isMesh && obj.material && !obj.userData.halo) {
       const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
       mats.forEach((mat) => {
         mat.transparent = trans;
@@ -3856,6 +3856,36 @@ const chainLinkGeo = new THREE.BoxGeometry(0.1, 0.1, 0.1);
 const chainLinkMat = new THREE.MeshBasicMaterial({ color: 0x8a6d3b });
 const chainLinkHeadGeo = new THREE.BoxGeometry(0.17, 0.17, 0.17);
 const chainLinkHeadMat = new THREE.MeshBasicMaterial({ color: 0x4a3a1e });
+let chainLinkDragonMat = null;
+let chainLinkDragonHeadMat = null;
+function ensureChainDragonMats() {
+  if (!chainLinkDragonMat) {
+    chainLinkDragonMat = new THREE.MeshBasicMaterial({ color: DRAGON_FINISH.eye });
+    chainLinkDragonHeadMat = new THREE.MeshBasicMaterial({ color: DRAGON_FINISH.eye });
+  }
+}
+function syncChainLinkColor(childId) {
+  const link = chainLinks.get(childId);
+  if (!link) return;
+  const child = mobById.get(childId);
+  const root = child ? chainRootOf(child) : null;
+  if (root && root.kind === "dragon") {
+    ensureChainDragonMats();
+    link.rope.material = chainLinkDragonMat;
+    link.head.material = chainLinkDragonHeadMat;
+  } else {
+    link.rope.material = chainLinkMat;
+    link.head.material = chainLinkHeadMat;
+  }
+}
+function syncChainLinkColors() {
+  ensureChainDragonMats();
+  if (dragon && dragon.mats && dragon.mats.eye) {
+    chainLinkDragonMat.color.copy(dragon.mats.eye.color);
+    chainLinkDragonHeadMat.color.copy(dragon.mats.eye.color).multiplyScalar(0.6);
+  }
+  for (const childId of chainLinks.keys()) syncChainLinkColor(childId);
+}
 const chainLinkMatrix = new THREE.Matrix4();
 const CHAIN_LINK_LEN = Math.hypot(2.5, 0.4);
 const CHAIN_TAUT_TIME = 0.5;
@@ -3875,6 +3905,7 @@ const playerChainAvatar = {
   get h() { return PLAYER_H; },
   get hw() { return PLAYER_HW; },
   get speed() { return (grappleMob && grappleMob.speed) || PIGEON_SPEED; },
+  get onGround() { return onGround; },
 };
 function playerInChain() {
   return grappleActive && !grappleRetracting && grappleHooked && !!grappleMob;
@@ -4138,6 +4169,7 @@ function linkChain(carrier, child) {
   head.visible = true;
   scene.add(head);
   chainLinks.set(child.id, { carrierId: carrier.id, rope, head, towDir: new THREE.Vector3(0, 0, 1), towPos: new THREE.Vector3(), towInit: false, playerFrontId: carrierIsPlayer ? grappleMob.id : null, taut: 0, strained: false, strainT: 0, carrierAirT: 0, hopT: 0, farT: 0, snapT: 0.4, loiter: false, freeT: 0 });
+  syncChainLinkColor(child.id);
   if (child.vel) child.vel.set(0, 0, 0);
   child.mode = "chained";
   child.path = null;
@@ -4178,6 +4210,7 @@ function spliceChainLink(front, back) {
   link.freeT = 0;
   link.prevAx = undefined;
   link.farT = 0;
+  syncChainLinkColor(back.id);
   return true;
 }
 function seatChainChildNearCarrier(carrier, child) {
@@ -4229,6 +4262,11 @@ function prependChainLead(root, mob) {
   if (root === carryMob || root === carryGrappleMob) return false;
   if (root.kind === "dragon") return false;
   if ((mob.dim || "over") !== dim || (root.dim || "over") !== dim) return false;
+  if (chainParent.get(root.id) === PLAYER_CHAIN_ID) {
+    const rl = chainLinks.get(root.id);
+    if (!(rl && rl.playerLead) || playerInChain()) return false;
+    dropPlayerLeadEntry();
+  }
   if (aabbCollidesWorld(root.pos.x, root.pos.y, root.pos.z, root.hw, root.h)) return false;
   if (!seatNewLeadNear(root, mob)) return false;
   if (!linkChain(mob, root)) return false;
@@ -4393,6 +4431,7 @@ function resumeChainedMob(m) {
     } else m.vel.set(0, 0, 0);
   }
   if (m.kind === "enderman") { m.falling = true; m.fallV = 0; }
+  syncEndermanHalo(m);
   if (m._chainStep) { m.canStep = isJumpingKind(m.kind); delete m._chainStep; }
   m._chainJumpT = 0;
   m._wasInWater = false;
@@ -4408,6 +4447,7 @@ function chainTakeForCarry(mob) {
   const front = carrierId === PLAYER_CHAIN_ID ? playerChainAvatar : mobById.get(carrierId);
   const back = childId !== undefined ? mobById.get(childId) : null;
   if (front === mob) return;
+  const wasLead = carrierId === PLAYER_CHAIN_ID && !!((chainLinks.get(mob.id) || {}).playerLead);
   if (mob._chainStep) { mob.canStep = isJumpingKind(mob.kind); delete mob._chainStep; }
   if (carrierId !== undefined) {
     chainChild.delete(carrierId);
@@ -4422,6 +4462,18 @@ function chainTakeForCarry(mob) {
     chainLinks.delete(mob.id);
   }
   if (back && mobs.includes(back) && !isMobHeld(back)) {
+    if (front === playerChainAvatar && wasLead && !playerInChain()) {
+      chainParent.set(back.id, PLAYER_CHAIN_ID);
+      chainChild.set(PLAYER_CHAIN_ID, back.id);
+      const bl = chainLinks.get(back.id);
+      if (bl) {
+        bl.carrierId = PLAYER_CHAIN_ID;
+        bl.playerLead = true;
+        bl.playerFrontId = null;
+        bl.strainT = 0; bl.farT = 0; bl.flySplitT = 0; bl.threadT = 0; bl.loiter = false; bl.snapT = 0;
+      }
+      return;
+    }
     if (front && spliceChainLink(front, back)) {
       const se = chainLinks.get(back.id);
       if (se) se.taut = CHAIN_TAUT_TIME;
@@ -4522,7 +4574,7 @@ function pruneChains() {
   for (const [childId, link] of [...chainLinks]) {
     if (link.carrierId === PLAYER_CHAIN_ID) {
       const child = mobById.get(childId);
-      if (playerInChain() && mobs.includes(grappleMob) && child && mobs.includes(child)) continue;
+      if (child && mobs.includes(child) && ((playerInChain() && mobs.includes(grappleMob)) || link.playerLead)) continue;
       const front = mobById.get(link.playerFrontId);
       chainChild.delete(PLAYER_CHAIN_ID);
       if (child && mobs.includes(child)) {
@@ -4556,6 +4608,8 @@ function pruneChains() {
   for (const [ch, c] of [...chainParent]) {
     if (!chainLinks.has(ch)) chainParent.delete(ch);
   }
+  syncEndermanHalos();
+  syncChainLinkColors();
 }
 function clearChains() {
   for (const [, link] of chainLinks) {
@@ -4566,6 +4620,7 @@ function clearChains() {
   chainLinks.clear();
   chainChild.clear();
   chainParent.clear();
+  syncEndermanHalos();
 }
 function chainMoveAxis(m, dx, dy, dz) {
   const blocked = { x: false, y: false, z: false };
@@ -5423,8 +5478,8 @@ function updateCarryGrapple(dt) {
         carryGrappleActive = false;
         carryGrapplePulling = true;
         setMobTransparent(mob, 1);
-        chainTakeForCarry(mob);
-        if (grappleMob === mob) detachDisplacementGrapple();
+        if (grappleMob === mob) grabRideForCarry(mob);
+        else chainTakeForCarry(mob);
       } else {
         const move = Math.min(step, dist0);
         const s = move / dist0;
@@ -6725,6 +6780,7 @@ function restoreOverworldMobs(list, opts) {
       base.armL = endermanVis.armL;
       base.armR = endermanVis.armR;
       base.head = endermanVis.head;
+      base.haloMeshes = endermanVis.haloMeshes;
       base.t = 0;
       base.angry = 0;
       base.teleportT = 3 + Math.random() * 7;
@@ -9744,6 +9800,7 @@ function fireGrapple() {
   const mob0 = pickMob(dir, blockDist);
   const mob = mob0;
   if (mob && mob.kind === "enderman" && !isChained(mob) && !isChainCarrier(mob)) return;
+  if (mob && readyLeadForLatch(mob) === false) return;
   if (mob) {
     const off = getMobHitOffset(eye, dir, mob);
     const mx = off ? mob.pos.x + off.x : mob.pos.x;
@@ -9804,6 +9861,7 @@ function fireGrapple() {
 
 function latchPlayerTo(mob) {
   if (!mob || !mobs.includes(mob) || freeCam) return false;
+  if (readyLeadForLatch(mob) === false) return false;
   grapplePendingInsert = null;
   grappleMob = mob;
   grappleBlock = null;
@@ -9821,7 +9879,110 @@ function latchPlayerTo(mob) {
   grappleRetracting = false;
   grappleTowInit = false;
   grappleTowPos.set(0, 0, 0);
+  const keptLead = playerLeadLink();
+  if (keptLead) keptLead.link.playerFrontId = mob.id;
   return true;
+}
+
+function playerLeadLink() {
+  const backId = chainChild.get(PLAYER_CHAIN_ID);
+  if (backId === undefined) return null;
+  const link = chainLinks.get(backId);
+  if (!link || !link.playerLead) return null;
+  const back = mobById.get(backId);
+  if (!back || !mobs.includes(back)) return null;
+  return { backId, back, link };
+}
+function dropPlayerLeadEntry() {
+  const lead = playerLeadLink();
+  if (!lead) return null;
+  chainChild.delete(PLAYER_CHAIN_ID);
+  chainParent.delete(lead.backId);
+  const l = chainLinks.get(lead.backId);
+  if (l) {
+    scene.remove(l.rope);
+    scene.remove(l.head);
+    if (l.rope.dispose) l.rope.dispose();
+    chainLinks.delete(lead.backId);
+  }
+  return lead.back;
+}
+function leadContains(mob) {
+  if (!mob || playerInChain()) return false;
+  let cur = mob, guard = 0;
+  const seen = new Set();
+  while (cur && guard++ < 64 && !seen.has(cur.id)) {
+    seen.add(cur.id);
+    const pid = chainParent.get(cur.id);
+    if (pid === undefined) return false;
+    if (pid === PLAYER_CHAIN_ID) {
+      const link = chainLinks.get(cur.id);
+      return !!(link && link.playerLead);
+    }
+    cur = mobById.get(pid);
+  }
+  return false;
+}
+function readyLeadForLatch(mob) {
+  const lead = playerLeadLink();
+  if (!lead) return true;
+  if (!mob || !leadContains(mob)) return true;
+  if (mob === lead.back) {
+    dropPlayerLeadEntry();
+    resumeChainedMob(lead.back);
+    return true;
+  }
+  return false;
+}
+function appendCutFollowerBehindLeadTail(backId) {
+  const lead = playerLeadLink();
+  const back = backId !== undefined ? mobById.get(backId) : null;
+  if (!lead || !back || !mobs.includes(back)) return false;
+  const T = chainTailOf(lead.back);
+  if (!T) return false;
+  chainParent.set(backId, T.id);
+  chainChild.set(T.id, backId);
+  const fl = chainLinks.get(backId);
+  if (fl) {
+    fl.carrierId = T.id;
+    fl.playerFrontId = null;
+    fl.strainT = 0; fl.farT = 0; fl.flySplitT = 0; fl.threadT = 0; fl.loiter = false;
+  }
+  return true;
+}
+function leadAwareLatchInsert(mob) {
+  if (!mob || !mobs.includes(mob) || !playerLeadLink()) return false;
+  const fid = chainChild.get(mob.id);
+  const F = fid !== undefined ? mobById.get(fid) : null;
+  if (!F || !mobs.includes(F) || F === mob || isMobHeld(F)) return true;
+  chainChild.delete(mob.id);
+  chainParent.delete(fid);
+  if (!appendCutFollowerBehindLeadTail(fid)) spliceChainLink(mob, F);
+  return true;
+}
+function grabRideForCarry(mob) {
+  const fid = chainParent.get(mob.id);
+  const front = (fid !== undefined && fid !== PLAYER_CHAIN_ID) ? mobById.get(fid) : null;
+  chainTakeForCarry(mob);
+  const frontLive = front && mobs.includes(front) && !isMobHeld(front);
+  if (frontLive) {
+    grappleMob = front;
+    grappleMobOffset.set(0, front.h + 0.001, 0);
+    grappleTarget.set(front.pos.x, front.pos.y + grappleMobOffset.y, front.pos.z);
+    grappleHookPos.copy(grappleTarget);
+    grappleTowInit = false;
+    grappleTowPos.set(0, 0, 0);
+    if (front.kind === "pigeon" && (front.mode === "perch" || front.mode === "toPerch")) pigeonTakeoff(front);
+    const backId = chainChild.get(PLAYER_CHAIN_ID);
+    const pl = backId !== undefined ? chainLinks.get(backId) : null;
+    if (pl) pl.playerFrontId = front.id;
+    return;
+  }
+  if (mob.vel) vel.copy(mob.vel);
+  detachDisplacementGrapple();
+  const backId = chainChild.get(PLAYER_CHAIN_ID);
+  const pl = backId !== undefined ? chainLinks.get(backId) : null;
+  if (pl) { pl.playerLead = true; pl.playerFrontId = null; }
 }
 
 function playerInsertCutAndLink(mob) {
@@ -9850,6 +10011,8 @@ function latchPlayerInMiddle(mob) {
   if (isMobHeld(mob)) return false;
   if (mob.kind === "enderman" && !isChained(mob) && !isChainCarrier(mob)) return false;
   if (playerInChain() && grappleMob === mob) return true;
+  if (readyLeadForLatch(mob) === false) return false;
+  const keptLead = playerLeadLink();
   if (playerInChain() && grappleMob) {
     const oldBackId = chainChild.get(PLAYER_CHAIN_ID);
     const oldBack = oldBackId !== undefined ? mobById.get(oldBackId) : null;
@@ -9880,7 +10043,7 @@ function latchPlayerInMiddle(mob) {
     chainChild.delete(mob.id);
     chainParent.delete(backId);
     const bl = chainLinks.get(backId);
-    if (bl) {
+    if (bl && !keptLead) {
       scene.remove(bl.rope);
       scene.remove(bl.head);
       if (bl.rope.dispose) bl.rope.dispose();
@@ -9891,8 +10054,12 @@ function latchPlayerInMiddle(mob) {
     if (backLive) spliceChainLink(mob, back);
     return false;
   }
-  if (backLive && !linkChain(playerChainAvatar, back)) {
-    if (!spliceChainLink(mob, back)) freeChainRoot(back);
+  if (backLive) {
+    if (keptLead && playerLeadLink()) {
+      if (!appendCutFollowerBehindLeadTail(backId)) spliceChainLink(mob, back);
+    } else if (!linkChain(playerChainAvatar, back)) {
+      if (!spliceChainLink(mob, back)) freeChainRoot(back);
+    }
   }
   return true;
 }
@@ -10042,7 +10209,15 @@ function updateGrapple(dt) {
       if (dist0 <= hitR) {
         grappleHookPos.copy(grappleTarget);
         grappleHooked = true;
-        if (grapplePendingInsert !== null) {
+        const lead = playerLeadLink();
+        if (lead) {
+          lead.link.playerFrontId = grappleMob.id;
+          if (grapplePendingInsert !== null) {
+            const im = mobById.get(grapplePendingInsert);
+            grapplePendingInsert = null;
+            if (im) leadAwareLatchInsert(im);
+          }
+        } else if (grapplePendingInsert !== null) {
           const im = mobById.get(grapplePendingInsert);
           grapplePendingInsert = null;
           if (im) playerInsertCutAndLink(im);
@@ -13134,6 +13309,7 @@ const ENDERMEN_COUNT = 10;
 const endermen = [];
 let endermanGeo = null;
 let endermanBodyMat = null;
+let endermanHaloMat = null;
 const ENDERMAN_ANGRY_TIME = 0.5;
 const ENDERMAN_STARE_TIME = 0.3;
 const ENDERMAN_HW = 0.31;
@@ -13150,30 +13326,48 @@ function endermanBox(parent, mat, sx, sy, sz, px, py, pz) {
 function makeEndermanMesh() {
   const g = new THREE.Group();
   const eyeMat = new THREE.MeshBasicMaterial({ color: 0xb44cff });
+  const haloMeshes = [];
+  const endermanHalo = (parent, sx, sy, sz, px, py, pz) => {
+    if (!endermanHaloMat) return null;
+    const m = new THREE.Mesh(endermanGeo, endermanHaloMat);
+    m.scale.set(sx * 1.18, sy * 1.06, sz * 1.18);
+    m.position.set(px, py, pz);
+    m.visible = false;
+    m.userData.halo = true;
+    parent.add(m);
+    haloMeshes.push(m);
+    return m;
+  };
   const legL = new THREE.Group();
   legL.position.set(-0.16, 0.6, 0);
   g.add(legL);
   endermanBox(legL, endermanBodyMat, 0.24, 1.2, 0.24, 0, 0, 0);
+  endermanHalo(legL, 0.24, 1.2, 0.24, 0, 0, 0);
   const legR = new THREE.Group();
   legR.position.set(0.16, 0.6, 0);
   g.add(legR);
   endermanBox(legR, endermanBodyMat, 0.24, 1.2, 0.24, 0, 0, 0);
+  endermanHalo(legR, 0.24, 1.2, 0.24, 0, 0, 0);
   endermanBox(g, endermanBodyMat, 0.62, 1.0, 0.4, 0, 1.7, 0);
+  endermanHalo(g, 0.62, 1.0, 0.4, 0, 1.7, 0);
   const head = new THREE.Group();
   head.position.set(0, 2.45, 0);
   g.add(head);
   endermanBox(head, endermanBodyMat, 0.52, 0.5, 0.5, 0, 0, 0);
+  endermanHalo(head, 0.52, 0.5, 0.5, 0, 0, 0);
   const eyes = [];
   for (const sx of [1, -1]) eyes.push(endermanBox(head, eyeMat, 0.09, 0.16, 0.05, sx * 0.16, 0.03, 0.26));
   const armL = new THREE.Group();
   armL.position.set(-0.42, 1.95, 0);
   g.add(armL);
   endermanBox(armL, endermanBodyMat, 0.16, 1.75, 0.16, 0, -0.9, 0);
+  endermanHalo(armL, 0.16, 1.75, 0.16, 0, -0.9, 0);
   const armR = new THREE.Group();
   armR.position.set(0.42, 1.95, 0);
   g.add(armR);
   endermanBox(armR, endermanBodyMat, 0.16, 1.75, 0.16, 0, -0.9, 0);
-  return { g, eyeMat, eyes, armL, armR, head, t: 0, angry: 0, teleportT: 0, lookT: 0 };
+  endermanHalo(armR, 0.16, 1.75, 0.16, 0, -0.9, 0);
+  return { g, eyeMat, eyes, armL, armR, head, haloMeshes, t: 0, angry: 0, teleportT: 0, lookT: 0 };
 }
 
 function setEndermanEyeColor(e, hex) {
@@ -13184,9 +13378,27 @@ function setEndermanEyeColor(e, hex) {
   }
 }
 
+function endermanChainHaloVisible(m) {
+  if (!m || m.kind !== "enderman") return false;
+  if (isMobHeld(m)) return false;
+  if (!isChained(m)) return false;
+  const root = chainRootOf(m);
+  return !!root && root.kind === "dragon";
+}
+function syncEndermanHalo(m) {
+  if (!m || m.kind !== "enderman" || !m.haloMeshes) return;
+  const v = endermanChainHaloVisible(m);
+  for (const h of m.haloMeshes) h.visible = v;
+}
+function syncEndermanHalos() {
+  if (endermanHaloMat && dragon && dragon.mats && dragon.mats.eye) endermanHaloMat.color.copy(dragon.mats.eye.color);
+  for (const e of endermen) syncEndermanHalo(e);
+}
+
 function ensureEndermanAssets() {
   if (!endermanGeo) endermanGeo = new THREE.BoxGeometry(1, 1, 1);
   if (!endermanBodyMat) endermanBodyMat = new THREE.MeshStandardMaterial({ color: 0x0c0a12, roughness: 0.85, metalness: 0.05 });
+  if (!endermanHaloMat) endermanHaloMat = new THREE.MeshBasicMaterial({ color: DRAGON_FINISH.eye, transparent: true, opacity: 0.4, side: THREE.BackSide, fog: false, depthWrite: false });
 }
 
 function spawnEndermen() {
@@ -13212,6 +13424,7 @@ function spawnEndermen() {
       _stuckT: 0, _prevX: spot.x, _prevZ: spot.z,
       path: null, pathIdx: 0, pathKey: null, steerX: 0, steerZ: 0, steerCooldown: 0, lastTarget: null, _wasInWater: false, wolfInWater: false,
       g: v.g, eyeMat: v.eyeMat, eyes: v.eyes, armL: v.armL, armR: v.armR, head: v.head,
+      haloMeshes: v.haloMeshes,
       t: 0, angry: 0, teleportT: v.teleportT, lookT: 0, eyeRedT: 0, baseY: END_PLATFORM_TOP + 1,
     };
     stampSpawn(e);
@@ -13238,6 +13451,7 @@ function removeEndermen() {
   if (!endermen.length) {
     if (endermanGeo) { endermanGeo.dispose(); endermanGeo = null; }
     if (endermanBodyMat) { endermanBodyMat.dispose(); endermanBodyMat = null; }
+    if (endermanHaloMat) { endermanHaloMat.dispose(); endermanHaloMat = null; }
   }
 }
 
@@ -13692,6 +13906,7 @@ function serialize() {
       const b = idxById.get(childId);
       if (carrierId === PLAYER_CHAIN_ID) {
         const link = chainLinks.get(childId);
+        if (link && link.playerLead) continue;
         const front = (playerInChain() && grappleMob) ? grappleMob : (link ? mobById.get(link.playerFrontId) : null);
         a = front ? idxById.get(front.id) : null;
       }
@@ -15164,7 +15379,7 @@ if (location.search.includes('test')) {
     get villageCenter(){ return villageCenter; }, get villageHouses(){ return villageHouses; }, get villagePen(){ return villagePen; }, get villagePool(){ return villagePool; }, get isInsidePen(){ return isInsidePen; }, get isInsidePool(){ return isInsidePool; }, get isInsidePenPool(){ return isInsidePenPool; }, get poolExitTarget(){ return poolExitTarget; }, get penPoolExitTarget(){ return penPoolExitTarget; }, get LOG(){ return LOG; }, findPenGaps, nearestPenGap, penGapInside, penGapOutside, hasMobGround, mobBlockedAt, aabbCollidesWorld, mobProbeFree, randomPenPoint, randomAroundPenPoint, groundYForMob, get CLOUD_BASE(){ return CLOUD_BASE; }, get CLOUD_TOP(){ return CLOUD_TOP; }, get MAX_Y(){ return MAX_Y; },
     getTypeMats, get typeMats(){ return typeMats; }, buildWorld, generateWorld, computeVillageLayout, spawnVillagers, refreshBlocks, get boxGeo(){ return boxGeo; }, THREE,
     get pos(){ return pos; }, get vel(){ return vel; }, get camera(){ return camera; }, get yaw(){ return yaw; }, set yaw(v){ yaw=v; }, get pitch(){ return pitch; }, set pitch(v){ pitch=v; },
-    get carryMob(){ return carryMob; }, handleCarryEnterDown, handleCarryEnterUp, pickMob, get carryGrappleActive(){ return carryGrappleActive; }, get carryGrapplePulling(){ return carryGrapplePulling; }, get carryGrappleMob(){ return carryGrappleMob; }, get carryGrappleBlock(){ return carryGrappleBlock; }, get carryGrappleHookPos(){ return carryGrappleHookPos; }, get carryGrappleOffset(){ return carryGrappleOffset; }, get carryGrappleMode(){ return carryGrappleMode; }, get isMobFrozenByGrapple(){ return isMobFrozenByGrapple; }, isChained, isChainCarrier, chainRootOf, chainTailOf, linkChain, dropChainFrom, chainTakeForCarry, severChainMob, groundChainFrom, insertChainBefore, insertChainBehind, insertBehindRide, prependChainLead, clearChains, pruneChains, updateChains, chainAttachTarget, startCarryAttachGrapple, killChainMob, respawnChainMob, unchainMob, get chainLinks(){ return chainLinks; }, get chainParent(){ return chainParent; }, get chainChild(){ return chainChild; }, playerChainAvatar, playerInChain, PLAYER_CHAIN_ID, spliceChainLink, chainHasJumping, chainPushCrumb, chainTrailTarget, latchPlayerTo, latchPlayerInMiddle, playerInsertCutAndLink, insertChainAheadOfPlayer, insertChainBehindPlayer, fireGrapple, detachDisplacementGrapple, get grappleActive(){ return grappleActive; }, get grappleHooked(){ return grappleHooked; }, get grappleRetracting(){ return grappleRetracting; }, get grappleMob(){ return grappleMob; }, get grappleMobOffset(){ return grappleMobOffset; }, get grappleHookPos(){ return grappleHookPos; }, get grappleTarget(){ return grappleTarget; }, updateCarryGrapple, updateCarry, get currentBlock(){ return currentBlock; }, updateTarget, hotbarList, placeBlock, breakBlock, get selected(){ return selected; }, set selected(v){ selected=v; }, toggleCarry: handleCarryEnterDown, findNearestMobForGrab: (...a)=>{ const d=new THREE.Vector3(); camera.getWorldDirection(d); return pickMob(d); }, get playerArms(){ return playerArms; }, get started(){ return started; }, set started(v){ started=v; }, get loading(){ return loading; }, get freeCam(){ return freeCam; }, set freeCam(v){ freeCam=v; }, get helpOpen(){ return helpOpen; },
+    get carryMob(){ return carryMob; }, handleCarryEnterDown, handleCarryEnterUp, pickMob, get carryGrappleActive(){ return carryGrappleActive; }, get carryGrapplePulling(){ return carryGrapplePulling; }, get carryGrappleMob(){ return carryGrappleMob; }, get carryGrappleBlock(){ return carryGrappleBlock; }, get carryGrappleHookPos(){ return carryGrappleHookPos; }, get carryGrappleOffset(){ return carryGrappleOffset; }, get carryGrappleMode(){ return carryGrappleMode; }, get isMobFrozenByGrapple(){ return isMobFrozenByGrapple; }, isChained, isChainCarrier, chainRootOf, chainTailOf, linkChain, dropChainFrom, chainTakeForCarry, severChainMob, groundChainFrom, insertChainBefore, insertChainBehind, insertBehindRide, prependChainLead, clearChains, pruneChains, updateChains, syncChainLinkColor, syncChainLinkColors, chainAttachTarget, startCarryAttachGrapple, killChainMob, respawnChainMob, unchainMob, get chainLinks(){ return chainLinks; }, get chainParent(){ return chainParent; }, get chainChild(){ return chainChild; }, playerChainAvatar, playerInChain, PLAYER_CHAIN_ID, spliceChainLink, chainHasJumping, chainPushCrumb, chainTrailTarget, latchPlayerTo, latchPlayerInMiddle, playerInsertCutAndLink, insertChainAheadOfPlayer, insertChainBehindPlayer, playerLeadLink, dropPlayerLeadEntry, readyLeadForLatch, leadAwareLatchInsert, appendCutFollowerBehindLeadTail, grabRideForCarry, fireGrapple, detachDisplacementGrapple, get grappleActive(){ return grappleActive; }, get grappleHooked(){ return grappleHooked; }, get grappleRetracting(){ return grappleRetracting; }, get grappleMob(){ return grappleMob; }, get grappleMobOffset(){ return grappleMobOffset; }, get grappleHookPos(){ return grappleHookPos; }, get grappleTarget(){ return grappleTarget; }, updateCarryGrapple, updateCarry, get currentBlock(){ return currentBlock; }, updateTarget, hotbarList, placeBlock, breakBlock, get selected(){ return selected; }, set selected(v){ selected=v; }, toggleCarry: handleCarryEnterDown, findNearestMobForGrab: (...a)=>{ const d=new THREE.Vector3(); camera.getWorldDirection(d); return pickMob(d); }, get playerArms(){ return playerArms; }, get started(){ return started; }, set started(v){ started=v; }, get loading(){ return loading; }, get freeCam(){ return freeCam; }, set freeCam(v){ freeCam=v; }, get helpOpen(){ return helpOpen; },
     get WOLF_COUNT(){ return WOLF_COUNT; }, makeWolfMesh, villagerHW, villagerH, wolfHasMobGround, wolfBlockedAt, wolfProbeFree, wanderGoalForWolf, wolfFindPath, wolfInWater, mobInWater, waterSurfaceForMob, mobPhysicsStep, wolfPhysicsStep, updateMobs, obstacleTurnDir, buildMobGrid,     get isPigCow(){ return isPigCow; }, get pigOverlapsFence(){ return pigOverlapsFence; }, get MOB_FLOAT_FRAC(){ return MOB_FLOAT_FRAC; }, mobFloatTargetY, mobWaterExitJump, poolExitTarget, penPoolExitTarget, isInsidePenPool,
     get PIGEON_COUNT(){ return PIGEON_COUNT; }, get PIGEON_MIN_Y(){ return PIGEON_MIN_Y; }, get PIGEON_MAX_Y(){ return PIGEON_MAX_Y; }, get PIGEON_SPEED(){ return PIGEON_SPEED; }, get TNT_HOME_SPEED(){ return TNT_HOME_SPEED; }, get PIGEON_AIM_DIST(){ return PIGEON_AIM_DIST; }, get PIGEON_LOCK_TIME(){ return PIGEON_LOCK_TIME; }, get pigeonLock(){ return pigeonLock; }, get pigeonLockT(){ return pigeonLockT; }, set pigeonLockT(v){ pigeonLockT = v; }, get pigeonLockShots(){ return pigeonLockShots; }, livePigeonLock, tntTargeted, tryFireLockedTNT, get chainBreaking(){ return chainBreaking; }, set chainBreaking(v){ chainBreaking = v; },     makePigeonMesh, spawnPigeons, spawnSinglePigeon, removePigeons, spawnPigeonChain, updatePigeon, updatePerchedPigeon, updateToPerchPigeon, pigeonTakeoff, pigeonNextLeg, pigeonFindPerchSpot, pigeonCloudTopAt, pigeonTreeTopAt, pigeonRoofTopAt, pigeonPerchBand, pigeonPerchSupports, killPigeon, pigeonSpotOutOfView, pigeonProbeFree, pigeonRandomTarget, pigeonSeparate,     houseInteriorFor, houseMouths, pigeonCoopTarget,     pigeonSegmentFree, pigeonClearance, pigeonBestSteer, pigeonMillHop, pigeonConfinedSteer, pigeonMoveSlide, bandReturnTarget, pigeonNoticeBreak, setMobTransparent, pigeonIsConfined, pigeonHoleCell, chainSegmentFree, chainThreadRide, pigeonTunnelPlan, updateTunnelPigeon, pigeonTunnelSeparate, pigeonSkyClear, pigeonSidestep, pigeonUTurn, pigeonNarrow, pigeonColHW, pigeonColH, get PIGEON_NARROW_SCALE(){ return PIGEON_NARROW_SCALE; }, get PIGEON_SKY_CLEAR(){ return PIGEON_SKY_CLEAR; }, get PIGEON_TUNNEL_SCALE(){ return PIGEON_TUNNEL_SCALE; }, get PIGEON_COL_HW(){ return PIGEON_COL_HW; }, get PIGEON_COL_H(){ return PIGEON_COL_H; },     get tntLit(){ return tntLit; }, get tntEta(){ return tntEta; }, igniteTNT, aimedPigeon, fireTNTAtPigeon, explodePigeon, spawnPigeonBurst, get bursts(){ return bursts; }, get flashes(){ return flashes; }, updateTNTTarget, tickTNT, fireGrapple, updateGrapple, updatePlayer, get grappleActive(){ return grappleActive; }, get grapplePulling(){ return grapplePulling; }, get grappleHooked(){ return grappleHooked; },
     get overPortalWin(){ return overPortalWin; }, get overPortalDir(){ return overPortalDir; }, get overPortalSpawn(){ return overPortalSpawn; }, get overPortalFace(){ return overPortalFace; },
@@ -15174,7 +15389,7 @@ if (location.search.includes('test')) {
     goToDimension, removeVillagers,
     get DEV_START_DIM(){ return DEV_START_DIM; },
     get dragon(){ return dragon; }, spawnDragon, removeDragon, updateDragon, paintDragon, damageDragon, dragonShotsCap, aimedDragon, get DRAGON_FULL_DMG(){ return DRAGON_FULL_DMG; }, get DRAGON_SPEED(){ return DRAGON_SPEED; }, get DRAGON_FOLLOW_DIST(){ return DRAGON_FOLLOW_DIST; },
-    get endermen(){ return endermen; }, get ENDERMEN_COUNT(){ return ENDERMEN_COUNT; }, get ENDERMAN_STARE_TIME(){ return ENDERMAN_STARE_TIME; }, get ENDERMAN_ANGRY_TIME(){ return ENDERMAN_ANGRY_TIME; }, spawnEndermen, removeEndermen, updateEnderman, updateEndermen, endermanTeleport, endermanPickSpot, endermanSpotFor, ensureEndermanAssets, makeEndermanMesh,
+    get endermen(){ return endermen; }, get ENDERMEN_COUNT(){ return ENDERMEN_COUNT; }, get ENDERMAN_STARE_TIME(){ return ENDERMAN_STARE_TIME; }, get ENDERMAN_ANGRY_TIME(){ return ENDERMAN_ANGRY_TIME; }, spawnEndermen, removeEndermen, updateEnderman, updateEndermen, endermanTeleport, endermanPickSpot, endermanSpotFor, ensureEndermanAssets, makeEndermanMesh, syncEndermanHalo, syncEndermanHalos, endermanChainHaloVisible,
   };
 }
 
