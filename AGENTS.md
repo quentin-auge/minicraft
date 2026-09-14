@@ -223,7 +223,8 @@ stays bright at distance, `placeable: true` so it
 - **Player**: AABB collision, gravity (`GRAVITY = 37.44`, +20% twice; halved
   in the Overworld once the player rises to the bottom of the Moon sphere,
   `pos.y >= MOON_Y - MOON_R`), jump (Shift/Space), walk/sprint (/), fly mode, swimming,
-  free-cam (spectator). Third-person-style first-person camera, yaw/pitch.
+  free-cam (spectator, F on/off persists across portal traversal — arrival spawn
+  unchanged). Third-person-style first-person camera, yaw/pitch.
   While flying (F), the build anchor tracks the camera position, so placing and
   breaking blocks works from the air just like on the ground and the hold-left
   chain builds toward your airborne position instead of a stale ground spot.

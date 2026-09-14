@@ -12431,16 +12431,16 @@ function goToDimension(name, sx, sy, sz) {
     yaw = ret.yaw;
     sx = ret.spot.x; sy = ret.spot.y; sz = ret.spot.z;
   }
-  if (freeCam) { freeCam = false; }
   Object.keys(keys).forEach((k) => { keys[k] = false; });
-  pos.set(sx, sy, sz);
-  camPos.set(sx, sy, sz);
+  pos.set(sx, freeCam ? sy + EYE : sy, sz);
+  camPos.set(sx, freeCam ? sy + EYE : sy, sz);
   vel.set(0, 0, 0);
   rebuildMeshes();
   scanWorldPortals();
   recomputeGlowClusters();
   syncGlowLights();
-  updateCamera();
+  if (freeCam) { camera.position.copy(camPos); camera.rotation.set(pitch, yaw, 0); }
+  else updateCamera();
   portalCd = 1.5;
   queueSave();
   updateDimLabel();
