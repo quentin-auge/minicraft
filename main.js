@@ -4336,6 +4336,7 @@ function linkChain(carrier, child) {
   if (child === carryMob || child === carryGrappleMob) return false;
   if (carrier === carryMob || carrier === carryGrappleMob) return false;
   if (chainChild.has(carrier.id)) return false;
+  if (!carrierIsPlayer && carrier.kind === "enderman" && chainRootOf(carrier) === carrier) return false;
   if (aabbCollidesWorld(carrier.pos.x, carrier.pos.y, carrier.pos.z, carrier.hw, carrier.h)) return false;
   if (aabbCollidesWorld(child.pos.x, child.pos.y, child.pos.z, child.hw, child.h) &&
       !seatChainChildOnCarrierSurface(carrier, child) &&
@@ -4712,6 +4713,34 @@ function groundChainFrom(back) {
 }
 function freeChainRoot(back) {
   if (!back || !mobs.includes(back)) return;
+  if (back.kind === "enderman") {
+    const nextId = chainChild.get(back.id);
+    const next = nextId !== undefined ? mobById.get(nextId) : null;
+    const bl = chainLinks.get(back.id);
+    if (bl) {
+      scene.remove(bl.rope);
+      scene.remove(bl.head);
+      if (bl.rope.dispose) bl.rope.dispose();
+      chainLinks.delete(back.id);
+    }
+    chainParent.delete(back.id);
+    chainChild.delete(back.id);
+    resumeChainedMob(back);
+    back.villageBound = false;
+    back.penBound = false;
+    if (next && mobs.includes(next) && next !== back && !isMobHeld(next)) freeChainRoot(next);
+    else if (next && mobs.includes(next) && isMobHeld(next)) {
+      const nl = chainLinks.get(next.id);
+      if (nl) {
+        scene.remove(nl.rope);
+        scene.remove(nl.head);
+        if (nl.rope.dispose) nl.rope.dispose();
+        chainLinks.delete(next.id);
+      }
+      chainParent.delete(next.id);
+    }
+    return;
+  }
   const bl = chainLinks.get(back.id);
   if (bl) {
     scene.remove(bl.rope);
