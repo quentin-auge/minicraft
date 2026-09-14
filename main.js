@@ -3028,6 +3028,7 @@ function spawnPigeonChain() {
       const px = ax - dx * 2.6 * i, pz = az - dz * 2.6 * i;
       if (Math.abs(px) > WORLD_RADIUS - 2 || Math.abs(pz) > WORLD_RADIUS - 2) { clear = false; break; }
       const [hw, hh] = sizes[allKinds[i]];
+      if (isInsidePenPool(px, pz) || isInsidePool(px, pz)) { clear = false; break; }
       const gy = groundYDown(px, pz, (aimHit ? aimHit.y : pos.y) + 2, hw);
       if (gy == null || gy < 1) { clear = false; break; }
       if (aabbCollidesWorld(px, gy, pz, hw, hh) || !hasMobGround(px, pz, hw, gy)) { clear = false; break; }
@@ -6681,7 +6682,7 @@ function spawnVillagers() {
       // final snap center
       sx = Math.floor(sx) + 0.5; sz = Math.floor(sz) + 0.5;
       const blockKey = `${Math.floor(sx)},${villageCenter.y + 1},${Math.floor(sz)}`;
-      if (usedBlocks.has(blockKey)) {
+      if (usedBlocks.has(blockKey) || isInsidePenPool(sx, sz)) {
         // fallback to random village point centered
         let alt = wanderGoalFor({ pos: new THREE.Vector3(sx, villageCenter.y+1, sz), hw, h: hh, lastTarget: null });
         if (alt) { sx = Math.floor(alt.x)+0.5; sz = Math.floor(alt.z)+0.5; }
@@ -6756,7 +6757,7 @@ function spawnVillagers() {
       } while (tries < 30);
       sx = Math.floor(sx) + 0.5; sz = Math.floor(sz) + 0.5;
       const blockKey = `${Math.floor(sx)},${villageCenter.y + 1},${Math.floor(sz)}`;
-      if (usedBlocks.has(blockKey)) {
+      if (usedBlocks.has(blockKey) || isInsidePenPool(sx, sz)) {
         const alt = randomPenPoint();
         sx = Math.floor(alt.x) + 0.5; sz = Math.floor(alt.z) + 0.5;
       }
@@ -6810,7 +6811,7 @@ function spawnVillagers() {
       } while (tries < 40);
       sx = Math.floor(sx) + 0.5; sz = Math.floor(sz) + 0.5;
       const blockKey = `${Math.floor(sx)},${villageCenter.y + 1},${Math.floor(sz)}`;
-      if (usedBlocks.has(blockKey)) {
+      if (usedBlocks.has(blockKey) || isInsidePenPool(sx, sz)) {
         const alt = wanderGoalForWolf({ pos: new THREE.Vector3(sx, villageCenter.y+1, sz), hw, h: hh, lastTarget: null });
         if (alt) { sx = Math.floor(alt.x)+0.5; sz = Math.floor(alt.z)+0.5; }
       }
@@ -7024,12 +7025,20 @@ function restoreOverworldMobs(list, opts) {
       sz = Math.max(-WORLD_RADIUS + 1, Math.min(WORLD_RADIUS - 1, sz));
       sy = Math.max(1, Math.min(MAX_Y - 2, isFinite(sy) ? sy : PIGEON_MIN_Y + 20));
       spot = freeChainSpot(sx, sy, sz, hw, hh) || settleMobSpot(sx, sy, sz, hw, hh, isWolf);
+      if (spot && isInsidePenPool(spot.x, spot.z)) {
+        const fixed = freeChainSpot(spot.x + 2.5, spot.y, spot.z + 2.5, hw, hh) || settleMobSpot(spot.x + 2.5, spot.y, spot.z + 2.5, hw, hh, isWolf);
+        if (fixed && !isInsidePenPool(fixed.x, fixed.z)) spot = fixed;
+      }
     } else {
-    if (usedXZ.some((u) => (u[0] - sx) * (u[0] - sx) + (u[1] - sz) * (u[1] - sz) < 1.4)) {
+    if (isInsidePenPool(sx, sz) || usedXZ.some((u) => (u[0] - sx) * (u[0] - sx) + (u[1] - sz) * (u[1] - sz) < 1.4)) {
       const fixed = settleMobSpot(sx + 1.5, sy, sz + 1.5, hw, hh, isWolf);
       sx = fixed.x; sy = fixed.y; sz = fixed.z;
     }
     spot = settleMobSpot(sx, sy, sz, hw, hh, isWolf);
+    if (isInsidePenPool(spot.x, spot.z)) {
+      const fixed = settleMobSpot(spot.x + 2.5, spot.y, spot.z + 2.5, hw, hh, isWolf);
+      if (!isInsidePenPool(fixed.x, fixed.z)) spot = fixed;
+    }
     }
     let homeId = e.homeId;
     if (kind === "villager" && (homeId == null || homeId < 0 || homeId >= villageHouses.length)) homeId = villageHouses.length ? 0 : -1;
