@@ -2082,9 +2082,41 @@ function pigeonNextLeg(m) {
     m._tPlanT = 0;
     return;
   }
-  if (Math.random() < (pigeonDimOf(m) === "nether" ? 0.7 : 0.45)) { pigeonNewArc(m); return; }
+  if (Math.random() < (pigeonDimOf(m) === "nether" ? 0.7 : 0.45)) {
+    let arcOk = !chainLiveFollower(m);
+    if (!arcOk) {
+      const vl = Math.hypot(m.vel.x, m.vel.z);
+      arcOk = vl >= 0.5 && !chainLeadConeDeflect(m, m.vel.x / vl, m.vel.z / vl);
+    }
+    if (arcOk) { pigeonNewArc(m); return; }
+  }
   m.mode = "straight"; m.arc = null;
   m.target = pigeonDimOf(m) === "nether" ? pigeonReachableTarget(m, 12, 30) : pigeonReachableTarget(m, 40, 90);
+  const leadFol = chainLiveFollower(m);
+  if (leadFol && m.target) {
+    const tx = m.target.x - m.pos.x, tz = m.target.z - m.pos.z;
+    const tl = Math.hypot(tx, tz);
+    const fx = leadFol.pos.x - m.pos.x, fz = leadFol.pos.z - m.pos.z;
+    const fl = Math.hypot(fx, fz);
+    if (tl > 1e-6 && fl > 1e-6 && (tx * fx + tz * fz) / (tl * fl) > Math.cos(CHAIN_LEAD_CONE)) {
+      const fang = Math.atan2(fx, fz);
+      let rel = Math.atan2(tx, tz) - fang;
+      while (rel > Math.PI) rel -= Math.PI * 2;
+      while (rel < -Math.PI) rel += Math.PI * 2;
+      let side;
+      if (rel > 0) side = 1;
+      else if (rel < 0) side = -1;
+      else { m._turnSide = !m._turnSide; side = m._turnSide ? 1 : -1; }
+      for (const s of [side, -side]) {
+        const ex = Math.sin(fang + s * CHAIN_LEAD_CONE), ez = Math.cos(fang + s * CHAIN_LEAD_CONE);
+        const px = m.pos.x + ex * tl, pz = m.pos.z + ez * tl;
+        if (pigeonProbeFree(px, m.target.y, pz) && pigeonSegmentFree(m.pos.x, m.pos.y, m.pos.z, px, m.target.y, pz)) {
+          m.target.set(px, m.target.y, pz);
+          break;
+        }
+      }
+    }
+  }
   m.targetMode = null;
 }
 function pigeonTakeoff(m) {
@@ -2130,58 +2162,62 @@ function isInsidePenPool(x, z) {
   const q = villagePen.pool;
   return x >= q.minX && x <= q.maxX && z >= q.minZ && z <= q.maxZ;
 }
-function penPoolExitTarget(x, z) {
+function penPoolExitTarget(x, z, hx, hz) {
   if (!villagePen || !villagePen.pool) return null;
   const q = villagePen.pool, p = villagePen;
   const dL = x - q.minX, dR = (q.maxX + 1) - x, dT = z - q.minZ, dB = (q.maxZ + 1) - z;
   const cx = Math.max(p.minX + 1, Math.min(p.maxX - 1, x));
   const cz = Math.max(p.minZ + 1, Math.min(p.maxZ - 1, z));
-  const cands = [];
-  if (dL <= dR && dL <= dT && dL <= dB) cands.push(0);
-  if (dR <= dL && dR <= dT && dR <= dB) cands.push(1);
-  if (dT <= dB && dT <= dL && dT <= dR) cands.push(2);
-  if (dB <= dT && dB <= dL && dB <= dR) cands.push(3);
-  for (let i = 0; i < 4; i++) if (!cands.includes(i)) cands.push(i);
-  for (const side of cands) {
-    let ex = null;
-    if (side === 0) ex = { x: q.minX - 1.5, z: cz };
-    else if (side === 1) ex = { x: q.maxX + 2.5, z: cz };
-    else if (side === 2) ex = { x: cx, z: q.minZ - 1.5 };
-    else ex = { x: cx, z: q.maxZ + 2.5 };
-    if (ex.x <= p.minX + 0.7 || ex.x >= p.maxX - 0.7 || ex.z <= p.minZ + 0.7 || ex.z >= p.maxZ - 0.7) continue;
-    if (ex.x < villageMinX + 1 || ex.x > villageMaxX - 1 || ex.z < villageMinZ + 1 || ex.z > villageMaxZ - 1) continue;
-    if (isInsideAnyHouse(ex.x, ex.z)) continue;
-    return ex;
+  const hl = hx !== undefined && hz !== undefined ? Math.hypot(hx, hz) : 0;
+  const nx = hl > 1e-6 ? hx / hl : 0, nz = hl > 1e-6 ? hz / hl : 0;
+  const sides = [
+    { x: q.minX - 1.5, z: cz, d: dL },
+    { x: q.maxX + 2.5, z: cz, d: dR },
+    { x: cx, z: q.minZ - 1.5, d: dT },
+    { x: cx, z: q.maxZ + 2.5, d: dB },
+  ];
+  let best = null, bestScore = Infinity;
+  for (const s of sides) {
+    if (s.x <= p.minX + 0.7 || s.x >= p.maxX - 0.7 || s.z <= p.minZ + 0.7 || s.z >= p.maxZ - 0.7) continue;
+    if (s.x < villageMinX + 1 || s.x > villageMaxX - 1 || s.z < villageMinZ + 1 || s.z > villageMaxZ - 1) continue;
+    if (isInsideAnyHouse(s.x, s.z)) continue;
+    const dx = s.x - x, dz = s.z - z;
+    const dl = Math.hypot(dx, dz) || 1;
+    const dot = hl > 1e-6 ? (dx * nx + dz * nz) / dl : 0;
+    const score = s.d - dot * 2;
+    if (score < bestScore) { bestScore = score; best = { x: s.x, z: s.z }; }
   }
-  return null;
+  return best;
 }
 function isInsidePool(x, z) {
   if (!villagePool) return false;
   return x >= villagePool.minX && x <= villagePool.maxX && z >= villagePool.minZ && z <= villagePool.maxZ;
 }
-function poolExitTarget(x, z) {
+function poolExitTarget(x, z, hx, hz) {
   if (!villagePool) return null;
   const p = villagePool;
   const dL = x - p.minX, dR = (p.maxX + 1) - x, dT = z - p.minZ, dB = (p.maxZ + 1) - z;
   const cz = Math.max(villageMinZ + 1, Math.min(villageMaxZ - 1, z));
   const cx = Math.max(villageMinX + 1, Math.min(villageMaxX - 1, x));
-  const cands = [];
-  if (dL <= dR && dL <= dT && dL <= dB) cands.push(0);
-  if (dR <= dL && dR <= dT && dR <= dB) cands.push(1);
-  if (dT <= dB && dT <= dL && dT <= dR) cands.push(2);
-  if (dB <= dT && dB <= dL && dB <= dR) cands.push(3);
-  for (let i = 0; i < 4; i++) if (!cands.includes(i)) cands.push(i);
-  for (const side of cands) {
-    let ex = null;
-    if (side === 0) ex = { x: p.minX - 1.5, z: cz };
-    else if (side === 1) ex = { x: p.maxX + 2.5, z: cz };
-    else if (side === 2) ex = { x: cx, z: p.minZ - 1.5 };
-    else ex = { x: cx, z: p.maxZ + 2.5 };
-    if (ex.x < villageMinX + 1 || ex.x > villageMaxX - 1 || ex.z < villageMinZ + 1 || ex.z > villageMaxZ - 1) continue;
-    if (isInsideAnyHouse(ex.x, ex.z)) continue;
-    return ex;
+  const hl = hx !== undefined && hz !== undefined ? Math.hypot(hx, hz) : 0;
+  const nx = hl > 1e-6 ? hx / hl : 0, nz = hl > 1e-6 ? hz / hl : 0;
+  const sides = [
+    { x: p.minX - 1.5, z: cz, d: dL },
+    { x: p.maxX + 2.5, z: cz, d: dR },
+    { x: cx, z: p.minZ - 1.5, d: dT },
+    { x: cx, z: p.maxZ + 2.5, d: dB },
+  ];
+  let best = null, bestScore = Infinity;
+  for (const s of sides) {
+    if (s.x < villageMinX + 1 || s.x > villageMaxX - 1 || s.z < villageMinZ + 1 || s.z > villageMaxZ - 1) continue;
+    if (isInsideAnyHouse(s.x, s.z)) continue;
+    const dx = s.x - x, dz = s.z - z;
+    const dl = Math.hypot(dx, dz) || 1;
+    const dot = hl > 1e-6 ? (dx * nx + dz * nz) / dl : 0;
+    const score = s.d - dot * 2;
+    if (score < bestScore) { bestScore = score; best = { x: s.x, z: s.z }; }
   }
-  return null;
+  return best;
 }
 function placeVillagePool() {
   if (!villagePool) return;
@@ -4197,6 +4233,35 @@ function isChained(m) {
 function isChainCarrier(m) {
   return !!m && chainChild.has(m.id);
 }
+const CHAIN_LEAD_CONE = Math.PI / 4;
+function chainLiveFollower(m) {
+  if (!m || m === playerChainAvatar) return null;
+  if (!chainChild.has(m.id)) return null;
+  const f = mobById.get(chainChild.get(m.id));
+  if (!f || !mobs.includes(f) || isMobHeld(f)) return null;
+  if (f.dim !== undefined && m.dim !== undefined && f.dim !== m.dim) return null;
+  return f;
+}
+function chainLeadConeDeflect(m, dx, dz) {
+  const f = chainLiveFollower(m);
+  if (!f) return null;
+  const dl = Math.hypot(dx, dz);
+  if (dl < 1e-6) return null;
+  const fx = f.pos.x - m.pos.x, fz = f.pos.z - m.pos.z;
+  const fl = Math.hypot(fx, fz);
+  if (fl < 1e-6) return null;
+  if ((dx * fx + dz * fz) / (dl * fl) <= Math.cos(CHAIN_LEAD_CONE)) return null;
+  const fang = Math.atan2(fx, fz);
+  let rel = Math.atan2(dx, dz) - fang;
+  while (rel > Math.PI) rel -= Math.PI * 2;
+  while (rel < -Math.PI) rel += Math.PI * 2;
+  let side;
+  if (rel > 0) side = 1;
+  else if (rel < 0) side = -1;
+  else side = stickyTurnSide(m);
+  const edge = fang + side * CHAIN_LEAD_CONE;
+  return { x: Math.sin(edge), z: Math.cos(edge) };
+}
 function isGroundedChainVictim(m) {
   if (!m || (!isChained(m) && !isChainCarrier(m))) return false;
   if (!isFlyingKind(m.kind)) return true;
@@ -5100,7 +5165,8 @@ function updateChains(dt) {
       freeChainRoot(child);
       continue;
     }
-    if (!threading && linkD > linkLen * 1.5 && linkD <= linkLen * CHAIN_FLY_SNAP_MAX) {
+    link.snapT = Math.max(0, (link.snapT || 0) - dt);
+    if (!threading && (link.snapT || 0) > 0 && linkD > linkLen * 1.5 && linkD <= linkLen * CHAIN_FLY_SNAP_MAX) {
       let sx2 = tx, sy2 = ty, sz2 = tz;
       if (dim === "end") {
         const rr = Math.hypot(sx2, sz2);
@@ -5109,7 +5175,7 @@ function updateChains(dt) {
       }
       if (!aabbCollidesWorld(sx2, sy2, sz2, child.hw, child.h) &&
           pigeonSegmentFree(child.pos.x, child.pos.y, child.pos.z, sx2, sy2, sz2)) {
-        child.pos.set(sx2, sy2, sz2);
+        chainSlideToward(child, sx2, sy2, sz2, 1.5);
         child.vel.set(svx, svy, svz);
       }
     }
@@ -5364,14 +5430,14 @@ function updateChainGroundLink(link, carrier, child, followDist, dt) {
     }
     sep = chainLinkDelta(carrier, child);
   }
-  if (sep.d > 1e-6) {
+  if (sep.d > 1e-6 && (link.snapT || 0) > 0) {
     const hd = Math.hypot(sep.dx, sep.dz);
-    if (hd > 1e-6 && Math.abs(hd - followDist) > (floats ? (link.snapT > 0 ? 0.05 : Infinity) : 0.05)) {
+    if (hd > 1e-6 && Math.abs(hd - followDist) > 0.05) {
       const s = followDist / hd;
       const px = carrier.pos.x + sep.dx * s, pz = carrier.pos.z + sep.dz * s;
       if (!aabbCollidesWorld(px, child.pos.y, pz, child.hw, child.h) &&
           pigeonSegmentFree(child.pos.x, child.pos.y, child.pos.z, px, child.pos.y, pz)) {
-        child.pos.x = px; child.pos.z = pz;
+        chainSlideToward(child, px, child.pos.y, pz, 1.5);
         sep = chainLinkDelta(carrier, child);
       }
     }
@@ -7549,6 +7615,11 @@ function mobWouldCollide(mob, nx, nz) {
   }
   return false;
 }
+function stickyTurnSide(m) {
+  const nowS = performance.now() / 1000;
+  if (m._turnT === undefined || nowS - m._turnT > 0.8) { m._turnSide = !m._turnSide; m._turnT = nowS; }
+  return m._turnSide ? 1 : -1;
+}
 function obstacleTurnDir(m, probeFree, dist) {
   const d = dist || 2.2;
   let hx = m.vel ? m.vel.x : 0, hz = m.vel ? m.vel.z : 0;
@@ -7563,10 +7634,107 @@ function obstacleTurnDir(m, probeFree, dist) {
   if (fl >= 0.35 || fr >= 0.35) {
     if (fl > fr + 0.05) return { x: hz, z: -hx };
     if (fr > fl + 0.05) return { x: -hz, z: hx };
-    m._turnSide = !m._turnSide;
-    return m._turnSide ? { x: hz, z: -hx } : { x: -hz, z: hx };
+    const s = stickyTurnSide(m);
+    return s > 0 ? { x: hz, z: -hx } : { x: -hz, z: hx };
   }
   return { x: -hx, z: -hz };
+}
+const HEADON_DIST = 2.4;
+const HEADON_FREE_MIN = 1.0;
+const HEADON_FREE_PROBE = 2.2;
+const HEADON_FREEZE_T = 1.0;
+function mobHeadonHeading(m) {
+  let hx = m.vel ? m.vel.x : 0, hz = m.vel ? m.vel.z : 0;
+  if (Math.hypot(hx, hz) < 0.3) {
+    const yaw = m.mesh ? m.mesh.rotation.y : (m.yaw || 0);
+    hx = Math.sin(yaw); hz = Math.cos(yaw);
+  }
+  const l = Math.hypot(hx, hz) || 1;
+  return { x: hx / l, z: hz / l };
+}
+function isHeadonWalker(m) {
+  if (!m || isMobHeld(m) || isChained(m) || isMobFrozenByGrapple(m)) return false;
+  if (m.dim !== undefined && m.dim !== dim) return false;
+  if (isFlyingKind(m.kind) || m.kind === "dragon" || m.kind === "enderman") return false;
+  return !m.kind || m.kind === "villager" || m.kind === "pig" || m.kind === "cow" || m.kind === "wolf";
+}
+function headonSidestepOk(m, tx, tz) {
+  if (aabbCollidesWorld(tx, m.pos.y, tz, m.hw, m.h)) return false;
+  if (!mobHasGroundFor(m, tx, tz, m.hw, m.pos.y)) return false;
+  if (isPigCow(m) && pigOverlapsFence(tx, tz, m.hw)) return false;
+  if (typeof isInsidePool === "function" && isInsidePool(tx, tz)) return false;
+  if (typeof isInsidePenPool === "function" && isInsidePenPool(tx, tz)) return false;
+  if (dim === "over" && (m.kind === "pig" || m.kind === "cow") && typeof isInsidePen === "function" && isInsidePen(m.pos.x, m.pos.z) && !isInsidePen(tx, tz)) return false;
+  if (dim === "over" && villageHouses.length && m.villageBound !== false) {
+    if (tx < villageMinX + 1 || tx > villageMaxX - 1 || tz < villageMinZ + 1 || tz > villageMaxZ - 1) return false;
+  }
+  if (m.homeId != null && m.homeId >= 0 && villageHouses[m.homeId]) {
+    const h = villageHouses[m.homeId];
+    const inHome = m.pos.x > h.minX && m.pos.x < h.maxX && m.pos.z > h.minZ && m.pos.z < h.maxZ;
+    if (inHome && (tx <= h.minX + 0.4 || tx >= h.maxX - 0.4 || tz <= h.minZ + 0.4 || tz >= h.maxZ - 0.4)) return false;
+  }
+  return true;
+}
+function applyHeadonSidestep(m, dx, dz, free) {
+  const sp = m.speed || WALK / 2;
+  const step = Math.min(2.5, Math.max(1.5, free));
+  const tx = m.pos.x + dx * step, tz = m.pos.z + dz * step;
+  if (headonSidestepOk(m, tx, tz)) {
+    m._headonTX = tx; m._headonTZ = tz;
+    m._headonSteerT = 0.6;
+    m.steerX = dx * sp; m.steerZ = dz * sp; m.steerCooldown = 0.6;
+    m.path = null; m.pathKey = null;
+  } else {
+    m._headonTX = null; m._headonTZ = null;
+    m._headonSteerT = 0.45;
+    m.steerX = dx * sp; m.steerZ = dz * sp; m.steerCooldown = 0.45;
+  }
+}
+function resolveHeadOn() {
+  const nowS = performance.now() / 1000;
+  for (const a of mobs) {
+    if (!isHeadonWalker(a)) continue;
+    if ((a._headonFreezeT || 0) > 0 || (a._headonSteerT || 0) > 0) continue;
+    if (nowS < (a._headonCooldown || 0)) continue;
+    if (Math.hypot(a.vel.x, a.vel.z) < 0.5) continue;
+    const nearby = nearbyMobsFor(a.pos.x, a.pos.z, 2);
+    for (const b of nearby) {
+      if (b === a || b.id < a.id) continue;
+      if (!isHeadonWalker(b)) continue;
+      if ((b._headonFreezeT || 0) > 0 || (b._headonSteerT || 0) > 0) continue;
+      if (nowS < (b._headonCooldown || 0)) continue;
+      if (Math.hypot(b.vel.x, b.vel.z) < 0.5) continue;
+      if (Math.abs(a.pos.y - b.pos.y) > 1.2) continue;
+      if ((a.isBaby && b.id === a.parentId) || (b.isBaby && b.parentId === a.id)) continue;
+      const dx = b.pos.x - a.pos.x, dz = b.pos.z - a.pos.z;
+      const d = Math.hypot(dx, dz);
+      if (d > HEADON_DIST || d < 0.0001) continue;
+      const closing = (dx * (b.vel.x - a.vel.x) + dz * (b.vel.z - a.vel.z)) / d;
+      if (closing > -0.2) continue;
+      const ha = mobHeadonHeading(a), hb = mobHeadonHeading(b);
+      if ((ha.x * dx + ha.z * dz) / d < 0.3) continue;
+      if ((hb.x * -dx + hb.z * -dz) / d < 0.3) continue;
+      for (const m of [a, b]) {
+        const h = mobHeadonHeading(m);
+        const fl = mobProbeFreeFor(m, m.pos.x, m.pos.z, h.z, -h.x, HEADON_FREE_PROBE, m.hw, m.pos.y);
+        const fr = mobProbeFreeFor(m, m.pos.x, m.pos.z, -h.z, h.x, HEADON_FREE_PROBE, m.hw, m.pos.y);
+        if (fl <= HEADON_FREE_MIN && fr <= HEADON_FREE_MIN && !isChainCarrier(m)) {
+          m._headonFreezeT = HEADON_FREEZE_T;
+          m._headonSteerT = 0; m._headonTX = null; m._headonTZ = null;
+          m._headonCooldown = nowS + 1.5;
+          m.vel.x = 0; m.vel.z = 0;
+        } else {
+          let dx2, dz2, free;
+          if (fl > fr + 0.05) { dx2 = h.z; dz2 = -h.x; free = fl; }
+          else if (fr > fl + 0.05) { dx2 = -h.z; dz2 = h.x; free = fr; }
+          else { m._turnSide = !m._turnSide; dx2 = m._turnSide ? h.z : -h.z; dz2 = m._turnSide ? -h.x : h.x; free = Math.max(fl, fr); }
+          m._headonCooldown = nowS + 1.5;
+          applyHeadonSidestep(m, dx2, dz2, free);
+        }
+      }
+      break;
+    }
+  }
 }
 function updateMobs(dt) {
   if (!mobs.length) return;
@@ -7576,8 +7744,10 @@ function updateMobs(dt) {
     buildMobGrid();
     separateMobs();
     pushMobsFromPlayer();
+    resolveHeadOn();
   } else {
     buildMobGrid();
+    resolveHeadOn();
   }
   if (mobStats) mobStats.frames++;
   const g = GRAVITY;
@@ -7656,6 +7826,15 @@ function updateMobs(dt) {
     }
     // Physics step will be done after AI sets vel
     const prevX = m.pos.x, prevZ = m.pos.z;
+    if ((m._headonFreezeT || 0) > 0) {
+      m._headonFreezeT -= dt;
+      if (m._headonFreezeT < 0) m._headonFreezeT = 0;
+      m.vel.x = 0; m.vel.z = 0;
+      if (m.canStep) wolfPhysicsStep(m, dt, g);
+      else mobPhysicsStep(m, dt, g);
+      m.mesh.position.copy(m.pos);
+      continue;
+    }
     addVisit(m.pos.x, m.pos.z);
     if (aabbCollidesWorld(m.pos.x, m.pos.y, m.pos.z, m.hw, m.h)) { mobInvariantsViolated++; if (mobStats) mobStats.invariants++; }
     // Step-capable mobs (wolves) — instant step, no block feeling (converge to pen when panicking, or flee away outside)
@@ -7897,19 +8076,32 @@ function updateMobs(dt) {
     const findPath = canStep ? wolfFindPath : findVillagePath;
     const goalFor = canStep ? wanderGoalForWolf : wanderGoalFor;
     let poolEx = null;
-    if (villagePool && isInsidePool(m.pos.x, m.pos.z) && mobInWater(m)) {
-      poolEx = poolExitTarget(m.pos.x, m.pos.z);
-      if (poolEx) { m.path = null; m.pathKey = null; }
+    const pHead = mobHeadonHeading(m);
+    if (m._poolEx && m._poolExKind) {
+      const q = m._poolExKind === "pen" ? (villagePen && villagePen.pool) : villagePool;
+      const arrived = q && Math.hypot(m.pos.x - m._poolEx.x, m.pos.z - m._poolEx.z) < 0.8;
+      const outside = q && (m.pos.x < q.minX - 1 || m.pos.x > q.maxX + 1 || m.pos.z < q.minZ - 1 || m.pos.z > q.maxZ + 1);
+      if (!q || arrived || outside) { m._poolEx = null; m._poolExKind = null; }
+      else poolEx = m._poolEx;
+    }
+    if (!poolEx && villagePool && isInsidePool(m.pos.x, m.pos.z) && mobInWater(m)) {
+      poolEx = poolExitTarget(m.pos.x, m.pos.z, pHead.x, pHead.z);
+      if (poolEx) { m.path = null; m.pathKey = null; m._poolEx = poolEx; m._poolExKind = "pool"; }
     }
     if (!poolEx && villagePen && villagePen.pool && isInsidePenPool(m.pos.x, m.pos.z) && mobInWater(m)) {
-      poolEx = penPoolExitTarget(m.pos.x, m.pos.z);
-      if (poolEx) { m.path = null; m.pathKey = null; }
+      poolEx = penPoolExitTarget(m.pos.x, m.pos.z, pHead.x, pHead.z);
+      if (poolEx) { m.path = null; m.pathKey = null; m._poolEx = poolEx; m._poolExKind = "pen"; }
     }
     let tx = poolEx ? poolEx.x : (m.target ? m.target.x : m.pos.x);
     let tz = poolEx ? poolEx.z : (m.target ? m.target.z : m.pos.z);
     if (dim === "end") {
       const tr = Math.hypot(tx, tz);
       if (tr > END_MOB_R) { const s = END_MOB_R / tr; tx *= s; tz *= s; }
+    }
+    if ((m._headonSteerT || 0) > 0) {
+      m._headonSteerT -= dt;
+      if (m._headonSteerT <= 0) { m._headonSteerT = 0; m._headonTX = null; m._headonTZ = null; }
+      else if (m._headonTX != null && m._headonTZ != null) { tx = m._headonTX; tz = m._headonTZ; }
     }
     let hasPath = false;
     const toTarOverall = Math.hypot(tx - m.pos.x, tz - m.pos.z);
@@ -7923,10 +8115,39 @@ function updateMobs(dt) {
         else { m.path = null; m.pathKey = null; }
       } else if (m.path && m.pathIdx < m.path.length) {
         hasPath = true;
-        tx = m.path[m.pathIdx][0]; tz = m.path[m.pathIdx][1];
-        if (Math.hypot(m.pos.x - tx, m.pos.z - tz) < 0.45) {
-          m.pathIdx++; if (m.pathIdx < m.path.length) { tx = m.path[m.pathIdx][0]; tz = m.path[m.pathIdx][1]; }
-          else { m.path = null; m.pathKey = null; hasPath = false; }
+        const le = m.path[m.path.length - 1];
+        const ldx0 = le[0] - m.pos.x, ldz0 = le[1] - m.pos.z;
+        const ldd = Math.hypot(ldx0, ldz0);
+        if (ldd > 0.6) {
+          const lf = probeFree(m.pos.x, m.pos.z, ldx0 / ldd, ldz0 / ldd, ldd, m.hw, m.pos.y);
+          if (lf >= ldd - 0.05) {
+            m.path = null; m.pathKey = null; hasPath = false; tx = le[0]; tz = le[1];
+          }
+        }
+        if (hasPath) {
+          if ((m._skipT = (m._skipT || 0) - dt) <= 0) {
+            m._skipT = 0.25;
+            const maxK = Math.min(m.path.length - 1, m.pathIdx + 10);
+            for (let k = maxK; k > m.pathIdx; k--) {
+              const wx = m.path[k][0], wz = m.path[k][1];
+              const wd = Math.hypot(wx - m.pos.x, wz - m.pos.z);
+              if (wd < 0.45) { m.pathIdx = k + 1; break; }
+              if (wd > 3.0) continue;
+              const dx = (wx - m.pos.x) / wd, dz = (wz - m.pos.z) / wd;
+              if (probeFree(m.pos.x, m.pos.z, dx, dz, wd, m.hw, m.pos.y) >= wd - 0.05) { m.pathIdx = k; break; }
+            }
+            if (m.pathIdx > m.path.length - 1) {
+              const le2 = m.path[m.path.length - 1];
+              m.path = null; m.pathKey = null; hasPath = false; tx = le2[0]; tz = le2[1];
+            }
+          }
+        }
+        if (hasPath) {
+          tx = m.path[m.pathIdx][0]; tz = m.path[m.pathIdx][1];
+          if (Math.hypot(m.pos.x - tx, m.pos.z - tz) < 0.45) {
+            m.pathIdx++; if (m.pathIdx < m.path.length) { tx = m.path[m.pathIdx][0]; tz = m.path[m.pathIdx][1]; }
+            else { m.path = null; m.pathKey = null; hasPath = false; }
+          }
         }
       }
       if (hasPath && probeFree(m.pos.x, m.pos.z, (tx - m.pos.x)/Math.hypot(tx - m.pos.x, tz - m.pos.z || 1), (tz - m.pos.z)/Math.hypot(tx - m.pos.x, tz - m.pos.z || 1), 0.6, m.hw, m.pos.y) < 0.15) {
@@ -7944,6 +8165,13 @@ function updateMobs(dt) {
       if (poolEx) {
         m.steerX = wantX; m.steerZ = wantZ; m.steerCooldown = 0.2;
       } else if (!hasPath) {
+        const hwh = mobHeadonHeading(m);
+        const tdx0 = (tx - m.pos.x) / (dist || 1), tdz0 = (tz - m.pos.z) / (dist || 1);
+        if (dist > 0.6 && (hwh.x * tdx0 + hwh.z * tdz0) > 0.5 &&
+            probeFree(m.pos.x, m.pos.z, hwh.x, hwh.z, 1.4, m.hw, m.pos.y) > 1.2) {
+          wantX = hwh.x * m.speed; wantZ = hwh.z * m.speed;
+          m.steerX = wantX; m.steerZ = wantZ; m.steerCooldown = 0.5;
+        } else {
         if (m.steerCooldown > 0) {
           m.steerCooldown -= dt;
           const sx = m.steerX / (m.speed || 1), sz = m.steerZ / (m.speed || 1);
@@ -7976,6 +8204,7 @@ function updateMobs(dt) {
           } else {
             m.steerX = wantX; m.steerZ = wantZ; m.steerCooldown = 0.3;
           }
+          }
         }
       } else {
         m.steerX = wantX; m.steerZ = wantZ; m.steerCooldown = 0.2;
@@ -7996,6 +8225,7 @@ function updateMobs(dt) {
         }
       }
     }
+    const wantDeflected = (m._headonSteerT || 0) > 0;
     {
       let repX = 0, repZ = 0, cnt = 0;
       const nearby = nearbyMobsFor(m.pos.x, m.pos.z, 2);
@@ -8019,7 +8249,7 @@ function updateMobs(dt) {
           cnt++;
         }
       }
-      if (cnt) {
+      if (cnt && !wantDeflected) {
         repX /= cnt; repZ /= cnt;
         const len = Math.hypot(repX, repZ);
         if (len > 0.001) {
@@ -8033,10 +8263,39 @@ function updateMobs(dt) {
         }
       }
     }
+    if (!wantDeflected && isChainCarrier(m) && !isFlyingKind(m.kind) && (wantX || wantZ)) {
+      const wl = Math.hypot(wantX, wantZ);
+      const f = wl > 1e-6 ? chainLiveFollower(m) : null;
+      if (f) {
+        const fx = f.pos.x - m.pos.x, fz = f.pos.z - m.pos.z;
+        const fl = Math.hypot(fx, fz);
+        if (fl > 1e-6 && (wantX * fx + wantZ * fz) / (wl * fl) > Math.cos(CHAIN_LEAD_CONE)) {
+          const fang = Math.atan2(fx, fz);
+          let rel = Math.atan2(wantX, wantZ) - fang;
+          while (rel > Math.PI) rel -= Math.PI * 2;
+          while (rel < -Math.PI) rel += Math.PI * 2;
+          let side;
+          if (rel > 0) side = 1;
+          else if (rel < 0) side = -1;
+          else side = stickyTurnSide(m);
+          const edgeFree = (s) => {
+            const ex = Math.sin(fang + s * CHAIN_LEAD_CONE), ez = Math.cos(fang + s * CHAIN_LEAD_CONE);
+            if (probeFree(m.pos.x, m.pos.z, ex, ez, 1.4, m.hw, m.pos.y) < 0.35) return null;
+            if (!headonSidestepOk(m, m.pos.x + ex * 1.5, m.pos.z + ez * 1.5)) return null;
+            return { x: ex, z: ez };
+          };
+          const edge = edgeFree(side) || edgeFree(-side);
+          if (edge) {
+            wantX = edge.x * wl; wantZ = edge.z * wl;
+            m.steerX = wantX; m.steerZ = wantZ; m.steerCooldown = Math.max(m.steerCooldown, 0.3);
+          }
+        }
+      }
+    }
     // lerp vel towards want (like player)
     m.vel.x += (wantX - m.vel.x) * Math.min(1, dt * 6);
     m.vel.z += (wantZ - m.vel.z) * Math.min(1, dt * 6);
-    if (dist < 0.1) { m.vel.x *= 0.85; m.vel.z *= 0.85; }
+    if (dist < 0.1 && !poolEx) { m.vel.x *= 0.85; m.vel.z *= 0.85; }
     // handle inside house wall clamp: if trying to go out of house interior via wall, pick new inside point
     if (m.mode === "inside") {
       const h = villageHouses[m.homeId];
@@ -14038,10 +14297,23 @@ function buildDragonPath() {
   const base = Math.random() * Math.PI * 2;
   const lowBias = Math.random() < 0.3 ? 0.5 : 0.18;
   const pts = [];
+  const dfol = dragon.mob ? chainLiveFollower(dragon.mob) : null;
   for (let i = 0; i < N; i++) {
-    const a = base + (i / N) * Math.PI * 2 + (Math.random() - 0.5) * 0.7;
+    let a = base + (i / N) * Math.PI * 2 + (Math.random() - 0.5) * 0.7;
     const wide = i % 2 === 0;
-    const r = wide ? 26 + Math.random() * 10 : 10 + Math.random() * 10;
+    let r = wide ? 26 + Math.random() * 10 : 10 + Math.random() * 10;
+    if (dfol) {
+      for (let t = 0; t < 4; t++) {
+        const cx = Math.cos(a) * r - dragon.mesh.position.x, cz = Math.sin(a) * r - dragon.mesh.position.z;
+        const cl = Math.hypot(cx, cz);
+        const fx = dfol.pos.x - dragon.mesh.position.x, fz = dfol.pos.z - dragon.mesh.position.z;
+        const fl = Math.hypot(fx, fz);
+        if (cl < 1e-6 || fl < 1e-6) break;
+        if ((cx * fx + cz * fz) / (cl * fl) <= Math.cos(CHAIN_LEAD_CONE)) break;
+        a += 0.6;
+        r = wide ? 26 + Math.random() * 10 : 10 + Math.random() * 10;
+      }
+    }
     pts.push(new THREE.Vector3(
       Math.cos(a) * r,
       Math.random() < lowBias ? DRAGON_MIN_Y + Math.random() * 2 : DRAGON_MAX_Y - 6 + Math.random() * 6,
