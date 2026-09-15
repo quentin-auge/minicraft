@@ -11,9 +11,11 @@ small Python server for saving/loading worlds.
 - Run the game: `python3 server.py` (or `npm start`) → http://localhost:8383
 - The server serves static files and exposes `GET/PUT/DELETE /api/worlds/<name>.sav`.
 - No build step, no lint/test/typecheck scripts are configured.
-- There is no Node runtime installed on this machine — you cannot run JS with
-  `node`. For quick syntax checks use Python scripts or `osascript -l JavaScript`
-  (macOS JavaScriptCore, ES2017-flavored); verify game logic in the browser.
+- Node v26.7.0 is installed (`/opt/homebrew/bin/node`, Homebrew). For quick JS
+  syntax checks use `node --check` on a `.mjs` copy (`cp main.js /tmp/check.mjs &&
+  node --check /tmp/check.mjs`) — `package.json` declares commonjs, so checking
+  `main.js` in place would misparse its `import` line; the copy is parse-only, never
+  executed. Verify game logic in the browser.
 
 ## Project Structure
 
@@ -1099,10 +1101,20 @@ or phase. Step-up is root-gated by jumping leadership: when the chain root is a 
 - Do not add code comments unless the surrounding code already explains itself.
 - All code, comments, and documentation must be written in English — no French anywhere.
 
+## Worktrees
+
+- Workspaces live in `../minicraft_wts/<name>` (one dir = one branch of the same name).
+- Natural language routing: "spawn/create a new workspace ..." → follow `.opencode/commands/wt-new.md`
+  with that name/commit; "rebase onto master / finish this workspace ..." → follow `.opencode/commands/wt-done.md`.
+- In worktrees, commit normally after each task (`git add -u`, single-line message, capital first letter).
+- Each workspace server runs on its own random port, not 8383 — read it from
+  `/tmp/minicraft-<name>.port` (announced by `/wt-new`) instead of assuming the default.
+
 ## Workflow Notes
 
 - The dev server that was restarted during sessions runs on port 8090 via
   `python3 -m http.server`. Prefer `python3 server.py` (port 8383) for normal use.
+- If tests or instrumentation killed the dev server, relaunch it before continuing.
 - Commit messages are always single-line only (no body, no multi-line text),
   starting with a capital letter, describing
   the user-facing change (e.g. "Increase block reach to 15").
