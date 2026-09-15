@@ -6865,6 +6865,84 @@ let overworldMobCache = null;
 let pendingOverworldMobs = null;
 let pendingChainLinks = null;
 let pendingCarriedIdx = null;
+let endMobCache = null;
+let netherMobCache = null;
+let pendingEndMobs = null;
+let pendingNetherMobs = null;
+let pendingChainLinksEnd = null;
+let pendingChainLinksNether = null;
+let pendingCarriedDim = 0;
+let netherExit = null;
+let endExit = null;
+let pendingDragon = null;
+let pendingTNTBombs = null;
+let pendingTNTQueue = null;
+let pendingTNTEta = null;
+let pendingFx = null;
+function mobDimOf(m) { return (m && m.dim !== undefined ? m.dim : "over"); }
+function snapshotMobsForDim(dimName, includeCarried) {
+  const olds = mobs.filter((m) => mobDimOf(m) === dimName && m.kind !== "dragon");
+  const list = olds.filter((m) => {
+    if (m === carryMob) return includeCarried;
+    if (m === carryGrappleMob && !includeCarried && carryGrappleMode === "release") return false;
+    return true;
+  });
+  if (!list.length) return [];
+  const idxById = new Map();
+  list.forEach((m, i) => idxById.set(m.id, i));
+  return list.map((m) => ({
+    id: m.id,
+    kind: mobKindCode(m),
+    isBaby: !!m.isBaby,
+    homeId: m.homeId != null ? m.homeId : -1,
+    parentIdx: m.parentId != null ? (idxById.get(m.parentId) != null ? idxById.get(m.parentId) : -1) : -1,
+    x: m.pos.x, y: m.pos.y, z: m.pos.z,
+    yaw: m.yaw != null ? m.yaw : 0,
+    look: mobLookIndex(m),
+    villageBound: m.villageBound !== false,
+    penBound: !!m.penBound,
+  }));
+}
+function snapshotChainPairsForDim(dimName, mobList) {
+  if (!mobList || !mobList.length) return [];
+  const idxById = new Map();
+  mobList.forEach((e, i) => { if (e.id != null) idxById.set(e.id, i); });
+  const pairs = [];
+  for (const [carrierId, childId] of chainChild) {
+    let a = idxById.get(carrierId);
+    const b = idxById.get(childId);
+    if (carrierId === PLAYER_CHAIN_ID) {
+      if (dimName !== dim) continue;
+      const link = chainLinks.get(childId);
+      if (link && link.playerLead) continue;
+      const front = (playerInChain() && grappleMob) ? grappleMob : (link ? mobById.get(link.playerFrontId) : null);
+      if (!front || mobDimOf(front) !== dimName) continue;
+      a = front ? idxById.get(front.id) : null;
+    } else {
+      const carrier = mobById.get(carrierId);
+      const child = mobById.get(childId);
+      if (!carrier || !child || mobDimOf(carrier) !== dimName || mobDimOf(child) !== dimName) continue;
+    }
+    if (a == null || b == null || a >= 65535 || b >= 65535) continue;
+    pairs.push([a, b]);
+  }
+  return pairs;
+}
+function purgeProtectedForDim(prefix) {
+  for (const k of [...protectedBlocks]) if (k.startsWith(prefix + ":")) protectedBlocks.delete(k);
+}
+function recordDimExit(win, dir) {
+  const full = Object.assign({ nether: false }, win);
+  const spot = nearPortalSpawn(full, dir);
+  return { x: spot.x, y: spot.y, z: spot.z, yaw: faceAwayFromPortal(full, spot.x, spot.z) };
+}
+function resolveDimArrival(exit, fallback) {
+  if (exit && isFinite(exit.x) && isFinite(exit.y) && isFinite(exit.z)) {
+    const spot = resolveSpawn(exit.x, exit.y, exit.z);
+    return { spot, yaw: isFinite(exit.yaw) ? exit.yaw : fallback.yaw };
+  }
+  return fallback;
+}
 const MOB_SAVE_BYTES = 19;
 function mobKindCode(m) {
   if (m.kind === "pig") return 1;
@@ -7194,6 +7272,127 @@ function restoreOverworldMobs(list, opts) {
   spawnVillagers();
   spawnPigeons();
   return created.length;
+}
+function purgeDimMobs(dimName, keepHeld) {
+  for (let i = mobs.length - 1; i >= 0; i--) {
+    const m = mobs[i];
+    if (mobDimOf(m) !== dimName || m.kind === "dragon") continue;
+    if (keepHeld && (m === carryMob || m === carryGrappleMob)) continue;
+    dropChainFrom(m);
+    if (m.mesh) scene.remove(m.mesh);
+    if (m.fallMesh) scene.remove(m.fallMesh);
+    mobById.delete(m.id);
+    mobs.splice(i, 1);
+  }
+  for (let i = endermen.length - 1; i >= 0; i--) if (!mobs.includes(endermen[i])) endermen.splice(i, 1);
+  pruneChains();
+  buildMobGrid();
+}
+function relinkDimChainsByIds(idByListIdx, pairs) {
+  if (!pairs || !pairs.length || !idByListIdx) return;
+  for (const [a, b] of pairs) {
+    if (a < 0 || b < 0 || a >= idByListIdx.length || b >= idByListIdx.length) continue;
+    const ca = idByListIdx[a] != null ? mobById.get(idByListIdx[a]) : null;
+    const cb = idByListIdx[b] != null ? mobById.get(idByListIdx[b]) : null;
+    if (!ca || !cb) continue;
+    linkChain(ca, cb);
+  }
+}
+function restoreDimMobs(list, dimName) {
+  if (!list || !list.length) return 0;
+  purgeDimMobs(dimName, true);
+  let gid = mobs.length ? Math.max(...mobs.map((m) => m.id)) + 1 : 0;
+  const created = [];
+  const idByListIdx = new Array(list.length).fill(null);
+  for (let i = 0; i < list.length; i++) {
+    const e = list[i];
+    const kind = mobKindFromCode(e.kind);
+    if (kind === "dragon") continue;
+    const isBaby = !!e.isBaby && kind === "villager";
+    const hw = kind === "pigeon" ? 0.25 : kind === "wolf" ? 0.30 : (kind === "pig" || kind === "cow") ? 0.32 : kind === "enderman" ? ENDERMAN_HW : (isBaby ? 0.16 : 0.27);
+    const hh = kind === "pigeon" ? 0.5 : kind === "wolf" ? 0.90 : kind === "pig" ? 0.92 : kind === "cow" ? 1.30 : kind === "enderman" ? ENDERMAN_H : (isBaby ? 0.98 : 1.82);
+    let sx = e.x, sy = e.y, sz = e.z;
+    if (!isFinite(sx) || !isFinite(sy) || !isFinite(sz)) continue;
+    sx = Math.max(-WORLD_RADIUS + 1, Math.min(WORLD_RADIUS - 1, sx));
+    sz = Math.max(-WORLD_RADIUS + 1, Math.min(WORLD_RADIUS - 1, sz));
+    sy = Math.max(1, Math.min(MAX_Y - 2, isFinite(sy) ? sy : 30));
+    if (dimName === "end") {
+      const r = Math.hypot(sx, sz);
+      if (r > END_MOB_R) { const s = END_MOB_R / r; sx *= s; sz *= s; }
+      if (!isFlyingKind(kind)) sy = Math.max(END_PLATFORM_TOP + 1, Math.min(DRAGON_MAX_Y, sy));
+    }
+    if (aabbCollidesWorld(sx, sy, sz, hw, hh)) {
+      let placed = false;
+      for (const [ox, oz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+        for (const yOff of [0, 1, 2, -1, -2]) {
+          const nx = Math.max(-WORLD_RADIUS + 1, Math.min(WORLD_RADIUS - 1, sx + ox * 2));
+          const nz = Math.max(-WORLD_RADIUS + 1, Math.min(WORLD_RADIUS - 1, sz + oz * 2));
+          const ny = Math.max(1, Math.min(MAX_Y - 2, sy + yOff));
+          if (!aabbCollidesWorld(nx, ny, nz, hw, hh)) { sx = nx; sy = ny; sz = nz; placed = true; break; }
+        }
+        if (placed) break;
+      }
+      if (!placed) continue;
+    }
+    const ryaw = isFinite(e.yaw) ? e.yaw : 0;
+    let mesh = null, palIdx = 0, collar = WOLF_COLLAR_COLORS[0], endermanVis = null;
+    if (kind === "villager") {
+      palIdx = (e.look >= 0 && e.look < VILLAGER_PALETTES.length) ? e.look : 0;
+      mesh = makeVillagerMesh(isBaby, palIdx);
+    } else if (kind === "pig") mesh = makePigMesh();
+    else if (kind === "cow") mesh = makeCowMesh();
+    else if (kind === "pigeon") mesh = makePigeonMesh();
+    else if (kind === "enderman") {
+      ensureEndermanAssets();
+      endermanVis = makeEndermanMesh();
+      mesh = endermanVis.g;
+    } else {
+      collar = WOLF_COLLAR_COLORS[(e.look >= 0 && e.look < WOLF_COLLAR_COLORS.length) ? e.look : 0];
+      mesh = makeWolfMesh(WOLF_FUR, collar);
+    }
+    mesh.position.set(sx, sy, sz);
+    mesh.rotation.y = ryaw;
+    scene.add(mesh);
+    const base = {
+      id: gid++, kind, homeId: -1, isBaby, parentId: -1, dim: dimName,
+      pos: new THREE.Vector3(sx, sy, sz),
+      vel: new THREE.Vector3(0, 0, 0),
+      hw, h: hh, mesh, onGround: false,
+      target: null, mode: "wander", wanderT: 3 + Math.random() * 4, insideT: 0,
+      legPhase: Math.random() * Math.PI * 2,
+      blockedT: 0, yaw: ryaw, yawTarget: ryaw, villageBound: false,
+      _stuckT: 0, _prevX: sx, _prevZ: sz,
+      path: null, pathIdx: 0, pathKey: null, steerX: 0, steerZ: 0, steerCooldown: 0, lastTarget: null, _wasInWater: false, wolfInWater: false,
+    };
+    if (kind === "villager") { base.canStep = false; base.speed = WALK / 2; base.sc = isBaby ? 0.52 : 1; base.palIdx = palIdx; }
+    else if (kind === "pig" || kind === "cow") { base.canStep = false; base.speed = WALK / 2.2; base.penBound = false; base.sc = 1; }
+    else if (kind === "pigeon") {
+      base.canStep = false; base.speed = PIGEON_SPEED; base.sc = 1; base.arc = null; base.mode = "straight";
+      base.perchSpot = null; base.perchGroup = null; base.perchT = 0; base.perchWander = null; base.perchWanderT = 0;
+      base.perchTimeout = 0; base.perchRetry = 0;
+      base.vel.set(Math.cos(ryaw) * PIGEON_SPEED, 0, Math.sin(ryaw) * PIGEON_SPEED);
+    } else if (kind === "enderman") {
+      base.canStep = false; base.speed = WALK / 2; base.sc = 1;
+      base.g = endermanVis.g; base.eyeMat = endermanVis.eyeMat; base.eyes = endermanVis.eyes;
+      base.armL = endermanVis.armL; base.armR = endermanVis.armR; base.head = endermanVis.head;
+      base.haloMeshes = endermanVis.haloMeshes;
+      base.t = 0; base.angry = 0; base.teleportT = 3 + Math.random() * 7; base.lookT = 0;
+      base.baseY = sy; base.mesh.rotation.y = base.yaw;
+      endermen.push(base);
+    } else { base.canStep = true; base.speed = WALK / 2; base.fur = WOLF_FUR; base.collar = collar; base.sc = 1; base.wolfStepUp = false; base.wolfStepUpClearY = 0; base.wolfInWater = false; base.wasOnGroundWolf = false; }
+    mobs.push(base);
+    mobById.set(base.id, base);
+    idByListIdx[i] = base.id;
+    created.push(base);
+  }
+  for (const m of created) {
+    if (isChained(m)) continue;
+    if (isFlyingKind(m.kind)) { if (!m.target) m.target = pigeonRandomTarget(m.pos); }
+    else m.target = { x: m.pos.x, z: m.pos.z };
+    m.wanderT = 3 + Math.random() * 4;
+  }
+  buildMobGrid();
+  return { n: created.length, ids: idByListIdx };
 }
 function intersectsMob(bx, by, bz, ignorePigeons) {
   const nearby = nearbyMobsFor(bx + 0.5, bz + 0.5, 1);
@@ -11450,6 +11649,196 @@ function clearTNTVisual(t) {
   if (t.mesh) { scene.remove(t.mesh); t.mesh = null; }
 }
 
+function purgeLiveTNT() {
+  for (const t of tntLit.values()) clearTNTVisual(t);
+  tntLit.clear();
+  tntEta.clear();
+  explosionQueue.length = 0;
+}
+
+function purgeLiveEffects() {
+  for (const b of bursts) {
+    scene.remove(b.pts);
+    b.geo.dispose();
+    b.mat.dispose();
+  }
+  bursts.length = 0;
+  for (const f of flashes) {
+    scene.remove(f.mesh);
+    f.mesh.geometry.dispose();
+    f.mesh.material.dispose();
+  }
+  flashes.length = 0;
+}
+
+const FX_SNAPSHOT_MAX = 24;
+function snapshotLiveFx() {
+  const fx = [];
+  for (const b of bursts) {
+    if (b.tag === undefined || b.tag > 3 || !(b.life > 0)) continue;
+    if (![b.fx, b.fy, b.fz].every(isFinite)) continue;
+    fx.push({ tag: b.tag, x: b.fx, y: b.fy, z: b.fz, hex: b.hex || 0 });
+    if (fx.length >= FX_SNAPSHOT_MAX) break;
+  }
+  return fx;
+}
+
+function replayLiveFx(list) {
+  if (!list) return;
+  for (const e of list) {
+    if (![e.x, e.y, e.z].every(isFinite)) continue;
+    if (e.tag === 0) spawnExplosion(e.x, e.y, e.z);
+    else if (e.tag === 1) spawnPigeonBurst(e.x, e.y, e.z);
+    else if (e.tag === 2) spawnDragonBurst(e.x, e.y, e.z, e.hex || 0xd06bff);
+    else if (e.tag === 3) spawnDragonDeath(e.x, e.y, e.z);
+  }
+}
+
+function dragonSaveable() {
+  return dim === "end" && !endCleared && dragon.mesh && dragon.hp > 0 && !(dragon.dying > 0);
+}
+
+function snapshotLiveTNT() {
+  const bombs = [];
+  for (const t of tntLit.values()) {
+    let targetKind = 0;
+    let tx = 0, ty = 0, tz = 0, tkind = 0;
+    if (t.pigeon) {
+      if (t.pigeon.kind === "dragon") targetKind = 1;
+      else if (mobs.includes(t.pigeon)) {
+        targetKind = 2;
+        tx = t.pigeon.pos.x; ty = t.pigeon.pos.y; tz = t.pigeon.pos.z;
+        tkind = mobKindCode(t.pigeon);
+      } else continue;
+    }
+    bombs.push({ t, targetKind, tx, ty, tz, tkind });
+  }
+  const queue = [];
+  for (const q of explosionQueue) {
+    let qKind = 0;
+    let qx = 0, qy = 0, qz = 0, qk = 0;
+    if (q.pigeon) {
+      if (q.pigeon === true) qKind = 3;
+      else if (q.pigeon.kind === "dragon") qKind = 1;
+      else if (mobs.includes(q.pigeon)) {
+        qKind = 2;
+        qx = q.pigeon.pos.x; qy = q.pigeon.pos.y; qz = q.pigeon.pos.z;
+        qk = mobKindCode(q.pigeon);
+      } else continue;
+    }
+    queue.push({ q, qKind, qx, qy, qz, qk });
+  }
+  const etas = [];
+  for (const [mob, eta] of tntEta) {
+    if (!(eta > 0)) continue;
+    let hasBomb = false;
+    for (const t of tntLit.values()) {
+      if (t.pigeon === mob && t.mesh && !t.stuck) { hasBomb = true; break; }
+    }
+    if (!hasBomb) continue;
+    if (mob.kind === "dragon") {
+      if (!mobs.includes(mob)) continue;
+      etas.push({ eta, targetKind: 1, tx: 0, ty: 0, tz: 0, tkind: 0 });
+    } else {
+      if (!mobs.includes(mob)) continue;
+      etas.push({ eta, targetKind: 2, tx: mob.pos.x, ty: mob.pos.y, tz: mob.pos.z, tkind: mobKindCode(mob) });
+    }
+  }
+  return { bombs, queue, etas };
+}
+
+function findSavedTargetMob(dimName, kindCode, x, y, z) {
+  let best = null, bestD = 0.001;
+  for (const m of mobs) {
+    if (mobDimOf(m) !== dimName || mobKindCode(m) !== kindCode) continue;
+    const d = Math.hypot(m.pos.x - x, m.pos.y - y, m.pos.z - z);
+    if (d <= bestD) { bestD = d; best = m; }
+  }
+  if (best) return best;
+  bestD = 3.5;
+  for (const m of mobs) {
+    if (mobDimOf(m) !== dimName || mobKindCode(m) !== kindCode) continue;
+    if (isMobHeld(m)) continue;
+    const d = Math.hypot(m.pos.x - x, m.pos.y - y, m.pos.z - z);
+    if (d <= bestD) { bestD = d; best = m; }
+  }
+  return best;
+}
+
+function restoreLiveTNT(savedBombs, savedQueue, savedEtas) {
+  if (!savedBombs && !savedQueue && !savedEtas) return;
+  const now = performance.now();
+  if (savedQueue) {
+    for (const e of savedQueue) {
+      let pigeon = null;
+      if (e.qKind === 1) {
+        if (dragon.mob && mobs.includes(dragon.mob)) pigeon = dragon.mob;
+        else continue;
+      } else if (e.qKind === 3) {
+        pigeon = true;
+      } else if (e.qKind === 2) {
+        pigeon = findSavedTargetMob(dim, e.qk, e.qx, e.qy, e.qz);
+        if (!pigeon) continue;
+      }
+      explosionQueue.push({
+        x: e.x, y: e.y, z: e.z,
+        pointBlank: !!e.pointBlank, homing: !!e.homing,
+        due: e.remain > 0.01 ? now + e.remain * 1000 : 0,
+        ...(pigeon ? { pigeon } : {}),
+      });
+    }
+  }
+  if (savedBombs) {
+    for (const e of savedBombs) {
+      let pigeon = null;
+      if (e.targetKind === 1) {
+        if (dragon.mob && mobs.includes(dragon.mob)) pigeon = dragon.mob;
+        else continue;
+      } else if (e.targetKind === 2) {
+        pigeon = findSavedTargetMob(dim, e.tkind, e.tx, e.ty, e.tz);
+        if (!pigeon) continue;
+      }
+      const spr = makeFuseSprite();
+      spr.position.set(e.px, e.py + 0.85, e.pz);
+      scene.add(spr);
+      drawFuseSprite(spr, Math.max(0, pigeon ? e.life : e.fuse));
+      let mesh = null;
+      if (e.hasMesh) {
+        mesh = makeTNTBomb();
+        mesh.position.set(e.px, e.py, e.pz);
+        scene.add(mesh);
+      }
+      const t = {
+        bx: e.bx, by: e.by, bz: e.bz,
+        px: e.px, py: e.py, pz: e.pz,
+        fuse: e.fuse, life: e.life,
+        spr, mesh, stuck: !!e.stuck,
+        ax: e.ax, ay: e.ay, az: e.az,
+        pigeon,
+      };
+      tntLit.set(e.fly ? ("fly" + (tntFlySeq++)) : key(e.bx, e.by, e.bz), t);
+    }
+  }
+  if (savedEtas) {
+    for (const e of savedEtas) {
+      let mob = null;
+      if (e.targetKind === 1) {
+        if (dragon.mob && mobs.includes(dragon.mob)) mob = dragon.mob;
+        else continue;
+      } else if (e.targetKind === 2) {
+        mob = findSavedTargetMob(dim, e.tkind, e.tx, e.ty, e.tz);
+        if (!mob) continue;
+      } else continue;
+      let hasBomb = false;
+      for (const t of tntLit.values()) {
+        if (t.pigeon === mob && t.mesh && !t.stuck) { hasBomb = true; break; }
+      }
+      if (!hasBomb) continue;
+      tntEta.set(mob, e.eta);
+    }
+  }
+}
+
 const CHAIN_FUSE = 0.05;
 function tntFizzleAim(bx, by, bz) {
   if (dim !== "over" && dim !== "end" && dim !== "nether" || chainBreaking) return null;
@@ -11808,6 +12197,8 @@ function tickTNT(dt) {
             if (v.kind === "dragon") enqueueExplosion(t.px, t.py, t.pz, false, true);
             else explodePigeon(t.px, t.py, t.pz, false);
           }
+        } else {
+          drawFuseSprite(t.spr, Math.max(0, t.life));
         }
       } else if (!dragon.mesh) {
         clearTNTVisual(t);
@@ -11950,7 +12341,7 @@ function spawnDragonDeath(cx, cy, cz) {
   });
   const pts = new THREE.Points(geo, mat);
   scene.add(pts);
-  bursts.push({ pts, geo, mat, vel, life: 2.0, max: 2.0 });
+  bursts.push({ pts, geo, mat, vel, life: 2.0, max: 2.0, tag: 3, fx: cx, fy: cy, fz: cz });
 
   const N2 = 80;
   const posB = new Float32Array(N2 * 3);
@@ -11976,7 +12367,7 @@ function spawnDragonDeath(cx, cy, cz) {
   });
   const ptsB = new THREE.Points(geoB, matB);
   scene.add(ptsB);
-  bursts.push({ pts: ptsB, geo: geoB, mat: matB, vel: velB, life: 1.2, max: 1.2 });
+  bursts.push({ pts: ptsB, geo: geoB, mat: matB, vel: velB, life: 1.2, max: 1.2, tag: 3, fx: cx, fy: cy, fz: cz });
 }
 
 function dragonBurstColor() {
@@ -12018,7 +12409,7 @@ function spawnDragonBurst(cx, cy, cz, hex = 0xd06bff) {
   });
   const pts = new THREE.Points(geo, mat);
   scene.add(pts);
-  bursts.push({ pts, geo, mat, vel, life: 1.1, max: 1.1 });
+  bursts.push({ pts, geo, mat, vel, life: 1.1, max: 1.1, tag: 2, fx: cx, fy: cy, fz: cz, hex });
 }
 
 function spawnPigeonBurst(cx, cy, cz) {
@@ -12058,7 +12449,7 @@ function spawnPigeonBurst(cx, cy, cz) {
   });
   const pts = new THREE.Points(geo, mat);
   scene.add(pts);
-  bursts.push({ pts, geo, mat, vel, life: 1.1, max: 1.1 });
+  bursts.push({ pts, geo, mat, vel, life: 1.1, max: 1.1, tag: 1, fx: cx, fy: cy, fz: cz });
 }
 
 function spawnExplosion(cx, cy, cz) {
@@ -12093,7 +12484,7 @@ function spawnExplosion(cx, cy, cz) {
   });
   const pts = new THREE.Points(geo, mat);
   scene.add(pts);
-  bursts.push({ pts, geo, mat, vel, life: 0.8, max: 0.8 });
+  bursts.push({ pts, geo, mat, vel, life: 0.8, max: 0.8, tag: 0, fx: cx, fy: cy, fz: cz });
 }
 
 function tickEffects(dt) {
@@ -12317,7 +12708,7 @@ let endCleared = false;
 let dormantMsgAt = 0;
 
 function buildReturnPortal() {
-  protectedBlocks.clear();
+  purgeProtectedForDim("end");
   const coords = [];
   for (let x = -2; x <= 2; x++)
     for (let y = 0; y <= 4; y++) {
@@ -12343,7 +12734,7 @@ let netReturnWin = null;
 const NETHER_SPAWN = { x: 0.5, y: NETHER_RETURN_BASE_Y + 1.01, z: 2.5 };
 
 function buildNetherPortal() {
-  protectedBlocks.clear();
+  purgeProtectedForDim("nether");
   const coords = [];
   const base = NETHER_RETURN_BASE_Y;
   for (let x = -4; x <= 3; x++)
@@ -12363,6 +12754,63 @@ function buildNetherPortal() {
     }
   netReturnWin = { minX: -2, minY: base, minZ: NETHER_RETURN_Z };
   refreshBlocks(coords);
+}
+
+function returnPortalFrameMissing() {
+  const w = worlds.end;
+  for (let x = -2; x <= 2; x++)
+    for (let y = 0; y <= 4; y++) {
+      const isCorner = (x === -2 && (y === 0 || y === 4)) || (x === 2 && (y === 0 || y === 4));
+      const isEdge = x === -2 || x === 2 || y === 0 || y === 4;
+      if (isEdge && !isCorner && w.get(key(x, END_RETURN_BASE_Y + y, END_RETURN_Z)) !== PORTAL) return true;
+    }
+  return false;
+}
+
+function ensureReturnPortal() {
+  if (worlds.end.size && !returnPortalFrameMissing()) {
+    endReturnWin = { orient: "v", minX: -2, minY: END_RETURN_BASE_Y, minZ: END_RETURN_Z };
+    const coords = [];
+    for (let x = -2; x <= 2; x++)
+      for (let y = 0; y <= 4; y++) {
+        const isCorner = (x === -2 && (y === 0 || y === 4)) || (x === 2 && (y === 0 || y === 4));
+        const isEdge = x === -2 || x === 2 || y === 0 || y === 4;
+        if (isEdge && !isCorner) {
+          protectedBlocks.add("end:" + key(x, END_RETURN_BASE_Y + y, END_RETURN_Z));
+          coords.push([x, END_RETURN_BASE_Y + y, END_RETURN_Z]);
+        }
+      }
+    for (let x = -END_PLATFORM_R; x <= END_PLATFORM_R; x++)
+      for (let z = -END_PLATFORM_R; z <= END_PLATFORM_R; z++)
+        protectedBlocks.add("end:" + key(x, END_PLATFORM_TOP, z));
+    return;
+  }
+  buildReturnPortal();
+}
+
+function netherPortalFrameMissing() {
+  const w = worlds.nether;
+  const base = NETHER_RETURN_BASE_Y;
+  for (let x = -2; x <= 2; x++)
+    for (let y = 0; y <= 3; y++) {
+      const isEdge = x === -2 || x === 2 || y === 0 || y === 3;
+      if (isEdge && w.get(key(x, base + y, NETHER_RETURN_Z)) !== OBSIDIAN) return true;
+    }
+  return false;
+}
+
+function ensureNetherPortal() {
+  if (worlds.nether.size && !netherPortalFrameMissing()) {
+    const base = NETHER_RETURN_BASE_Y;
+    for (let x = -2; x <= 2; x++)
+      for (let y = 0; y <= 3; y++) {
+        const isEdge = x === -2 || x === 2 || y === 0 || y === 3;
+        if (isEdge) protectedBlocks.add("nether:" + key(x, base + y, NETHER_RETURN_Z));
+      }
+    netReturnWin = { minX: -2, minY: base, minZ: NETHER_RETURN_Z };
+    return;
+  }
+  buildNetherPortal();
 }
 
 function setDimensionEnv() {
@@ -12392,8 +12840,41 @@ function setDimensionEnv() {
   }
 }
 
+function suspendLiveDim() {
+  if (dim === "over") {
+    overworldMobCache = snapshotMobsForDim("over", false);
+    pendingChainLinks = snapshotChainPairsForDim("over", overworldMobCache);
+  } else if (dim === "end") {
+    endMobCache = snapshotMobsForDim("end", false);
+    pendingChainLinksEnd = snapshotChainPairsForDim("end", endMobCache);
+  } else if (dim === "nether") {
+    netherMobCache = snapshotMobsForDim("nether", false);
+    pendingChainLinksNether = snapshotChainPairsForDim("nether", netherMobCache);
+  }
+  pendingCarriedIdx = null;
+}
+
 function goToDimension(name, sx, sy, sz) {
+  suspendLiveDim();
+  purgeLiveTNT();
+  pigeonLock = null; pigeonLockT = 0; pigeonLockShots = 0;
   clearChains();
+  if (playerInChain()) detachDisplacementGrapple();
+  if (carryGrappleActive || carryGrapplePulling || carryGrappleRetracting) {
+    if (carryGrappleMode === "release" && carryGrappleMob && !carryMob) {
+      carryMob = carryGrappleMob;
+      carryMob.mode = "carried";
+      setMobTransparent(carryMob, 0.35);
+      playerArms.visible = true;
+    }
+    carryGrappleActive = false;
+    carryGrapplePulling = false;
+    carryGrappleRetracting = false;
+    carryGrappleMob = null;
+    carryGrappleBlock = null;
+    if (carryGrappleCubes) carryGrappleCubes.visible = false;
+    if (carryGrappleHead) carryGrappleHead.visible = false;
+  }
   dim = name;
   world = worlds[name];
   clearGlowLights();
@@ -12401,45 +12882,80 @@ function goToDimension(name, sx, sy, sz) {
   portalDirty = true;
   worldDirty = true;
   clearPortalFills();
-  removeEndEntities();
-  if (dim !== "over") {
-    overworldMobCache = snapshotOverworldMobs(false);
-    pendingCarriedIdx = null;
-    removeVillagers();
-  }
-  else {
-    if (!villageHouses.length) computeVillageLayout();
-    const liveOver = mobs.filter((m) => m.dim === "over" || m.dim === undefined).length;
-    if (overworldMobCache && overworldMobCache.length && liveOver < overworldMobCache.length) {
-      restoreOverworldMobs(overworldMobCache, { keepCarried: true });
-    } else if (!liveOver) spawnVillagers();
-    pendingCarriedIdx = null;
-    spawnPigeons();
-  }
-  for (const m of mobs) m.mesh.visible = (m.dim === dim || m.dim === undefined) || m === carryMob || m === carryGrappleMob;
+  if (!villageHouses.length) computeVillageLayout();
+  const liveCount = (d) => mobs.filter((m) => mobDimOf(m) === d && m.kind !== "dragon").length;
+  for (const m of mobs) m.mesh.visible = (mobDimOf(m) === dim) || m === carryMob || m === carryGrappleMob;
   if (name === "end") {
-    generateEnd();
-    endReturnWin = null;
-    endCleared = false;
-    buildReturnPortal();
+    if (!worlds.end.size) {
+      generateEnd();
+      endCleared = false;
+      buildReturnPortal();
+    } else {
+      removeDragon();
+      endCleared = false;
+      ensureReturnPortal();
+    }
     spawnDragon();
     spawnEndermen();
+    const arr = resolveDimArrival(endExit, { spot: { x: END_SPAWN.x, y: END_SPAWN.y, z: END_SPAWN.z }, yaw: 0 });
+    sx = arr.spot.x; sy = arr.spot.y; sz = arr.spot.z;
     setDimensionEnv();
-    yaw = 0;
+    yaw = arr.yaw;
     pitch = 0;
+    if (endMobCache && endMobCache.length && liveCount("end") < endMobCache.length) {
+      const saved = endMobCache;
+      const pairs = pendingChainLinksEnd;
+      pendingChainLinksEnd = null;
+      const res = restoreDimMobs(saved, "end");
+      relinkDimChainsByIds(res.ids, pairs);
+    } else if (pendingChainLinksEnd && pendingChainLinksEnd.length && endMobCache && endMobCache.length) {
+      const pairs = pendingChainLinksEnd;
+      pendingChainLinksEnd = null;
+      relinkDimChainsByIds(endMobCache.map((e) => e.id), pairs);
+    } else pendingChainLinksEnd = null;
   } else if (name === "nether") {
-    generateNether();
-    netReturnWin = null;
-    buildNetherPortal();
+    if (!worlds.nether.size) {
+      generateNether();
+      buildNetherPortal();
+    } else {
+      ensureNetherPortal();
+    }
+    const arr = resolveDimArrival(netherExit, { spot: { x: NETHER_SPAWN.x, y: NETHER_SPAWN.y, z: NETHER_SPAWN.z }, yaw: Math.PI });
+    sx = arr.spot.x; sy = arr.spot.y; sz = arr.spot.z;
     setDimensionEnv();
-    yaw = Math.PI;
+    yaw = arr.yaw;
     pitch = 0;
+    if (netherMobCache && netherMobCache.length && liveCount("nether") < netherMobCache.length) {
+      const saved = netherMobCache;
+      const pairs = pendingChainLinksNether;
+      pendingChainLinksNether = null;
+      const res = restoreDimMobs(saved, "nether");
+      relinkDimChainsByIds(res.ids, pairs);
+    } else if (pendingChainLinksNether && pendingChainLinksNether.length && netherMobCache && netherMobCache.length) {
+      const pairs = pendingChainLinksNether;
+      pendingChainLinksNether = null;
+      relinkDimChainsByIds(netherMobCache.map((e) => e.id), pairs);
+    } else pendingChainLinksNether = null;
   } else {
     setDimensionEnv();
+    const liveOver = liveCount("over");
+    if (overworldMobCache && overworldMobCache.length && liveOver < overworldMobCache.length) {
+      const saved = overworldMobCache;
+      overworldMobCache = null;
+      if (!restoreOverworldMobs(saved, { keepCarried: true })) spawnVillagers();
+    } else if (!liveOver) spawnVillagers();
+    if (pendingChainLinks && pendingChainLinks.length && overworldMobCache && overworldMobCache.length) {
+      const pairs = pendingChainLinks;
+      pendingChainLinks = null;
+      relinkDimChainsByIds(overworldMobCache.map((e) => e.id), pairs);
+    } else pendingChainLinks = null;
+    pendingCarriedIdx = null;
+    spawnPigeons();
     const ret = resolveOverworldReturn();
     yaw = ret.yaw;
     sx = ret.spot.x; sy = ret.spot.y; sz = ret.spot.z;
   }
+  for (const m of mobs) m.mesh.visible = (mobDimOf(m) === dim) || m === carryMob || m === carryGrappleMob;
   Object.keys(keys).forEach((k) => { keys[k] = false; });
   pos.set(sx, freeCam ? sy + EYE : sy, sz);
   camPos.set(sx, freeCam ? sy + EYE : sy, sz);
@@ -13060,6 +13576,10 @@ function facePortalFrom(win, px, pz) {
   return Math.atan2(-(c.x + 0.5 - px), -(c.z + 0.5 - pz));
 }
 
+function faceAwayFromPortal(win, px, pz) {
+  return facePortalFrom(win, px, pz) + Math.PI;
+}
+
 function nearestReturnWin(sx, sy, sz) {
   const cx = Math.floor(sx), cy = Math.floor(sy), cz = Math.floor(sz);
   let best = null;
@@ -13175,9 +13695,15 @@ function checkPortal() {
       if (ddx === 0 && ddz === 0) { ddx = forward.x; ddz = forward.z; }
       if (dim === "over") recordOverPortal(f.win, true, { x: ddx, z: ddz });
       if (dim === "nether") {
+        netherExit = recordDimExit(Object.assign({ nether: true }, f.win), { x: ddx, z: ddz });
         portalTrigger("over", overPortalSpawn.x, overPortalSpawn.y, overPortalSpawn.z, "You returned to the Overworld");
+      } else if (dim === "end") {
+        endExit = recordDimExit(Object.assign({ nether: true }, f.win), { x: ddx, z: ddz });
+        const dst = netherExit || NETHER_SPAWN;
+        portalTrigger("nether", dst.x, dst.y, dst.z, "You entered The Nether");
       } else {
-        portalTrigger("nether", NETHER_SPAWN.x, NETHER_SPAWN.y, NETHER_SPAWN.z, "You entered The Nether");
+        const dst = netherExit || NETHER_SPAWN;
+        portalTrigger("nether", dst.x, dst.y, dst.z, "You entered The Nether");
       }
       return;
     } else {
@@ -13191,9 +13717,15 @@ function checkPortal() {
       if (ddx === 0 && ddz === 0) { ddx = forward.x; ddz = forward.z; }
       if (dim === "over") recordOverPortal(f.win, false, { x: ddx, z: ddz });
       if (dim === "end") {
+        endExit = recordDimExit(Object.assign({ nether: false }, f.win), { x: ddx, z: ddz });
         portalTrigger("over", overPortalSpawn.x, overPortalSpawn.y, overPortalSpawn.z, "You returned to the Overworld");
+      } else if (dim === "nether") {
+        netherExit = recordDimExit(Object.assign({ nether: false }, f.win), { x: ddx, z: ddz });
+        const dst = endExit || END_SPAWN;
+        portalTrigger("end", dst.x, dst.y, dst.z, "You arrived in The End");
       } else {
-        portalTrigger("end", END_SPAWN.x, END_SPAWN.y, END_SPAWN.z, "You arrived in The End");
+        const dst = endExit || END_SPAWN;
+        portalTrigger("end", dst.x, dst.y, dst.z, "You arrived in The End");
       }
       return;
     }
@@ -13913,7 +14445,7 @@ function spawnEndermanBurst(cx, cy, cz) {
   });
   const pts = new THREE.Points(geo, mat);
   scene.add(pts);
-  bursts.push({ pts, geo, mat, vel, life: 0.7, max: 0.7 });
+  bursts.push({ pts, geo, mat, vel, life: 0.7, max: 0.7, tag: 4, fx: cx, fy: cy, fz: cz });
 }
 
 function endermanPickSpot(cx, cz, minDist, others = [], maxDist = END_MOB_R, px = null, pz = null) {
@@ -14329,40 +14861,41 @@ function serialize() {
   const m = placedFlowers.size;
   const gov = glowVariants.over.size, gev = glowVariants.end.size, gnv = glowVariants.nether.size;
   const winLen = overPortalWin ? 12 : 1;
-  let overMobs = dim === "over" ? snapshotOverworldMobs(true) : (overworldMobCache || []).slice();
+  let overMobs = snapshotMobsForDim("over", true);
+  let endMobs = snapshotMobsForDim("end", true);
+  let netherMobs = snapshotMobsForDim("nether", true);
+  let carriedDim = 0;
   let carriedIdx = -1;
-  if (dim === "over") {
-    if (carryMob && mobs.includes(carryMob)) {
-      const ci = overMobs.findIndex((e) => e.id === carryMob.id);
-      if (ci >= 0) carriedIdx = ci;
-    }
-  } else if (carryMob && mobs.includes(carryMob) && (carryMob.dim === "over" || carryMob.dim === undefined)) {
-    const live = snapshotOverworldMobs(true).find((e) => e.id === carryMob.id);
-    if (live) { overMobs.push(live); carriedIdx = overMobs.length - 1; }
+  if (carryMob && mobs.includes(carryMob)) {
+    const hd = mobDimOf(carryMob);
+    carriedDim = hd === "end" ? 1 : hd === "nether" ? 2 : 0;
+    const li = [overMobs, endMobs, netherMobs][carriedDim].findIndex((e) => e.id === carryMob.id);
+    if (li >= 0) carriedIdx = li;
+    else carriedDim = 0;
   }
-  const mobN = overMobs.length;
-  let chainPairs = [];
-  if (dim === "over" && mobN) {
-    const idxById = new Map();
-    overMobs.forEach((e, i) => { if (e.id != null) idxById.set(e.id, i); });
-    for (const [carrierId, childId] of chainChild) {
-      let a = idxById.get(carrierId);
-      const b = idxById.get(childId);
-      if (carrierId === PLAYER_CHAIN_ID) {
-        const link = chainLinks.get(childId);
-        if (link && link.playerLead) continue;
-        const front = (playerInChain() && grappleMob) ? grappleMob : (link ? mobById.get(link.playerFrontId) : null);
-        a = front ? idxById.get(front.id) : null;
-      }
-      if (a == null || b == null || a >= 65535 || b >= 65535) continue;
-      chainPairs.push([a, b]);
-    }
-  }
-  const buf = new ArrayBuffer(117 + (on + en + nn) * 5 + m * 6 + (gov + gev + gnv) * 5 + winLen + 16 + 4 + mobN * MOB_SAVE_BYTES + 24 + 4 + chainPairs.length * 4 + 4);
+  overworldMobCache = snapshotMobsForDim("over", false);
+  endMobCache = snapshotMobsForDim("end", false);
+  netherMobCache = snapshotMobsForDim("nether", false);
+  pendingCarriedIdx = null;
+  const mobN = overMobs.length, endMobN = endMobs.length, netherMobN = netherMobs.length;
+  const chainPairs = snapshotChainPairsForDim("over", overMobs);
+  const chainPairsEnd = snapshotChainPairsForDim("end", endMobs);
+  const chainPairsNether = snapshotChainPairsForDim("nether", netherMobs);
+  const exitBytes = (netherExit ? 33 : 1) + (endExit ? 33 : 1);
+  const liveTNTSize = snapshotLiveTNT();
+  const dragonPresent = dragonSaveable() || (dim === "end" && !endCleared && dragon.mesh && dragon.dying > 0);
+  let tntBytes = 1 + 4 + 4 + 4;
+  if (dragonPresent) tntBytes += 43;
+  for (const b of liveTNTSize.bombs) tntBytes += b.targetKind === 2 ? 55 : 42;
+  for (const e of liveTNTSize.queue) tntBytes += e.qKind === 2 ? 32 : 19;
+  for (const e of liveTNTSize.etas) tntBytes += e.targetKind === 2 ? 18 : 5;
+  const liveFx = snapshotLiveFx();
+  const fxBytes = 4 + liveFx.length * 17;
+  const buf = new ArrayBuffer(117 + 18 + (on + en + nn) * 5 + m * 6 + (gov + gev + gnv) * 5 + winLen + 16 + 4 + (mobN + endMobN + netherMobN) * MOB_SAVE_BYTES + 24 + 4 + (chainPairs.length + chainPairsEnd.length + chainPairsNether.length) * 4 + 4 + 1 + 1 + exitBytes + tntBytes + fxBytes);
   const dv = new DataView(buf);
   let o = 0;
   new Uint8Array(buf, o, 9).set(SAVE_MAGIC); o += 9;
-  dv.setUint8(o++, 15); // format version
+  dv.setUint8(o++, 20); // format version
   dv.setUint8(o++, dim === "end" ? 1 : dim === "nether" ? 2 : 0);
   dv.setInt32(o, seed, true); o += 4;
   dv.setInt32(o, endSeed, true); o += 4;
@@ -14427,8 +14960,7 @@ function serialize() {
   writeVariants(glowVariants.over, gov);
   writeVariants(glowVariants.end, gev);
   writeVariants(glowVariants.nether, gnv);
-  dv.setUint32(o, mobN, true); o += 4;
-  for (const em of overMobs) {
+  const writeMob = (em) => {
     dv.setUint8(o++, em.kind & 255);
     let mfl = em.isBaby ? 1 : 0;
     if (em.villageBound !== false) mfl |= 2;
@@ -14441,7 +14973,9 @@ function serialize() {
     dv.setFloat32(o, em.z, true); o += 4;
     dv.setUint8(o++, encodeMobYaw(em.yaw || 0));
     dv.setUint8(o++, em.look & 255);
-  }
+  };
+  dv.setUint32(o, mobN, true); o += 4;
+  for (const em of overMobs) writeMob(em);
   dv.setFloat64(o, vel.x, true); o += 8;
   dv.setFloat64(o, vel.y, true); o += 8;
   dv.setFloat64(o, vel.z, true); o += 8;
@@ -14451,6 +14985,114 @@ function serialize() {
     dv.setUint16(o, b, true); o += 2;
   }
   dv.setInt32(o, carriedIdx, true); o += 4;
+  dv.setUint32(o, endMobN, true); o += 4;
+  for (const em of endMobs) writeMob(em);
+  dv.setUint32(o, chainPairsEnd.length, true); o += 4;
+  for (const [a, b] of chainPairsEnd) {
+    dv.setUint16(o, a, true); o += 2;
+    dv.setUint16(o, b, true); o += 2;
+  }
+  dv.setUint32(o, netherMobN, true); o += 4;
+  for (const em of netherMobs) writeMob(em);
+  dv.setUint32(o, chainPairsNether.length, true); o += 4;
+  for (const [a, b] of chainPairsNether) {
+    dv.setUint16(o, a, true); o += 2;
+    dv.setUint16(o, b, true); o += 2;
+  }
+  dv.setUint8(o++, carriedDim & 255);
+  dv.setUint8(o++, endCleared ? 1 : 0);
+  const writeExit = (ex) => {
+    if (!ex) { dv.setUint8(o++, 0); return; }
+    dv.setUint8(o++, 1);
+    dv.setFloat64(o, ex.x, true); o += 8;
+    dv.setFloat64(o, ex.y, true); o += 8;
+    dv.setFloat64(o, ex.z, true); o += 8;
+    dv.setFloat64(o, ex.yaw || 0, true); o += 8;
+  };
+  writeExit(netherExit);
+  writeExit(endExit);
+  if (dragonPresent) {
+    const mp = dragon.mesh.position;
+    dv.setUint8(o++, 1);
+    dv.setFloat32(o, dragon.hp, true); o += 4;
+    dv.setUint16(o, dragon.hitCount & 65535, true); o += 2;
+    dv.setFloat32(o, mp.x, true); o += 4;
+    dv.setFloat32(o, mp.y, true); o += 4;
+    dv.setFloat32(o, mp.z, true); o += 4;
+    dv.setFloat32(o, dragon.yaw || 0, true); o += 4;
+    dv.setFloat32(o, dragon.pitch || 0, true); o += 4;
+    const wasDying = dragon.dying > 0;
+    dv.setFloat32(o, wasDying ? dragon.dying : 0, true); o += 4;
+    dv.setUint8(o++, wasDying ? dragon.deathIdx & 255 : 0);
+    dv.setFloat32(o, wasDying ? dragon.deathX : mp.x, true); o += 4;
+    dv.setFloat32(o, wasDying ? dragon.deathY : mp.y, true); o += 4;
+    dv.setFloat32(o, wasDying ? dragon.deathZ : mp.z, true); o += 4;
+  } else {
+    dv.setUint8(o++, 0);
+  }
+  const liveTNT = liveTNTSize;
+  dv.setUint32(o, liveTNT.bombs.length, true); o += 4;
+  for (const b of liveTNT.bombs) {
+    const t = b.t;
+    dv.setInt16(o, Math.max(-32768, Math.min(32767, Math.round(t.bx))), true); o += 2;
+    dv.setUint16(o, Math.max(0, Math.min(65535, Math.round(t.by))), true); o += 2;
+    dv.setInt16(o, Math.max(-32768, Math.min(32767, Math.round(t.bz))), true); o += 2;
+    dv.setFloat32(o, t.px, true); o += 4;
+    dv.setFloat32(o, t.py, true); o += 4;
+    dv.setFloat32(o, t.pz, true); o += 4;
+    dv.setFloat32(o, t.fuse, true); o += 4;
+    dv.setFloat32(o, t.life, true); o += 4;
+    dv.setUint8(o++, t.stuck ? 1 : 0);
+    dv.setFloat32(o, t.ax || 0, true); o += 4;
+    dv.setFloat32(o, t.ay || 0, true); o += 4;
+    dv.setFloat32(o, t.az || 0, true); o += 4;
+    dv.setUint8(o++, t.mesh ? 1 : 0);
+    dv.setUint8(o++, t.by < 0 ? 1 : 0);
+    dv.setUint8(o++, b.targetKind & 255);
+    if (b.targetKind === 2) {
+      dv.setUint8(o++, b.tkind & 255);
+      dv.setFloat32(o, b.tx, true); o += 4;
+      dv.setFloat32(o, b.ty, true); o += 4;
+      dv.setFloat32(o, b.tz, true); o += 4;
+    }
+  }
+  dv.setUint32(o, liveTNT.queue.length, true); o += 4;
+  for (const e of liveTNT.queue) {
+    const q = e.q;
+    dv.setFloat32(o, q.x, true); o += 4;
+    dv.setFloat32(o, q.y, true); o += 4;
+    dv.setFloat32(o, q.z, true); o += 4;
+    dv.setUint8(o++, q.pointBlank ? 1 : 0);
+    dv.setUint8(o++, q.homing ? 1 : 0);
+    dv.setUint8(o++, e.qKind & 255);
+    if (e.qKind === 2) {
+      dv.setUint8(o++, e.qk & 255);
+      dv.setFloat32(o, e.qx, true); o += 4;
+      dv.setFloat32(o, e.qy, true); o += 4;
+      dv.setFloat32(o, e.qz, true); o += 4;
+    }
+    const remain = q.due ? Math.max(0, (q.due - performance.now()) / 1000) : 0;
+    dv.setFloat32(o, remain, true); o += 4;
+  }
+  dv.setUint32(o, liveTNT.etas.length, true); o += 4;
+  for (const e of liveTNT.etas) {
+    dv.setUint8(o++, e.targetKind & 255);
+    if (e.targetKind === 2) {
+      dv.setUint8(o++, e.tkind & 255);
+      dv.setFloat32(o, e.tx, true); o += 4;
+      dv.setFloat32(o, e.ty, true); o += 4;
+      dv.setFloat32(o, e.tz, true); o += 4;
+    }
+    dv.setFloat32(o, e.eta, true); o += 4;
+  }
+  dv.setUint32(o, liveFx.length, true); o += 4;
+  for (const f of liveFx) {
+    dv.setUint8(o++, f.tag & 255);
+    dv.setFloat32(o, f.x, true); o += 4;
+    dv.setFloat32(o, f.y, true); o += 4;
+    dv.setFloat32(o, f.z, true); o += 4;
+    dv.setUint32(o, f.hex >>> 0, true); o += 4;
+  }
   return buf;
 }
 
@@ -14460,7 +15102,7 @@ function deserialize(buf) {
   for (let i = 0; i < 9; i++) if (new Uint8Array(buf, o, 9)[i] !== SAVE_MAGIC[i]) throw new Error("Not a MiniCraft save");
   o += 9;
   const ver = dv.getUint8(o++);
-  if (ver !== 1 && ver !== 2 && ver !== 3 && ver !== 4 && ver !== 5 && ver !== 6 && ver !== 7 && ver !== 8 && ver !== 9 && ver !== 10 && ver !== 11 && ver !== 12 && ver !== 13 && ver !== 14 && ver !== 15) throw new Error("Unsupported save version");
+  if (ver !== 1 && ver !== 2 && ver !== 3 && ver !== 4 && ver !== 5 && ver !== 6 && ver !== 7 && ver !== 8 && ver !== 9 && ver !== 10 && ver !== 11 && ver !== 12 && ver !== 13 && ver !== 14 && ver !== 15 && ver !== 16 && ver !== 17 && ver !== 18 && ver !== 19 && ver !== 20) throw new Error("Unsupported save version");
   const yWidth = ver >= 8 ? 2 : 1;
   const readY = () => { const y = yWidth === 2 ? dv.getUint16(o, true) : dv.getUint8(o); o += yWidth; return y; };
   placedFlowers.clear();
@@ -14471,6 +15113,21 @@ function deserialize(buf) {
   overworldMobCache = null;
   pendingChainLinks = null;
   pendingCarriedIdx = null;
+  pendingEndMobs = null;
+  pendingNetherMobs = null;
+  endMobCache = null;
+  netherMobCache = null;
+  pendingChainLinksEnd = null;
+  pendingChainLinksNether = null;
+  pendingCarriedDim = 0;
+  netherExit = null;
+  endExit = null;
+  endCleared = false;
+  pendingDragon = null;
+  pendingTNTBombs = null;
+  pendingTNTQueue = null;
+  pendingTNTEta = null;
+  pendingFx = null;
   let dimFlag = 0, endSeedVal = endSeed;
   if (ver >= 2) dimFlag = dv.getUint8(o++);
   if (ver >= 4) {
@@ -14635,6 +15292,173 @@ function deserialize(buf) {
   if (ver >= 15) {
     const ci = dv.getInt32(o, true); o += 4;
     pendingCarriedIdx = (ci >= 0 && pendingOverworldMobs && ci < pendingOverworldMobs.length) ? ci : null;
+  }
+  if (ver >= 16) {
+    const readMobList = () => {
+      const n = dv.getUint32(o, true); o += 4;
+      const arr = [];
+      for (let i = 0; i < n; i++) {
+        const kind = dv.getUint8(o++);
+        const flags = dv.getUint8(o++);
+        const homeId = dv.getInt8(o++);
+        const parentIdx = dv.getInt16(o, true); o += 2;
+        const x = dv.getFloat32(o, true); o += 4;
+        const y = dv.getFloat32(o, true); o += 4;
+        const z = dv.getFloat32(o, true); o += 4;
+        const yb = dv.getUint8(o++);
+        const look = dv.getUint8(o++);
+        if (!isFinite(x) || !isFinite(y) || !isFinite(z)) continue;
+        arr.push({ kind, isBaby: (flags & 1) !== 0, homeId, parentIdx, x, y, z, yaw: decodeMobYaw(yb), look, villageBound: (flags & 2) !== 0, penBound: (flags & 4) !== 0 });
+      }
+      return arr;
+    };
+    const readPairs = () => {
+      const cn = dv.getUint32(o, true); o += 4;
+      const pairs = [];
+      for (let i = 0; i < cn; i++) {
+        const a = dv.getUint16(o, true); o += 2;
+        const b = dv.getUint16(o, true); o += 2;
+        pairs.push([a, b]);
+      }
+      return pairs;
+    };
+    pendingEndMobs = readMobList();
+    endMobCache = pendingEndMobs.map((e) => ({ ...e }));
+    pendingChainLinksEnd = readPairs();
+    pendingNetherMobs = readMobList();
+    netherMobCache = pendingNetherMobs.map((e) => ({ ...e }));
+    pendingChainLinksNether = readPairs();
+    const cd = dv.getUint8(o++);
+    pendingCarriedDim = cd === 1 ? 1 : cd === 2 ? 2 : 0;
+    endCleared = dv.getUint8(o++) === 1;
+    const readExit = () => {
+      if (!dv.getUint8(o++)) return null;
+      const x = dv.getFloat64(o, true); o += 8;
+      const y = dv.getFloat64(o, true); o += 8;
+      const z = dv.getFloat64(o, true); o += 8;
+      const yawE = dv.getFloat64(o, true); o += 8;
+      if (!isFinite(x) || !isFinite(y) || !isFinite(z)) return null;
+      return { x, y, z, yaw: yawE };
+    };
+    netherExit = readExit();
+    endExit = readExit();
+    if (pendingCarriedDim !== 0) {
+      const list = pendingCarriedDim === 1 ? pendingEndMobs : pendingNetherMobs;
+      if (!(pendingCarriedIdx >= 0 && list && pendingCarriedIdx < list.length)) pendingCarriedIdx = null;
+    } else if (!(pendingCarriedIdx >= 0 && pendingOverworldMobs && pendingCarriedIdx < pendingOverworldMobs.length)) {
+      pendingCarriedIdx = null;
+    }
+  }
+  if (ver >= 17) {
+    if (dv.getUint8(o++)) {
+      const hp = dv.getFloat32(o, true); o += 4;
+      const hitCount = ver >= 18 ? dv.getUint16(o, true) : dv.getUint8(o++);
+      if (ver >= 18) o += 2;
+      const dx = dv.getFloat32(o, true); o += 4;
+      const dy = dv.getFloat32(o, true); o += 4;
+      const dz = dv.getFloat32(o, true); o += 4;
+      const dyaw = dv.getFloat32(o, true); o += 4;
+      const dpitch = dv.getFloat32(o, true); o += 4;
+      let dying = 0, deathIdx = 0, deathX = dx, deathY = dy, deathZ = dz;
+      if (ver >= 20) {
+        dying = dv.getFloat32(o, true); o += 4;
+        deathIdx = dv.getUint8(o++);
+        deathX = dv.getFloat32(o, true); o += 4;
+        deathY = dv.getFloat32(o, true); o += 4;
+        deathZ = dv.getFloat32(o, true); o += 4;
+      }
+      const alive = isFinite(hp) && hp > 0;
+      const agonizing = isFinite(dying) && dying > 0 && [deathX, deathY, deathZ].every(isFinite);
+      pendingDragon = ((alive || agonizing) && [dx, dy, dz].every(isFinite))
+        ? { hp: alive ? hp : 0, hitCount, x: dx, y: dy, z: dz, yaw: dyaw, pitch: dpitch, dying: agonizing ? dying : 0, deathIdx, deathX, deathY, deathZ } : null;
+    }
+    const readBombs = () => {
+      const n = dv.getUint32(o, true); o += 4;
+      const arr = [];
+      for (let i = 0; i < n; i++) {
+        const bx = dv.getInt16(o, true); o += 2;
+        const by = dv.getUint16(o, true); o += 2;
+        const bz = dv.getInt16(o, true); o += 2;
+        const px = dv.getFloat32(o, true); o += 4;
+        const py = dv.getFloat32(o, true); o += 4;
+        const pz = dv.getFloat32(o, true); o += 4;
+        const fuse = dv.getFloat32(o, true); o += 4;
+        const life = dv.getFloat32(o, true); o += 4;
+        const stuck = dv.getUint8(o++) === 1;
+        const ax = dv.getFloat32(o, true); o += 4;
+        const ay = dv.getFloat32(o, true); o += 4;
+        const az = dv.getFloat32(o, true); o += 4;
+        const hasMesh = dv.getUint8(o++) === 1;
+        const flyFlag = ver >= 18 ? dv.getUint8(o++) === 1 : by < 0;
+        const targetKind = dv.getUint8(o++);
+        let tkind = 0, tx = 0, ty = 0, tz = 0;
+        if (targetKind === 2) {
+          tkind = dv.getUint8(o++);
+          tx = dv.getFloat32(o, true); o += 4;
+          ty = dv.getFloat32(o, true); o += 4;
+          tz = dv.getFloat32(o, true); o += 4;
+        }
+        if (![px, py, pz, fuse, life].every(isFinite)) continue;
+        arr.push({ bx, by, bz, px, py, pz, fuse, life, stuck, ax, ay, az, hasMesh, fly: flyFlag, targetKind, tkind, tx, ty, tz });
+      }
+      return arr;
+    };
+    const readQueue = () => {
+      const n = dv.getUint32(o, true); o += 4;
+      const arr = [];
+      for (let i = 0; i < n; i++) {
+        const x = dv.getFloat32(o, true); o += 4;
+        const y = dv.getFloat32(o, true); o += 4;
+        const z = dv.getFloat32(o, true); o += 4;
+        const pointBlank = dv.getUint8(o++) === 1;
+        const homing = dv.getUint8(o++) === 1;
+        const qKind = dv.getUint8(o++);
+        let qk = 0, qx = 0, qy = 0, qz = 0;
+        if (qKind === 2) {
+          qk = dv.getUint8(o++);
+          qx = dv.getFloat32(o, true); o += 4;
+          qy = dv.getFloat32(o, true); o += 4;
+          qz = dv.getFloat32(o, true); o += 4;
+        }
+        const remain = dv.getFloat32(o, true); o += 4;
+        if (![x, y, z].every(isFinite)) continue;
+        arr.push({ x, y, z, pointBlank, homing, qKind, qk, qx, qy, qz, remain: isFinite(remain) ? remain : 0 });
+      }
+      return arr;
+    };
+    pendingTNTBombs = readBombs();
+    pendingTNTQueue = readQueue();
+    if (ver >= 18) {
+      const n = dv.getUint32(o, true); o += 4;
+      pendingTNTEta = [];
+      for (let i = 0; i < n; i++) {
+        const targetKind = dv.getUint8(o++);
+        let tkind = 0, tx = 0, ty = 0, tz = 0;
+        if (targetKind === 2) {
+          tkind = dv.getUint8(o++);
+          tx = dv.getFloat32(o, true); o += 4;
+          ty = dv.getFloat32(o, true); o += 4;
+          tz = dv.getFloat32(o, true); o += 4;
+        }
+        const eta = dv.getFloat32(o, true); o += 4;
+        if (targetKind !== 1 && targetKind !== 2) continue;
+        if (!isFinite(eta) || eta <= 0) continue;
+        pendingTNTEta.push({ targetKind, tkind, tx, ty, tz, eta });
+      }
+    }
+    if (ver >= 19) {
+      const n = dv.getUint32(o, true); o += 4;
+      pendingFx = [];
+      for (let i = 0; i < n; i++) {
+        const tag = dv.getUint8(o++);
+        const x = dv.getFloat32(o, true); o += 4;
+        const y = dv.getFloat32(o, true); o += 4;
+        const z = dv.getFloat32(o, true); o += 4;
+        const hex = dv.getUint32(o, true); o += 4;
+        if (tag > 3 || ![x, y, z].every(isFinite)) continue;
+        pendingFx.push({ tag, x, y, z, hex });
+      }
+    }
   }
   freeCam = flyFlag;
   if (freeCam) camPos.copy(pos);
@@ -14916,34 +15740,164 @@ async function restoreSave(buf) {
   await new Promise((r) => setTimeout(r, 30));
   try {
     deserialize(buf);
+    const liveDim = dim;
+    clearChains();
+    purgeLiveTNT();
+    purgeLiveEffects();
+    if (playerInChain()) detachDisplacementGrapple();
+    for (const m of [...mobs]) {
+      if (m.mesh) scene.remove(m.mesh);
+      if (m.fallMesh) scene.remove(m.fallMesh);
+    }
+    mobs.length = 0;
+    mobById.clear();
+    endermen.length = 0;
+    if (dragon.mesh) removeDragon();
+    carryMob = null;
+    carryGrappleMob = null;
+    carryGrappleActive = false;
+    carryGrapplePulling = false;
+    carryGrappleRetracting = false;
+    if (carryGrappleCubes) carryGrappleCubes.visible = false;
+    if (carryGrappleHead) carryGrappleHead.visible = false;
+    playerArms.visible = false;
+    if (!worlds.end.size) {
+      dim = "end"; world = worlds.end;
+      generateEnd();
+    }
+    if (!worlds.nether.size) {
+      dim = "nether"; world = worlds.nether;
+      generateNether();
+    } else {
+      generateNetherRivers();
+      generateVolcanoes();
+    }
+    dim = liveDim; world = worlds[liveDim];
+    clearPortalFills();
+    dim = "end"; world = worlds.end;
+    ensureReturnPortal();
+    rebuildColTops("end");
+    dim = "nether"; world = worlds.nether;
+    ensureNetherPortal();
+    rebuildColTops("nether");
+    dim = liveDim; world = worlds[liveDim];
     rebuildMeshes();
     select(selected);
     updateCamera();
     setDimensionEnv();
     updateDimLabel();
     clearPortalFills();
-    removeEndEntities();
-    if (dim === "end") { endCleared = false; buildReturnPortal(); spawnDragon(); spawnEndermen(); }
-    if (dim === "nether") { netReturnWin = null; buildNetherPortal(); }
+    if (liveDim === "end") {
+      if (endCleared) spawnEndermen();
+      else if (pendingDragon) {
+        spawnDragon();
+        dragon.hp = Math.min(dragon.maxHp, pendingDragon.hp);
+        dragon.hitCount = pendingDragon.hitCount || 1;
+        paintDragon();
+        dragon.mesh.position.set(pendingDragon.x, pendingDragon.y, pendingDragon.z);
+        dragon.yaw = pendingDragon.yaw || 0;
+        dragon.pitch = pendingDragon.pitch || 0;
+        dragon.prevYaw = dragon.yaw;
+        buildDragonPath();
+        updateBossBar();
+        if (pendingDragon.dying > 0) {
+          dragon.hp = 0;
+          dragon.deathTotal = DRAGON_HUES.length + 1;
+          dragon.dying = pendingDragon.dying;
+          dragon.deathFlash = 0.1;
+          dragon.deathIdx = pendingDragon.deathIdx || 0;
+          dragon.deathX = pendingDragon.deathX;
+          dragon.deathY = pendingDragon.deathY;
+          dragon.deathZ = pendingDragon.deathZ;
+          dragon.spitting = 0;
+          if (dragon.parts) for (const q of dragon.parts) { q.life = q.ttl; q.m.visible = false; }
+          updateBossBar();
+        }
+        pendingDragon = null;
+        spawnEndermen();
+      } else { spawnDragon(); spawnEndermen(); }
+    } else pendingDragon = null;
     computeVillageLayout();
-    if (dim === "over") {
-      if (pendingOverworldMobs && pendingOverworldMobs.length) {
-        const saved = pendingOverworldMobs;
-        pendingOverworldMobs = null;
-        overworldMobCache = null;
-        if (!restoreOverworldMobs(saved, { keepCarried: false })) { spawnVillagers(); spawnPigeons(); }
-        else overworldMobCache = snapshotOverworldMobs(true);
-      } else {
-        pendingOverworldMobs = null;
-        removeVillagers();
-        spawnVillagers();
-        spawnPigeons();
-      }
+    const heldDim = pendingCarriedDim;
+    const heldIdx = pendingCarriedIdx;
+    if (heldDim !== 0) pendingCarriedIdx = null;
+    if (pendingOverworldMobs && pendingOverworldMobs.length) {
+      const saved = pendingOverworldMobs;
+      pendingOverworldMobs = null;
+      overworldMobCache = null;
+      if (!restoreOverworldMobs(saved, { keepCarried: false })) { spawnVillagers(); spawnPigeons(); }
+      overworldMobCache = snapshotOverworldMobs(true);
     } else {
+      pendingOverworldMobs = null;
       removeVillagers();
+      spawnVillagers();
+      spawnPigeons();
+      overworldMobCache = snapshotOverworldMobs(true);
     }
     pendingChainLinks = null;
+    let endIds = null, netherIds = null;
+    if (pendingEndMobs && pendingEndMobs.length) {
+      const saved = pendingEndMobs;
+      pendingEndMobs = null;
+      const pairs = (pendingChainLinksEnd || []).filter(([a, b]) => !(heldDim === 1 && (a === heldIdx || b === heldIdx)));
+      pendingChainLinksEnd = null;
+      const res = restoreDimMobs(saved, "end");
+      endIds = res.ids;
+      relinkDimChainsByIds(endIds, pairs);
+      endMobCache = snapshotMobsForDim("end", true);
+    } else {
+      pendingEndMobs = null;
+      pendingChainLinksEnd = null;
+      if (liveDim === "end") spawnEndermen();
+      endMobCache = snapshotMobsForDim("end", true);
+    }
+    if (pendingNetherMobs && pendingNetherMobs.length) {
+      const saved = pendingNetherMobs;
+      pendingNetherMobs = null;
+      const pairs = (pendingChainLinksNether || []).filter(([a, b]) => !(heldDim === 2 && (a === heldIdx || b === heldIdx)));
+      pendingChainLinksNether = null;
+      const res = restoreDimMobs(saved, "nether");
+      netherIds = res.ids;
+      relinkDimChainsByIds(netherIds, pairs);
+      netherMobCache = snapshotMobsForDim("nether", true);
+    } else {
+      pendingNetherMobs = null;
+      pendingChainLinksNether = null;
+      netherMobCache = snapshotMobsForDim("nether", true);
+    }
+    if (heldDim !== 0 && heldIdx != null && heldIdx >= 0) {
+      const ids = heldDim === 1 ? endIds : netherIds;
+      const hid = ids && heldIdx < ids.length ? ids[heldIdx] : null;
+      const held = hid != null ? mobById.get(hid) : null;
+      if (held) {
+        held.mode = "carried";
+        held.vel.set(0, 0, 0);
+        held.target = null;
+        held.path = null;
+        held.pathKey = null;
+        held.blockedT = 0;
+        held._stuckT = 0;
+        if (held.isBaby) held._followDetourUntil = 0;
+        held.mesh.visible = true;
+        setMobTransparent(held, 0.35);
+        carryMob = held;
+        playerArms.visible = true;
+      }
+      pendingCarriedIdx = null;
+      pendingCarriedDim = 0;
+    }
+    for (const m of mobs) m.mesh.visible = (mobDimOf(m) === liveDim) || m === carryMob || m === carryGrappleMob;
+    restoreLiveTNT(pendingTNTBombs, pendingTNTQueue, pendingTNTEta);
+    pendingTNTBombs = null;
+    pendingTNTQueue = null;
+    pendingTNTEta = null;
+    replayLiveFx(pendingFx);
+    pendingFx = null;
     scanWorldPortals();
+    if (liveDim === "end" && endCleared && endReturnWin) {
+      ensurePortalFill(endReturnWin, false);
+      updatePortalVisual();
+    }
     lastManualSave = Date.now();
     return true;
   } finally {
@@ -15039,6 +15993,9 @@ function resetDims() {
   overPortalDir = null;
   endCleared = false;
   netReturnWin = null;
+  endReturnWin = null;
+  netherExit = null;
+  endExit = null;
   protectedBlocks.clear();
   clearChains();
   removeEndEntities();
@@ -15046,6 +16003,18 @@ function resetDims() {
   overworldMobCache = null;
   pendingOverworldMobs = null;
   pendingCarriedIdx = null;
+  pendingCarriedDim = 0;
+  endMobCache = null;
+  netherMobCache = null;
+  pendingEndMobs = null;
+  pendingNetherMobs = null;
+  pendingChainLinksEnd = null;
+  pendingChainLinksNether = null;
+  pendingDragon = null;
+  pendingTNTBombs = null;
+  pendingTNTQueue = null;
+  pendingTNTEta = null;
+  pendingFx = null;
   setDimensionEnv();
   updateDimLabel();
 }
@@ -15256,10 +16225,10 @@ document.addEventListener("pointerlockchange", () => {
   const wasLocked = locked;
   locked = document.pointerLockElement === renderer.domElement;
   if (wasLocked && !locked && lockPoll) { clearInterval(lockPoll); lockPoll = null; }
+  if (wasLocked && !locked && started) saveToFile();
   if (suppressMenu) { suppressMenu = false; return; }
   if (helpOpen) return;
   if (!locked && Date.now() - helpCloseTime < 2000) return;
-  if (wasLocked && !locked && started) saveToFile();
   if (loading) return;
   overlay.style.display = locked ? "none" : "flex";
   crosshair.style.display = locked ? "block" : "none";
@@ -15833,14 +16802,16 @@ if (location.search.includes('test')) {
     getBlock, setBlock, handleMobExplosion, processExplosionQueue, isMobStandingOn, intersectsMob, key, BLAST_RADIUS, TNT, STONE, AIR, get SAND(){ return SAND; }, get WATER(){ return WATER; }, get VILLAGE_POOL_W(){ return VILLAGE_POOL_W; }, get VILLAGE_POOL_D(){ return VILLAGE_POOL_D; }, get VILLAGE_POOL_DEPTH(){ return VILLAGE_POOL_DEPTH; }, get VILLAGE_PEN_POOL_W(){ return VILLAGE_PEN_POOL_W; }, get VILLAGE_PEN_POOL_D(){ return VILLAGE_PEN_POOL_D; }, get VILLAGE_PEN_POOL_DEPTH(){ return VILLAGE_PEN_POOL_DEPTH; },
     get villageCenter(){ return villageCenter; }, get villageHouses(){ return villageHouses; }, get villagePen(){ return villagePen; }, get villagePool(){ return villagePool; }, get isInsidePen(){ return isInsidePen; }, get isInsidePool(){ return isInsidePool; }, get isInsidePenPool(){ return isInsidePenPool; }, get poolExitTarget(){ return poolExitTarget; }, get penPoolExitTarget(){ return penPoolExitTarget; }, get LOG(){ return LOG; }, findPenGaps, nearestPenGap, penGapInside, penGapOutside, hasMobGround, mobBlockedAt, aabbCollidesWorld, mobProbeFree, randomPenPoint, randomAroundPenPoint, groundYForMob, get CLOUD_BASE(){ return CLOUD_BASE; }, get CLOUD_TOP(){ return CLOUD_TOP; }, get MAX_Y(){ return MAX_Y; },
     getTypeMats, get typeMats(){ return typeMats; }, buildWorld, generateWorld, computeVillageLayout, spawnVillagers, refreshBlocks, get boxGeo(){ return boxGeo; }, THREE,
-    get pos(){ return pos; }, get vel(){ return vel; }, get camera(){ return camera; }, get yaw(){ return yaw; }, set yaw(v){ yaw=v; }, get pitch(){ return pitch; }, set pitch(v){ pitch=v; },
-    get carryMob(){ return carryMob; }, handleCarryEnterDown, handleCarryEnterUp, pickMob, get carryGrappleActive(){ return carryGrappleActive; }, get carryGrapplePulling(){ return carryGrapplePulling; }, get carryGrappleMob(){ return carryGrappleMob; }, get carryGrappleBlock(){ return carryGrappleBlock; }, get carryGrappleHookPos(){ return carryGrappleHookPos; }, get carryGrappleOffset(){ return carryGrappleOffset; }, get carryGrappleMode(){ return carryGrappleMode; }, get isMobFrozenByGrapple(){ return isMobFrozenByGrapple; }, isChained, isChainCarrier, chainRootOf, chainTailOf, linkChain, dropChainFrom, chainTakeForCarry, severChainMob, groundChainFrom, insertChainBefore, insertChainBehind, insertBehindRide, prependChainLead, clearChains, pruneChains, updateChains, syncChainLinkColor, syncChainLinkColors, stampSpawn, get mobById(){ return mobById; }, chainAttachTarget, startCarryAttachGrapple, killChainMob, respawnChainMob, unchainMob, severGroundedChainVictim, isGroundedChainVictim, get chainLinks(){ return chainLinks; }, get chainParent(){ return chainParent; }, get chainChild(){ return chainChild; }, playerChainAvatar, playerInChain, PLAYER_CHAIN_ID, spliceChainLink, chainHasJumping, chainPushCrumb, chainTrailTarget, latchPlayerTo, latchPlayerInMiddle, playerInsertCutAndLink, insertChainAheadOfPlayer, insertChainBehindPlayer, playerLeadLink, dropPlayerLeadEntry, readyLeadForLatch, leadAwareLatchInsert, appendCutFollowerBehindLeadTail, grabRideForCarry, fireGrapple, detachDisplacementGrapple, get grappleActive(){ return grappleActive; }, get grappleHooked(){ return grappleHooked; }, get grappleRetracting(){ return grappleRetracting; }, get grappleMob(){ return grappleMob; }, get grappleMobOffset(){ return grappleMobOffset; }, get grappleHookPos(){ return grappleHookPos; }, get grappleTarget(){ return grappleTarget; }, updateCarryGrapple, updateCarry, get currentBlock(){ return currentBlock; }, updateTarget, hotbarList, placeBlock, breakBlock, get selected(){ return selected; }, set selected(v){ selected=v; }, toggleCarry: handleCarryEnterDown, findNearestMobForGrab: (...a)=>{ const d=new THREE.Vector3(); camera.getWorldDirection(d); return pickMob(d); }, get playerArms(){ return playerArms; }, get started(){ return started; }, set started(v){ started=v; }, get loading(){ return loading; }, get freeCam(){ return freeCam; }, set freeCam(v){ freeCam=v; }, get helpOpen(){ return helpOpen; },
+    get pos(){ return pos; }, get vel(){ return vel; }, get camera(){ return camera; }, get scene(){ return scene; }, get freeCam(){ return freeCam; }, set freeCam(v){ freeCam = v; }, get camPos(){ return camPos; }, get yaw(){ return yaw; }, set yaw(v){ yaw=v; }, get pitch(){ return pitch; }, set pitch(v){ pitch=v; },
+    get carryMob(){ return carryMob; }, set carryMob(v){ carryMob = v; }, handleCarryEnterDown, handleCarryEnterUp, pickMob, get carryGrappleActive(){ return carryGrappleActive; }, get carryGrapplePulling(){ return carryGrapplePulling; }, get carryGrappleMob(){ return carryGrappleMob; }, get carryGrappleBlock(){ return carryGrappleBlock; }, get carryGrappleHookPos(){ return carryGrappleHookPos; }, get carryGrappleOffset(){ return carryGrappleOffset; }, get carryGrappleMode(){ return carryGrappleMode; }, get isMobFrozenByGrapple(){ return isMobFrozenByGrapple; }, isChained, isChainCarrier, chainRootOf, chainTailOf, linkChain, dropChainFrom, chainTakeForCarry, severChainMob, groundChainFrom, insertChainBefore, insertChainBehind, insertBehindRide, prependChainLead, clearChains, pruneChains, updateChains, syncChainLinkColor, syncChainLinkColors, stampSpawn, get mobById(){ return mobById; }, chainAttachTarget, startCarryAttachGrapple, killChainMob, respawnChainMob, unchainMob, severGroundedChainVictim, isGroundedChainVictim, get chainLinks(){ return chainLinks; }, get chainParent(){ return chainParent; }, get chainChild(){ return chainChild; }, playerChainAvatar, playerInChain, PLAYER_CHAIN_ID, spliceChainLink, chainHasJumping, chainPushCrumb, chainTrailTarget, latchPlayerTo, latchPlayerInMiddle, playerInsertCutAndLink, insertChainAheadOfPlayer, insertChainBehindPlayer, playerLeadLink, dropPlayerLeadEntry, readyLeadForLatch, leadAwareLatchInsert, appendCutFollowerBehindLeadTail, grabRideForCarry, fireGrapple, detachDisplacementGrapple, get grappleActive(){ return grappleActive; }, get grappleHooked(){ return grappleHooked; }, get grappleRetracting(){ return grappleRetracting; }, get grappleMob(){ return grappleMob; }, get grappleMobOffset(){ return grappleMobOffset; }, get grappleHookPos(){ return grappleHookPos; }, get grappleTarget(){ return grappleTarget; }, updateCarryGrapple, updateCarry, get currentBlock(){ return currentBlock; }, updateTarget, hotbarList, placeBlock, breakBlock, get selected(){ return selected; }, set selected(v){ selected=v; }, toggleCarry: handleCarryEnterDown, findNearestMobForGrab: (...a)=>{ const d=new THREE.Vector3(); camera.getWorldDirection(d); return pickMob(d); }, get playerArms(){ return playerArms; }, get started(){ return started; }, set started(v){ started=v; }, get loading(){ return loading; }, get freeCam(){ return freeCam; }, set freeCam(v){ freeCam=v; }, get helpOpen(){ return helpOpen; },
     get WOLF_COUNT(){ return WOLF_COUNT; }, makeWolfMesh, villagerHW, villagerH, wolfHasMobGround, wolfBlockedAt, wolfProbeFree, wanderGoalForWolf, wolfFindPath, wolfInWater, mobInWater, waterSurfaceForMob, mobPhysicsStep, wolfPhysicsStep, updateMobs, obstacleTurnDir, buildMobGrid,     get isPigCow(){ return isPigCow; }, get pigOverlapsFence(){ return pigOverlapsFence; }, get MOB_FLOAT_FRAC(){ return MOB_FLOAT_FRAC; }, mobFloatTargetY, mobWaterExitJump, poolExitTarget, penPoolExitTarget, isInsidePenPool,
-    get PIGEON_COUNT(){ return PIGEON_COUNT; }, get PIGEON_MIN_Y(){ return PIGEON_MIN_Y; }, get PIGEON_MAX_Y(){ return PIGEON_MAX_Y; }, get PIGEON_SPEED(){ return PIGEON_SPEED; }, get TNT_HOME_SPEED(){ return TNT_HOME_SPEED; }, get PIGEON_AIM_DIST(){ return PIGEON_AIM_DIST; }, get PIGEON_LOCK_TIME(){ return PIGEON_LOCK_TIME; }, get pigeonLock(){ return pigeonLock; }, get pigeonLockT(){ return pigeonLockT; }, set pigeonLockT(v){ pigeonLockT = v; }, get pigeonLockShots(){ return pigeonLockShots; }, livePigeonLock, tntTargeted, tryFireLockedTNT, tntChainAimMob, aimOnMob, get chainBreaking(){ return chainBreaking; }, set chainBreaking(v){ chainBreaking = v; },     makePigeonMesh, spawnPigeons, spawnSinglePigeon, removePigeons, spawnPigeonChain, updatePigeon, updatePerchedPigeon, updateToPerchPigeon, pigeonTakeoff, pigeonNextLeg, pigeonFindPerchSpot, pigeonCloudTopAt, pigeonTreeTopAt, pigeonRoofTopAt, pigeonPerchBand, pigeonPerchSupports, killPigeon, pigeonSpotOutOfView, pigeonProbeFree, pigeonRandomTarget, pigeonSeparate,     houseInteriorFor, houseMouths, pigeonCoopTarget,     pigeonSegmentFree, pigeonClearance, pigeonBestSteer, pigeonMillHop, pigeonConfinedSteer, pigeonMoveSlide, bandReturnTarget, pigeonNoticeBreak, setMobTransparent, pigeonIsConfined, pigeonHoleCell, chainSegmentFree, chainThreadRide, pigeonTunnelPlan, updateTunnelPigeon, pigeonTunnelSeparate, pigeonSkyClear, pigeonSidestep, pigeonUTurn, pigeonNarrow, pigeonColHW, pigeonColH,     get PIGEON_NARROW_SCALE(){ return PIGEON_NARROW_SCALE; }, get PIGEON_SKY_CLEAR(){ return PIGEON_SKY_CLEAR; }, get NETHER_PIGEON_MIN_Y(){ return NETHER_PIGEON_MIN_Y; }, get NETHER_PIGEON_MAX_Y(){ return NETHER_PIGEON_MAX_Y; }, pigeonDimOf, pigeonBandMinFor, pigeonBandMaxFor, pigeonBandMin, pigeonBandMax, pigeonNetherLegY, netherPigeonCeiling, pigeonLavaAt, get PIGEON_TUNNEL_SCALE(){ return PIGEON_TUNNEL_SCALE; }, get PIGEON_COL_HW(){ return PIGEON_COL_HW; }, get PIGEON_COL_H(){ return PIGEON_COL_H; },     get tntLit(){ return tntLit; }, get tntEta(){ return tntEta; }, igniteTNT, aimedPigeon, fireTNTAtPigeon, explodePigeon, spawnPigeonBurst, get bursts(){ return bursts; }, get flashes(){ return flashes; }, updateTNTTarget, tickTNT, fireGrapple, updateGrapple, updatePlayer, get grappleActive(){ return grappleActive; }, get grapplePulling(){ return grapplePulling; }, get grappleHooked(){ return grappleHooked; },
+    get PIGEON_COUNT(){ return PIGEON_COUNT; }, get PIGEON_MIN_Y(){ return PIGEON_MIN_Y; }, get PIGEON_MAX_Y(){ return PIGEON_MAX_Y; }, get PIGEON_SPEED(){ return PIGEON_SPEED; }, get TNT_HOME_SPEED(){ return TNT_HOME_SPEED; }, get PIGEON_AIM_DIST(){ return PIGEON_AIM_DIST; }, get PIGEON_LOCK_TIME(){ return PIGEON_LOCK_TIME; }, get pigeonLock(){ return pigeonLock; }, get pigeonLockT(){ return pigeonLockT; }, set pigeonLockT(v){ pigeonLockT = v; }, get pigeonLockShots(){ return pigeonLockShots; }, livePigeonLock, tntTargeted, tryFireLockedTNT, tntChainAimMob, aimOnMob, get chainBreaking(){ return chainBreaking; }, set chainBreaking(v){ chainBreaking = v; },     makePigeonMesh, spawnPigeons, spawnSinglePigeon, removePigeons, spawnPigeonChain, updatePigeon, updatePerchedPigeon, updateToPerchPigeon, pigeonTakeoff, pigeonNextLeg, pigeonFindPerchSpot, pigeonCloudTopAt, pigeonTreeTopAt, pigeonRoofTopAt, pigeonPerchBand, pigeonPerchSupports, killPigeon, pigeonSpotOutOfView, pigeonProbeFree, pigeonRandomTarget, pigeonSeparate,     houseInteriorFor, houseMouths, pigeonCoopTarget,     pigeonSegmentFree, pigeonClearance, pigeonBestSteer, pigeonMillHop, pigeonConfinedSteer, pigeonMoveSlide, bandReturnTarget, pigeonNoticeBreak, setMobTransparent, pigeonIsConfined, pigeonHoleCell, chainSegmentFree, chainThreadRide, pigeonTunnelPlan, updateTunnelPigeon, pigeonTunnelSeparate, pigeonSkyClear, pigeonSidestep, pigeonUTurn, pigeonNarrow, pigeonColHW, pigeonColH,     get PIGEON_NARROW_SCALE(){ return PIGEON_NARROW_SCALE; }, get PIGEON_SKY_CLEAR(){ return PIGEON_SKY_CLEAR; }, get NETHER_PIGEON_MIN_Y(){ return NETHER_PIGEON_MIN_Y; }, get NETHER_PIGEON_MAX_Y(){ return NETHER_PIGEON_MAX_Y; }, pigeonDimOf, pigeonBandMinFor, pigeonBandMaxFor, pigeonBandMin, pigeonBandMax, pigeonNetherLegY, netherPigeonCeiling, pigeonLavaAt, get PIGEON_TUNNEL_SCALE(){ return PIGEON_TUNNEL_SCALE; }, get PIGEON_COL_HW(){ return PIGEON_COL_HW; }, get PIGEON_COL_H(){ return PIGEON_COL_H; },     get tntLit(){ return tntLit; }, get explosionQueue(){ return explosionQueue; }, get tntEta(){ return tntEta; }, get pendingTNTBombs(){ return pendingTNTBombs; }, get pendingTNTEta(){ return pendingTNTEta; }, get bursts(){ return bursts; }, get flashes(){ return flashes; }, snapshotLiveFx, replayLiveFx, spawnExplosion, igniteTNT, fireTNTAtPigeon, purgeLiveTNT, tickTNT, snapshotLiveTNT, restoreLiveTNT, get pendingDragon(){ return pendingDragon; }, get tntEta(){ return tntEta; }, igniteTNT, aimedPigeon, fireTNTAtPigeon, explodePigeon, spawnPigeonBurst, get bursts(){ return bursts; }, get flashes(){ return flashes; }, updateTNTTarget, tickTNT, fireGrapple, updateGrapple, updatePlayer, get grappleActive(){ return grappleActive; }, get grapplePulling(){ return grapplePulling; }, get grappleHooked(){ return grappleHooked; },
     get overPortalWin(){ return overPortalWin; }, get overPortalDir(){ return overPortalDir; }, get overPortalSpawn(){ return overPortalSpawn; }, get overPortalFace(){ return overPortalFace; },
-    portalWinValid, portalFrameBBox, findReturnSpot, frameTopSpot, facePortalFrom, recordOverPortal, nearestReturnWin, resolveOverworldReturn, nearPortalSpawn, resolveSpawn, collectEndWins, collectNetherWins, collectReturnWins, insideEndInterior, insideNetherInterior, winCenter, windowDist, isSolid,
+    portalWinValid, portalFrameBBox, findReturnSpot, frameTopSpot, facePortalFrom, faceAwayFromPortal, recordOverPortal, recordDimExit, resolveDimArrival, nearestReturnWin, resolveOverworldReturn, nearPortalSpawn, resolveSpawn, collectEndWins, collectNetherWins, collectReturnWins, insideEndInterior, insideNetherInterior, winCenter, windowDist, isSolid,
     get PORTAL(){ return PORTAL; }, get OBSIDIAN(){ return OBSIDIAN; }, get WORLD_RADIUS(){ return WORLD_RADIUS; }, get PLAYER_HW(){ return PLAYER_HW; }, get PLAYER_H(){ return PLAYER_H; }, get MOON(){ return MOON; }, get CLOUD(){ return CLOUD; }, get GRASS(){ return GRASS; }, get STONE(){ return STONE; }, get ENDSTONE(){ return ENDSTONE; }, get NETHERRACK(){ return NETHERRACK; }, get dim(){ return dim; },
     serialize, deserialize, restoreSave, snapshotOverworldMobs, restoreOverworldMobs, get overworldMobCache(){ return overworldMobCache; }, get pendingOverworldMobs(){ return pendingOverworldMobs; }, get pendingChainLinks(){ return pendingChainLinks; }, get pendingCarriedIdx(){ return pendingCarriedIdx; },
+    snapshotMobsForDim, snapshotChainPairsForDim, restoreDimMobs, relinkDimChainsByIds, mobDimOf, suspendLiveDim,
+    get endMobCache(){ return endMobCache; }, get netherMobCache(){ return netherMobCache; }, get pendingEndMobs(){ return pendingEndMobs; }, get pendingNetherMobs(){ return pendingNetherMobs; }, get netherExit(){ return netherExit; }, get endExit(){ return endExit; }, get endCleared(){ return endCleared; },
     goToDimension, removeVillagers,
     get DEV_START_DIM(){ return DEV_START_DIM; },
     get dragon(){ return dragon; }, spawnDragon, removeDragon, updateDragon, paintDragon, damageDragon, dragonShotsCap, aimedDragon, get DRAGON_FULL_DMG(){ return DRAGON_FULL_DMG; }, get DRAGON_SPEED(){ return DRAGON_SPEED; }, get DRAGON_FOLLOW_DIST(){ return DRAGON_FOLLOW_DIST; },
