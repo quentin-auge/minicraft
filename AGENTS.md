@@ -8,8 +8,8 @@ small Python server for saving/loading worlds.
 
 ## Commands
 
-- Run the game: `python3 server.py` (or `npm start`) → http://localhost:8383
-- The server serves static files and exposes `GET/PUT/DELETE /api/worlds/<name>.sav`.
+- Run the game: `python3 server.py [--save-dir DIR]` (or `npm start`) → http://localhost:8383
+- The server serves static files and exposes `GET/PUT/DELETE /api/worlds/<name>.sav` plus `GET /api/save-dir` (live save dir, shown in the Load/New World dialogs). Default save dir is `save/` next to `server.py`.
 - No build step, no lint/test/typecheck scripts are configured.
 - Node v26.7.0 is installed (`/opt/homebrew/bin/node`, Homebrew). For quick JS
   syntax checks use `node --check` on a `.mjs` copy (`cp main.js /tmp/check.mjs &&
@@ -1178,6 +1178,8 @@ or phase. Step-up is root-gated by jumping leadership: when the chain root is a 
 - In worktrees, commit normally after each task (`git add -u`, single-line message, capital first letter).
 - Each workspace server runs on its own random port, not 8383 — read it from
   `/tmp/minicraft-<name>.port` (announced by `/wt-add`) instead of assuming the default.
+  Each workspace server also owns its saves: `/wt-add` launches it with
+  `--save-dir <worktree>/save`, so worktree saves never mix with the main checkout's.
 
 ## Workflow Notes
 

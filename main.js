@@ -15142,6 +15142,10 @@ const fileDirOK = typeof window.showDirectoryPicker === "function";
 const apiOkPromise = fetch("api/worlds").then((r) => r.ok).catch(() => false);
 let apiOk = false;
 apiOkPromise.then((v) => { apiOk = v; });
+const serverSaveDirPromise = fetch("api/save-dir").then((r) => (r.ok ? r.json() : null)).catch(() => null);
+function escHtml(s) {
+  return String(s).replace(/[&<>"']/g, (c) => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]));
+}
 let saveHandle = null;
 let saveName = "";
 let started = false;
@@ -15884,10 +15888,11 @@ function dialogEl() {
   document.body.appendChild(dlg);
   return { dlg, box };
 }
-function askName(title, initial) {
+function askName(title, initial, saveDir) {
   return new Promise((resolve) => {
     const { dlg, box } = dialogEl();
     box.innerHTML = "<h2>" + title + "</h2>" +
+      (saveDir && saveDir.display ? '<div class="dlg-path">' + escHtml(saveDir.display) + "</div>" : "") +
       '<input class="dlg-input" type="text" value="" spellcheck="false" placeholder="world name"/>' +
       '<div class="dlg-actions"><button class="dlg-cancel">Cancel</button><button class="dlg-ok">Create</button></div>';
     const input = box.querySelector(".dlg-input");
@@ -15906,12 +15911,12 @@ function askName(title, initial) {
 
 // Firefox/Safari have no File System Access API, so the OS picker can't be
 // dropped into save/. Show the folder contents instead; click a row to load.
-function pickWorld(entries) {
+function pickWorld(entries, saveDir) {
   return new Promise((resolve) => {
     const names = entries.map((e) => (typeof e === "string" ? e : e.name));
     const { dlg, box } = dialogEl();
     let html = "<h2>Load save</h2>" +
-      '<div class="dlg-path">~/projects/tech/minicraft/save/</div>';
+      '<div class="dlg-path">' + escHtml((saveDir && saveDir.display) || "~/projects/tech/minicraft/save/") + "</div>";
     if (!names.length) {
       html += '<div class="dlg-empty">No saves in save/ yet. Create one with New World.</div>' +
         '<div class="dlg-actions"><button class="dlg-cancel">Close</button></div>';
@@ -16237,7 +16242,7 @@ async function loadSave() {
       } catch { setLoading(false); return false; }
     }
     const list = await apiList();
-    const name = await pickWorld(list);
+    const name = await pickWorld(list, await serverSaveDirPromise);
     if (!name) return false;
     try {
       saveName = name;
@@ -16731,7 +16736,7 @@ document.getElementById("btnNew").addEventListener("click", async (e) => {
   try {
     apiOk = await apiOkPromise;
     if (apiOk) {
-      const name = await askName("New World", "world");
+      const name = await askName("New World", "world", await serverSaveDirPromise);
       if (!name) return;
       const existing = await apiList();
       if (existing.some((w) => w.name === name) && !confirm("Overwrite existing save '" + name.replace(/\.sav$/i, "") + "'?")) return;

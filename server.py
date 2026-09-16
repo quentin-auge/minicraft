@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import argparse
 import json
 import os
 import re
@@ -8,7 +9,6 @@ from urllib.parse import unquote, urlparse
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 SAVE_DIR = os.path.join(ROOT, "save")
-os.makedirs(SAVE_DIR, exist_ok=True)
 PORT = int(os.environ.get("PORT", "8383"))
 
 MIME = {
@@ -55,6 +55,14 @@ class Handler(BaseHTTPRequestHandler):
         return path[len("/api/worlds"):].rstrip("/")
 
     def do_GET(self):
+        if unquote(urlparse(self.path).path) == "/api/save-dir":
+            home = os.path.expanduser("~")
+            display = SAVE_DIR
+            if home and display.startswith(home + os.sep):
+                display = "~" + display[len(home):]
+            if not display.endswith("/"):
+                display += "/"
+            return self._json(200, {"dir": SAVE_DIR, "display": display})
         rest = self._world_rest()
         if rest is not None:
             if not rest:
@@ -114,6 +122,11 @@ class Handler(BaseHTTPRequestHandler):
 
 
 if __name__ == "__main__":
+    ap = argparse.ArgumentParser(description="MiniCraft: static files + world-save API")
+    ap.add_argument("--save-dir", default=SAVE_DIR,
+                    help="world-save directory (default: save/ next to server.py)")
+    SAVE_DIR = os.path.abspath(ap.parse_args().save_dir)
+    os.makedirs(SAVE_DIR, exist_ok=True)
     print("MiniCraft running at http://localhost:%d/" % PORT)
     print("World saves are written to %s" % SAVE_DIR)
     ThreadingHTTPServer(("0.0.0.0", PORT), Handler).serve_forever()
