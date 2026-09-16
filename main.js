@@ -2067,9 +2067,9 @@ function pigeonFindPerchSpot(m, nearMax = 0) {
 }
 function pigeonNextLeg(m) {
   m._decideT = 1.2;
-  if (pigeonDimOf(m) !== "nether" && !pigeonOnMoon(m) && Math.random() < PIGEON_PERCH_CHANCE && !chainChild.has(m.id)) {
+  if (pigeonDimOf(m) !== "nether" && !pigeonOnMoon(m) && !(m._panicUntil && performance.now() / 1000 < m._panicUntil) && Math.random() < PIGEON_PERCH_CHANCE && !chainChild.has(m.id)) {
     const found = pigeonFindPerchSpot(m);
-    if (found) {
+    if (found && !(performance.now() / 1000 < villagePanicUntil && villageSqContains(found.spot.x, found.spot.z))) {
       m.mode = "toPerch";
       m.arc = null;
       m.perchSpot = found.spot;
@@ -2135,7 +2135,7 @@ function pigeonTakeoff(m) {
   m.perchWanderT = 0;
   m.perchTimeout = 0;
   m.perchRetry = 0;
-  if (pigeonDimOf(m) !== "nether" && !pigeonOnMoon(m) && Math.random() < PIGEON_HOP_CHANCE && !chainChild.has(m.id)) {
+  if (pigeonDimOf(m) !== "nether" && !pigeonOnMoon(m) && !(m._panicUntil && performance.now() / 1000 < m._panicUntil) && Math.random() < PIGEON_HOP_CHANCE && !chainChild.has(m.id)) {
     const found = pigeonFindPerchSpot(m, PIGEON_HOP_R);
     if (found) {
       m.mode = "toPerch";
@@ -3566,6 +3566,10 @@ function pigeonCoopTarget(h) {
 function updatePerchedPigeon(m, dt) {
   dt = Math.min(0.05, dt);
   if (grappleMob === m) { pigeonTakeoff(m); return; }
+  if (m.perchSpot && villageSqContains(m.perchSpot.x, m.perchSpot.z) && performance.now() / 1000 < villagePanicUntil) {
+    m._panicUntil = Math.max(m._panicUntil || 0, villagePanicUntil);
+    pigeonTakeoff(m); return;
+  }
   if (!m.perchSpot || !pigeonPerchSupports(m.perchSpot.x, m.perchSpot.y, m.perchSpot.z)) { pigeonTakeoff(m); return; }
   m.perchT -= dt;
   if (m.perchT <= 0) { pigeonTakeoff(m); return; }
@@ -3615,6 +3619,10 @@ function updateToPerchPigeon(m, dt) {
   dt = Math.min(0.05, dt);
   const s = m.perchSpot;
   if (grappleMob === m) { pigeonTakeoff(m); return; }
+  if (s && villageSqContains(s.x, s.z) && performance.now() / 1000 < villagePanicUntil) {
+    m._panicUntil = Math.max(m._panicUntil || 0, villagePanicUntil);
+    pigeonTakeoff(m); return;
+  }
   if (!s || !pigeonPerchSupports(s.x, s.y, s.z)) { pigeonTakeoff(m); return; }
   m.perchTimeout -= dt;
   if (m.perchTimeout <= 0) { pigeonTakeoff(m); return; }
@@ -3676,6 +3684,40 @@ function updatePigeon(m, dt) {
   const targetScale = confined ? PIGEON_NARROW_SCALE : 1;
   if (Math.abs(m.mesh.scale.x - targetScale) > 0.001) {
     m.mesh.scale.setScalar(m.mesh.scale.x + (targetScale - m.mesh.scale.x) * Math.min(1, dt / 0.15));
+  }
+  if ((m._panicT || 0) > 0) {
+    m._panicT -= dt;
+    if (!m.target || m.targetMode !== "panic" || m._panicT <= 0) {
+      m._panicT = 0;
+      if (m.targetMode === "panic") { m.target = null; m.targetMode = null; }
+    } else {
+      let pt = m.target;
+      let pd = Math.hypot(pt.x - m.pos.x, pt.y - m.pos.y, pt.z - m.pos.z);
+      if (pd < 2 && m._panicT > 0.5) {
+        m.target = panicPigeonTarget(m, m._panicSrcX != null ? m._panicSrcX : m.pos.x, m._panicSrcZ != null ? m._panicSrcZ : m.pos.z);
+        m.targetMode = "panic";
+        pt = m.target;
+        pd = Math.hypot(pt.x - m.pos.x, pt.y - m.pos.y, pt.z - m.pos.z);
+      }
+      if (pd < 2) {
+        m._panicT = 0;
+        m.target = null; m.targetMode = null;
+      } else {
+      const sp2 = PIGEON_SPEED * 2;
+      const tl = pd || 1;
+      const slid = pigeonMoveSlide(m, (pt.x - m.pos.x) / tl * sp2, (pt.y - m.pos.y) / tl * sp2, (pt.z - m.pos.z) / tl * sp2, dt);
+      m.vel.set(slid.vx, slid.vy, slid.vz);
+      if (endMobInEnd(m)) {
+        endClampXZPos(m.pos);
+        m.pos.y = Math.max(1, Math.min(MAX_Y - 1, m.pos.y));
+      }
+      m.mesh.position.copy(m.pos);
+      const hv = Math.hypot(slid.vx, slid.vz);
+      if (hv > 0.5) { m.yaw = Math.atan2(slid.vx, slid.vz); m.yawTarget = m.yaw; m.mesh.rotation.y = m.yaw; }
+      pigeonAnimate(m, dt, slid.vx, slid.vy, slid.vz, sp2);
+      return;
+      }
+    }
   }
   if (m.mode === "sit") {
     pigeonResolvePenetration(m);
@@ -4750,6 +4792,10 @@ function resumeChainedMob(m) {
   m.path = null;
   m.pathKey = null;
   m.blockedT = 0;
+  m._panicT = 0;
+  m._panicUntil = 0;
+  m._panicSrcX = null;
+  m._panicSrcZ = null;
   m._stuckT = 0;
   m.perchSpot = null;
   m.perchGroup = null;
@@ -8105,6 +8151,15 @@ function updateMobs(dt) {
           m.steerCooldown = 0; m.path = null; m.pathKey = null;
         }
       } else {
+      if (m._outsideFlee) {
+        m.speed = WALK * 2;
+        m.wanderT -= dt;
+        if (!m.target || Math.hypot(m.target.x - m.pos.x, m.target.z - m.pos.z) < 0.7 || m.wanderT <= 0) {
+          m.target = fleePointAway(m, m._fleeSrcX != null ? m._fleeSrcX : m.pos.x, m._fleeSrcZ != null ? m._fleeSrcZ : m.pos.z);
+          m.wanderT = 1.2 + Math.random() * 0.8;
+          m.steerCooldown = 0; m.path = null; m.pathKey = null;
+        }
+      } else {
       const house = villageHouses[m.homeId];
       const inHome = house && m.pos.x > house.minX && m.pos.x < house.maxX && m.pos.z > house.minZ && m.pos.z < house.maxZ;
       const centre = { x: house.cx + 0.5, z: house.cz + 0.5 };
@@ -8119,7 +8174,8 @@ function updateMobs(dt) {
         m.path = null; m.pathKey = null; m.wanderT = 99;
       }
       }
-    } else if ((!m.kind || m.kind === "villager") && m.fleeUntil) { m.fleeUntil = 0; m.speed = WALK / 2; }
+      }
+    } else if ((!m.kind || m.kind === "villager") && m.fleeUntil) { m.fleeUntil = 0; m.speed = WALK / 2; delete m._outsideFlee; delete m._fleeSrcX; delete m._fleeSrcZ; }
 
     // Roof mobs: stay and wander locally on the same roof, never walk off alone (panic in place at WALKx2)
     if (isMobOnRoof(m)) {
@@ -8491,36 +8547,49 @@ function updateMobs(dt) {
   }
   if (over) { buildMobGrid(); separateMobs(); }
 }
+const PANIC_TIME = 2;
+const VILLAGE_PANIC_TIME = 5;
+let villagePanicUntil = 0;
+function villageSqContains(x, z) {
+  return x >= villageMinX - 10 && x <= villageMaxX + 10 && z >= villageMinZ - 10 && z <= villageMaxZ + 10;
+}
+function blastInVillageSq(cx, cy, cz) {
+  if (dim !== "over" || !villageHouses.length) return false;
+  if (Math.abs(cy - villageCenter.y) > CLOUD_BASE / 2) return false;
+  return cx >= villageMinX - 10 && cx <= villageMaxX + 10 && cz >= villageMinZ - 10 && cz <= villageMaxZ + 10;
+}
+function mobInVillageSq(m) {
+  if (dim !== "over") return false;
+  return villageSqContains(m.pos.x, m.pos.z);
+}
 function panicVillagers(cx, cy, cz) {
   if (!mobs.length) return;
   if (dim === "over" && !villageHouses.length) return;
-  if (dim === "over" && ((cx - villageCenter.x) ** 2 + (cz - villageCenter.z) ** 2 > (VILLAGE_RADIUS + 15) ** 2)) return;
-  if (dim === "over" && Math.abs(cy - villageCenter.y) > CLOUD_BASE / 2) return;
+  if (dim === "over" && !blastInVillageSq(cx, cy, cz)) return;
   const now = performance.now() / 1000;
   for (const m of mobs) {
     if (isMobHeld(m)) continue;
     if (isChained(m)) continue;
     if (m.dim !== undefined && m.dim !== dim) continue;
     if (m.homeId < 0) continue;
+    if (dim === "over" && !mobInVillageSq(m)) continue;
     if (dim !== "over") {
-      const dx = m.pos.x - cx, dz = m.pos.z - cz;
-      if (dx * dx + dz * dz > 20 * 20) continue;
-      if (Math.abs(m.pos.y - cy) > 12) continue;
-      const stagger = Math.random() * 1;
-      m.fleeUntil = Math.max(m.fleeUntil || 0, now + 5 + stagger);
+      const dx = m.pos.x - cx, dy = m.pos.y - cy, dz = m.pos.z - cz;
+      if (Math.hypot(dx, dy, dz) > 10) continue;
+      m.fleeUntil = Math.max(m.fleeUntil || 0, now + PANIC_TIME);
       m.speed = WALK * 2;
       m._outsideFlee = true; m._fleeSrcX = cx; m._fleeSrcZ = cz;
       m.target = fleePointAway(m, cx, cz);
       m.wanderT = 1.2 + Math.random() * 0.8; m.steerCooldown = 0; m.path = null; m.pathKey = null;
       continue;
     }
-    const stagger = Math.random() * 3;
-    m.fleeUntil = Math.max(m.fleeUntil || 0, now + 10 + stagger);
+    const stagger = Math.random() * 1;
+    m.fleeUntil = Math.max(m.fleeUntil || 0, now + VILLAGE_PANIC_TIME + stagger);
     const house = villageHouses[m.homeId];
     const centre = { x: house.cx + 0.5, z: house.cz + 0.5 };
     const inHome = m.pos.x > house.minX && m.pos.x < house.maxX && m.pos.z > house.minZ && m.pos.z < house.maxZ;
     if (inHome) {
-      m.insideT = Math.max(m.insideT, 10 + stagger);
+      m.insideT = Math.max(m.insideT, VILLAGE_PANIC_TIME + stagger);
       m.mode = "inside";
       m.target = centre;
     } else {
@@ -8535,15 +8604,16 @@ function panicPenMobs(cx, cy, cz) {
   if (dim === "over" && !villagePen) return;
   if (dim === "over" && Math.abs(cy - villageCenter.y) > CLOUD_BASE / 2) return;
   const now = performance.now() / 1000;
-  const insideVillage = dim === "over" && ((cx - villageCenter.x) ** 2 + (cz - villageCenter.z) ** 2 <= (VILLAGE_RADIUS + 15) ** 2);
+  const insideVillage = dim === "over" && blastInVillageSq(cx, cy, cz);
   if (insideVillage) {
     for (const m of mobs) {
       if (isMobHeld(m)) continue;
       if (isChained(m)) continue;
       if (m.dim !== undefined && m.dim !== dim) continue;
       if (m.kind !== "pig" && m.kind !== "cow") continue;
-      const stagger = Math.random() * 3;
-      m.fleeUntil = Math.max(m.fleeUntil || 0, now + 10 + stagger);
+      if (!mobInVillageSq(m)) continue;
+      const stagger = Math.random() * 1;
+      m.fleeUntil = Math.max(m.fleeUntil || 0, now + VILLAGE_PANIC_TIME + stagger);
       m.speed = WALK * 2;
       delete m._outsideFlee; delete m._fleeSrcX; delete m._fleeSrcZ;
       const insidePen = isInsidePen(m.pos.x, m.pos.z);
@@ -8573,11 +8643,9 @@ function panicPenMobs(cx, cy, cz) {
       if (isChained(m)) continue;
       if (m.dim !== undefined && m.dim !== dim) continue;
       if (m.kind !== "pig" && m.kind !== "cow") continue;
-      const dx = m.pos.x - cx, dz = m.pos.z - cz;
-      if (dx * dx + dz * dz > 20 * 20) continue;
-      if (Math.abs(m.pos.y - cy) > 12) continue;
-      const stagger = Math.random() * 1;
-      m.fleeUntil = Math.max(m.fleeUntil || 0, now + 5 + stagger);
+      const dx = m.pos.x - cx, dy = m.pos.y - cy, dz = m.pos.z - cz;
+      if (Math.hypot(dx, dy, dz) > 10) continue;
+      m.fleeUntil = Math.max(m.fleeUntil || 0, now + PANIC_TIME);
       m.speed = WALK * 2;
       m._outsideFlee = true; m._fleeSrcX = cx; m._fleeSrcZ = cz;
       m.target = fleePointAway(m, cx, cz);
@@ -8589,15 +8657,16 @@ function panicWolves(cx, cy, cz) {
   if (!mobs.length) return;
   if (dim === "over" && Math.abs(cy - villageCenter.y) > CLOUD_BASE / 2) return;
   const now = performance.now() / 1000;
-  const insideVillage = dim === "over" && ((cx - villageCenter.x) ** 2 + (cz - villageCenter.z) ** 2 <= (VILLAGE_RADIUS + 15) ** 2);
+  const insideVillage = dim === "over" && blastInVillageSq(cx, cy, cz);
   if (insideVillage) {
     for (const m of mobs) {
       if (isMobHeld(m)) continue;
       if (isChained(m)) continue;
       if (m.dim !== undefined && m.dim !== dim) continue;
       if (m.kind !== "wolf") continue;
-      const stagger = Math.random() * 3;
-      m.fleeUntil = Math.max(m.fleeUntil || 0, now + 10 + stagger);
+      if (!mobInVillageSq(m)) continue;
+      const stagger = Math.random() * 1;
+      m.fleeUntil = Math.max(m.fleeUntil || 0, now + VILLAGE_PANIC_TIME + stagger);
       m.speed = WALK * 2;
       delete m._outsideFlee; delete m._fleeSrcX; delete m._fleeSrcZ;
       if (villagePen) {
@@ -8631,11 +8700,9 @@ function panicWolves(cx, cy, cz) {
       if (isChained(m)) continue;
       if (m.dim !== undefined && m.dim !== dim) continue;
       if (m.kind !== "wolf") continue;
-      const dx = m.pos.x - cx, dz = m.pos.z - cz;
-      if (dx * dx + dz * dz > 20 * 20) continue;
-      if (Math.abs(m.pos.y - cy) > 12) continue;
-      const stagger = Math.random() * 1;
-      m.fleeUntil = Math.max(m.fleeUntil || 0, now + 5 + stagger);
+      const dx = m.pos.x - cx, dy = m.pos.y - cy, dz = m.pos.z - cz;
+      if (Math.hypot(dx, dy, dz) > 10) continue;
+      m.fleeUntil = Math.max(m.fleeUntil || 0, now + PANIC_TIME);
       m.speed = WALK * 2;
       m._outsideFlee = true; m._fleeSrcX = cx; m._fleeSrcZ = cz;
       m.target = fleePointAway(m, cx, cz);
@@ -8643,8 +8710,152 @@ function panicWolves(cx, cy, cz) {
     }
   }
 }
+function groundFlee2s(m, cx, cz, now, dur) {
+  m.fleeUntil = Math.max(m.fleeUntil || 0, now + dur);
+  m.speed = WALK * 2;
+  m._outsideFlee = true; m._fleeSrcX = cx; m._fleeSrcZ = cz;
+  m.target = fleePointAway(m, cx, cz);
+  m.wanderT = 1.2 + Math.random() * 0.8; m.steerCooldown = 0; m.path = null; m.pathKey = null;
+}
+function panicPigeonTarget(m, cx, cz) {
+  let dx = m.pos.x - cx, dz = m.pos.z - cz;
+  let len = Math.hypot(dx, dz);
+  if (len < 0.15) { const a = Math.random() * Math.PI * 2; dx = Math.cos(a); dz = Math.sin(a); len = 1; }
+  else { dx /= len; dz /= len; }
+  const inEnd = endMobInEnd(m);
+  const loB = inEnd ? DRAGON_MIN_Y : pigeonBandMin(m);
+  const hiB = inEnd ? DRAGON_MAX_Y : pigeonBandMax(m);
+  for (let t = 0; t < 8; t++) {
+    const ang = Math.atan2(dz, dx) + (Math.random() - 0.5) * 1.2;
+    const dist = 15 + Math.random() * 10;
+    let tx = m.pos.x + Math.cos(ang) * dist;
+    let tz = m.pos.z + Math.sin(ang) * dist;
+    let ty = Math.max(loB, Math.min(hiB, m.pos.y + (Math.random() - 0.5) * 6));
+    if (inEnd) { const r = Math.hypot(tx, tz); if (r > END_MOB_R) { const s = END_MOB_R / r; tx *= s; tz *= s; } }
+    else { tx = Math.max(-WORLD_RADIUS + 2, Math.min(WORLD_RADIUS - 2, tx)); tz = Math.max(-WORLD_RADIUS + 2, Math.min(WORLD_RADIUS - 2, tz)); ty = Math.max(1.5, Math.min(MAX_Y - 1, ty)); }
+    if (pigeonSegmentFree(m.pos.x, m.pos.y, m.pos.z, tx, ty, tz, m)) return new THREE.Vector3(tx, ty, tz);
+  }
+  return new THREE.Vector3(
+    Math.max(-WORLD_RADIUS + 2, Math.min(WORLD_RADIUS - 2, m.pos.x + dx * 10)),
+    Math.max(loB, Math.min(hiB, m.pos.y)),
+    Math.max(-WORLD_RADIUS + 2, Math.min(WORLD_RADIUS - 2, m.pos.z + dz * 10)));
+}
+function panicPigeonLeaveTarget(m, cx, cz) {
+  let dx = m.pos.x - cx, dz = m.pos.z - cz;
+  let len = Math.hypot(dx, dz);
+  if (len < 0.15) { const a = Math.random() * Math.PI * 2; dx = Math.cos(a); dz = Math.sin(a); len = 1; }
+  else { dx /= len; dz /= len; }
+  const inEnd = endMobInEnd(m);
+  const loB = inEnd ? DRAGON_MIN_Y : pigeonBandMin(m);
+  const hiB = inEnd ? DRAGON_MAX_Y : pigeonBandMax(m);
+  for (let t = 0; t < 10; t++) {
+    const ang = Math.atan2(dz, dx) + (Math.random() - 0.5) * 0.9;
+    const dist = 20 + Math.random() * 15;
+    let tx = m.pos.x + Math.cos(ang) * dist;
+    let tz = m.pos.z + Math.sin(ang) * dist;
+    let ty = Math.max(loB, Math.min(hiB, Math.max(m.pos.y, loB + 2) + Math.random() * 4));
+    if (inEnd) { const r = Math.hypot(tx, tz); if (r > END_MOB_R) { const s = END_MOB_R / r; tx *= s; tz *= s; } }
+    else {
+      tx = Math.max(-WORLD_RADIUS + 2, Math.min(WORLD_RADIUS - 2, tx));
+      tz = Math.max(-WORLD_RADIUS + 2, Math.min(WORLD_RADIUS - 2, tz));
+      ty = Math.max(1.5, Math.min(MAX_Y - 1, ty));
+      if (tx >= villageMinX - 10 && tx <= villageMaxX + 10 && tz >= villageMinZ - 10 && tz <= villageMaxZ + 10) continue;
+    }
+    if (pigeonSegmentFree(m.pos.x, m.pos.y, m.pos.z, tx, ty, tz, m)) return new THREE.Vector3(tx, ty, tz);
+  }
+  return panicPigeonTarget(m, cx, cz);
+}
+function panicPigeon(m, cx, cy, cz, villageBlast, force) {
+  if (!force) {
+    if (villageBlast) {
+      if (dim !== "over" || !mobInVillageSq(m) || Math.abs(m.pos.y - villageCenter.y) > 20) return;
+    } else {
+      const dx = m.pos.x - cx, dy = m.pos.y - cy, dz = m.pos.z - cz;
+      if (Math.hypot(dx, dy, dz) > 10) return;
+    }
+  }
+  m.perchSpot = null; m.perchGroup = null; m.perchT = 0; m.perchWander = null; m.perchWanderT = 0; m.perchTimeout = 0; m.perchRetry = 0;
+  m.mode = "straight"; m.arc = null;
+  m._tunnel = false; m._tFree = 0; m._tPath = null; m._tGoal = null;
+  m.target = villageBlast ? panicPigeonLeaveTarget(m, cx, cz) : panicPigeonTarget(m, cx, cz);
+  m.targetMode = "panic";
+  m._panicSrcX = cx; m._panicSrcZ = cz;
+  m._panicT = PANIC_TIME;
+  m._panicUntil = performance.now() / 1000 + (villageBlast ? VILLAGE_PANIC_TIME : PANIC_TIME);
+}
+function panicEnderman(m, cx, cy, cz, villageBlast, force) {
+  if (m.falling) return;
+  if (m === carryGrappleMob && (carryGrappleActive || carryGrapplePulling)) return;
+  if (!force) {
+    if (villageBlast) {
+      if (!mobInVillageSq(m)) return;
+    } else {
+      const dx = m.pos.x - cx, dy = m.pos.y - cy, dz = m.pos.z - cz;
+      if (Math.hypot(dx, dy, dz) > 10) return;
+    }
+  }
+  const dx = m.pos.x - cx, dz = m.pos.z - cz;
+  let hx = dx, hz = dz;
+  if (Math.hypot(hx, hz) < 0.15) { const a = Math.random() * Math.PI * 2; hx = Math.cos(a); hz = Math.sin(a); }
+  const spot = endermanSpotFor(m, Math.round(cx), Math.round(cz), ENDERMAN_BLINK_DIST, hx, hz, ENDERMAN_BLINK_FAR);
+  if (!spot) return;
+  m.lookT = 0;
+  m.angry = ENDERMAN_ANGRY_TIME;
+  m.eyeRedT = ENDERMAN_RED_TIME;
+  endermanTeleport(m, spot.x, spot.z, spot.y);
+}
+function panicGeneric(cx, cy, cz) {
+  if (!mobs.length) return;
+  const now = performance.now() / 1000;
+  const villageBlast = blastInVillageSq(cx, cy, cz);
+  for (const m of mobs) {
+    if (!m || m.kind === "dragon") continue;
+    if (isMobHeld(m)) continue;
+    if (isChained(m)) continue;
+    if (m.dim !== undefined && m.dim !== dim) continue;
+    if (m.kind === "pigeon") { panicPigeon(m, cx, cy, cz, villageBlast); continue; }
+    if (m.kind === "enderman") { panicEnderman(m, cx, cy, cz, villageBlast); continue; }
+    if (villageBlast) {
+      if (!mobInVillageSq(m)) continue;
+    } else {
+      const dx = m.pos.x - cx, dy = m.pos.y - cy, dz = m.pos.z - cz;
+      if (Math.hypot(dx, dy, dz) > 10) continue;
+    }
+    if (m.fleeUntil != null && m.fleeUntil > now + PANIC_TIME) continue;
+    groundFlee2s(m, cx, cz, now, villageBlast ? VILLAGE_PANIC_TIME : PANIC_TIME);
+  }
+}
+function chainDownstreamOf(v) {
+  const out = [];
+  if (!v || v.kind === "dragon") return out;
+  const seen = new Set();
+  let c = v;
+  while (c && !seen.has(c.id)) {
+    seen.add(c.id);
+    out.push(c);
+    const nid = chainChild.get(c.id);
+    const n = nid !== undefined ? mobById.get(nid) : null;
+    c = n && mobs.includes(n) ? n : null;
+  }
+  return out;
+}
+function panicSingleMob(m, cx, cy, cz, force) {
+  if (!m || !mobs.includes(m)) return;
+  if (m.kind === "dragon") return;
+  if (isMobHeld(m)) return;
+  if (isChained(m)) return;
+  if (m.dim !== undefined && m.dim !== dim) return;
+  const vb = blastInVillageSq(cx, cy, cz);
+  if (m.kind === "pigeon") { panicPigeon(m, cx, cy, cz, vb, force); return; }
+  if (m.kind === "enderman") { panicEnderman(m, cx, cy, cz, vb, force); return; }
+  const now = performance.now() / 1000;
+  if (!force && m.fleeUntil != null && m.fleeUntil > now + PANIC_TIME) return;
+  groundFlee2s(m, cx, cz, now, vb && mobInVillageSq(m) ? VILLAGE_PANIC_TIME : PANIC_TIME);
+}
 function handleMobExplosion(cx, cy, cz) {
+  if (blastInVillageSq(cx, cy, cz)) villagePanicUntil = performance.now() / 1000 + VILLAGE_PANIC_TIME;
   if (dim === "over" || dim === "nether") { panicVillagers(cx, cy, cz); panicPenMobs(cx, cy, cz); panicWolves(cx, cy, cz); }
+  panicGeneric(cx, cy, cz);
 }
 
 function generateWorld() {
@@ -11205,7 +11416,7 @@ function updateGrapple(dt) {
       vel.y += ((ey / exl * ecl) * stiff - (vel.y - pm.vel.y) * damp) * dt;
       vel.z += ((ez / exl * ecl) * stiff - (vel.z - pm.vel.z) * damp) * dt;
       const spd = Math.hypot(vel.x, vel.y, vel.z);
-      const maxSp = (pm.speed || PIGEON_SPEED) * 2.2;
+      const maxSp = Math.max((pm.speed || PIGEON_SPEED) * 2.2, pvl * 1.5);
       if (spd > maxSp) { vel.x *= maxSp / spd; vel.y *= maxSp / spd; vel.z *= maxSp / spd; }
       let remaining = Math.min(Math.hypot(vel.x, vel.y, vel.z) * dt, 1.2);
       let blockedX = false, blockedY = false, blockedZ = false;
@@ -12490,6 +12701,9 @@ function tickTNT(dt) {
         tntSyncClear(t.pigeon);
         const v = t.pigeon;
         const victimChained = v && v.kind !== "dragon" && (!isFlyingKind(v.kind) || isChained(v) || isChainCarrier(v));
+        const downstream = victimChained && mobs.includes(v) ? chainDownstreamOf(v) : null;
+        const frontId = victimChained && mobs.includes(v) ? chainParent.get(v.id) : undefined;
+        const front = frontId !== undefined && frontId !== PLAYER_CHAIN_ID ? mobById.get(frontId) : null;
         if (victimChained && mobs.includes(v) && isGroundedChainVictim(v)) {
           severGroundedChainVictim(v, k);
           explodePigeon(t.px, t.py, t.pz, true);
@@ -12505,9 +12719,14 @@ function tickTNT(dt) {
           if (t.pigeon && t.pigeon.kind !== "dragon") explodePigeon(t.px, t.py, t.pz, true);
           else enqueueExplosion(t.px, t.py, t.pz, true, true);
         }
+        if (downstream) for (const d of downstream) panicSingleMob(d, t.px, t.py, t.pz);
+        if (front) panicSingleMob(front, t.px, t.py, t.pz);
       } else if (t.pigeon) {
         const v = t.pigeon;
         const victimChained = v.kind !== "dragon" && (!isFlyingKind(v.kind) || isChained(v) || isChainCarrier(v));
+        const downstream = victimChained && mobs.includes(v) ? chainDownstreamOf(v) : null;
+        const frontId = victimChained && mobs.includes(v) ? chainParent.get(v.id) : undefined;
+        const front = frontId !== undefined && frontId !== PLAYER_CHAIN_ID ? mobById.get(frontId) : null;
         if (!mobs.includes(v) || (t.life -= dt) <= 0) {
           clearTNTVisual(t);
           tntLit.delete(k);
@@ -12523,6 +12742,8 @@ function tickTNT(dt) {
             if (v.kind === "dragon") enqueueExplosion(t.px, t.py, t.pz, false, true);
             else explodePigeon(t.px, t.py, t.pz, false);
           }
+          if (downstream) for (const d of downstream) panicSingleMob(d, t.px, t.py, t.pz);
+          if (front) panicSingleMob(front, t.px, t.py, t.pz);
         } else {
           drawFuseSprite(t.spr, Math.max(0, t.life));
         }
@@ -14321,12 +14542,25 @@ function paintDragon() {
 function removeDragon() {
   if (!dragon.mesh) return;
   if (dragon.mob) {
+    const freed = [];
+    {
+      const seen = new Set();
+      let c = mobById.get(chainChild.get(dragon.mob.id));
+      while (c && !seen.has(c.id)) {
+        seen.add(c.id);
+        freed.push(c);
+        const nid = chainChild.get(c.id);
+        c = nid !== undefined ? mobById.get(nid) : null;
+      }
+    }
+    const dx = dragon.mesh.position.x, dy = dragon.mesh.position.y, dz = dragon.mesh.position.z;
     dropChainFrom(dragon.mob);
     if (pigeonLock === dragon.mob) { pigeonLock = null; pigeonLockT = 0; pigeonLockShots = 0; }
     mobById.delete(dragon.mob.id);
     const mi = mobs.indexOf(dragon.mob);
     if (mi >= 0) mobs.splice(mi, 1);
     dragon.mob = null;
+    for (const f of freed) panicSingleMob(f, dx, dy, dz, true);
   }
   scene.remove(dragon.mesh);
   dragon.mesh.traverse((o) => {
