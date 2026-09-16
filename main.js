@@ -569,6 +569,12 @@ function setBlock(x, y, z, id) {
   }
   endMemo.dim = "";
   netherMemo.dim = "";
+  if (id === PORTAL || id === OBSIDIAN) {
+    if (!(dim === "end" && !endCleared)) {
+      for (const w of collectEndWins(x, y, z, 6)) ensurePortalFill(w, false);
+      for (const w of collectNetherWins(x, y, z, 6)) ensurePortalFill(w, true);
+    }
+  }
   portalDirty = true;
   worldDirty = true;
 }

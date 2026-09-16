@@ -404,7 +404,10 @@ stays bright at distance, `placeable: true` so it
   interior is recognized immediately with no per-frame window sweep).
   `updatePortalVisual` rescans only when `portalDirty` is set or when half a
   second has passed with the player on a new chunk cell; any `setBlock` edit
-  sets `portalDirty`, and `checkPortal` walks the live `portalFills` Map
+  sets `portalDirty`, and placing a PORTAL/OBSIDIAN block also registers
+  windows anchored at the edited block itself (same `collect*` + `ensurePortalFill`,
+  skipped while the End is sealed), so a frame completed far from the player
+  gets its fill immediately; `checkPortal` walks the live `portalFills` Map
   instead of rescanning the world each frame. Nether/End fills share one
   `portalFillGeo`
   and two `MeshBasicMaterial`s (purple `0x9b30ff` for Nether, black for End)
