@@ -724,7 +724,11 @@ or phase. Step-up is root-gated by jumping leadership: when the chain root is a 
   dragon wears a purple outline halo (BackSide shell over each body part in the
   dragon's own eye purple, `endermanHaloMat`, `fog: false`, additive blending so the six shell parts sum order-independently with no transparency-sort shimmer, synced live to TNT-hit
   repaints via `syncEndermanHalos`, hidden for solo/non-dragon links and while
-  held) so the black body reads against the black End sky. Carried endermen can be released in the Overworld or the Nether,
+  held) so the black body reads against the black End sky. An enderman chained
+  under another flying mob in the End (any non-dragon flying root) wears the same shell in fixed
+  dragon-yellow `0xd8a818` (`endermanHaloFlyMat`, mode picked by
+  `endermanHaloMode`, End-gated via `m.dim === "end"` so Overworld/Nether
+  flying-led endermen stay halo-free). Carried endermen can be released in the Overworld or the Nether,
   where they keep End behaviour on local ground (`endermanSpotFor` /
   `endermanPickSpotOutside`, same 0.3 s stare + "stop staring" toast), and they
   persist in saves as mob kind code 5 (save v13).

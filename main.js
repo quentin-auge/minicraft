@@ -4505,6 +4505,7 @@ function linkChain(carrier, child) {
   scene.add(head);
   chainLinks.set(child.id, { carrierId: carrier.id, rope, head, towDir: new THREE.Vector3(0, 0, 1), towPos: new THREE.Vector3(), towInit: false, playerFrontId: carrierIsPlayer ? grappleMob.id : null, taut: 0, strained: false, strainT: 0, carrierAirT: 0, hopT: 0, farT: 0, snapT: 0.4, loiter: false, freeT: 0 });
   syncChainLinkColor(child.id);
+  syncEndermanHalo(child);
   if (child.vel) child.vel.set(0, 0, 0);
   child.mode = "chained";
   child.path = null;
@@ -4546,6 +4547,7 @@ function spliceChainLink(front, back) {
   link.prevAx = undefined;
   link.farT = 0;
   syncChainLinkColor(back.id);
+  syncEndermanHalo(back);
   return true;
 }
 function seatChainChildNearCarrier(carrier, child) {
@@ -14558,6 +14560,7 @@ const endermen = [];
 let endermanGeo = null;
 let endermanBodyMat = null;
 let endermanHaloMat = null;
+let endermanHaloFlyMat = null;
 const ENDERMAN_ANGRY_TIME = 0.5;
 const ENDERMAN_STARE_TIME = 0.3;
 const ENDERMAN_HW = 0.31;
@@ -14626,17 +14629,27 @@ function setEndermanEyeColor(e, hex) {
   }
 }
 
-function endermanChainHaloVisible(m) {
-  if (!m || m.kind !== "enderman") return false;
-  if (isMobHeld(m)) return false;
-  if (!isChained(m)) return false;
+function endermanHaloMode(m) {
+  if (!m || m.kind !== "enderman") return null;
+  if (isMobHeld(m)) return null;
+  if (!isChained(m)) return null;
   const root = chainRootOf(m);
-  return !!root && root.kind === "dragon";
+  if (!root) return null;
+  if (root.kind === "dragon") return "dragon";
+  if (m.dim === "end" && isFlyingKind(root.kind)) return "fly";
+  return null;
+}
+function endermanChainHaloVisible(m) {
+  return endermanHaloMode(m) !== null;
 }
 function syncEndermanHalo(m) {
   if (!m || m.kind !== "enderman" || !m.haloMeshes) return;
-  const v = endermanChainHaloVisible(m);
-  for (const h of m.haloMeshes) h.visible = v;
+  const mode = endermanHaloMode(m);
+  for (const h of m.haloMeshes) {
+    h.visible = mode !== null;
+    if (mode === "fly" && endermanHaloFlyMat) h.material = endermanHaloFlyMat;
+    else if (mode === "dragon" && endermanHaloMat) h.material = endermanHaloMat;
+  }
 }
 function syncEndermanHalos() {
   if (endermanHaloMat && dragon && dragon.mats && dragon.mats.eye) endermanHaloMat.color.copy(dragon.mats.eye.color);
@@ -14647,6 +14660,7 @@ function ensureEndermanAssets() {
   if (!endermanGeo) endermanGeo = new THREE.BoxGeometry(1, 1, 1);
   if (!endermanBodyMat) endermanBodyMat = new THREE.MeshStandardMaterial({ color: 0x0c0a12, roughness: 0.85, metalness: 0.05 });
   if (!endermanHaloMat) endermanHaloMat = new THREE.MeshBasicMaterial({ color: DRAGON_FINISH.eye, transparent: true, opacity: 0.35, side: THREE.BackSide, fog: false, depthWrite: false, blending: THREE.AdditiveBlending });
+  if (!endermanHaloFlyMat) endermanHaloFlyMat = new THREE.MeshBasicMaterial({ color: 0xd8a818, transparent: true, opacity: 0.35, side: THREE.BackSide, fog: false, depthWrite: false, blending: THREE.AdditiveBlending });
 }
 
 function spawnEndermen() {
@@ -14700,6 +14714,7 @@ function removeEndermen() {
     if (endermanGeo) { endermanGeo.dispose(); endermanGeo = null; }
     if (endermanBodyMat) { endermanBodyMat.dispose(); endermanBodyMat = null; }
     if (endermanHaloMat) { endermanHaloMat.dispose(); endermanHaloMat = null; }
+    if (endermanHaloFlyMat) { endermanHaloFlyMat.dispose(); endermanHaloFlyMat = null; }
   }
 }
 
@@ -17099,7 +17114,7 @@ if (location.search.includes('test')) {
     goToDimension, removeVillagers,
     get DEV_START_DIM(){ return DEV_START_DIM; },
     get dragon(){ return dragon; }, spawnDragon, removeDragon, updateDragon, paintDragon, damageDragon, dragonShotsCap, aimedDragon, get DRAGON_FULL_DMG(){ return DRAGON_FULL_DMG; }, get DRAGON_SPEED(){ return DRAGON_SPEED; }, get DRAGON_FOLLOW_DIST(){ return DRAGON_FOLLOW_DIST; },
-    get endermen(){ return endermen; }, get ENDERMEN_COUNT(){ return ENDERMEN_COUNT; }, get END_PLATFORM_R(){ return END_PLATFORM_R; }, get END_MOB_R(){ return END_MOB_R; }, get END_RETURN_Z(){ return END_RETURN_Z; }, get END_RETURN_BASE_Y(){ return END_RETURN_BASE_Y; }, get DRAGON_MIN_Y(){ return DRAGON_MIN_Y; }, get DRAGON_MAX_Y(){ return DRAGON_MAX_Y; }, endMobInEnd, endClampXZPos, endClampYFlying, pigeonEndPortalTopAt, get ENDERMAN_STARE_TIME(){ return ENDERMAN_STARE_TIME; }, get ENDERMAN_ANGRY_TIME(){ return ENDERMAN_ANGRY_TIME; }, spawnEndermen, removeEndermen, updateEnderman, updateEndermen, endermanTeleport, endermanPickSpot, endermanSpotFor, ensureEndermanAssets, makeEndermanMesh, syncEndermanHalo, syncEndermanHalos, endermanChainHaloVisible,
+    get endermen(){ return endermen; }, get ENDERMEN_COUNT(){ return ENDERMEN_COUNT; }, get END_PLATFORM_R(){ return END_PLATFORM_R; }, get END_MOB_R(){ return END_MOB_R; }, get END_RETURN_Z(){ return END_RETURN_Z; }, get END_RETURN_BASE_Y(){ return END_RETURN_BASE_Y; }, get DRAGON_MIN_Y(){ return DRAGON_MIN_Y; }, get DRAGON_MAX_Y(){ return DRAGON_MAX_Y; }, endMobInEnd, endClampXZPos, endClampYFlying, pigeonEndPortalTopAt, get ENDERMAN_STARE_TIME(){ return ENDERMAN_STARE_TIME; }, get ENDERMAN_ANGRY_TIME(){ return ENDERMAN_ANGRY_TIME; }, spawnEndermen, removeEndermen, updateEnderman, updateEndermen, endermanTeleport, endermanPickSpot, endermanSpotFor, ensureEndermanAssets, makeEndermanMesh, syncEndermanHalo, syncEndermanHalos, endermanChainHaloVisible, endermanHaloMode,
   };
 }
 
