@@ -1163,7 +1163,8 @@ or phase. Step-up is root-gated by jumping leadership: when the chain root is a 
 
 - Workspaces live in `../minicraft_wts/<name>` (one dir = one branch of the same name).
 - Natural language routing: "spawn/create a new workspace ..." → follow `.opencode/commands/wt-new.md`
-  with that name/commit; "rebase onto master / finish this workspace ..." → follow `.opencode/commands/wt-done.md`.
+  with that name/commit; "rebase onto master / finish this workspace ..." → follow `.opencode/commands/wt-done.md`;
+  "delete/remove workspace ..." → follow `.opencode/commands/wt-delete.md`.
 - In worktrees, commit normally after each task (`git add -u`, single-line message, capital first letter).
 - Each workspace server runs on its own random port, not 8383 — read it from
   `/tmp/minicraft-<name>.port` (announced by `/wt-new`) instead of assuming the default.
