@@ -1020,7 +1020,7 @@ or phase. Step-up is root-gated by jumping leadership: when the chain root is a 
   instead of damping the whole velocity, so the tow stays fluid from every angle
   including directly underneath; release during transit flings along
   the launch line at `GRAPPLE_FLING` like any other grapple, release while following
-  keeps the tow momentum clamped to `GRAPPLE_FLING`. The follow tow speed cap scales with the bird's live speed (`max(base*2.2, liveVel*1.5)`), so 2x panic flights tow without latch/pop stutter. Persisted as mob kind code 4 in save v12.
+  keeps the tow momentum clamped to `GRAPPLE_FLING`. The follow tow scales with the bird's live speed (cap `max(base*2.2, liveVel*1.5)`, trail smoothing rates, velocity lead on the trail point, speed-aware follow band), so 2x panic flights tow in one continuous spring with no latch/pop stutter. Persisted as mob kind code 4 in save v12.
   Cloud perching: pigeons sit ~50% of the time, on village roofs (`pigeonRoofTopAt`,
   any house roof cell at `vy+6`), cloud tops (`pigeonCloudTopAt`, now with an
   optional y-range) and tree tops (`pigeonTreeTopAt`, highest `LOG`/`LEAVES`

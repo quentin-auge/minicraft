@@ -11393,21 +11393,23 @@ function updateGrapple(dt) {
     const pm = grappleMob;
     const followDist = pm.kind === "dragon" ? DRAGON_FOLLOW_DIST : PIGEON_FOLLOW_DIST;
     const pdx = grappleTarget.x - pos.x, pdy = grappleTarget.y - pos.y, pdz = grappleTarget.z - pos.z;
-    const followR = grappleTowInit ? followDist + 2 : followDist;
+    const pvl = pm.vel.length();
+    const followR = (grappleTowInit ? followDist + 2 : followDist) + pvl * 0.25;
     if (Math.hypot(pdx, pdy, pdz) <= followR) {
       grappleHookPos.copy(grappleTarget);
-      const pvl = pm.vel.length();
+      const dirRate = 2.2 + pvl * 0.2, posRate = 6 + pvl * 0.5;
       if (pvl > 1e-3) {
         grappleTowTmp.set(pm.vel.x / pvl, pm.vel.y / pvl, pm.vel.z / pvl);
         grappleTowTmp.y = Math.max(-0.6, Math.min(0.6, grappleTowTmp.y));
         const tl = grappleTowTmp.length() || 1;
         grappleTowTmp.divideScalar(tl);
         if (!grappleTowInit) { grappleTowDir.copy(grappleTowTmp); grappleTowInit = true; }
-        else { grappleTowDir.lerp(grappleTowTmp, Math.min(1, dt * 2.2)); if (grappleTowDir.lengthSq() < 1e-6) grappleTowDir.set(0, 0, 1); grappleTowDir.normalize(); }
+        else { grappleTowDir.lerp(grappleTowTmp, Math.min(1, dt * dirRate)); if (grappleTowDir.lengthSq() < 1e-6) grappleTowDir.set(0, 0, 1); grappleTowDir.normalize(); }
       } else if (!grappleTowInit) { grappleTowDir.set(0, 0, 1); grappleTowInit = true; }
-      const desX = pm.pos.x - grappleTowDir.x * followDist, desY = pm.pos.y + pm.h * 0.5 - grappleTowDir.y * followDist - PLAYER_H * 0.5, desZ = pm.pos.z - grappleTowDir.z * followDist;
+      const leadT = 1 / posRate;
+      const desX = pm.pos.x + pm.vel.x * leadT - grappleTowDir.x * followDist, desY = pm.pos.y + pm.vel.y * leadT + pm.h * 0.5 - grappleTowDir.y * followDist - PLAYER_H * 0.5, desZ = pm.pos.z + pm.vel.z * leadT - grappleTowDir.z * followDist;
       if (grappleTowPos.lengthSq() < 1e-6) grappleTowPos.set(desX, desY, desZ);
-      else grappleTowPos.lerp(grappleTowTmp.set(desX, desY, desZ), Math.min(1, dt * 6));
+      else grappleTowPos.lerp(grappleTowTmp.set(desX, desY, desZ), Math.min(1, dt * posRate));
     const stiff = 18, damp = 11;
       const ex = grappleTowPos.x - pos.x, ey = grappleTowPos.y - pos.y, ez = grappleTowPos.z - pos.z;
       const exl = Math.hypot(ex, ey, ez) || 1;
