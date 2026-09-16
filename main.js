@@ -6983,7 +6983,8 @@ function snapshotMobsForDim(dimName, includeCarried) {
     penBound: !!m.penBound,
   }));
 }
-function snapshotChainPairsForDim(dimName, mobList) {
+const DRAGON_CHAIN_CARRIER = 65535;
+function snapshotChainPairsForDim(dimName, mobList, includeDragon = false) {
   if (!mobList || !mobList.length) return [];
   const idxById = new Map();
   mobList.forEach((e, i) => { if (e.id != null) idxById.set(e.id, i); });
@@ -7002,8 +7003,9 @@ function snapshotChainPairsForDim(dimName, mobList) {
       const carrier = mobById.get(carrierId);
       const child = mobById.get(childId);
       if (!carrier || !child || mobDimOf(carrier) !== dimName || mobDimOf(child) !== dimName) continue;
+      if (a == null && includeDragon && carrier.kind === "dragon" && mobDimOf(child) === "end") a = DRAGON_CHAIN_CARRIER;
     }
-    if (a == null || b == null || a >= 65535 || b >= 65535) continue;
+    if (a == null || b == null || a > DRAGON_CHAIN_CARRIER || b >= DRAGON_CHAIN_CARRIER) continue;
     pairs.push([a, b]);
   }
   return pairs;
@@ -7371,10 +7373,18 @@ function purgeDimMobs(dimName, keepHeld) {
 function relinkDimChainsByIds(idByListIdx, pairs) {
   if (!pairs || !pairs.length || !idByListIdx) return;
   for (const [a, b] of pairs) {
-    if (a < 0 || b < 0 || a >= idByListIdx.length || b >= idByListIdx.length) continue;
-    const ca = idByListIdx[a] != null ? mobById.get(idByListIdx[a]) : null;
+    if (b < 0 || b >= idByListIdx.length) continue;
     const cb = idByListIdx[b] != null ? mobById.get(idByListIdx[b]) : null;
-    if (!ca || !cb) continue;
+    if (!cb) continue;
+    if (a === DRAGON_CHAIN_CARRIER) {
+      const dm = dragon && dragon.mob;
+      if (!dm || !mobs.includes(dm) || mobDimOf(dm) !== mobDimOf(cb)) continue;
+      linkChain(dm, cb);
+      continue;
+    }
+    if (a < 0 || a >= idByListIdx.length) continue;
+    const ca = idByListIdx[a] != null ? mobById.get(idByListIdx[a]) : null;
+    if (!ca) continue;
     linkChain(ca, cb);
   }
 }
@@ -15178,7 +15188,7 @@ function serialize() {
   pendingCarriedIdx = null;
   const mobN = overMobs.length, endMobN = endMobs.length, netherMobN = netherMobs.length;
   const chainPairs = snapshotChainPairsForDim("over", overMobs);
-  const chainPairsEnd = snapshotChainPairsForDim("end", endMobs);
+  const chainPairsEnd = snapshotChainPairsForDim("end", endMobs, true);
   const chainPairsNether = snapshotChainPairsForDim("nether", netherMobs);
   const exitBytes = (netherExit ? 33 : 1) + (endExit ? 33 : 1);
   const liveTNTSize = snapshotLiveTNT();
@@ -17109,7 +17119,7 @@ if (location.search.includes('test')) {
     portalWinValid, portalFrameBBox, findReturnSpot, frameTopSpot, facePortalFrom, faceAwayFromPortal, recordOverPortal, recordDimExit, resolveDimArrival, nearestReturnWin, resolveOverworldReturn, nearPortalSpawn, resolveSpawn, collectEndWins, collectNetherWins, collectReturnWins, insideEndInterior, insideNetherInterior, winCenter, windowDist, isSolid,
     get PORTAL(){ return PORTAL; }, get OBSIDIAN(){ return OBSIDIAN; }, get WORLD_RADIUS(){ return WORLD_RADIUS; }, get PLAYER_HW(){ return PLAYER_HW; }, get PLAYER_H(){ return PLAYER_H; }, get MOON(){ return MOON; }, get CLOUD(){ return CLOUD; }, get GRASS(){ return GRASS; }, get STONE(){ return STONE; }, get ENDSTONE(){ return ENDSTONE; }, get NETHERRACK(){ return NETHERRACK; }, get dim(){ return dim; },
     serialize, deserialize, restoreSave, snapshotOverworldMobs, restoreOverworldMobs, get overworldMobCache(){ return overworldMobCache; }, get pendingOverworldMobs(){ return pendingOverworldMobs; }, get pendingChainLinks(){ return pendingChainLinks; }, get pendingCarriedIdx(){ return pendingCarriedIdx; },
-    snapshotMobsForDim, snapshotChainPairsForDim, restoreDimMobs, relinkDimChainsByIds, mobDimOf, suspendLiveDim,
+    snapshotMobsForDim, snapshotChainPairsForDim, DRAGON_CHAIN_CARRIER, restoreDimMobs, relinkDimChainsByIds, mobDimOf, suspendLiveDim,
     get endMobCache(){ return endMobCache; }, get netherMobCache(){ return netherMobCache; }, get pendingEndMobs(){ return pendingEndMobs; }, get pendingNetherMobs(){ return pendingNetherMobs; }, get netherExit(){ return netherExit; }, get endExit(){ return endExit; }, get endCleared(){ return endCleared; },
     goToDimension, removeVillagers,
     get DEV_START_DIM(){ return DEV_START_DIM; },

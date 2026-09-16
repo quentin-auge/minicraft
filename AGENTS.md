@@ -1056,7 +1056,10 @@ or phase. Step-up is root-gated by jumping leadership: when the chain root is a 
   via `snapshotMobsForDim`/`restoreOverworldMobs`/`restoreDimMobs`) for every
   dimension (over + end + nether lists, the dragon excluded — it respawns fresh);
   chain links as (carrier, child) per-dimension mob index pairs (relinked via
-  `linkChain` after mob restore, failures skipped; a link saved while the player
+  `linkChain` after mob restore, failures skipped; a dragon-led End link persists
+  as a sentinel-carrier pair (`DRAGON_CHAIN_CARRIER` 65535, resolved to the live
+  `dragon.mob` on relink — file saves only, portal trips still drop dragon
+  chains; skipped with no dragon, e.g. cleared End); a link saved while the player
   held it rejoins as a direct pair (the ride in front of the player linked
   straight to the follower behind, so the chain is whole and the player
   resumes falling on load); chained members keep their saved
