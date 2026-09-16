@@ -3239,7 +3239,7 @@ function unchainMob(m, fizzleKey) {
   if (m.kind === "dragon") return;
   severChainMob(m);
   resumeChainedMob(m);
-  m.villageBound = false;
+  if (m.isBaby) rebindBabyBounds(m); else m.villageBound = false;
   m.penBound = false;
   if (pigeonLock === m) pigeonLock = null;
   if (grappleMob === m) detachDisplacementGrapple();
@@ -3257,7 +3257,7 @@ function severGroundedChainVictim(m, fizzleKey) {
   if (m.kind === "dragon") return;
   severChainMob(m);
   resumeChainedMob(m);
-  m.villageBound = false;
+  if (m.isBaby) rebindBabyBounds(m); else m.villageBound = false;
   m.penBound = false;
   if (pigeonLock === m) pigeonLock = null;
   if (grappleMob === m) detachDisplacementGrapple();
@@ -4776,6 +4776,22 @@ function resumeChainedMob(m) {
   if (m.mesh) m.mesh.rotation.x = 0;
   setMobTransparent(m, 1);
 }
+function rebindBabyBounds(m) {
+  if (!m || !m.isBaby) return;
+  m.villageBound = dim === "over" && m.pos.x >= villageMinX && m.pos.x <= villageMaxX && m.pos.z >= villageMinZ && m.pos.z <= villageMaxZ;
+}
+function babyParentFor(m) {
+  const p = mobById.get(m.parentId);
+  if (!p || mobDimOf(p) !== dim || Math.abs(m.pos.y - p.pos.y) >= 1) return null;
+  return p;
+}
+function babyTrailSpot(m, p) {
+  const yaw = (p.mesh ? p.mesh.rotation.y : 0) || 0;
+  const bx = p.pos.x - Math.sin(yaw) * 1.5, bz = p.pos.z - Math.cos(yaw) * 1.5;
+  const inWater = dim === "over" && (isInsidePool(bx, bz) || isInsidePenPool(bx, bz));
+  if (!inWater && !aabbCollidesWorld(bx, m.pos.y, bz, m.hw, m.h) && hasMobGround(bx, bz, m.hw, m.pos.y)) return { x: bx, z: bz };
+  return { x: p.pos.x, z: p.pos.z };
+}
 function chainTakeForCarry(mob) {
   if (!mob || !mobs.includes(mob)) return;
   if (mob.kind === "dragon") return;
@@ -4874,7 +4890,7 @@ function freeChainRoot(back) {
     chainParent.delete(back.id);
     chainChild.delete(back.id);
     resumeChainedMob(back);
-    back.villageBound = false;
+    if (back.isBaby) rebindBabyBounds(back); else back.villageBound = false;
     back.penBound = false;
     if (next && mobs.includes(next) && next !== back && !isMobHeld(next)) freeChainRoot(next);
     else if (next && mobs.includes(next) && isMobHeld(next)) {
@@ -4898,7 +4914,7 @@ function freeChainRoot(back) {
   }
   chainParent.delete(back.id);
   resumeChainedMob(back);
-  back.villageBound = false;
+  if (back.isBaby) rebindBabyBounds(back); else back.villageBound = false;
   back.penBound = false;
 }
 function severChainMob(m) {
@@ -6790,9 +6806,20 @@ function spawnVillagers() {
   }
   for (const m of mobs) {
     if (isMobHeld(m)) continue;
-    if (m.isBaby) {
+    if (m.isBaby && mobById.get(m.parentId) == null) {
       const sibs = mobs.filter((o) => o.homeId === m.homeId && !o.isBaby);
       if (sibs.length) m.parentId = sibs[Math.floor(Math.random() * sibs.length)].id;
+      const p = mobById.get(m.parentId);
+      const pp = p && p.mesh && p.mesh.userData ? p.mesh.userData.palIdx : null;
+      if (pp != null && pp !== m.palIdx) {
+        const mesh = makeVillagerMesh(true, pp);
+        mesh.position.copy(m.mesh.position);
+        mesh.rotation.y = m.mesh.rotation.y;
+        scene.remove(m.mesh);
+        scene.add(mesh);
+        m.mesh = mesh;
+        m.palIdx = pp;
+      }
     }
   }
   for (const m of mobs) {
@@ -8005,24 +8032,37 @@ function updateMobs(dt) {
         m.target = dest;
       }
     } else {
-      // wander / follow — outside village babies behave like adults
-      if (m.isBaby && m.villageBound !== false && now >= (m.fleeUntil || 0)) {
-        const p = mobById.get(m.parentId);
+      // wander / follow — babies without an available parent wander like adults
+      if (m.isBaby && now >= (m.fleeUntil || 0)) {
+        const p = babyParentFor(m);
         if (p) {
           const pd = Math.hypot(p.pos.x - m.pos.x, p.pos.z - m.pos.z);
-          const pInside = (()=>{ const h=villageHouses[p.homeId]; return p.pos.x>h.minX&&p.pos.x<h.maxX&&p.pos.z>h.minZ&&p.pos.z<h.maxZ; })();
-          const meInside = (()=>{ const h=villageHouses[m.homeId]; return m.pos.x>h.minX&&m.pos.x<h.maxX&&m.pos.z>h.minZ&&m.pos.z<h.maxZ; })();
-          if (pInside !== meInside) {
-            const house = pInside ? villageHouses[p.homeId] : villageHouses[m.homeId];
+          const ph = villageHouses[p.homeId], mh = villageHouses[m.homeId];
+          const pInside = ph ? p.pos.x>ph.minX&&p.pos.x<ph.maxX&&p.pos.z>ph.minZ&&p.pos.z<ph.maxZ : false;
+          const meInside = mh ? m.pos.x>mh.minX&&m.pos.x<mh.maxX&&m.pos.z>mh.minZ&&m.pos.z<mh.maxZ : false;
+          if (pInside !== meInside && ph && mh && dim === "over") {
+            const house = pInside ? ph : mh;
             m.mode = pInside ? "goHome" : "goOut";
+            m.speed = WALK / 2;
             m.target = pInside ? { x: house.padX, z: house.padZ } : { x: house.apronX, z: house.apronZ };
-          } else if (pd > 3.0) {
-            m.target = { x: p.pos.x, z: p.pos.z };
+          } else if (pd > 2.0 || (m.mode === "follow" && pd > 1.2)) {
+            m.mode = "follow";
+            m.speed = WALK / 2 * 1.3;
+            m.target = babyTrailSpot(m, p);
           } else if (pd < 1.2 && m.target && Math.hypot(m.target.x - p.pos.x, m.target.z - p.pos.z) < 1) {
             // stay near parent
+            if (m.mode === "follow") m.mode = "wander";
+            m.speed = WALK / 2;
           } else if (m.wanderT <= 0) {
+            if (m.mode === "follow") m.mode = "wander";
+            m.speed = WALK / 2;
             m.target = { x: p.pos.x + (Math.random()-0.5)*2, z: p.pos.z + (Math.random()-0.5)*2 };
+          } else if (m.mode === "follow") {
+            m.target = babyTrailSpot(m, p);
           }
+        } else if (m.mode === "follow") {
+          m.mode = "wander";
+          m.speed = WALK / 2;
         }
       }
       m.wanderT -= dt;
@@ -8041,7 +8081,10 @@ function updateMobs(dt) {
       }
       if (m.target && Math.hypot(m.target.x - m.pos.x, m.target.z - m.pos.z) < 0.6) {
         if (m.mode === "wander") {
-          if (m.villageBound === false) {
+          const bp = m.isBaby ? babyParentFor(m) : null;
+          if (bp && Math.hypot(bp.pos.x - m.pos.x, bp.pos.z - m.pos.z) < 6) {
+            m.target = { x: bp.pos.x + (Math.random()-0.5)*2, z: bp.pos.z + (Math.random()-0.5)*2 };
+          } else if (m.villageBound === false) {
             m.target = wanderNear(m);
           } else {
             m.target = wanderGoalFor(m);
