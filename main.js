@@ -2155,12 +2155,12 @@ function pigeonTakeoff(m) {
 }
 function isInsidePen(x, z) {
   if (!villagePen) return false;
-  return x >= villagePen.minX && x <= villagePen.maxX && z >= villagePen.minZ && z <= villagePen.maxZ;
+  return x >= villagePen.minX && x < villagePen.maxX + 1 && z >= villagePen.minZ && z < villagePen.maxZ + 1;
 }
 function isInsidePenPool(x, z) {
   if (!villagePen || !villagePen.pool) return false;
   const q = villagePen.pool;
-  return x >= q.minX && x <= q.maxX && z >= q.minZ && z <= q.maxZ;
+  return x >= q.minX && x < q.maxX + 1 && z >= q.minZ && z < q.maxZ + 1;
 }
 function penPoolExitTarget(x, z, hx, hz) {
   if (!villagePen || !villagePen.pool) return null;
@@ -2191,7 +2191,7 @@ function penPoolExitTarget(x, z, hx, hz) {
 }
 function isInsidePool(x, z) {
   if (!villagePool) return false;
-  return x >= villagePool.minX && x <= villagePool.maxX && z >= villagePool.minZ && z <= villagePool.maxZ;
+  return x >= villagePool.minX && x < villagePool.maxX + 1 && z >= villagePool.minZ && z < villagePool.maxZ + 1;
 }
 function poolExitTarget(x, z, hx, hz) {
   if (!villagePool) return null;
@@ -6752,6 +6752,10 @@ function spawnVillagers() {
         // fallback to random village point centered
         let alt = wanderGoalFor({ pos: new THREE.Vector3(sx, villageCenter.y+1, sz), hw, h: hh, lastTarget: null });
         if (alt) { sx = Math.floor(alt.x)+0.5; sz = Math.floor(alt.z)+0.5; }
+        if (isInsidePenPool(sx, sz)) {
+          const retry = randomVillagePoint();
+          sx = Math.floor(retry.x)+0.5; sz = Math.floor(retry.z)+0.5;
+        }
       }
       used.push([sx, sz]);
       usedBlocks.add(`${Math.floor(sx)},${villageCenter.y + 1},${Math.floor(sz)}`);
@@ -6826,6 +6830,7 @@ function spawnVillagers() {
       if (usedBlocks.has(blockKey) || isInsidePenPool(sx, sz)) {
         const alt = randomPenPoint();
         sx = Math.floor(alt.x) + 0.5; sz = Math.floor(alt.z) + 0.5;
+        if (isInsidePenPool(sx, sz)) { sx = Math.floor(villagePen.cx) + 0.5; sz = Math.floor(villagePen.cz) + 0.5; }
       }
       used.push([sx, sz]);
       usedBlocks.add(`${Math.floor(sx)},${villageCenter.y + 1},${Math.floor(sz)}`);
@@ -6880,6 +6885,7 @@ function spawnVillagers() {
       if (usedBlocks.has(blockKey) || isInsidePenPool(sx, sz)) {
         const alt = wanderGoalForWolf({ pos: new THREE.Vector3(sx, villageCenter.y+1, sz), hw, h: hh, lastTarget: null });
         if (alt) { sx = Math.floor(alt.x)+0.5; sz = Math.floor(alt.z)+0.5; }
+        if (isInsidePenPool(sx, sz)) { sx = Math.floor(villageCenter.x)+0.5; sz = Math.floor(villageCenter.z)+0.5; }
       }
       used.push([sx, sz]);
       usedBlocks.add(`${Math.floor(sx)},${villageCenter.y + 1},${Math.floor(sz)}`);
@@ -7169,9 +7175,10 @@ function restoreOverworldMobs(list, opts) {
       sz = Math.max(-WORLD_RADIUS + 1, Math.min(WORLD_RADIUS - 1, sz));
       sy = Math.max(1, Math.min(MAX_Y - 2, isFinite(sy) ? sy : PIGEON_MIN_Y + 20));
       spot = freeChainSpot(sx, sy, sz, hw, hh) || settleMobSpot(sx, sy, sz, hw, hh, isWolf);
-      if (spot && isInsidePenPool(spot.x, spot.z)) {
-        const fixed = freeChainSpot(spot.x + 2.5, spot.y, spot.z + 2.5, hw, hh) || settleMobSpot(spot.x + 2.5, spot.y, spot.z + 2.5, hw, hh, isWolf);
-        if (fixed && !isInsidePenPool(fixed.x, fixed.z)) spot = fixed;
+      for (let n = 0; spot && n < 3 && isInsidePenPool(spot.x, spot.z); n++) {
+        const moved = freeChainSpot(spot.x + 2.5, spot.y, spot.z + 2.5, hw, hh) || settleMobSpot(spot.x + 2.5, spot.y, spot.z + 2.5, hw, hh, isWolf);
+        if (!moved) break;
+        spot = moved;
       }
     } else {
     if (isInsidePenPool(sx, sz) || usedXZ.some((u) => (u[0] - sx) * (u[0] - sx) + (u[1] - sz) * (u[1] - sz) < 1.4)) {
@@ -7179,9 +7186,8 @@ function restoreOverworldMobs(list, opts) {
       sx = fixed.x; sy = fixed.y; sz = fixed.z;
     }
     spot = settleMobSpot(sx, sy, sz, hw, hh, isWolf);
-    if (isInsidePenPool(spot.x, spot.z)) {
-      const fixed = settleMobSpot(spot.x + 2.5, spot.y, spot.z + 2.5, hw, hh, isWolf);
-      if (!isInsidePenPool(fixed.x, fixed.z)) spot = fixed;
+    for (let n = 0; n < 3 && isInsidePenPool(spot.x, spot.z); n++) {
+      spot = settleMobSpot(spot.x + 2.5, spot.y, spot.z + 2.5, hw, hh, isWolf);
     }
     }
     let homeId = e.homeId;
