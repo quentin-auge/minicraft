@@ -608,8 +608,10 @@ stays bright at distance, `placeable: true` so it
   helpers ignore it. It can be grappled and followed like a pigeon
   (same tow spring behind `vel`, but at `DRAGON_FOLLOW_DIST` 8 — the same
   length as a dragon chain link) but never grabbed —
-  ENTER refuses with a toast. The player hook anchors at mid-body
-  (`pos.y + h*0.5`, like `chainMidY`) instead of the ray hit point, and the
+  ENTER refuses with a toast. The player hook anchors 3/4 up the torso
+  (`mob.pos.y + DRAGON_ANCHOR_DY` via `chainAnchorY` — the torso box is 1.45
+  tall and centered on the mesh origin) — the same point every dragon chain
+  link uses as its carrier end — instead of the ray hit point, and the
   rope/head wear the dragon-eye purple (`syncGrappleColor`, shared with the
   dragon chain-link mats) instead of brown while latched. Grapple latch/release skips `setMobTransparent`
   for it so hit-repainting keeps working on the shared materials.

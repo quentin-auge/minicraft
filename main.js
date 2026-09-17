@@ -4284,6 +4284,11 @@ function chainFollowDist(carrier) {
 function chainMidY(m) {
   return m.pos.y + m.h * 0.5;
 }
+const DRAGON_ANCHOR_DY = 0.36;
+function chainAnchorY(m) {
+  if (m.kind === "dragon") return m.pos.y + DRAGON_ANCHOR_DY;
+  return chainMidY(m);
+}
 function isMobHeld(m) {
   return !!m && (m === carryMob || m === carryGrappleMob);
 }
@@ -5125,7 +5130,7 @@ function updateChains(dt) {
       link.towInit = true;
     }
     const desX = carrier.pos.x - link.towDir.x * followDist;
-    const desY = chainMidY(carrier) - link.towDir.y * followDist - child.h * 0.5;
+    const desY = chainAnchorY(carrier) - link.towDir.y * followDist - child.h * 0.5;
     const desZ = carrier.pos.z - link.towDir.z * followDist;
     const crumb = chainTrailTarget(carrier, followDist);
     const directSlot = !legacyTow && isFlyingKind(child.kind);
@@ -5189,7 +5194,7 @@ function updateChains(dt) {
     }
     const ax = lead._chAx.x, ay = lead._chAx.y, az = lead._chAx.z;
     const tx = carrier.pos.x - ax * followDist;
-    const ty = chainMidY(carrier) - ay * followDist - child.h * 0.5;
+    const ty = chainAnchorY(carrier) - ay * followDist - child.h * 0.5;
     const tz = carrier.pos.z - az * followDist;
     const svx = csx - lead._chAxV.x * followDist;
     const svy = csy - lead._chAxV.y * followDist;
@@ -5233,10 +5238,10 @@ function updateChains(dt) {
       endClampXZPos(child.pos);
       if (!isFlyingKind(child.kind)) child.pos.y = Math.max(1, Math.min(DRAGON_MAX_Y, child.pos.y));
     }
-    const linkAx = carrier.pos.x, linkAy = chainMidY(carrier), linkAz = carrier.pos.z;
-    const linkDx = child.pos.x - linkAx, linkDy = chainMidY(child) - linkAy, linkDz = child.pos.z - linkAz;
+    const linkAx = carrier.pos.x, linkAy = chainAnchorY(carrier), linkAz = carrier.pos.z;
+    const linkDx = child.pos.x - linkAx, linkDy = chainAnchorY(child) - linkAy, linkDz = child.pos.z - linkAz;
     const linkD = Math.hypot(linkDx, linkDy, linkDz);
-    const dyF = chainMidY(child) - chainMidY(carrier);
+    const dyF = chainAnchorY(child) - chainAnchorY(carrier);
     link.flySplitT = Math.abs(dyF) > CHAIN_FLY_SPLIT_DY ? (link.flySplitT || 0) + dt : 0;
     if (!threading && link.flySplitT > CHAIN_SPLIT_STRAIN_T) {
       freeChainRoot(child);
@@ -5293,7 +5298,7 @@ function updateChains(dt) {
 }
 function chainLinkDelta(carrier, child) {
   const dx = child.pos.x - carrier.pos.x;
-  const dy = chainMidY(child) - chainMidY(carrier);
+  const dy = chainAnchorY(child) - chainAnchorY(carrier);
   const dz = child.pos.z - carrier.pos.z;
   return { dx, dy, dz, d: Math.hypot(dx, dy, dz) };
 }
@@ -5484,7 +5489,7 @@ function updateChainGroundLink(link, carrier, child, followDist, dt) {
   }
   sep = chainLinkDelta(carrier, child);
   link.strained = hdOf() > hi + 0.15;
-  const cmx = carrier.pos.x, cmy = chainMidY(carrier), cmz = carrier.pos.z;
+  const cmx = carrier.pos.x, cmy = chainAnchorY(carrier), cmz = carrier.pos.z;
   const hdBand = () => Math.hypot(child.pos.x - cmx, child.pos.z - cmz);
   const airFollow = (link.carrierAirT || 0) > 0.2;
   if (!floats && (airFollow ? sep.d > hi : hdOf() > hi) && (airFollow || hdBand() > hi)) {
@@ -5539,8 +5544,8 @@ function updateChainGroundLink(link, carrier, child, followDist, dt) {
 const chainLinkTmp = new THREE.Vector3();
 
 function renderChainLink(link, carrier, child) {
-    const ax = carrier.pos.x, ay = chainMidY(carrier), az = carrier.pos.z;
-    const bx = child.pos.x, by = chainMidY(child), bz = child.pos.z;
+    const ax = carrier.pos.x, ay = chainAnchorY(carrier), az = carrier.pos.z;
+    const bx = child.pos.x, by = chainAnchorY(child), bz = child.pos.z;
     const dx = bx - ax, dy = by - ay, dz = bz - az;
     const dist = Math.hypot(dx, dy, dz) || 0.001;
     const n = Math.max(4, Math.min(CHAIN_LINK_CUBES, Math.round(dist / 0.15)));
@@ -10952,10 +10957,10 @@ function fireGrapple() {
     const isDragon = mob.kind === "dragon";
     const off = isDragon ? null : getMobHitOffset(eye, dir, mob);
     const mx = off ? mob.pos.x + off.x : mob.pos.x;
-    const my = off ? mob.pos.y + off.y : (isDragon ? mob.pos.y + mob.h * 0.5 : mob.pos.y + mob.h + 0.001);
+    const my = off ? mob.pos.y + off.y : (isDragon ? mob.pos.y + DRAGON_ANCHOR_DY : mob.pos.y + mob.h + 0.001);
     const mz = off ? mob.pos.z + off.z : mob.pos.z;
     if (off) grappleMobOffset.copy(off);
-    else if (isDragon) grappleMobOffset.set(0, mob.h * 0.5, 0);
+    else if (isDragon) grappleMobOffset.set(0, DRAGON_ANCHOR_DY, 0);
     else grappleMobOffset.set(0, mob.h + 0.001, 0);
     const distMob = Math.hypot(mx - sx, my - sy, mz - sz);
     if (distMob < 0.3) return;
@@ -11016,7 +11021,7 @@ function latchPlayerTo(mob) {
   grapplePendingInsert = null;
   grappleMob = mob;
   grappleBlock = null;
-  if (mob.kind === "dragon") grappleMobOffset.set(0, mob.h * 0.5, 0);
+  if (mob.kind === "dragon") grappleMobOffset.set(0, DRAGON_ANCHOR_DY, 0);
   else grappleMobOffset.set(0, mob.h + 0.001, 0);
   grappleTarget.set(mob.pos.x, mob.pos.y + grappleMobOffset.y, mob.pos.z);
   grappleStart.set(pos.x, pos.y + 0.3, pos.z);
@@ -11120,7 +11125,7 @@ function grabRideForCarry(mob) {
   const frontLive = front && mobs.includes(front) && !isMobHeld(front);
   if (frontLive) {
     grappleMob = front;
-    if (front.kind === "dragon") grappleMobOffset.set(0, front.h * 0.5, 0);
+    if (front.kind === "dragon") grappleMobOffset.set(0, DRAGON_ANCHOR_DY, 0);
     else grappleMobOffset.set(0, front.h + 0.001, 0);
     grappleTarget.set(front.pos.x, front.pos.y + grappleMobOffset.y, front.pos.z);
     grappleHookPos.copy(grappleTarget);
@@ -11229,7 +11234,7 @@ function insertChainAheadOfPlayer(mob) {
   } else if (!linkChain(ride, mob)) return false;
   if (ride.kind === "pigeon" && (ride.mode === "perch" || ride.mode === "toPerch")) pigeonTakeoff(ride);
   grappleMob = mob;
-  if (mob.kind === "dragon") grappleMobOffset.set(0, mob.h * 0.5, 0);
+  if (mob.kind === "dragon") grappleMobOffset.set(0, DRAGON_ANCHOR_DY, 0);
   else grappleMobOffset.set(0, mob.h + 0.001, 0);
   grappleTarget.set(mob.pos.x, mob.pos.y + grappleMobOffset.y, mob.pos.z);
   grappleHookPos.copy(grappleTarget);
@@ -11353,8 +11358,8 @@ function updateGrapple(dt) {
       return false;
     }
     if (grappleMob.kind === "dragon") {
-      grappleMobOffset.set(0, grappleMob.h * 0.5, 0);
-      grappleTarget.set(grappleMob.pos.x, grappleMob.pos.y + grappleMob.h * 0.5, grappleMob.pos.z);
+      grappleMobOffset.set(0, DRAGON_ANCHOR_DY, 0);
+      grappleTarget.set(grappleMob.pos.x, grappleMob.pos.y + DRAGON_ANCHOR_DY, grappleMob.pos.z);
     } else {
       grappleTarget.set(grappleMob.pos.x + grappleMobOffset.x, grappleMob.pos.y + grappleMobOffset.y, grappleMob.pos.z + grappleMobOffset.z);
     }
@@ -11435,7 +11440,7 @@ function updateGrapple(dt) {
         else { grappleTowDir.lerp(grappleTowTmp, Math.min(1, dt * dirRate)); if (grappleTowDir.lengthSq() < 1e-6) grappleTowDir.set(0, 0, 1); grappleTowDir.normalize(); }
       } else if (!grappleTowInit) { grappleTowDir.set(0, 0, 1); grappleTowInit = true; }
       const leadT = 1 / posRate;
-      const desX = pm.pos.x + pm.vel.x * leadT - grappleTowDir.x * followDist, desY = pm.pos.y + pm.vel.y * leadT + pm.h * 0.5 - grappleTowDir.y * followDist - PLAYER_H * 0.5, desZ = pm.pos.z + pm.vel.z * leadT - grappleTowDir.z * followDist;
+      const desX = pm.pos.x + pm.vel.x * leadT - grappleTowDir.x * followDist, desY = chainAnchorY(pm) + pm.vel.y * leadT - grappleTowDir.y * followDist - PLAYER_H * 0.5, desZ = pm.pos.z + pm.vel.z * leadT - grappleTowDir.z * followDist;
       if (grappleTowPos.lengthSq() < 1e-6) grappleTowPos.set(desX, desY, desZ);
       else grappleTowPos.lerp(grappleTowTmp.set(desX, desY, desZ), Math.min(1, dt * posRate));
     const stiff = 18, damp = 11;
@@ -11476,7 +11481,7 @@ function updateGrapple(dt) {
         }
       }
       if (grappleChainTail) {
-        const tAx = pm.pos.x, tAy = pm.pos.y + pm.h * 0.5, tAz = pm.pos.z;
+        const tAx = pm.pos.x, tAy = chainAnchorY(pm), tAz = pm.pos.z;
         const eDx = pos.x - tAx, eDy = pos.y + PLAYER_H * 0.5 - tAy, eDz = pos.z - tAz;
         const eD = Math.hypot(eDx, eDy, eDz);
         if (eD > 1e-6) {
