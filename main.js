@@ -8564,8 +8564,9 @@ function updateMobs(dt) {
   }
   if (over) { buildMobGrid(); separateMobs(); }
 }
-const PANIC_TIME = 2;
+const PANIC_TIME = 3;
 const VILLAGE_PANIC_TIME = 5;
+const VILLAGER_PANIC_TIME = 8;
 let villagePanicUntil = 0;
 function villageSqContains(x, z) {
   return x >= villageMinX - 10 && x <= villageMaxX + 10 && z >= villageMinZ - 10 && z <= villageMaxZ + 10;
@@ -8600,13 +8601,12 @@ function panicVillagers(cx, cy, cz) {
       m.wanderT = 1.2 + Math.random() * 0.8; m.steerCooldown = 0; m.path = null; m.pathKey = null;
       continue;
     }
-    const stagger = Math.random() * 1;
-    m.fleeUntil = Math.max(m.fleeUntil || 0, now + VILLAGE_PANIC_TIME + stagger);
+    m.fleeUntil = Math.max(m.fleeUntil || 0, now + VILLAGER_PANIC_TIME);
     const house = villageHouses[m.homeId];
     const centre = { x: house.cx + 0.5, z: house.cz + 0.5 };
     const inHome = m.pos.x > house.minX && m.pos.x < house.maxX && m.pos.z > house.minZ && m.pos.z < house.maxZ;
     if (inHome) {
-      m.insideT = Math.max(m.insideT, VILLAGE_PANIC_TIME + stagger);
+      m.insideT = Math.max(m.insideT, VILLAGER_PANIC_TIME);
       m.mode = "inside";
       m.target = centre;
     } else {
@@ -8629,8 +8629,7 @@ function panicPenMobs(cx, cy, cz) {
       if (m.dim !== undefined && m.dim !== dim) continue;
       if (m.kind !== "pig" && m.kind !== "cow") continue;
       if (!mobInVillageSq(m)) continue;
-      const stagger = Math.random() * 1;
-      m.fleeUntil = Math.max(m.fleeUntil || 0, now + VILLAGE_PANIC_TIME + stagger);
+      m.fleeUntil = Math.max(m.fleeUntil || 0, now + VILLAGE_PANIC_TIME);
       m.speed = WALK * 2;
       delete m._outsideFlee; delete m._fleeSrcX; delete m._fleeSrcZ;
       const insidePen = isInsidePen(m.pos.x, m.pos.z);
@@ -8682,8 +8681,7 @@ function panicWolves(cx, cy, cz) {
       if (m.dim !== undefined && m.dim !== dim) continue;
       if (m.kind !== "wolf") continue;
       if (!mobInVillageSq(m)) continue;
-      const stagger = Math.random() * 1;
-      m.fleeUntil = Math.max(m.fleeUntil || 0, now + VILLAGE_PANIC_TIME + stagger);
+      m.fleeUntil = Math.max(m.fleeUntil || 0, now + VILLAGE_PANIC_TIME);
       m.speed = WALK * 2;
       delete m._outsideFlee; delete m._fleeSrcX; delete m._fleeSrcZ;
       if (villagePen) {
