@@ -10357,7 +10357,7 @@ let waterDipTarget = null;
 const keys = {};
 
 function spawnPlayer() {
-  for (let y = MAX_Y; y > 0; y--) {
+  for (let y = MAX_Y; y >= 0; y--) {
     const b = getBlock(0, y, 0);
     if (b === CLOUD || b === MOON) continue;
     if (isSolid(0, y, 0)) {
