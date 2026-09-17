@@ -343,9 +343,12 @@ stays bright at distance, `placeable: true` so it
   player body), so a flat ground portal never grabs you just because you jump
   over it — the fill is a thin slab while your feet hover above it. The End is
   generated once per world and then persists: portal travel suspends the live
-  dimension (`suspendLiveDim` snapshots its mobs/chains) and resumes the target
-  one in place — blocks, mobs and chains are exactly where you left them
-  (`goToDimension` only generates when `worlds.end`/`worlds.nether` is empty,
+  dimension (`suspendLiveDim` snapshots its mobs/chains with exact pos/yaw/look/
+  home/parent/bounds, then purges its live mobs except the held/hook ones) and
+  unconditionally restores the target one from its cache in place — blocks, mobs
+  and chains are exactly where you left them, with no fresh-mob top-ups on portal
+  trips (`restoreOverworldMobs`/`restoreDimMobs` run with `topUp: false`;
+  `goToDimension` only generates when `worlds.end`/`worlds.nether` is empty,
   otherwise `ensureReturnPortal`/`ensureNetherPortal` just re-protect the frame).
   The dragon is still fresh on every portal entry (respawns at full
   health, sealed until killed) and the vertical 5×5 return portal (upright frame, `buildReturnPortal`)
@@ -1094,7 +1097,10 @@ or phase. Step-up is root-gated by jumping leadership: when the chain root is a 
   followers so the pigeon lead keeps flying and the formation resumes in the air;
   the 3 s autosave also fires while any chain link exists, so flying chains reach
   disk via ESC, autosave or page-hide alike; written for every dimension from
-  any save point in v16 — End/Nether saves store their live mobs and chains,
+  any save point in v16 — End/Nether saves store their live mobs and chains
+  (`serialize` merges each suspended dimension's cache with its live held mob,
+  uses the pending chain pairs for suspended dims, and only refreshes the
+  current dimension's cache, so saving far from home never empties it),
   and the End restores `endCleared` so a cleared End reloads dragon-free with
   its return portal open);
   the held mob (`carryMob`) is stored as a per-dimension mob index plus carrier

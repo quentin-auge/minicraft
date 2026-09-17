@@ -7018,9 +7018,10 @@ function spawnVillagers() {
 }
 function removeVillagers() {
   const keepCarry = carryMob && mobs.includes(carryMob) ? carryMob : null;
+  const keepHook = carryGrappleMob && mobs.includes(carryGrappleMob) ? carryGrappleMob : null;
   const survivors = [];
   for (const m of mobs) {
-    if (m === keepCarry) { survivors.push(m); continue; }
+    if (m === keepCarry || m === keepHook) { survivors.push(m); continue; }
     if (m.dim !== undefined && m.dim !== "over") { survivors.push(m); continue; }
     if (m.mesh) scene.remove(m.mesh);
     if (m.fallMesh) scene.remove(m.fallMesh);
@@ -7234,6 +7235,7 @@ function restoreFirstTarget(x, y, z, hw, h, isWolf) {
 }
 function restoreOverworldMobs(list, opts) {
   const keepCarried = !opts || opts.keepCarried !== false;
+  const topUp = !opts || opts.topUp !== false;
   const applyPanic = !!opts && opts.applyPanic === true;
   let carriedIdx = (opts && opts.carriedIdx != null) ? opts.carriedIdx : pendingCarriedIdx;
   pendingCarriedIdx = null;
@@ -7487,8 +7489,10 @@ function restoreOverworldMobs(list, opts) {
     }
   }
   buildMobGrid();
-  spawnVillagers();
-  spawnPigeons();
+  if (topUp) {
+    spawnVillagers();
+    spawnPigeons();
+  }
   return created.length;
 }
 function purgeDimMobs(dimName, keepHeld) {
@@ -7525,7 +7529,7 @@ function relinkDimChainsByIds(idByListIdx, pairs) {
   }
 }
 function restoreDimMobs(list, dimName, opts) {
-  if (!list || !list.length) return 0;
+  if (!list || !list.length) return { n: 0, ids: [] };
   const applyPanic = !!opts && opts.applyPanic === true;
   purgeDimMobs(dimName, true);
   let gid = mobs.length ? Math.max(...mobs.map((m) => m.id)) + 1 : 0;
@@ -7558,7 +7562,6 @@ function restoreDimMobs(list, dimName, opts) {
         }
         if (placed) break;
       }
-      if (!placed) continue;
     }
     const ryaw = isFinite(e.yaw) ? e.yaw : 0;
     let mesh = null, palIdx = 0, collar = WOLF_COLLAR_COLORS[0], endermanVis = null;
@@ -7580,18 +7583,19 @@ function restoreDimMobs(list, dimName, opts) {
     mesh.rotation.y = ryaw;
     scene.add(mesh);
     const base = {
-      id: gid++, kind, homeId: -1, isBaby, parentId: -1, dim: dimName,
+      id: gid++, kind, homeId: (kind === "villager" && e.homeId != null && e.homeId >= 0) ? e.homeId : -1, isBaby, parentId: -1, dim: dimName,
       pos: new THREE.Vector3(sx, sy, sz),
       vel: new THREE.Vector3(0, 0, 0),
       hw, h: hh, mesh, onGround: false,
       target: null, mode: "wander", wanderT: 0.5 + Math.random() * 1.5, insideT: 0,
       legPhase: Math.random() * Math.PI * 2,
-      blockedT: 0, yaw: ryaw, yawTarget: ryaw, villageBound: false,
+      blockedT: 0, yaw: ryaw, yawTarget: ryaw, villageBound: e.villageBound != null ? !!e.villageBound : false,
       _stuckT: 0, _prevX: sx, _prevZ: sz,
       path: null, pathIdx: 0, pathKey: null, steerX: 0, steerZ: 0, steerCooldown: 0, lastTarget: null, _wasInWater: false, wolfInWater: false,
     };
+    if (e.penBound != null) base.penBound = !!e.penBound;
     if (kind === "villager") { base.canStep = false; base.speed = WALK / 2; base.sc = isBaby ? 0.52 : 1; base.palIdx = palIdx; }
-    else if (kind === "pig" || kind === "cow") { base.canStep = false; base.speed = WALK / 2.2; base.penBound = false; base.sc = 1; }
+    else if (kind === "pig" || kind === "cow") { base.canStep = false; base.speed = WALK / 2.2; if (e.penBound == null) base.penBound = false; base.sc = 1; }
     else if (kind === "pigeon") {
       base.canStep = false; base.speed = PIGEON_SPEED; base.sc = 1; base.arc = null; base.mode = "straight";
       base.perchSpot = null; base.perchGroup = null; base.perchT = 0; base.perchWander = null; base.perchWanderT = 0;
@@ -7611,6 +7615,16 @@ function restoreDimMobs(list, dimName, opts) {
     idByListIdx[i] = base.id;
     created.push(base);
   }
+  list.forEach((e, i) => {
+    const nid = idByListIdx[i];
+    if (nid == null) return;
+    const cm = mobById.get(nid);
+    if (!cm || e.parentIdx == null || e.parentIdx < 0 || e.parentIdx >= list.length) return;
+    if (cm.kind !== "villager" || !cm.isBaby) return;
+    const pid = idByListIdx[e.parentIdx];
+    if (pid == null) return;
+    cm.parentId = pid;
+  });
   const panicResumedDim = new Set();
   if (applyPanic) {
     const idxByMobId = new Map();
@@ -13600,30 +13614,6 @@ function setDimensionEnv() {
 }
 
 function suspendLiveDim() {
-  if (dim === "over") {
-    overworldMobCache = snapshotMobsForDim("over", false);
-    stripPanicEntries(overworldMobCache);
-    pendingChainLinks = snapshotChainPairsForDim("over", overworldMobCache);
-  } else if (dim === "end") {
-    endMobCache = snapshotMobsForDim("end", false);
-    stripPanicEntries(endMobCache);
-    pendingChainLinksEnd = snapshotChainPairsForDim("end", endMobCache);
-  } else if (dim === "nether") {
-    netherMobCache = snapshotMobsForDim("nether", false);
-    stripPanicEntries(netherMobCache);
-    pendingChainLinksNether = snapshotChainPairsForDim("nether", netherMobCache);
-  }
-  for (const m of mobs) if (mobDimOf(m) === dim) clearMobPanic(m);
-  villagePanicUntil = 0;
-  pendingCarriedIdx = null;
-}
-
-function goToDimension(name, sx, sy, sz) {
-  suspendLiveDim();
-  purgeLiveTNT();
-  pigeonLock = null; pigeonLockT = 0; pigeonLockShots = 0;
-  clearChains();
-  if (playerInChain()) detachDisplacementGrapple();
   if (carryGrappleActive || carryGrapplePulling || carryGrappleRetracting) {
     if (carryGrappleMode === "release" && carryGrappleMob && !carryMob) {
       carryMob = carryGrappleMob;
@@ -13639,6 +13629,31 @@ function goToDimension(name, sx, sy, sz) {
     if (carryGrappleCubes) carryGrappleCubes.visible = false;
     if (carryGrappleHead) carryGrappleHead.visible = false;
   }
+  if (dim === "over") {
+    overworldMobCache = snapshotMobsForDim("over", false);
+    stripPanicEntries(overworldMobCache);
+    pendingChainLinks = snapshotChainPairsForDim("over", overworldMobCache);
+  } else if (dim === "end") {
+    endMobCache = snapshotMobsForDim("end", false);
+    stripPanicEntries(endMobCache);
+    pendingChainLinksEnd = snapshotChainPairsForDim("end", endMobCache);
+  } else if (dim === "nether") {
+    netherMobCache = snapshotMobsForDim("nether", false);
+    stripPanicEntries(netherMobCache);
+    pendingChainLinksNether = snapshotChainPairsForDim("nether", netherMobCache);
+  }
+  for (const m of mobs) if (mobDimOf(m) === dim) clearMobPanic(m);
+  purgeDimMobs(dim, true);
+  villagePanicUntil = 0;
+  pendingCarriedIdx = null;
+}
+
+function goToDimension(name, sx, sy, sz) {
+  suspendLiveDim();
+  purgeLiveTNT();
+  pigeonLock = null; pigeonLockT = 0; pigeonLockShots = 0;
+  clearChains();
+  if (playerInChain()) detachDisplacementGrapple();
   dim = name;
   world = worlds[name];
   clearGlowLights();
@@ -13668,16 +13683,13 @@ function goToDimension(name, sx, sy, sz) {
     setDimensionEnv();
     yaw = arr.yaw;
     pitch = 0;
-    if (endMobCache && endMobCache.length && liveCount("end") < endMobCache.length) {
+    if (endMobCache && endMobCache.length) {
       const saved = endMobCache;
+      endMobCache = null;
       const pairs = pendingChainLinksEnd;
       pendingChainLinksEnd = null;
-      const res = restoreDimMobs(saved, "end");
+      const res = restoreDimMobs(saved, "end", { topUp: false });
       relinkDimChainsByIds(res.ids, pairs);
-    } else if (pendingChainLinksEnd && pendingChainLinksEnd.length && endMobCache && endMobCache.length) {
-      const pairs = pendingChainLinksEnd;
-      pendingChainLinksEnd = null;
-      relinkDimChainsByIds(endMobCache.map((e) => e.id), pairs);
     } else pendingChainLinksEnd = null;
   } else if (name === "nether") {
     if (!worlds.nether.size) {
@@ -13691,32 +13703,26 @@ function goToDimension(name, sx, sy, sz) {
     setDimensionEnv();
     yaw = arr.yaw;
     pitch = 0;
-    if (netherMobCache && netherMobCache.length && liveCount("nether") < netherMobCache.length) {
+    if (netherMobCache && netherMobCache.length) {
       const saved = netherMobCache;
+      netherMobCache = null;
       const pairs = pendingChainLinksNether;
       pendingChainLinksNether = null;
-      const res = restoreDimMobs(saved, "nether");
+      const res = restoreDimMobs(saved, "nether", { topUp: false });
       relinkDimChainsByIds(res.ids, pairs);
-    } else if (pendingChainLinksNether && pendingChainLinksNether.length && netherMobCache && netherMobCache.length) {
-      const pairs = pendingChainLinksNether;
-      pendingChainLinksNether = null;
-      relinkDimChainsByIds(netherMobCache.map((e) => e.id), pairs);
     } else pendingChainLinksNether = null;
   } else {
     setDimensionEnv();
     const liveOver = liveCount("over");
-    if (overworldMobCache && overworldMobCache.length && liveOver < overworldMobCache.length) {
+    if (overworldMobCache && overworldMobCache.length) {
       const saved = overworldMobCache;
       overworldMobCache = null;
-      if (!restoreOverworldMobs(saved, { keepCarried: true })) spawnVillagers();
-    } else if (!liveOver) spawnVillagers();
-    if (pendingChainLinks && pendingChainLinks.length && overworldMobCache && overworldMobCache.length) {
-      const pairs = pendingChainLinks;
+      if (!restoreOverworldMobs(saved, { keepCarried: true, topUp: false })) spawnVillagers();
+    } else {
       pendingChainLinks = null;
-      relinkDimChainsByIds(overworldMobCache.map((e) => e.id), pairs);
-    } else pendingChainLinks = null;
+      if (!liveOver) spawnVillagers();
+    }
     pendingCarriedIdx = null;
-    spawnPigeons();
     const ret = resolveOverworldReturn();
     yaw = ret.yaw;
     sx = ret.spot.x; sy = ret.spot.y; sz = ret.spot.z;
@@ -15673,9 +15679,15 @@ function serialize() {
   const m = placedFlowers.size;
   const gov = glowVariants.over.size, gev = glowVariants.end.size, gnv = glowVariants.nether.size;
   const winLen = overPortalWin ? 12 : 1;
-  let overMobs = snapshotMobsForDim("over", true);
-  let endMobs = snapshotMobsForDim("end", true);
-  let netherMobs = snapshotMobsForDim("nether", true);
+  const mergeSuspendedMobs = (dimName, cache) => {
+    const base = (cache && cache.length ? cache : []).map((e) => Object.assign({}, e));
+    const ids = new Set(base.map((e) => e.id));
+    for (const e of snapshotMobsForDim(dimName, true)) if (!ids.has(e.id)) { ids.add(e.id); base.push(e); }
+    return base;
+  };
+  let overMobs = dim === "over" ? snapshotMobsForDim("over", true) : mergeSuspendedMobs("over", overworldMobCache);
+  let endMobs = dim === "end" ? snapshotMobsForDim("end", true) : mergeSuspendedMobs("end", endMobCache);
+  let netherMobs = dim === "nether" ? snapshotMobsForDim("nether", true) : mergeSuspendedMobs("nether", netherMobCache);
   let carriedDim = 0;
   let carriedIdx = -1;
   if (carryMob && mobs.includes(carryMob)) {
@@ -15685,14 +15697,14 @@ function serialize() {
     if (li >= 0) carriedIdx = li;
     else carriedDim = 0;
   }
-  overworldMobCache = snapshotMobsForDim("over", false);
-  endMobCache = snapshotMobsForDim("end", false);
-  netherMobCache = snapshotMobsForDim("nether", false);
+  if (dim === "over") overworldMobCache = snapshotMobsForDim("over", false);
+  else if (dim === "end") endMobCache = snapshotMobsForDim("end", false);
+  else if (dim === "nether") netherMobCache = snapshotMobsForDim("nether", false);
   pendingCarriedIdx = null;
   const mobN = overMobs.length, endMobN = endMobs.length, netherMobN = netherMobs.length;
-  const chainPairs = snapshotChainPairsForDim("over", overMobs);
-  const chainPairsEnd = snapshotChainPairsForDim("end", endMobs, true);
-  const chainPairsNether = snapshotChainPairsForDim("nether", netherMobs);
+  const chainPairs = dim === "over" ? snapshotChainPairsForDim("over", overMobs) : (pendingChainLinks || []);
+  const chainPairsEnd = dim === "end" ? snapshotChainPairsForDim("end", endMobs, true) : (pendingChainLinksEnd || []);
+  const chainPairsNether = dim === "nether" ? snapshotChainPairsForDim("nether", netherMobs) : (pendingChainLinksNether || []);
   const exitBytes = (netherExit ? 33 : 1) + (endExit ? 33 : 1);
   const liveTNTSize = snapshotLiveTNT();
   const dragonPresent = dragonSaveable() || (dim === "end" && !endCleared && dragon.mesh && dragon.dying > 0);
