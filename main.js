@@ -11837,10 +11837,6 @@ function exitFreeCam() {
   pos.set(camPos.x, Math.max(0, camPos.y), camPos.z);
   vel.set(0, 0, 0);
   flingActive = false;
-  const outOfLevel =
-    Math.abs(pos.x) > WORLD_RADIUS || Math.abs(pos.z) > WORLD_RADIUS ||
-    pos.y < 0 || pos.y > MAX_Y;
-  if (outOfLevel) spawnPlayer();
 }
 
 function headInWater() {
