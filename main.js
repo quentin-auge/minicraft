@@ -5771,18 +5771,33 @@ function startCarryReleaseGrapple() {
   if (carryGrappleActive || carryGrappleRetracting || carryGrapplePulling) return false;
   if (!carryMob) return false;
   if (!started || loading || helpOpen) return false;
-  if (!currentBlock) return false;
   const b = currentBlock;
   const eye = camera.position;
+  const fdir = new THREE.Vector3();
+  camera.getWorldDirection(fdir);
+  const fl = pickFill(camera.position, fdir);
+  let useFill = false;
+  if (fl) {
+    const fd = Math.hypot(fl.x + 0.5 - eye.x, fl.y + 0.5 - eye.y, fl.z + 0.5 - eye.z);
+    let bd = Infinity;
+    if (b) bd = Math.hypot(b.x + 0.5 - eye.x, b.y + 0.5 - eye.y, b.z + 0.5 - eye.z);
+    if (fd < bd) useFill = true;
+  }
+  if (!b && !useFill) return false;
   let px, py, pz, tx, ty, tz;
-  let h = 0;
-  while (isSolid(b.x, b.y + h + 1, b.z)) h++;
-  if (h <= 1) {
-    px = b.x; py = b.y + h + 1; pz = b.z;
-    tx = b.x + 0.5; ty = b.y + h + 1.5; tz = b.z + 0.5;
+  if (useFill) {
+    px = fl.x; py = fl.y; pz = fl.z;
+    tx = fl.x + 0.5; ty = fl.y + 0.5; tz = fl.z + 0.5;
   } else {
-    px = b.x + b.face[0]; py = b.y + b.face[1]; pz = b.z + b.face[2];
-    tx = px + 0.5; ty = py + 0.5; tz = pz + 0.5;
+    let h = 0;
+    while (isSolid(b.x, b.y + h + 1, b.z)) h++;
+    if (h <= 1) {
+      px = b.x; py = b.y + h + 1; pz = b.z;
+      tx = b.x + 0.5; ty = b.y + h + 1.5; tz = b.z + 0.5;
+    } else {
+      px = b.x + b.face[0]; py = b.y + b.face[1]; pz = b.z + b.face[2];
+      tx = px + 0.5; ty = py + 0.5; tz = pz + 0.5;
+    }
   }
   if (dim === "end" && endBlockOutsidePlatform(px, pz)) return false;
   carryGrappleBlock = { x: px, y: py, z: pz };
@@ -10493,6 +10508,7 @@ let grapplingDist = 1;
 const grappleTarget = new THREE.Vector3();
 const grappleStart = new THREE.Vector3();
 let grappleBlock = null;
+let grappleFill = null;
 let grappleMob = null;
 const grappleMobOffset = new THREE.Vector3();
 let grappleArrived = false;
@@ -11103,6 +11119,7 @@ function collide() {
 function detachDisplacementGrapple() {
   if (!grappleActive) return;
   grapplePendingInsert = null;
+  grappleFill = null;
   grappleRetracting = true;
   grappleTowInit = false;
   grappleTowPos.set(0, 0, 0);
@@ -11120,6 +11137,7 @@ function fireGrapple() {
   const dir = new THREE.Vector3();
   camera.getWorldDirection(dir);
   const b = pickBlock(camera.position, dir, true);
+  const f = pickFill(camera.position, dir);
   const eye = camera.position;
   const sx = pos.x, sy = pos.y + 0.3, sz = pos.z;
   let blockDist = Infinity, tx = 0, ty = 0, tz = 0;
@@ -11130,7 +11148,9 @@ function fireGrapple() {
       blockDist = Math.hypot(tx - sx, ty - sy, tz - sz);
     }
   }
-  const mob0 = pickMob(dir, blockDist);
+  let fillDist = Infinity;
+  if (f) fillDist = Math.hypot(f.x + 0.5 - sx, f.y + 0.5 - sy, f.z + 0.5 - sz);
+  const mob0 = pickMob(dir, Math.min(blockDist, fillDist));
   const mob = mob0;
   if (mob && mob.kind === "enderman" && !isChained(mob) && !isChainCarrier(mob)) return;
   if (mob && readyLeadForLatch(mob) === false) return;
@@ -11145,11 +11165,12 @@ function fireGrapple() {
     else grappleMobOffset.set(0, mob.h + 0.001, 0);
     const distMob = Math.hypot(mx - sx, my - sy, mz - sz);
     if (distMob < 0.3) return;
-    if (!b || distMob < blockDist) {
+    if ((!b && !f) || distMob < Math.min(blockDist, fillDist)) {
       if (mob === carryMob || mob === carryGrappleMob) return;
       grapplePendingInsert = (isChainCarrier(mob) || playerInChain()) ? mob.id : null;
       grappleMob = mob;
       grappleBlock = null;
+      grappleFill = null;
       if (mob.kind !== "dragon" && mob !== carryMob && mob !== carryGrappleMob) setMobTransparent(mob, 1);
       grappleTarget.set(mx, my, mz);
       grappleStart.set(sx, sy, sz);
@@ -11171,12 +11192,39 @@ function fireGrapple() {
       return;
     }
   }
+  if (!b && !f) return;
+  if (f && fillDist < blockDist) {
+    if (fillDist < 0.3) return;
+    grapplePendingInsert = null;
+    grappleMob = null;
+    grappleBlock = null;
+    grappleFill = { x: f.x, y: f.y, z: f.z, frame: portalFrameSkip(f.win, f.nether) };
+    grappleTarget.set(f.x + 0.5, f.y + 0.5, f.z + 0.5);
+    grappleStart.set(sx, sy, sz);
+    grapplingDist = fillDist;
+    grappleFly = 0;
+    grappleHookPos.set(sx, sy, sz);
+    grappleHooked = false;
+    grappleArrived = false;
+    grapplePulling = false;
+    grapplePass = true;
+    grappleActive = true;
+    grappleRetracting = false;
+    grappleTowInit = false;
+    grappleTowPos.set(0, 0, 0);
+    syncGrappleColor();
+    jumpCount = 1;
+    jumpIdle = 0;
+    stepDown = false;
+    return;
+  }
   if (!b) return;
   if ((b.id === MOON || b.id === MOON_WATER) && eye.y < MOON_FADE_START) return;
   if (blockDist < 0.3) return;
   grapplePendingInsert = null;
   grappleMob = null;
   grappleBlock = b;
+  grappleFill = null;
   grappleTarget.set(tx, ty, tz);
   grappleStart.set(sx, sy, sz);
   grapplingDist = blockDist;
@@ -11461,6 +11509,7 @@ function blockedBody(px, py, pz) {
       const skip = grappleBlock && bx === grappleBlock.x && bz === grappleBlock.z;
       for (let by = y0; by <= y1; by++) {
         if (skip && by === grappleBlock.y) continue;
+        if (isGrappleFillFrame(bx, by, bz)) continue;
         if (isSolid(bx, by, bz)) return true;
       }
     }
@@ -11472,6 +11521,10 @@ function isGrappleBlock(bx, by, bz) {
     by >= grappleBlock.y && by <= grappleTopY;
 }
 
+function isGrappleFillFrame(bx, by, bz) {
+  return !!grappleFill && grappleFill.frame.has(bx + "," + by + "," + bz);
+}
+
 function grappleMoveX(dx) {
   pos.x += dx;
   if (dx === 0) return false;
@@ -11480,7 +11533,7 @@ function grappleMoveX(dx) {
   const cellX = Math.floor(edge);
   for (let by = Math.floor(pos.y); by <= Math.floor(pos.y + PLAYER_H); by++)
     for (let bz = Math.floor(pos.z - PLAYER_HW); bz <= Math.floor(pos.z + PLAYER_HW); bz++) {
-      if (!isSolid(cellX, by, bz) || isGrappleBlock(cellX, by, bz)) continue;
+      if (!isSolid(cellX, by, bz) || isGrappleBlock(cellX, by, bz) || isGrappleFillFrame(cellX, by, bz)) continue;
       if (dir > 0 && edge > cellX) { pos.x = cellX - PLAYER_HW - 0.001; return true; }
       if (dir < 0 && edge < cellX + 0.999) { pos.x = cellX + 1 + PLAYER_HW + 0.001; return true; }
     }
@@ -11495,7 +11548,7 @@ function grappleMoveZ(dz) {
   const cellZ = Math.floor(edge);
   for (let by = Math.floor(pos.y); by <= Math.floor(pos.y + PLAYER_H); by++)
     for (let bx = Math.floor(pos.x - PLAYER_HW); bx <= Math.floor(pos.x + PLAYER_HW); bx++) {
-      if (!isSolid(bx, by, cellZ) || isGrappleBlock(bx, by, cellZ)) continue;
+      if (!isSolid(bx, by, cellZ) || isGrappleBlock(bx, by, cellZ) || isGrappleFillFrame(bx, by, cellZ)) continue;
       if (dir > 0 && edge > cellZ) { pos.z = cellZ - PLAYER_HW - 0.001; return true; }
       if (dir < 0 && edge < cellZ + 0.999) { pos.z = cellZ + 1 + PLAYER_HW + 0.001; return true; }
     }
@@ -11510,10 +11563,10 @@ function grappleMoveY(dy) {
     for (let bz = Math.floor(pos.z - PLAYER_HW); bz <= Math.floor(pos.z + PLAYER_HW); bz++) {
       if (dy > 0) {
         const by = Math.floor(top);
-        if (isSolid(bx, by, bz) && !isGrappleBlock(bx, by, bz) && top > by) { pos.y = by - PLAYER_H - 0.001; return true; }
+        if (isSolid(bx, by, bz) && !isGrappleBlock(bx, by, bz) && !isGrappleFillFrame(bx, by, bz) && top > by) { pos.y = by - PLAYER_H - 0.001; return true; }
       } else {
         const by = Math.floor(feet);
-        if (isSolid(bx, by, bz) && !isGrappleBlock(bx, by, bz)) { pos.y = by + 1 + 0.001; return true; }
+        if (isSolid(bx, by, bz) && !isGrappleBlock(bx, by, bz) && !isGrappleFillFrame(bx, by, bz)) { pos.y = by + 1 + 0.001; return true; }
       }
     }
   return false;
@@ -12050,6 +12103,62 @@ function waterSurfaceTop() {
 // Raycast (DDA voxel traversal)
 // ---------------------------------------------------------------------------
 const REACH = Infinity;
+function pickFill(origin, dir) {
+  const cells = new Set();
+  const owners = new Map();
+  for (const f of portalFills.values()) {
+    if (f.dim !== dim) continue;
+    for (const [x, y, z] of portalFillCells(f.win, f.nether)) {
+      const k = x + "," + y + "," + z;
+      cells.add(k);
+      owners.set(k, f);
+    }
+  }
+  if (!cells.size) return null;
+  let x = Math.floor(origin.x), y = Math.floor(origin.y), z = Math.floor(origin.z);
+  const stepX = dir.x > 0 ? 1 : -1, stepY = dir.y > 0 ? 1 : -1, stepZ = dir.z > 0 ? 1 : -1;
+  const tDeltaX = dir.x !== 0 ? Math.abs(1 / dir.x) : Infinity;
+  const tDeltaY = dir.y !== 0 ? Math.abs(1 / dir.y) : Infinity;
+  const tDeltaZ = dir.z !== 0 ? Math.abs(1 / dir.z) : Infinity;
+  let tMaxX = dir.x !== 0 ? ((stepX > 0 ? Math.floor(origin.x) + 1 - origin.x : origin.x - Math.floor(origin.x)) / Math.abs(dir.x)) : Infinity;
+  let tMaxY = dir.y !== 0 ? ((stepY > 0 ? Math.floor(origin.y) + 1 - origin.y : origin.y - Math.floor(origin.y)) / Math.abs(dir.y)) : Infinity;
+  let tMaxZ = dir.z !== 0 ? ((stepZ > 0 ? Math.floor(origin.z) + 1 - origin.z : origin.z - Math.floor(origin.z)) / Math.abs(dir.z)) : Infinity;
+  for (let i = 0; i < 1024; i++) {
+    const outOfBounds = x < -WORLD_RADIUS || x > WORLD_RADIUS || z < -WORLD_RADIUS || z > WORLD_RADIUS || y < 0 || y > MAX_Y;
+    if (!outOfBounds && cells.has(x + "," + y + "," + z)) {
+      const o = owners.get(x + "," + y + "," + z);
+      return { x, y, z, win: o.win, nether: o.nether };
+    }
+    if (tMaxX < tMaxY && tMaxX < tMaxZ) {
+      x += stepX; tMaxX += tDeltaX;
+    } else if (tMaxY < tMaxZ) {
+      y += stepY; tMaxY += tDeltaY;
+    } else {
+      z += stepZ; tMaxZ += tDeltaZ;
+    }
+    if (Math.min(tMaxX, tMaxY, tMaxZ) > REACH) break;
+  }
+  return null;
+}
+
+function portalFrameSkip(win, nether) {
+  const cells = portalFillCells(win, nether);
+  let x0 = Infinity, y0 = Infinity, z0 = Infinity, x1 = -Infinity, y1 = -Infinity, z1 = -Infinity;
+  for (const [x, y, z] of cells) {
+    if (x < x0) x0 = x; if (x > x1) x1 = x;
+    if (y < y0) y0 = y; if (y > y1) y1 = y;
+    if (z < z0) z0 = z; if (z > z1) z1 = z;
+  }
+  const skip = new Set();
+  for (let x = x0 - 1; x <= x1 + 1; x++)
+    for (let y = y0 - 1; y <= y1 + 1; y++)
+      for (let z = z0 - 1; z <= z1 + 1; z++) {
+        const id = getBlock(x, y, z);
+        if (id === PORTAL || id === OBSIDIAN) skip.add(x + "," + y + "," + z);
+      }
+  return skip;
+}
+
 function pickBlock(origin, dir, skipLiquid) {
   let x = Math.floor(origin.x), y = Math.floor(origin.y), z = Math.floor(origin.z);
   const stepX = dir.x > 0 ? 1 : -1, stepY = dir.y > 0 ? 1 : -1, stepZ = dir.z > 0 ? 1 : -1;
@@ -13655,6 +13764,15 @@ function goToDimension(name, sx, sy, sz) {
   pigeonLock = null; pigeonLockT = 0; pigeonLockShots = 0;
   clearChains();
   if (playerInChain()) detachDisplacementGrapple();
+  if (grappleFill) {
+    grappleActive = false;
+    grapplePulling = false;
+    grappleRetracting = false;
+    grappleArrived = false;
+    grappleFill = null;
+    if (grappleCubes) grappleCubes.visible = false;
+    if (grappleHead) grappleHead.visible = false;
+  }
   dim = name;
   world = worlds[name];
   clearGlowLights();
@@ -17173,6 +17291,7 @@ document.addEventListener("mouseup", (e) => {
   }
   grappleRetracting = true;
   grapplePendingInsert = null;
+  grappleFill = null;
   grappleTowInit = false;
   grappleTowPos.set(0, 0, 0);
   if (grappleMob) {
