@@ -6262,6 +6262,11 @@ function wanderNear(m) {
   }
   return { x: m.pos.x + (Math.random() - 0.5) * 4, z: m.pos.z + (Math.random() - 0.5) * 4 };
 }
+function settleNearBonus(m, dCur) {
+  if (!m || !m._settleUntil) return 0;
+  if (performance.now() / 1000 >= m._settleUntil) return 0;
+  return dCur * 1.5;
+}
 function wanderGoalFor(m) {
   if (dim !== "over") return wanderNear(m);
   let best = null, bestScore = Infinity;
@@ -6290,7 +6295,7 @@ function wanderGoalFor(m) {
         if (td < 1.4) mobPenalty += (1.4 - td) * 5;
       }
     }
-    const score = v * 10 - dCur * 0.15 + mobPenalty;
+    const score = v * 10 - dCur * 0.15 + mobPenalty + settleNearBonus(m, dCur);
     if (score < bestScore) { bestScore = score; best = { x, z }; }
   }
   if (best) { m.lastTarget = { x: best.x, z: best.z }; return best; }
@@ -6389,7 +6394,7 @@ function wanderGoalForPen(m) {
         if (td < 1.6) mobPenalty += (1.6 - td) * 6;
       }
     }
-    const score = v * 10 - dCur * 0.15 + mobPenalty;
+    const score = v * 10 - dCur * 0.15 + mobPenalty + settleNearBonus(m, dCur);
     if (score < bestScore) { bestScore = score; best = { x: cx, z: cz }; }
   }
   if (best) { m.lastTarget = { x: best.x, z: best.z }; return best; }
@@ -6541,9 +6546,9 @@ function hasMobGround(x, z, hw, y) {
   }
   return true;
 }
-function mobBlockedAt(x, z, hw, y) {
+function mobBlockedAt(x, z, hw, y, h) {
   const py = y != null ? y : villageCenter.y + 1;
-  const hh = hw <= 0.18 ? 0.98 : 1.82;
+  const hh = h != null ? h : (hw <= 0.18 ? 0.98 : 1.82);
   if (aabbCollidesWorld(x, py, z, hw, hh)) return true;
   if (!hasMobGround(x, z, hw, py)) return true;
   return false;
@@ -6710,7 +6715,7 @@ function wanderGoalForWolf(m) {
         if (td < 1.5) mobPenalty += (1.5 - td) * 5;
       }
     }
-    const score = v * 10 - dCur * 0.15 + mobPenalty;
+    const score = v * 10 - dCur * 0.15 + mobPenalty + settleNearBonus(m, dCur);
     if (score < bestScore) { bestScore = score; best = { x, z }; }
   }
   if (best) { m.lastTarget = { x: best.x, z: best.z }; return best; }
@@ -6806,6 +6811,7 @@ function spawnVillagers() {
   if (!villagerGeo) villagerGeo = new THREE.BoxGeometry(1, 1, 1);
   else if (villagerGeo.attributes.position.getY(0) > -0.4) { villagerGeo.dispose(); villagerGeo = new THREE.BoxGeometry(1, 1, 1); }
   let gid = mobs.length ? Math.max(...mobs.map((m) => m.id)) + 1 : 0;
+  const preExisting = new Set(mobs.map((m) => m.id));
   const used = mobs.filter((m) => m.dim === "over" || m.dim === undefined).map((m) => [m.pos.x, m.pos.z]);
   const usedBlocks = new Set(mobs.filter((m) => m.dim === "over" || m.dim === undefined).map((m) => `${Math.floor(m.pos.x)},${Math.floor(m.pos.y)},${Math.floor(m.pos.z)}`));
   for (const h of villageHouses) {
@@ -6866,6 +6872,7 @@ function spawnVillagers() {
   }
   for (const m of mobs) {
     if (isMobHeld(m)) continue;
+    if (preExisting.has(m.id)) continue;
     if (m.isBaby && mobById.get(m.parentId) == null) {
       const sibs = mobs.filter((o) => o.homeId === m.homeId && !o.isBaby);
       if (sibs.length) m.parentId = sibs[Math.floor(Math.random() * sibs.length)].id;
@@ -6884,6 +6891,7 @@ function spawnVillagers() {
   }
   for (const m of mobs) {
     if (isMobHeld(m)) continue;
+    if (preExisting.has(m.id)) continue;
     if (m.isBaby) {
       const p = mobById.get(m.parentId);
       if (p) m.target = { x: p.pos.x, z: p.pos.z };
@@ -7064,7 +7072,7 @@ function snapshotMobsForDim(dimName, includeCarried) {
     homeId: m.homeId != null ? m.homeId : -1,
     parentIdx: m.parentId != null ? (idxById.get(m.parentId) != null ? idxById.get(m.parentId) : -1) : -1,
     x: m.pos.x, y: m.pos.y, z: m.pos.z,
-    yaw: m.yaw != null ? m.yaw : 0,
+    yaw: liveMobYaw(m),
     look: mobLookIndex(m),
     villageBound: m.villageBound !== false,
     penBound: !!m.penBound,
@@ -7150,6 +7158,11 @@ function encodeMobYaw(yaw) {
 function decodeMobYaw(b) {
   return (b / 255) * Math.PI * 2;
 }
+function liveMobYaw(m) {
+  const y = (m.mesh ? m.mesh.rotation.y : null);
+  if (y != null && isFinite(y)) return y;
+  return m.yaw != null ? m.yaw : 0;
+}
 function snapshotOverworldMobs(includeCarried) {
   const overs = mobs.filter((m) => (m.dim === "over" || m.dim === undefined));
   const list = overs.filter((m) => {
@@ -7167,7 +7180,7 @@ function snapshotOverworldMobs(includeCarried) {
     homeId: m.homeId != null ? m.homeId : -1,
     parentIdx: m.parentId != null ? (idxById.get(m.parentId) != null ? idxById.get(m.parentId) : -1) : -1,
     x: m.pos.x, y: m.pos.y, z: m.pos.z,
-    yaw: m.yaw != null ? m.yaw : 0,
+    yaw: liveMobYaw(m),
     look: mobLookIndex(m),
     villageBound: m.villageBound !== false,
     penBound: !!m.penBound,
@@ -7177,7 +7190,7 @@ function settleMobSpot(sx, sy, sz, hw, h, isWolf) {
   const cx = Math.max(-WORLD_RADIUS + 2, Math.min(WORLD_RADIUS - 2, sx));
   const cz = Math.max(-WORLD_RADIUS + 2, Math.min(WORLD_RADIUS - 2, sz));
   const cy = Math.max(1, Math.min(MAX_Y - 2, sy));
-  const blockedAt = (x, y, z) => isWolf ? wolfBlockedAt(x, z, hw, y) : mobBlockedAt(x, z, hw, y);
+  const blockedAt = (x, y, z) => isWolf ? wolfBlockedAt(x, z, hw, y) : mobBlockedAt(x, z, hw, y, h);
   const hasGround = (x, z, y) => isWolf ? wolfHasMobGround(x, z, hw, y) : hasMobGround(x, z, hw, y);
   if (!aabbCollidesWorld(cx, cy, cz, hw, h) && !blockedAt(cx, cy, cz)) return { x: cx, y: cy, z: cz };
   for (let r = 1; r <= 3; r++) {
@@ -7194,6 +7207,26 @@ function settleMobSpot(sx, sy, sz, hw, h, isWolf) {
   }
   const gy = groundYForMob(cx, cz, cy, hw);
   return { x: cx, y: Math.max(1, Math.min(MAX_Y - 2, gy)), z: cz };
+}
+function restoreFirstTarget(x, y, z, hw, h, isWolf) {
+  const self = { x, z };
+  const groundAt = (px, pz) => isWolf ? wolfHasMobGround(px, pz, hw, y) : hasMobGround(px, pz, hw, y);
+  for (let t = 0; t < 12; t++) {
+    const a = Math.random() * Math.PI * 2;
+    const d = 2 + Math.random() * 3;
+    let px = x + Math.cos(a) * d, pz = z + Math.sin(a) * d;
+    if (dim === "end") {
+      const r = Math.hypot(px, pz);
+      if (r > END_MOB_R - 1) continue;
+    } else {
+      if (Math.abs(px) > WORLD_RADIUS - 2 || Math.abs(pz) > WORLD_RADIUS - 2) continue;
+    }
+    if (dim === "over" && (isInsidePool(px, pz) || isInsidePenPool(px, pz))) continue;
+    if (aabbCollidesWorld(px, y, pz, hw, h)) continue;
+    if (!groundAt(px, pz)) continue;
+    return { x: px, z: pz };
+  }
+  return self;
 }
 function restoreOverworldMobs(list, opts) {
   const keepCarried = !opts || opts.keepCarried !== false;
@@ -7213,7 +7246,6 @@ function restoreOverworldMobs(list, opts) {
   removeVillagers();
   if (keepCarried && carryMob && mobs.includes(carryMob)) carriedIdx = -1;
   let gid = mobs.length ? Math.max(...mobs.map((m) => m.id)) + 1 : 0;
-  const usedXZ = mobs.map((m) => [m.pos.x, m.pos.z]);
   const idByListIdx = new Array(list.length).fill(null);
   const created = [];
   const chainedIdx = new Set();
@@ -7262,11 +7294,7 @@ function restoreOverworldMobs(list, opts) {
       sx = Math.max(-WORLD_RADIUS + 1, Math.min(WORLD_RADIUS - 1, sx));
       sz = Math.max(-WORLD_RADIUS + 1, Math.min(WORLD_RADIUS - 1, sz));
       sy = Math.max(1, Math.min(MAX_Y - 2, isFinite(sy) ? sy : PIGEON_MIN_Y + 20));
-      if (aabbCollidesWorld(sx, sy, sz, hw, hh)) {
-        const alt = pigeonSpotOutOfView();
-        sx = alt.x; sy = alt.y; sz = alt.z;
-      }
-      spot = { x: sx, y: sy, z: sz };
+      spot = freeChainSpot(sx, sy, sz, hw, hh) || { x: sx, y: sy, z: sz };
     } else if (chainedIdx.has(i)) {
       sx = Math.max(-WORLD_RADIUS + 1, Math.min(WORLD_RADIUS - 1, sx));
       sz = Math.max(-WORLD_RADIUS + 1, Math.min(WORLD_RADIUS - 1, sz));
@@ -7278,7 +7306,7 @@ function restoreOverworldMobs(list, opts) {
         spot = moved;
       }
     } else {
-    if (isInsidePenPool(sx, sz) || usedXZ.some((u) => (u[0] - sx) * (u[0] - sx) + (u[1] - sz) * (u[1] - sz) < 1.4)) {
+    if (isInsidePenPool(sx, sz)) {
       const fixed = settleMobSpot(sx + 1.5, sy, sz + 1.5, hw, hh, isWolf);
       sx = fixed.x; sy = fixed.y; sz = fixed.z;
     }
@@ -7316,7 +7344,7 @@ function restoreOverworldMobs(list, opts) {
       pos: new THREE.Vector3(spot.x, spot.y, spot.z),
       vel: new THREE.Vector3(0, 0, 0),
       hw, h: hh, mesh, onGround: false,
-      target: null, mode: "wander", wanderT: 3 + Math.random() * 4, insideT: 0,
+      target: null, mode: "wander", wanderT: 0.5 + Math.random() * 1.5, insideT: 0,
       legPhase: Math.random() * Math.PI * 2,
       blockedT: 0, yaw: ryaw, yawTarget: ryaw, villageBound: true,
       _stuckT: 0, _prevX: spot.x, _prevZ: spot.z,
@@ -7389,7 +7417,6 @@ function restoreOverworldMobs(list, opts) {
     mobById.set(base.id, base);
     idByListIdx[i] = base.id;
     created.push(base);
-    usedXZ.push([spot.x, spot.z]);
   }
   list.forEach((e, i) => {
     const nid = idByListIdx[i];
@@ -7411,14 +7438,16 @@ function restoreOverworldMobs(list, opts) {
     }
   }
   pendingChainLinks = null;
+  const settleStart = performance.now() / 1000;
   for (const m of created) {
     if (isChained(m)) continue;
     if (isFlyingKind(m.kind)) {
       if (!m.target) m.target = pigeonRandomTarget(m.pos);
     } else {
-      m.target = { x: m.pos.x, z: m.pos.z };
+      m.target = restoreFirstTarget(m.pos.x, m.pos.y, m.pos.z, m.hw, m.h, isJumpingKind(m.kind));
+      m._settleUntil = settleStart + 12 + Math.random() * 8;
     }
-    m.wanderT = 3 + Math.random() * 4;
+    m.wanderT = 0.5 + Math.random() * 1.5;
   }
   if (carriedIdx >= 0 && idByListIdx[carriedIdx] != null) {
     const held = mobById.get(idByListIdx[carriedIdx]);
@@ -7534,7 +7563,7 @@ function restoreDimMobs(list, dimName) {
       pos: new THREE.Vector3(sx, sy, sz),
       vel: new THREE.Vector3(0, 0, 0),
       hw, h: hh, mesh, onGround: false,
-      target: null, mode: "wander", wanderT: 3 + Math.random() * 4, insideT: 0,
+      target: null, mode: "wander", wanderT: 0.5 + Math.random() * 1.5, insideT: 0,
       legPhase: Math.random() * Math.PI * 2,
       blockedT: 0, yaw: ryaw, yawTarget: ryaw, villageBound: false,
       _stuckT: 0, _prevX: sx, _prevZ: sz,
@@ -7561,11 +7590,15 @@ function restoreDimMobs(list, dimName) {
     idByListIdx[i] = base.id;
     created.push(base);
   }
+  const settleStartDim = performance.now() / 1000;
   for (const m of created) {
     if (isChained(m)) continue;
     if (isFlyingKind(m.kind)) { if (!m.target) m.target = pigeonRandomTarget(m.pos); }
-    else m.target = { x: m.pos.x, z: m.pos.z };
-    m.wanderT = 3 + Math.random() * 4;
+    else {
+      m.target = restoreFirstTarget(m.pos.x, m.pos.y, m.pos.z, m.hw, m.h, isJumpingKind(m.kind));
+      m._settleUntil = settleStartDim + 12 + Math.random() * 8;
+    }
+    m.wanderT = 0.5 + Math.random() * 1.5;
   }
   buildMobGrid();
   return { n: created.length, ids: idByListIdx };
@@ -16451,6 +16484,7 @@ async function restoreSave(buf) {
     const heldDim = pendingCarriedDim;
     const heldIdx = pendingCarriedIdx;
     if (heldDim !== 0) pendingCarriedIdx = null;
+    dim = "over"; world = worlds.over;
     if (pendingOverworldMobs && pendingOverworldMobs.length) {
       const saved = pendingOverworldMobs;
       pendingOverworldMobs = null;
@@ -16466,6 +16500,7 @@ async function restoreSave(buf) {
     }
     pendingChainLinks = null;
     let endIds = null, netherIds = null;
+    dim = "end"; world = worlds.end;
     if (pendingEndMobs && pendingEndMobs.length) {
       const saved = pendingEndMobs;
       pendingEndMobs = null;
@@ -16481,6 +16516,7 @@ async function restoreSave(buf) {
       if (liveDim === "end") spawnEndermen();
       endMobCache = snapshotMobsForDim("end", true);
     }
+    dim = "nether"; world = worlds.nether;
     if (pendingNetherMobs && pendingNetherMobs.length) {
       const saved = pendingNetherMobs;
       pendingNetherMobs = null;
@@ -16495,6 +16531,7 @@ async function restoreSave(buf) {
       pendingChainLinksNether = null;
       netherMobCache = snapshotMobsForDim("nether", true);
     }
+    dim = liveDim; world = worlds[liveDim];
     if (heldDim !== 0 && heldIdx != null && heldIdx >= 0) {
       const ids = heldDim === 1 ? endIds : netherIds;
       const hid = ids && heldIdx < ids.length ? ids[heldIdx] : null;
