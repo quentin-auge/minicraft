@@ -8638,6 +8638,7 @@ function updateMobs(dt) {
   if (over) { buildMobGrid(); separateMobs(); }
 }
 const PANIC_TIME = 3;
+const OUTSIDE_PANIC_DIST = 10;
 const VILLAGE_PANIC_TIME = 5;
 const VILLAGER_PANIC_TIME = 8;
 let villagePanicUntil = 0;
@@ -8771,7 +8772,7 @@ function panicVillagers(cx, cy, cz) {
     if (dim === "over" && !mobInVillageSq(m)) continue;
     if (dim !== "over") {
       const dx = m.pos.x - cx, dy = m.pos.y - cy, dz = m.pos.z - cz;
-      if (Math.hypot(dx, dy, dz) > 10) continue;
+      if (Math.hypot(dx, dy, dz) > OUTSIDE_PANIC_DIST) continue;
       m.fleeUntil = Math.max(m.fleeUntil || 0, now + PANIC_TIME);
       m.speed = WALK * 2;
       m._outsideFlee = true; m._fleeSrcX = cx; m._fleeSrcZ = cz;
@@ -8838,7 +8839,7 @@ function panicPenMobs(cx, cy, cz) {
       if (m.dim !== undefined && m.dim !== dim) continue;
       if (m.kind !== "pig" && m.kind !== "cow") continue;
       const dx = m.pos.x - cx, dy = m.pos.y - cy, dz = m.pos.z - cz;
-      if (Math.hypot(dx, dy, dz) > 10) continue;
+      if (Math.hypot(dx, dy, dz) > OUTSIDE_PANIC_DIST) continue;
       m.fleeUntil = Math.max(m.fleeUntil || 0, now + PANIC_TIME);
       m.speed = WALK * 2;
       m._outsideFlee = true; m._fleeSrcX = cx; m._fleeSrcZ = cz;
@@ -8894,7 +8895,7 @@ function panicWolves(cx, cy, cz) {
       if (m.dim !== undefined && m.dim !== dim) continue;
       if (m.kind !== "wolf") continue;
       const dx = m.pos.x - cx, dy = m.pos.y - cy, dz = m.pos.z - cz;
-      if (Math.hypot(dx, dy, dz) > 10) continue;
+      if (Math.hypot(dx, dy, dz) > OUTSIDE_PANIC_DIST) continue;
       m.fleeUntil = Math.max(m.fleeUntil || 0, now + PANIC_TIME);
       m.speed = WALK * 2;
       m._outsideFlee = true; m._fleeSrcX = cx; m._fleeSrcZ = cz;
@@ -8964,7 +8965,7 @@ function panicPigeon(m, cx, cy, cz, villageBlast, force) {
       if (dim !== "over" || !mobInVillageSq(m) || Math.abs(m.pos.y - villageCenter.y) > 20) return;
     } else {
       const dx = m.pos.x - cx, dy = m.pos.y - cy, dz = m.pos.z - cz;
-      if (Math.hypot(dx, dy, dz) > 10) return;
+      if (Math.hypot(dx, dy, dz) > OUTSIDE_PANIC_DIST) return;
     }
   }
   m.perchSpot = null; m.perchGroup = null; m.perchT = 0; m.perchWander = null; m.perchWanderT = 0; m.perchTimeout = 0; m.perchRetry = 0;
@@ -8985,7 +8986,7 @@ function panicEnderman(m, cx, cy, cz, villageBlast, force) {
       if (!mobInVillageSq(m)) return;
     } else {
       const dx = m.pos.x - cx, dy = m.pos.y - cy, dz = m.pos.z - cz;
-      if (Math.hypot(dx, dy, dz) > 10) return;
+      if (Math.hypot(dx, dy, dz) > OUTSIDE_PANIC_DIST) return;
     }
   }
   const dx = m.pos.x - cx, dz = m.pos.z - cz;
@@ -9013,7 +9014,7 @@ function panicGeneric(cx, cy, cz) {
       if (!mobInVillageSq(m)) continue;
     } else {
       const dx = m.pos.x - cx, dy = m.pos.y - cy, dz = m.pos.z - cz;
-      if (Math.hypot(dx, dy, dz) > 10) continue;
+      if (Math.hypot(dx, dy, dz) > OUTSIDE_PANIC_DIST) continue;
     }
     if (m.fleeUntil != null && m.fleeUntil > now + PANIC_TIME) continue;
     groundFlee2s(m, cx, cz, now, villageBlast ? VILLAGE_PANIC_TIME : PANIC_TIME);
