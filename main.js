@@ -11350,6 +11350,7 @@ function grappleVertBoost(y) {
   return 2;
 }
 function updateGrapple(dt) {
+  if (pos.y < 0) { detachDisplacementGrapple(); return false; }
   if (grappleArrived) { grapplePulling = false; return false; }
   if (grappleMob) {
     if (!mobs.includes(grappleMob) || (grappleMob.dim !== undefined && grappleMob.dim !== dim)) {
@@ -11884,9 +11885,11 @@ function pickBlock(origin, dir, skipLiquid) {
   let face = [0, 0, 0];
 
   for (let i = 0; i < 1024; i++) {
-    if (x < -WORLD_RADIUS || x > WORLD_RADIUS || z < -WORLD_RADIUS || z > WORLD_RADIUS || y < 0 || y > MAX_Y) break;
-    const id = getBlock(x, y, z);
-    if (id !== AIR && !(skipLiquid && (id === WATER || id === LAVA || id === MOON_WATER))) return { x, y, z, id, face };
+    const outOfBounds = x < -WORLD_RADIUS || x > WORLD_RADIUS || z < -WORLD_RADIUS || z > WORLD_RADIUS || y < 0 || y > MAX_Y;
+    if (!outOfBounds) {
+      const id = getBlock(x, y, z);
+      if (id !== AIR && !(skipLiquid && (id === WATER || id === LAVA || id === MOON_WATER))) return { x, y, z, id, face };
+    }
     if (tMaxX < tMaxY && tMaxX < tMaxZ) {
       x += stepX; tMaxX += tDeltaX; face = [-stepX, 0, 0];
     } else if (tMaxY < tMaxZ) {
@@ -17121,7 +17124,7 @@ function loop(now) {
     } else {
       if (simActive) {
         updatePlayer(dt);
-        if (pos.y < -20) { vel.set(0, 0, 0); spawnPlayer(); }
+        if (pos.y < -20) { vel.set(0, 0, 0); spawnPlayer(); detachDisplacementGrapple(); grappleRetracting = false; }
       }
       camera.position.set(pos.x, pos.y + EYE, pos.z);
     }
