@@ -8719,6 +8719,19 @@ function resumeMobPanic(m, e) {
   m.wanderT = 1.2 + Math.random() * 0.8;
   return true;
 }
+let simPauseStart = 0;
+function shiftPausedTimers(d) {
+  if (!(d > 0) || !(simPauseStart > 0)) return;
+  for (const m of mobs) {
+    if (m.fleeUntil != null && m.fleeUntil > simPauseStart) m.fleeUntil += d;
+    if (m._panicUntil != null && m._panicUntil > simPauseStart) m._panicUntil += d;
+  }
+  if (villagePanicUntil > simPauseStart) villagePanicUntil += d;
+  if (explosionQueue && explosionQueue.length) {
+    const psMs = simPauseStart * 1000, dMs = d * 1000;
+    for (const q of explosionQueue) if (q.due && q.due > psMs) q.due += dMs;
+  }
+}
 function villageSqContains(x, z) {
   return x >= villageMinX - 10 && x <= villageMaxX + 10 && z >= villageMinZ - 10 && z <= villageMaxZ + 10;
 }
@@ -15640,6 +15653,7 @@ let menuBusy = false;
 const loadingEl = document.getElementById("loading");
 function setLoading(on) {
   loading = on;
+  if (on) simPauseStart = 0;
   if (loadingEl) loadingEl.style.display = on ? "flex" : "none";
 }
 
@@ -17298,6 +17312,7 @@ addEventListener("resize", () => {
 // Main loop
 // ---------------------------------------------------------------------------
 let last = performance.now();
+let simActivePrev = true;
 function loop(now) {
   requestAnimationFrame(loop);
   dt = Math.min(0.05, (now - last) / 1000);
@@ -17308,6 +17323,13 @@ function loop(now) {
     // same condition that already freezes mobs and chains below, so Resume
     // finds the player exactly where ESC left them.
     const simActive = !started || (locked && !helpOpen);
+    const nowS = performance.now() / 1000;
+    if (simActivePrev && !simActive) simPauseStart = nowS;
+    else if (!simActivePrev && simActive && simPauseStart > 0) {
+      shiftPausedTimers(nowS - simPauseStart);
+      simPauseStart = 0;
+    }
+    simActivePrev = simActive;
     if (freeCam) {
       if (simActive) updateFreeCam(dt);
       camera.position.copy(camPos);

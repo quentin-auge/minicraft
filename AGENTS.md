@@ -1077,6 +1077,10 @@ or phase. Step-up is root-gated by jumping leadership: when the chain root is a 
   re-derived at restore — pigeon targets freshly re-rolled — never stored);
   portal crossings reset panic instead (`suspendLiveDim` strips cached panic and
   clears live timers, `goToDimension` clears the entered dim);
+  pausing freezes panic too (on resume `shiftPausedTimers` shifts live
+  `fleeUntil`/`_panicUntil`/`villagePanicUntil` deadlines plus TNT queue `due`
+  entries forward by the paused duration, so `remain_on_resume =
+  remain_at_pause`);
   chain links as (carrier, child) per-dimension mob index pairs (relinked via
   `linkChain` after mob restore, failures skipped; a dragon-led End link persists
   as a sentinel-carrier pair (`DRAGON_CHAIN_CARRIER` 65535, resolved to the live
