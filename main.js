@@ -4244,6 +4244,7 @@ const CHAIN_FLY_SPLIT_DY = 8;
 const CHAIN_CONVERGE_SPEED = 4.0;
 const CHAIN_TOW_KP = 5.0;
 const CHAIN_FLY_SNAP_MAX = 2.2, CHAIN_FLY_LEASH = 2.5, CHAIN_FLY_LEASH_T = 1.0;
+const CHAIN_PLAYER_SNAP_T = 2.0;
 const PLAYER_CHAIN_ID = "player";
 const playerChainAvatar = {
   id: PLAYER_CHAIN_ID,
@@ -4562,7 +4563,7 @@ function linkChain(carrier, child) {
   const head = new THREE.Mesh(chainLinkHeadGeo, chainLinkHeadMat);
   head.visible = true;
   scene.add(head);
-  chainLinks.set(child.id, { carrierId: carrier.id, rope, head, towDir: new THREE.Vector3(0, 0, 1), towPos: new THREE.Vector3(), towInit: false, playerFrontId: carrierIsPlayer ? grappleMob.id : null, taut: 0, strained: false, strainT: 0, carrierAirT: 0, hopT: 0, farT: 0, snapT: 0.4, loiter: false, freeT: 0 });
+  chainLinks.set(child.id, { carrierId: carrier.id, rope, head, towDir: new THREE.Vector3(0, 0, 1), towPos: new THREE.Vector3(), towInit: false, playerFrontId: carrierIsPlayer ? grappleMob.id : null, taut: 0, strained: false, strainT: 0, carrierAirT: 0, hopT: 0, farT: 0, flySplitT: 0, snapT: carrierIsPlayer ? CHAIN_PLAYER_SNAP_T : 0.4, loiter: false, freeT: 0 });
   syncChainLinkColor(child.id);
   syncEndermanHalo(child);
   if (child.vel) child.vel.set(0, 0, 0);
@@ -4597,7 +4598,7 @@ function spliceChainLink(front, back) {
   link.taut = 0;
   link.towPos.set(0, 0, 0);
   link.hoverY = undefined;
-  link.snapT = 0.4;
+  link.snapT = f === playerChainAvatar ? CHAIN_PLAYER_SNAP_T : 0.4;
   link.scvX = undefined;
   link.scvZ = undefined;
   link.faceYaw = undefined;
@@ -4605,6 +4606,7 @@ function spliceChainLink(front, back) {
   link.freeT = 0;
   link.prevAx = undefined;
   link.farT = 0;
+  link.flySplitT = 0;
   syncChainLinkColor(back.id);
   syncEndermanHalo(back);
   return true;
@@ -5242,18 +5244,21 @@ function updateChains(dt) {
     const linkDx = child.pos.x - linkAx, linkDy = chainAnchorY(child) - linkAy, linkDz = child.pos.z - linkAz;
     const linkD = Math.hypot(linkDx, linkDy, linkDz);
     const dyF = chainAnchorY(child) - chainAnchorY(carrier);
-    link.flySplitT = Math.abs(dyF) > CHAIN_FLY_SPLIT_DY ? (link.flySplitT || 0) + dt : 0;
-    if (!threading && link.flySplitT > CHAIN_SPLIT_STRAIN_T) {
+    const isPlayerLink = carrier === playerChainAvatar;
+    const playerGrace = isPlayerLink && (link.snapT || 0) > 0;
+    link.flySplitT = playerGrace ? 0 : (Math.abs(dyF) > CHAIN_FLY_SPLIT_DY ? (link.flySplitT || 0) + dt : 0);
+    if (!threading && !playerGrace && link.flySplitT > CHAIN_SPLIT_STRAIN_T) {
       freeChainRoot(child);
       continue;
     }
-    link.farT = linkD > linkLen * CHAIN_FLY_LEASH ? (link.farT || 0) + dt : 0;
-    if (!threading && link.farT > CHAIN_FLY_LEASH_T) {
+    link.farT = playerGrace ? 0 : (linkD > linkLen * CHAIN_FLY_LEASH ? (link.farT || 0) + dt : 0);
+    if (!threading && !playerGrace && link.farT > CHAIN_FLY_LEASH_T) {
       freeChainRoot(child);
       continue;
     }
     link.snapT = Math.max(0, (link.snapT || 0) - dt);
-    if (!threading && (link.snapT || 0) > 0 && linkD > linkLen * 1.5 && linkD <= linkLen * CHAIN_FLY_SNAP_MAX) {
+    const snapMax = isPlayerLink ? Infinity : linkLen * CHAIN_FLY_SNAP_MAX;
+    if (!threading && (link.snapT || 0) > 0 && linkD > linkLen * 1.5 && linkD <= snapMax) {
       let sx2 = tx, sy2 = ty, sz2 = tz;
       if (dim === "end") {
         const rr = Math.hypot(sx2, sz2);
@@ -11376,18 +11381,7 @@ function updateGrapple(dt) {
         grappleHookPos.copy(grappleTarget);
         grappleHooked = true;
         const lead = playerLeadLink();
-        if (lead) {
-          lead.link.playerFrontId = grappleMob.id;
-          if (grapplePendingInsert !== null) {
-            const im = mobById.get(grapplePendingInsert);
-            grapplePendingInsert = null;
-            if (im) leadAwareLatchInsert(im);
-          }
-        } else if (grapplePendingInsert !== null) {
-          const im = mobById.get(grapplePendingInsert);
-          grapplePendingInsert = null;
-          if (im) playerInsertCutAndLink(im);
-        }
+        if (lead) lead.link.playerFrontId = grappleMob.id;
       } else {
         const move = Math.min(step, dist0);
         const s = move / dist0;
@@ -11428,6 +11422,16 @@ function updateGrapple(dt) {
     const followR = (grappleTowInit ? followDist + 2 : followDist) + pvl * 0.25;
     if (Math.hypot(pdx, pdy, pdz) <= followR) {
       grappleHookPos.copy(grappleTarget);
+      if (grapplePendingInsert !== null) {
+        const im = mobById.get(grapplePendingInsert);
+        grapplePendingInsert = null;
+        if (im) {
+          if (playerLeadLink()) {
+            playerLeadLink().link.playerFrontId = grappleMob.id;
+            leadAwareLatchInsert(im);
+          } else playerInsertCutAndLink(im);
+        }
+      }
       const dirRate = 2.2 + pvl * 0.2, posRate = 6 + pvl * 0.5;
       if (pvl > 1e-3) {
         grappleTowTmp.set(pm.vel.x / pvl, pm.vel.y / pvl, pm.vel.z / pvl);
