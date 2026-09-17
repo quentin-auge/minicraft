@@ -4808,6 +4808,7 @@ function resumeChainedMob(m) {
   m._panicUntil = 0;
   m._panicSrcX = null;
   m._panicSrcZ = null;
+  m._panicVillage = false;
   m._stuckT = 0;
   m.perchSpot = null;
   m.perchGroup = null;
@@ -7054,6 +7055,7 @@ let pendingTNTBombs = null;
 let pendingTNTQueue = null;
 let pendingTNTEta = null;
 let pendingFx = null;
+let pendingVillagePanic = 0;
 function mobDimOf(m) { return (m && m.dim !== undefined ? m.dim : "over"); }
 function snapshotMobsForDim(dimName, includeCarried) {
   const olds = mobs.filter((m) => mobDimOf(m) === dimName && m.kind !== "dragon");
@@ -7065,7 +7067,8 @@ function snapshotMobsForDim(dimName, includeCarried) {
   if (!list.length) return [];
   const idxById = new Map();
   list.forEach((m, i) => idxById.set(m.id, i));
-  return list.map((m) => ({
+  const now = performance.now() / 1000;
+  return list.map((m) => Object.assign({
     id: m.id,
     kind: mobKindCode(m),
     isBaby: !!m.isBaby,
@@ -7076,7 +7079,7 @@ function snapshotMobsForDim(dimName, includeCarried) {
     look: mobLookIndex(m),
     villageBound: m.villageBound !== false,
     penBound: !!m.penBound,
-  }));
+  }, mobPanicSnapshot(m, now)));
 }
 const DRAGON_CHAIN_CARRIER = 65535;
 function snapshotChainPairsForDim(dimName, mobList, includeDragon = false) {
@@ -7120,7 +7123,7 @@ function resolveDimArrival(exit, fallback) {
   }
   return fallback;
 }
-const MOB_SAVE_BYTES = 19;
+const MOB_SAVE_BYTES = 40;
 function mobKindCode(m) {
   if (m.kind === "pig") return 1;
   if (m.kind === "cow") return 2;
@@ -7173,7 +7176,8 @@ function snapshotOverworldMobs(includeCarried) {
   if (!list.length) return [];
   const idxById = new Map();
   list.forEach((m, i) => idxById.set(m.id, i));
-  return list.map((m) => ({
+  const now = performance.now() / 1000;
+  return list.map((m) => Object.assign({
     id: m.id,
     kind: mobKindCode(m),
     isBaby: !!m.isBaby,
@@ -7184,7 +7188,7 @@ function snapshotOverworldMobs(includeCarried) {
     look: mobLookIndex(m),
     villageBound: m.villageBound !== false,
     penBound: !!m.penBound,
-  }));
+  }, mobPanicSnapshot(m, now)));
 }
 function settleMobSpot(sx, sy, sz, hw, h, isWolf) {
   const cx = Math.max(-WORLD_RADIUS + 2, Math.min(WORLD_RADIUS - 2, sx));
@@ -7230,6 +7234,7 @@ function restoreFirstTarget(x, y, z, hw, h, isWolf) {
 }
 function restoreOverworldMobs(list, opts) {
   const keepCarried = !opts || opts.keepCarried !== false;
+  const applyPanic = !!opts && opts.applyPanic === true;
   let carriedIdx = (opts && opts.carriedIdx != null) ? opts.carriedIdx : pendingCarriedIdx;
   pendingCarriedIdx = null;
   if (!Number.isInteger(carriedIdx) || carriedIdx < 0 || !list || carriedIdx >= list.length) carriedIdx = -1;
@@ -7438,9 +7443,24 @@ function restoreOverworldMobs(list, opts) {
     }
   }
   pendingChainLinks = null;
+  const panicResumed = new Set();
+  if (applyPanic) {
+    const idxByMobId = new Map();
+    idByListIdx.forEach((nid, li) => { if (nid != null) idxByMobId.set(nid, li); });
+    for (const m of created) {
+      if (isChained(m) || m === carryMob) continue;
+      const li = idxByMobId.get(m.id);
+      if (li == null || !list[li]) continue;
+      if (resumeMobPanic(m, list[li])) panicResumed.add(m.id);
+    }
+  }
   const settleStart = performance.now() / 1000;
   for (const m of created) {
     if (isChained(m)) continue;
+    if (panicResumed.has(m.id)) {
+      if (!isFlyingKind(m.kind)) m._settleUntil = settleStart + 12 + Math.random() * 8;
+      continue;
+    }
     if (isFlyingKind(m.kind)) {
       if (!m.target) m.target = pigeonRandomTarget(m.pos);
     } else {
@@ -7504,8 +7524,9 @@ function relinkDimChainsByIds(idByListIdx, pairs) {
     linkChain(ca, cb);
   }
 }
-function restoreDimMobs(list, dimName) {
+function restoreDimMobs(list, dimName, opts) {
   if (!list || !list.length) return 0;
+  const applyPanic = !!opts && opts.applyPanic === true;
   purgeDimMobs(dimName, true);
   let gid = mobs.length ? Math.max(...mobs.map((m) => m.id)) + 1 : 0;
   const created = [];
@@ -7590,9 +7611,24 @@ function restoreDimMobs(list, dimName) {
     idByListIdx[i] = base.id;
     created.push(base);
   }
+  const panicResumedDim = new Set();
+  if (applyPanic) {
+    const idxByMobId = new Map();
+    idByListIdx.forEach((nid, li) => { if (nid != null) idxByMobId.set(nid, li); });
+    for (const m of created) {
+      if (isChained(m) || m === carryMob) continue;
+      const li = idxByMobId.get(m.id);
+      if (li == null || !list[li]) continue;
+      if (resumeMobPanic(m, list[li])) panicResumedDim.add(m.id);
+    }
+  }
   const settleStartDim = performance.now() / 1000;
   for (const m of created) {
     if (isChained(m)) continue;
+    if (panicResumedDim.has(m.id)) {
+      if (!isFlyingKind(m.kind)) m._settleUntil = settleStartDim + 12 + Math.random() * 8;
+      continue;
+    }
     if (isFlyingKind(m.kind)) { if (!m.target) m.target = pigeonRandomTarget(m.pos); }
     else {
       m.target = restoreFirstTarget(m.pos.x, m.pos.y, m.pos.z, m.hw, m.h, isJumpingKind(m.kind));
@@ -8591,6 +8627,98 @@ const PANIC_TIME = 3;
 const VILLAGE_PANIC_TIME = 5;
 const VILLAGER_PANIC_TIME = 8;
 let villagePanicUntil = 0;
+function mobPanicSnapshot(m, now) {
+  const t = isFinite(now) ? now : performance.now() / 1000;
+  let fleeRemain = 0, panicT = 0, panicUntilRemain = 0, srcX = 0, srcZ = 0, flags = 0;
+  if (m && m.kind !== "dragon" && !isMobHeld(m) && !isChained(m)) {
+    if (m.fleeUntil != null && isFinite(m.fleeUntil) && m.fleeUntil > t) {
+      fleeRemain = Math.min(Math.max(0, m.fleeUntil - t), VILLAGER_PANIC_TIME);
+    }
+    if ((m._panicT || 0) > 0) panicT = Math.min(m._panicT, PANIC_TIME);
+    if (m._panicUntil != null && isFinite(m._panicUntil) && m._panicUntil > t) {
+      panicUntilRemain = Math.min(Math.max(0, m._panicUntil - t), VILLAGE_PANIC_TIME);
+    }
+    if (fleeRemain > 0 || panicT > 0 || panicUntilRemain > 0) {
+      if (m._fleeSrcX != null && m._fleeSrcZ != null) { srcX = m._fleeSrcX; srcZ = m._fleeSrcZ; }
+      else if (m._panicSrcX != null && m._panicSrcZ != null) { srcX = m._panicSrcX; srcZ = m._panicSrcZ; }
+      else { srcX = m.pos.x; srcZ = m.pos.z; }
+      if (m._outsideFlee) flags |= 1;
+      if (m._panicVillage) flags |= 2;
+    }
+  }
+  return { fleeRemain, panicT, panicUntilRemain, panicSrcX: srcX, panicSrcZ: srcZ, panicFlags: flags };
+}
+function clearMobPanic(m) {
+  if (!m) return;
+  m.fleeUntil = 0;
+  delete m._outsideFlee; delete m._fleeSrcX; delete m._fleeSrcZ;
+  m._panicT = 0;
+  m._panicUntil = 0;
+  m._panicSrcX = null;
+  m._panicSrcZ = null;
+  m._panicVillage = false;
+  if (m.targetMode === "panic") { m.target = null; m.targetMode = null; }
+}
+function stripPanicEntries(list) {
+  if (!list) return;
+  for (const e of list) {
+    e.fleeRemain = 0; e.panicT = 0; e.panicUntilRemain = 0; e.panicFlags = 0;
+  }
+}
+function resumeMobPanic(m, e) {
+  if (!m || !e || m.kind === "dragon") return false;
+  const now = performance.now() / 1000;
+  const fleeRemain = isFinite(e.fleeRemain) ? Math.min(Math.max(0, e.fleeRemain), VILLAGER_PANIC_TIME) : 0;
+  const pT = isFinite(e.panicT) ? Math.min(Math.max(0, e.panicT), PANIC_TIME) : 0;
+  const pUntil = isFinite(e.panicUntilRemain) ? Math.min(Math.max(0, e.panicUntilRemain), VILLAGE_PANIC_TIME) : 0;
+  const sx = isFinite(e.panicSrcX) ? e.panicSrcX : m.pos.x;
+  const sz = isFinite(e.panicSrcZ) ? e.panicSrcZ : m.pos.z;
+  const flags = (e.panicFlags & 255) || 0;
+  if (m.kind === "pigeon") {
+    if (pT <= 0.05 && pUntil <= 0.05) return false;
+    m.perchSpot = null; m.perchGroup = null; m.perchT = 0; m.perchWander = null; m.perchWanderT = 0; m.perchTimeout = 0; m.perchRetry = 0;
+    m.mode = "straight"; m.arc = null;
+    m._tunnel = false; m._tFree = 0; m._tPath = null; m._tGoal = null;
+    m.target = (flags & 2) ? panicPigeonLeaveTarget(m, sx, sz) : panicPigeonTarget(m, sx, sz);
+    m.targetMode = "panic";
+    m._panicSrcX = sx; m._panicSrcZ = sz;
+    m._panicVillage = !!(flags & 2);
+    m._panicT = Math.max(pT, 0.05);
+    m._panicUntil = now + Math.max(pUntil, 0.05);
+    return true;
+  }
+  if (m.kind === "enderman") return false;
+  if (fleeRemain <= 0.05) return false;
+  m.fleeUntil = now + fleeRemain;
+  m.speed = WALK * 2;
+  if (flags & 1) { m._outsideFlee = true; m._fleeSrcX = sx; m._fleeSrcZ = sz; }
+  else { delete m._outsideFlee; delete m._fleeSrcX; delete m._fleeSrcZ; }
+  m.steerCooldown = 0; m.path = null; m.pathKey = null;
+  if (dim === "over" && !(flags & 1)) {
+    if ((!m.kind || m.kind === "villager")) {
+      const house = villageHouses[m.homeId];
+      if (house) {
+        const centre = { x: house.cx + 0.5, z: house.cz + 0.5 };
+        const inHome = m.pos.x > house.minX && m.pos.x < house.maxX && m.pos.z > house.minZ && m.pos.z < house.maxZ;
+        if (inHome) { m.mode = "inside"; m.insideT = Math.max(m.insideT, fleeRemain); m.target = centre; }
+        else { m.mode = "goOut"; m.target = centre; m.wanderT = 99; }
+        return true;
+      }
+    } else if (m.kind === "pig" || m.kind === "cow") {
+      if (villagePen && isInsidePen(m.pos.x, m.pos.z)) { m.target = wanderGoalForPen(m); m.wanderT = 0.25 + Math.random() * 0.25; }
+      else { m.target = fleePointAway(m, sx, sz); m.wanderT = 1.2 + Math.random() * 0.8; }
+      return true;
+    } else if (m.kind === "wolf") {
+      if (villagePen) { const p = randomPenPoint(); m.target = { x: p.x, z: p.z }; }
+      else m.target = fleePointAway(m, sx, sz);
+      m.wanderT = 1 + Math.random();
+      return true;
+    }
+  }
+  m.target = fleePointAway(m, sx, sz);
+  m.wanderT = 1.2 + Math.random() * 0.8;
+  return true;
+}
 function villageSqContains(x, z) {
   return x >= villageMinX - 10 && x <= villageMaxX + 10 && z >= villageMinZ - 10 && z <= villageMaxZ + 10;
 }
@@ -8818,6 +8946,7 @@ function panicPigeon(m, cx, cy, cz, villageBlast, force) {
   m.target = villageBlast ? panicPigeonLeaveTarget(m, cx, cz) : panicPigeonTarget(m, cx, cz);
   m.targetMode = "panic";
   m._panicSrcX = cx; m._panicSrcZ = cz;
+  m._panicVillage = !!villageBlast;
   m._panicT = PANIC_TIME;
   m._panicUntil = performance.now() / 1000 + (villageBlast ? VILLAGE_PANIC_TIME : PANIC_TIME);
 }
@@ -13460,14 +13589,19 @@ function setDimensionEnv() {
 function suspendLiveDim() {
   if (dim === "over") {
     overworldMobCache = snapshotMobsForDim("over", false);
+    stripPanicEntries(overworldMobCache);
     pendingChainLinks = snapshotChainPairsForDim("over", overworldMobCache);
   } else if (dim === "end") {
     endMobCache = snapshotMobsForDim("end", false);
+    stripPanicEntries(endMobCache);
     pendingChainLinksEnd = snapshotChainPairsForDim("end", endMobCache);
   } else if (dim === "nether") {
     netherMobCache = snapshotMobsForDim("nether", false);
+    stripPanicEntries(netherMobCache);
     pendingChainLinksNether = snapshotChainPairsForDim("nether", netherMobCache);
   }
+  for (const m of mobs) if (mobDimOf(m) === dim) clearMobPanic(m);
+  villagePanicUntil = 0;
   pendingCarriedIdx = null;
 }
 
@@ -13502,6 +13636,8 @@ function goToDimension(name, sx, sy, sz) {
   if (!villageHouses.length) computeVillageLayout();
   const liveCount = (d) => mobs.filter((m) => mobDimOf(m) === d && m.kind !== "dragon").length;
   for (const m of mobs) m.mesh.visible = (mobDimOf(m) === dim) || m === carryMob || m === carryGrappleMob;
+  for (const m of mobs) if (mobDimOf(m) === dim) clearMobPanic(m);
+  villagePanicUntil = 0;
   if (name === "end") {
     if (!worlds.end.size) {
       generateEnd();
@@ -15553,11 +15689,12 @@ function serialize() {
   for (const e of liveTNTSize.etas) tntBytes += e.targetKind === 2 ? 18 : 5;
   const liveFx = snapshotLiveFx();
   const fxBytes = 4 + liveFx.length * 17;
-  const buf = new ArrayBuffer(117 + 18 + (on + en + nn) * 5 + m * 6 + (gov + gev + gnv) * 5 + winLen + 16 + 4 + (mobN + endMobN + netherMobN) * MOB_SAVE_BYTES + 24 + 4 + (chainPairs.length + chainPairsEnd.length + chainPairsNether.length) * 4 + 4 + 1 + 1 + exitBytes + tntBytes + fxBytes);
+  const villagePanicRemain = villagePanicUntil > 0 ? Math.min(Math.max(0, villagePanicUntil - performance.now() / 1000), VILLAGE_PANIC_TIME) : 0;
+  const buf = new ArrayBuffer(117 + 18 + (on + en + nn) * 5 + m * 6 + (gov + gev + gnv) * 5 + winLen + 16 + 4 + (mobN + endMobN + netherMobN) * MOB_SAVE_BYTES + 24 + 4 + (chainPairs.length + chainPairsEnd.length + chainPairsNether.length) * 4 + 4 + 1 + 1 + 4 + exitBytes + tntBytes + fxBytes);
   const dv = new DataView(buf);
   let o = 0;
   new Uint8Array(buf, o, 9).set(SAVE_MAGIC); o += 9;
-  dv.setUint8(o++, 20); // format version
+  dv.setUint8(o++, 21); // format version
   dv.setUint8(o++, dim === "end" ? 1 : dim === "nether" ? 2 : 0);
   dv.setInt32(o, seed, true); o += 4;
   dv.setInt32(o, endSeed, true); o += 4;
@@ -15635,6 +15772,12 @@ function serialize() {
     dv.setFloat32(o, em.z, true); o += 4;
     dv.setUint8(o++, encodeMobYaw(em.yaw || 0));
     dv.setUint8(o++, em.look & 255);
+    dv.setFloat32(o, isFinite(em.fleeRemain) ? Math.max(0, em.fleeRemain) : 0, true); o += 4;
+    dv.setFloat32(o, isFinite(em.panicT) ? Math.max(0, em.panicT) : 0, true); o += 4;
+    dv.setFloat32(o, isFinite(em.panicUntilRemain) ? Math.max(0, em.panicUntilRemain) : 0, true); o += 4;
+    dv.setFloat32(o, isFinite(em.panicSrcX) ? em.panicSrcX : 0, true); o += 4;
+    dv.setFloat32(o, isFinite(em.panicSrcZ) ? em.panicSrcZ : 0, true); o += 4;
+    dv.setUint8(o++, (em.panicFlags & 255) || 0);
   };
   dv.setUint32(o, mobN, true); o += 4;
   for (const em of overMobs) writeMob(em);
@@ -15663,6 +15806,7 @@ function serialize() {
   }
   dv.setUint8(o++, carriedDim & 255);
   dv.setUint8(o++, endCleared ? 1 : 0);
+  dv.setFloat32(o, villagePanicRemain, true); o += 4;
   const writeExit = (ex) => {
     if (!ex) { dv.setUint8(o++, 0); return; }
     dv.setUint8(o++, 1);
@@ -15764,7 +15908,7 @@ function deserialize(buf) {
   for (let i = 0; i < 9; i++) if (new Uint8Array(buf, o, 9)[i] !== SAVE_MAGIC[i]) throw new Error("Not a MiniCraft save");
   o += 9;
   const ver = dv.getUint8(o++);
-  if (ver !== 1 && ver !== 2 && ver !== 3 && ver !== 4 && ver !== 5 && ver !== 6 && ver !== 7 && ver !== 8 && ver !== 9 && ver !== 10 && ver !== 11 && ver !== 12 && ver !== 13 && ver !== 14 && ver !== 15 && ver !== 16 && ver !== 17 && ver !== 18 && ver !== 19 && ver !== 20) throw new Error("Unsupported save version");
+  if (ver !== 1 && ver !== 2 && ver !== 3 && ver !== 4 && ver !== 5 && ver !== 6 && ver !== 7 && ver !== 8 && ver !== 9 && ver !== 10 && ver !== 11 && ver !== 12 && ver !== 13 && ver !== 14 && ver !== 15 && ver !== 16 && ver !== 17 && ver !== 18 && ver !== 19 && ver !== 20 && ver !== 21) throw new Error("Unsupported save version");
   const yWidth = ver >= 8 ? 2 : 1;
   const readY = () => { const y = yWidth === 2 ? dv.getUint16(o, true) : dv.getUint8(o); o += yWidth; return y; };
   placedFlowers.clear();
@@ -15790,6 +15934,7 @@ function deserialize(buf) {
   pendingTNTQueue = null;
   pendingTNTEta = null;
   pendingFx = null;
+  pendingVillagePanic = 0;
   let dimFlag = 0, endSeedVal = endSeed;
   if (ver >= 2) dimFlag = dv.getUint8(o++);
   if (ver >= 4) {
@@ -15933,8 +16078,17 @@ function deserialize(buf) {
       const z = dv.getFloat32(o, true); o += 4;
       const yb = dv.getUint8(o++);
       const look = dv.getUint8(o++);
+      let fleeRemain = 0, panicT = 0, panicUntilRemain = 0, panicSrcX = 0, panicSrcZ = 0, panicFlags = 0;
+      if (ver >= 21) {
+        fleeRemain = dv.getFloat32(o, true); o += 4;
+        panicT = dv.getFloat32(o, true); o += 4;
+        panicUntilRemain = dv.getFloat32(o, true); o += 4;
+        panicSrcX = dv.getFloat32(o, true); o += 4;
+        panicSrcZ = dv.getFloat32(o, true); o += 4;
+        panicFlags = dv.getUint8(o++);
+      }
       if (!isFinite(x) || !isFinite(y) || !isFinite(z)) continue;
-      const e10 = { kind, isBaby: (flags & 1) !== 0, homeId, parentIdx, x, y, z, yaw: decodeMobYaw(yb), look };
+      const e10 = { kind, isBaby: (flags & 1) !== 0, homeId, parentIdx, x, y, z, yaw: decodeMobYaw(yb), look, fleeRemain: isFinite(fleeRemain) ? Math.max(0, fleeRemain) : 0, panicT: isFinite(panicT) ? Math.max(0, panicT) : 0, panicUntilRemain: isFinite(panicUntilRemain) ? Math.max(0, panicUntilRemain) : 0, panicSrcX: isFinite(panicSrcX) ? panicSrcX : 0, panicSrcZ: isFinite(panicSrcZ) ? panicSrcZ : 0, panicFlags: panicFlags & 255 };
       if (ver >= 11) { e10.villageBound = (flags & 2) !== 0; e10.penBound = (flags & 4) !== 0; }
       arr.push(e10);
     }
@@ -15969,8 +16123,17 @@ function deserialize(buf) {
         const z = dv.getFloat32(o, true); o += 4;
         const yb = dv.getUint8(o++);
         const look = dv.getUint8(o++);
+        let fleeRemain = 0, panicT = 0, panicUntilRemain = 0, panicSrcX = 0, panicSrcZ = 0, panicFlags = 0;
+        if (ver >= 21) {
+          fleeRemain = dv.getFloat32(o, true); o += 4;
+          panicT = dv.getFloat32(o, true); o += 4;
+          panicUntilRemain = dv.getFloat32(o, true); o += 4;
+          panicSrcX = dv.getFloat32(o, true); o += 4;
+          panicSrcZ = dv.getFloat32(o, true); o += 4;
+          panicFlags = dv.getUint8(o++);
+        }
         if (!isFinite(x) || !isFinite(y) || !isFinite(z)) continue;
-        arr.push({ kind, isBaby: (flags & 1) !== 0, homeId, parentIdx, x, y, z, yaw: decodeMobYaw(yb), look, villageBound: (flags & 2) !== 0, penBound: (flags & 4) !== 0 });
+        arr.push({ kind, isBaby: (flags & 1) !== 0, homeId, parentIdx, x, y, z, yaw: decodeMobYaw(yb), look, villageBound: (flags & 2) !== 0, penBound: (flags & 4) !== 0, fleeRemain: isFinite(fleeRemain) ? Math.max(0, fleeRemain) : 0, panicT: isFinite(panicT) ? Math.max(0, panicT) : 0, panicUntilRemain: isFinite(panicUntilRemain) ? Math.max(0, panicUntilRemain) : 0, panicSrcX: isFinite(panicSrcX) ? panicSrcX : 0, panicSrcZ: isFinite(panicSrcZ) ? panicSrcZ : 0, panicFlags: panicFlags & 255 });
       }
       return arr;
     };
@@ -15993,6 +16156,10 @@ function deserialize(buf) {
     const cd = dv.getUint8(o++);
     pendingCarriedDim = cd === 1 ? 1 : cd === 2 ? 2 : 0;
     endCleared = dv.getUint8(o++) === 1;
+    if (ver >= 21) {
+      const vp = dv.getFloat32(o, true); o += 4;
+      pendingVillagePanic = isFinite(vp) ? Math.min(Math.max(0, vp), VILLAGE_PANIC_TIME) : 0;
+    }
     const readExit = () => {
       if (!dv.getUint8(o++)) return null;
       const x = dv.getFloat64(o, true); o += 8;
@@ -16489,7 +16656,7 @@ async function restoreSave(buf) {
       const saved = pendingOverworldMobs;
       pendingOverworldMobs = null;
       overworldMobCache = null;
-      if (!restoreOverworldMobs(saved, { keepCarried: false })) { spawnVillagers(); spawnPigeons(); }
+      if (!restoreOverworldMobs(saved, { keepCarried: false, applyPanic: true })) { spawnVillagers(); spawnPigeons(); }
       overworldMobCache = snapshotOverworldMobs(true);
     } else {
       pendingOverworldMobs = null;
@@ -16506,7 +16673,7 @@ async function restoreSave(buf) {
       pendingEndMobs = null;
       const pairs = (pendingChainLinksEnd || []).filter(([a, b]) => !(heldDim === 1 && (a === heldIdx || b === heldIdx)));
       pendingChainLinksEnd = null;
-      const res = restoreDimMobs(saved, "end");
+      const res = restoreDimMobs(saved, "end", { applyPanic: true });
       endIds = res.ids;
       relinkDimChainsByIds(endIds, pairs);
       endMobCache = snapshotMobsForDim("end", true);
@@ -16522,7 +16689,7 @@ async function restoreSave(buf) {
       pendingNetherMobs = null;
       const pairs = (pendingChainLinksNether || []).filter(([a, b]) => !(heldDim === 2 && (a === heldIdx || b === heldIdx)));
       pendingChainLinksNether = null;
-      const res = restoreDimMobs(saved, "nether");
+      const res = restoreDimMobs(saved, "nether", { applyPanic: true });
       netherIds = res.ids;
       relinkDimChainsByIds(netherIds, pairs);
       netherMobCache = snapshotMobsForDim("nether", true);
@@ -16531,6 +16698,8 @@ async function restoreSave(buf) {
       pendingChainLinksNether = null;
       netherMobCache = snapshotMobsForDim("nether", true);
     }
+    if (pendingVillagePanic > 0.05) villagePanicUntil = performance.now() / 1000 + pendingVillagePanic;
+    pendingVillagePanic = 0;
     dim = liveDim; world = worlds[liveDim];
     if (heldDim !== 0 && heldIdx != null && heldIdx >= 0) {
       const ids = heldDim === 1 ? endIds : netherIds;

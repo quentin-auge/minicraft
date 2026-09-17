@@ -1053,7 +1053,7 @@ or phase. Step-up is root-gated by jumping leadership: when the chain root is a 
   retries via `perchRetry`), and every leg re-pick goes through `pigeonNextLeg`
   (perch roll `PIGEON_PERCH_CHANCE` 0.65, min 1.2 s between full decisions via `_decideT`),
   so flight legs stay short and duty cycle holds across worlds.
-- **Save/load**: binary format (`SAVE_MAGIC`, version 20) capturing world
+- **Save/load**: binary format (`SAVE_MAGIC`, version 21) capturing world
   blocks (over/end/nether), dim, seeds (over/end/nether), player pos/yaw/pitch,
   player velocity (`vel`, so a save made mid-air resumes at the exact spot still
   falling),
@@ -1069,6 +1069,14 @@ or phase. Step-up is root-gated by jumping leadership: when the chain root is a 
   19 bytes each, in v10 with bounds bits added in v11
   via `snapshotMobsForDim`/`restoreOverworldMobs`/`restoreDimMobs`) for every
   dimension (over + end + nether lists, the dragon excluded — it respawns fresh);
+  panic state per mob as remaining time (ground `fleeUntil` remain + flee src +
+  outside flag; pigeon `_panicT` + `_panicUntil` remain + src + village flag;
+  21 extra bytes per mob entry, 40 total, in v21; global `villagePanicUntil`
+  remain appended in v21) so a save made mid-panic resumes the same panic with
+  `time_before_save + time_after_save = panic_time` (save gap frozen; targets
+  re-derived at restore — pigeon targets freshly re-rolled — never stored);
+  portal crossings reset panic instead (`suspendLiveDim` strips cached panic and
+  clears live timers, `goToDimension` clears the entered dim);
   chain links as (carrier, child) per-dimension mob index pairs (relinked via
   `linkChain` after mob restore, failures skipped; a dragon-led End link persists
   as a sentinel-carrier pair (`DRAGON_CHAIN_CARRIER` 65535, resolved to the live
