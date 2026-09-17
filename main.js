@@ -4237,7 +4237,6 @@ function syncGrappleColor() {
   }
 }
 const chainLinkMatrix = new THREE.Matrix4();
-const CHAIN_LINK_LEN = 2.5;
 const CHAIN_TAUT_TIME = 0.5;
 const CHAIN_SPLIT_DY = 3, CHAIN_SPLIT_STRAIN_T = 1;
 const CHAIN_FLY_SPLIT_DY = 8;
@@ -4287,7 +4286,6 @@ function chainMidY(m) {
 }
 const DRAGON_ANCHOR_DY = 0.36;
 function chainAnchorY(m) {
-  if (m.kind === "dragon") return m.pos.y + DRAGON_ANCHOR_DY;
   return chainMidY(m);
 }
 function isMobHeld(m) {
@@ -5205,7 +5203,7 @@ function updateChains(dt) {
     let dvx = svx + ex * CHAIN_TOW_KP;
     let dvy = svy + ey * CHAIN_TOW_KP;
     let dvz = svz + ez * CHAIN_TOW_KP;
-    const leadSpd = chainLeadSpeedOf(carrier, dt);
+    const leadSpd = chainLeadSpeedOf(lead, dt);
     const maxSp = Math.max(12, leadSpd + 8);
     const dl = Math.hypot(dvx, dvy, dvz);
     if (dl > maxSp) {
@@ -10330,6 +10328,9 @@ const grappleTowDir = new THREE.Vector3(0, 0, 1);
 const grappleTowPos = new THREE.Vector3();
 let grappleTowInit = false;
 const grappleTowTmp = new THREE.Vector3();
+const grappleRideAx = new THREE.Vector3(0, 0, 1);
+const grappleRideAxP = new THREE.Vector3(0, 0, 1);
+const grappleRideAxV = new THREE.Vector3();
 let grapplePendingInsert = null;
 let flingActive = false;
 const vel = new THREE.Vector3();
@@ -11438,9 +11439,17 @@ function updateGrapple(dt) {
         grappleTowTmp.y = Math.max(-0.6, Math.min(0.6, grappleTowTmp.y));
         const tl = grappleTowTmp.length() || 1;
         grappleTowTmp.divideScalar(tl);
-        if (!grappleTowInit) { grappleTowDir.copy(grappleTowTmp); grappleTowInit = true; }
-        else { grappleTowDir.lerp(grappleTowTmp, Math.min(1, dt * dirRate)); if (grappleTowDir.lengthSq() < 1e-6) grappleTowDir.set(0, 0, 1); grappleTowDir.normalize(); }
-      } else if (!grappleTowInit) { grappleTowDir.set(0, 0, 1); grappleTowInit = true; }
+        if (!grappleTowInit) { grappleTowDir.copy(grappleTowTmp); grappleTowInit = true; grappleRideAx.copy(grappleTowTmp); grappleRideAxP.copy(grappleTowTmp); grappleRideAxV.set(0, 0, 0); }
+        else { grappleTowDir.lerp(grappleTowTmp, Math.min(1, dt * dirRate)); if (grappleTowDir.lengthSq() < 1e-6) grappleTowDir.set(0, 0, 1); grappleTowDir.normalize(); grappleRideAx.lerp(grappleTowTmp, Math.min(1, dt * 8)); if (grappleRideAx.lengthSq() < 1e-6) grappleRideAx.set(0, 0, 1); grappleRideAx.normalize(); }
+      } else {
+        if (!grappleTowInit) { grappleTowDir.set(0, 0, 1); grappleTowInit = true; grappleRideAx.set(0, 0, 1); grappleRideAxP.set(0, 0, 1); }
+        grappleRideAxV.multiplyScalar(Math.max(0, 1 - dt * 3));
+      }
+      if (pvl > 1e-3 && dt > 1e-4) {
+        grappleTowTmp.set((grappleRideAx.x - grappleRideAxP.x) / dt, (grappleRideAx.y - grappleRideAxP.y) / dt, (grappleRideAx.z - grappleRideAxP.z) / dt);
+        grappleRideAxV.lerp(grappleTowTmp, Math.min(1, dt * 3));
+        grappleRideAxP.copy(grappleRideAx);
+      }
       const leadT = 1 / posRate;
       const desX = pm.pos.x + pm.vel.x * leadT - grappleTowDir.x * followDist, desY = chainAnchorY(pm) + pm.vel.y * leadT - grappleTowDir.y * followDist - PLAYER_H * 0.5, desZ = pm.pos.z + pm.vel.z * leadT - grappleTowDir.z * followDist;
       if (grappleTowPos.lengthSq() < 1e-6) grappleTowPos.set(desX, desY, desZ);
@@ -11449,11 +11458,15 @@ function updateGrapple(dt) {
       const ex = grappleTowPos.x - pos.x, ey = grappleTowPos.y - pos.y, ez = grappleTowPos.z - pos.z;
       const exl = Math.hypot(ex, ey, ez) || 1;
       const ecl = Math.min(exl, 3);
-      vel.x += ((ex / exl * ecl) * stiff - (vel.x - pm.vel.x) * damp) * dt;
-      vel.y += ((ey / exl * ecl) * stiff - (vel.y - pm.vel.y) * damp) * dt;
-      vel.z += ((ez / exl * ecl) * stiff - (vel.z - pm.vel.z) * damp) * dt;
+      const svx = pm.vel.x - grappleRideAxV.x * followDist;
+      const svy = pm.vel.y - grappleRideAxV.y * followDist;
+      const svz = pm.vel.z - grappleRideAxV.z * followDist;
+      vel.x += ((ex / exl * ecl) * stiff - (vel.x - svx) * damp) * dt;
+      vel.y += ((ey / exl * ecl) * stiff - (vel.y - svy) * damp) * dt;
+      vel.z += ((ez / exl * ecl) * stiff - (vel.z - svz) * damp) * dt;
       const spd = Math.hypot(vel.x, vel.y, vel.z);
-      const maxSp = Math.max((pm.speed || PIGEON_SPEED) * 2.2, pvl * 1.5);
+      const rideSpd = chainLeadSpeedOf(pm, dt);
+      const maxSp = Math.max((pm.speed || PIGEON_SPEED) * 2.2, pvl * 1.5, rideSpd + 8 + grappleRideAxV.length() * followDist);
       if (spd > maxSp) { vel.x *= maxSp / spd; vel.y *= maxSp / spd; vel.z *= maxSp / spd; }
       let remaining = Math.min(Math.hypot(vel.x, vel.y, vel.z) * dt, 1.2);
       let blockedX = false, blockedY = false, blockedZ = false;
@@ -11487,9 +11500,9 @@ function updateGrapple(dt) {
         const eDx = pos.x - tAx, eDy = pos.y + PLAYER_H * 0.5 - tAy, eDz = pos.z - tAz;
         const eD = Math.hypot(eDx, eDy, eDz);
         if (eD > 1e-6) {
-          const qx = tAx + (eDx / eD) * CHAIN_LINK_LEN;
-          const qy = tAy + (eDy / eD) * CHAIN_LINK_LEN - PLAYER_H * 0.5;
-          const qz = tAz + (eDz / eD) * CHAIN_LINK_LEN;
+          const qx = tAx + (eDx / eD) * followDist;
+          const qy = tAy + (eDy / eD) * followDist - PLAYER_H * 0.5;
+          const qz = tAz + (eDz / eD) * followDist;
           const ox = pos.x, oy = pos.y, oz = pos.z;
           pos.set(qx, qy, qz);
           if (blockedBody(pos.x, pos.y, pos.z)) pos.set(ox, oy, oz);
@@ -14850,6 +14863,7 @@ function updateDragon(dt) {
   if (dragon.mob) {
     dragon.mob.pos.copy(M.position);
     dragon.mob.vel.copy(fwd).multiplyScalar(DRAGON_SPEED * dragon.speedMul);
+    if (dragon.flee && dragon.flee.lengthSq() > 0.0001) dragon.mob.vel.addScaledVector(dragon.flee, DRAGON_FLEE_SPEED);
     dragon.mob.yaw = dragon.yaw;
     dragon.mob.yawTarget = dragon.yaw;
   }
