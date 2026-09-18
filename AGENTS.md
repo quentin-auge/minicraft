@@ -552,7 +552,8 @@ stays bright at distance, `placeable: true` so it
   is placeable only onto another LAVA cell or directly on the fire above one,
   can't be removed, and TNT blasts never destroy
   LAVA. The Nether's auto-built return portal (`buildNetherPortal`, an obsidian
-  frame standing on a netherrack pad at spawn, protected, or any Nether-frame
+  frame standing on a 11×9 netherrack pad at spawn (x −5…5, z −4…4, 3 blocks past
+  each frame edge along X and 4 each side along Z, cleared 5 high), protected, or any Nether-frame
   you build in the Nether) brings you
   back to the Overworld's last portal entry point.
 - **Ender Dragon**: ambient dragon that spawns in the End and flies along a

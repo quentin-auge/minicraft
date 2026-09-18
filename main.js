@@ -13866,17 +13866,17 @@ function buildReturnPortal(skipMesh = false) {
 const NETHER_RETURN_BASE_Y = 30;
 const NETHER_RETURN_Z = 0;
 let netReturnWin = null;
-const NETHER_SPAWN = { x: 0.5, y: NETHER_RETURN_BASE_Y + 1.01, z: 2.5 };
+const NETHER_SPAWN = { x: 0.5, y: NETHER_RETURN_BASE_Y + 1.01, z: 1.5 };
 
 function buildNetherPortal(skipMesh = false) {
   purgeProtectedForDim("nether");
   const coords = [];
   const base = NETHER_RETURN_BASE_Y;
-  for (let x = -4; x <= 3; x++)
-    for (let z = -1; z <= 4; z++)
+  for (let x = -5; x <= 5; x++)
+    for (let z = -4; z <= 4; z++)
       for (let y = base - 2; y < base; y++) setBlock(x, y, z, NETHERRACK);
-  for (let x = -3; x <= 3; x++)
-    for (let z = -1; z <= 4; z++)
+  for (let x = -5; x <= 5; x++)
+    for (let z = -4; z <= 4; z++)
       for (let y = base; y <= base + 4; y++)
         if (worlds.nether.has(key(x, y, z))) worlds.nether.delete(key(x, y, z));
   for (let x = -2; x <= 2; x++)
