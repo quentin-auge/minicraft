@@ -4169,7 +4169,8 @@ let carryGrappleRetracting = false;
 let carryGrapplePulling = false;
 let carryGrappleChainTarget = null;
 let mobPortalTx = null;
-const MOB_PORTAL_TX_TIME = 0.7;
+const MOB_PORTAL_TX_TIME = 0.3;
+const MOB_PORTAL_TX_STANDOFF = 2.0;
 let chainAttachMode = "behind";
 let carryGrappleAttachMode = "behind";
 function isMobFrozenByGrapple(m) {
@@ -5790,7 +5791,20 @@ function startCarryReleaseGrapple() {
   let px, py, pz, tx, ty, tz;
   if (useFill) {
     px = fl.x; py = fl.y; pz = fl.z;
-    tx = fl.x + 0.5; ty = fl.y + 0.5; tz = fl.z + 0.5;
+    const cx0 = fl.x + 0.5, cy0 = fl.y + 0.5, cz0 = fl.z + 0.5;
+    let dx = eye.x - cx0, dy = eye.y - cy0, dz = eye.z - cz0;
+    const dl = Math.hypot(dx, dy, dz) || 1;
+    dx /= dl; dy /= dl; dz /= dl;
+    tx = cx0 + dx * MOB_PORTAL_TX_STANDOFF;
+    ty = cy0 + dy * MOB_PORTAL_TX_STANDOFF;
+    tz = cz0 + dz * MOB_PORTAL_TX_STANDOFF;
+    ty = Math.max(1, Math.min(MAX_Y - 1, ty));
+    const mh = carryMob ? carryMob.h : 1;
+    const mw = carryMob ? carryMob.hw : 0.3;
+    for (let t = 0; t < 8 && aabbCollidesWorld(tx, ty - mh * 0.5, tz, mw, mh); t++) {
+      tx += dx * 0.5; ty += dy * 0.5; tz += dz * 0.5;
+      ty = Math.max(1, Math.min(MAX_Y - 1, ty));
+    }
   } else {
     let h = 0;
     while (isSolid(b.x, b.y + h + 1, b.z)) h++;
@@ -5918,6 +5932,7 @@ function startMobPortalTx(mob, b, fl) {
   mobPortalTx = {
     mob, t: 0, srcDim: dim,
     fromScale: (mob.mesh && mob.mesh.scale.x) || 1,
+    basePos: mob.pos.clone(),
     targetDim: plan.targetDim, arrival: plan.arrival,
   };
   setMobTransparent(mob, 1);
@@ -5934,6 +5949,10 @@ function abortMobPortalTx() {
   if (!mob || !mobs.includes(mob)) return;
   mob._portalTx = false;
   if (mob.mesh) mob.mesh.scale.setScalar(tx.fromScale);
+  if (tx.basePos) {
+    mob.pos.copy(tx.basePos);
+    if (mob.mesh) mob.mesh.position.copy(mob.pos);
+  }
   if (dim !== tx.srcDim && mob !== carryMob && mob !== carryGrappleMob) {
     carryGrappleMob = null;
     carryMob = mob;
@@ -18020,7 +18039,7 @@ if (location.search.includes('test')) {
     goToDimension, removeVillagers,
     get DEV_START_DIM(){ return DEV_START_DIM; },
     get dragon(){ return dragon; }, spawnDragon, removeDragon, updateDragon, paintDragon, damageDragon, dragonShotsCap, aimedDragon, get DRAGON_FULL_DMG(){ return DRAGON_FULL_DMG; }, get DRAGON_SPEED(){ return DRAGON_SPEED; }, get DRAGON_FOLLOW_DIST(){ return DRAGON_FOLLOW_DIST; },
-    get endermen(){ return endermen; }, get ENDERMEN_COUNT(){ return ENDERMEN_COUNT; }, get END_PLATFORM_R(){ return END_PLATFORM_R; }, get END_MOB_R(){ return END_MOB_R; }, get END_RETURN_Z(){ return END_RETURN_Z; }, get END_RETURN_BASE_Y(){ return END_RETURN_BASE_Y; }, get DRAGON_MIN_Y(){ return DRAGON_MIN_Y; }, get DRAGON_MAX_Y(){ return DRAGON_MAX_Y; }, endMobInEnd, endClampXZPos, endClampYFlying, pigeonEndPortalTopAt, get ENDERMAN_STARE_TIME(){ return ENDERMAN_STARE_TIME; }, get ENDERMAN_ANGRY_TIME(){ return ENDERMAN_ANGRY_TIME; }, spawnEndermen, removeEndermen, updateEnderman, updateEndermen, endermanTeleport, endermanPickSpot, endermanSpotFor, ensureEndermanAssets, makeEndermanMesh, syncEndermanHalo, syncEndermanHalos, endermanChainHaloVisible, endermanHaloMode,
+    get endermen(){ return endermen; }, get mobPortalTx(){ return mobPortalTx; }, startMobPortalTx, tickMobPortalTx, finishMobPortalTx, abortMobPortalTx, get ENDERMEN_COUNT(){ return ENDERMEN_COUNT; }, get END_PLATFORM_R(){ return END_PLATFORM_R; }, get END_MOB_R(){ return END_MOB_R; }, get END_RETURN_Z(){ return END_RETURN_Z; }, get END_RETURN_BASE_Y(){ return END_RETURN_BASE_Y; }, get DRAGON_MIN_Y(){ return DRAGON_MIN_Y; }, get DRAGON_MAX_Y(){ return DRAGON_MAX_Y; }, endMobInEnd, endClampXZPos, endClampYFlying, pigeonEndPortalTopAt, get ENDERMAN_STARE_TIME(){ return ENDERMAN_STARE_TIME; }, get ENDERMAN_ANGRY_TIME(){ return ENDERMAN_ANGRY_TIME; }, spawnEndermen, removeEndermen, updateEnderman, updateEndermen, endermanTeleport, endermanPickSpot, endermanSpotFor, ensureEndermanAssets, makeEndermanMesh, syncEndermanHalo, syncEndermanHalos, endermanChainHaloVisible, endermanHaloMode,
   };
 }
 
