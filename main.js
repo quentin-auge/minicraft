@@ -4171,6 +4171,7 @@ let carryGrappleChainTarget = null;
 let mobPortalTx = null;
 const MOB_PORTAL_TX_TIME = 0.3;
 const MOB_PORTAL_TX_STANDOFF = 2.0;
+const MOB_PORTAL_ARRIVAL_R = 5;
 const PORTAL_ARRIVAL_FREEZE = 2;
 function isArrivalFrozen(m) {
   if (!m || m._frozenUntil == null) return false;
@@ -5860,6 +5861,20 @@ function mobPortalDestCells() {
   return banned;
 }
 
+function mobPortalAnchorWin(spot, targetDim) {
+  if (targetDim === "end") {
+    return findEndWinNear(spot.x, spot.y, spot.z, 24) || endReturnWin || null;
+  }
+  if (targetDim === "nether") {
+    const w = findNetherWinNear(spot.x, spot.y, spot.z, 24);
+    if (w) return Object.assign({ nether: true }, w);
+    if (netReturnWin) return Object.assign({ orient: "v", face: "z", nether: true }, netReturnWin);
+    return null;
+  }
+  if (typeof overPortalWin !== "undefined" && overPortalWin && portalWinValid(overPortalWin)) return overPortalWin;
+  return nearestReturnWin(spot.x, spot.y, spot.z);
+}
+
 function mobPortalArrival(mob, spot, targetDim) {
   const hw = mob.hw, h = mob.h;
   const cx = Math.floor(spot.x), cz = Math.floor(spot.z);
@@ -5870,10 +5885,18 @@ function mobPortalArrival(mob, spot, targetDim) {
     }
     return false;
   };
+  const win = mobPortalAnchorWin(spot, targetDim);
+  const box = win ? portalFrameBBox(win) : null;
   if (mob.kind === "pigeon") {
     const lo = pigeonBandMinFor(targetDim) + 1, hi = pigeonBandMaxFor(targetDim) - 1;
     let nx = Math.max(-WORLD_RADIUS + 1, Math.min(WORLD_RADIUS - 1, spot.x));
     let nz = Math.max(-WORLD_RADIUS + 1, Math.min(WORLD_RADIUS - 1, spot.z));
+    if (box) {
+      nx = Math.max(box.minX - MOB_PORTAL_ARRIVAL_R, Math.min(box.maxX + MOB_PORTAL_ARRIVAL_R, nx));
+      nz = Math.max(box.minZ - MOB_PORTAL_ARRIVAL_R, Math.min(box.maxZ + MOB_PORTAL_ARRIVAL_R, nz));
+      nx = Math.max(-WORLD_RADIUS + 1, Math.min(WORLD_RADIUS - 1, nx));
+      nz = Math.max(-WORLD_RADIUS + 1, Math.min(WORLD_RADIUS - 1, nz));
+    }
     let ny = Math.max(lo, Math.min(hi, Math.round(spot.y) + 2));
     if (targetDim === "end") { nx = endSquareCoord(nx); nz = endSquareCoord(nz); }
     for (let t = 0; t < 12 && (aabbCollidesWorld(nx, ny, nz, hw, h) || inFill(Math.floor(nx), ny, Math.floor(nz)) || (targetDim === "nether" && pigeonLavaAt(nx, ny, nz, null))); t++) ny++;
@@ -5881,19 +5904,32 @@ function mobPortalArrival(mob, spot, targetDim) {
     return { x: nx, y: ny, z: nz };
   }
   const baseGy = groundYForMob(spot.x, spot.z, spot.y, hw);
-  const cands = [];
-  for (let ix = cx - 5; ix <= cx + 5; ix++) {
-    for (let iz = cz - 5; iz <= cz + 5; iz++) {
+  const inR = [], outR = [];
+  const x0 = box ? box.minX - 10 : cx - 5, x1 = box ? box.maxX + 10 : cx + 5;
+  const z0 = box ? box.minZ - 10 : cz - 5, z1 = box ? box.maxZ + 10 : cz + 5;
+  for (let ix = x0; ix <= x1; ix++) {
+    for (let iz = z0; iz <= z1; iz++) {
       if (ix < -WORLD_RADIUS + 1 || ix > WORLD_RADIUS - 1 || iz < -WORLD_RADIUS + 1 || iz > WORLD_RADIUS - 1) continue;
       if (ix === Math.floor(spot.x) && iz === Math.floor(spot.z)) continue;
       const gy = groundYForMob(ix + 0.5, iz + 0.5, spot.y, hw);
       if (Math.abs(gy - baseGy) > 1) continue;
+      if (box && (gy < box.baseY - MOB_PORTAL_ARRIVAL_R || gy > box.topY + MOB_PORTAL_ARRIVAL_R)) continue;
       if (aabbCollidesWorld(ix + 0.5, gy, iz + 0.5, hw, h)) continue;
       if (inFill(ix, gy, iz)) continue;
-      cands.push({ x: ix + 0.5, y: gy, z: iz + 0.5 });
+      const d = box ? chebDistToBox(ix, iz, box) : 0;
+      const cand = { x: ix + 0.5, y: gy, z: iz + 0.5, d };
+      if (d <= MOB_PORTAL_ARRIVAL_R) inR.push(cand);
+      else outR.push(cand);
     }
   }
-  if (cands.length) return cands[(Math.random() * cands.length) | 0];
+  if (inR.length) {
+    const c = inR[(Math.random() * inR.length) | 0];
+    return { x: c.x, y: c.y, z: c.z };
+  }
+  if (outR.length) {
+    outR.sort((a, b) => a.d - b.d);
+    return { x: outR[0].x, y: outR[0].y, z: outR[0].z };
+  }
   const down = groundYDown(cx + 0.5, cz + 0.5, spot.y - 1, hw);
   if (down != null && !aabbCollidesWorld(cx + 0.5, down, cz + 0.5, hw, h) && !inFill(cx, down, cz)) {
     let dx = cx + 0.5, dz = cz + 0.5;
