@@ -4168,9 +4168,12 @@ const carryGrappleOffset = new THREE.Vector3();
 let carryGrappleRetracting = false;
 let carryGrapplePulling = false;
 let carryGrappleChainTarget = null;
+let mobPortalTx = null;
+const MOB_PORTAL_TX_TIME = 0.7;
 let chainAttachMode = "behind";
 let carryGrappleAttachMode = "behind";
 function isMobFrozenByGrapple(m) {
+  if (m && m._portalTx) return true;
   if (m !== carryGrappleMob) return false;
   if (carryGrappleMode === "release") return carryGrappleActive || carryGrapplePulling || carryGrappleRetracting;
   if (carryGrappleMode === "attach") return carryGrappleActive || carryGrapplePulling || carryGrappleRetracting;
@@ -5818,6 +5821,197 @@ function startCarryReleaseGrapple() {
   return true;
 }
 
+function mobPortalCacheFor(d) {
+  if (d === "end") { if (!endMobCache) endMobCache = []; return endMobCache; }
+  if (d === "nether") { if (!netherMobCache) netherMobCache = []; return netherMobCache; }
+  if (!overworldMobCache) overworldMobCache = [];
+  return overworldMobCache;
+}
+
+function mobPortalDestCells() {
+  const banned = new Set();
+  for (const pk of worldPortalSets.get(world)) {
+    const [px, py, pz] = keyXYZ(pk);
+    for (const w of collectEndWins(px, py, pz, 6))
+      for (const [x, y, z] of portalFillCells(w, false)) banned.add(x + "," + y + "," + z);
+    for (const w of collectNetherWins(px, py, pz, 6))
+      for (const [x, y, z] of portalFillCells(w, true)) banned.add(x + "," + y + "," + z);
+  }
+  return banned;
+}
+
+function mobPortalArrival(mob, spot, targetDim) {
+  const hw = mob.hw, h = mob.h;
+  const cx = Math.floor(spot.x), cz = Math.floor(spot.z);
+  const banned = mobPortalDestCells();
+  const inFill = (ix, feetY, iz) => {
+    for (let by = Math.floor(feetY); by <= Math.floor(feetY + h - 0.001); by++) {
+      if (banned.has(ix + "," + by + "," + iz)) return true;
+    }
+    return false;
+  };
+  if (mob.kind === "pigeon") {
+    const lo = pigeonBandMinFor(targetDim) + 1, hi = pigeonBandMaxFor(targetDim) - 1;
+    let nx = Math.max(-WORLD_RADIUS + 1, Math.min(WORLD_RADIUS - 1, spot.x));
+    let nz = Math.max(-WORLD_RADIUS + 1, Math.min(WORLD_RADIUS - 1, spot.z));
+    let ny = Math.max(lo, Math.min(hi, Math.round(spot.y) + 2));
+    if (targetDim === "end") { nx = endSquareCoord(nx); nz = endSquareCoord(nz); }
+    for (let t = 0; t < 12 && (aabbCollidesWorld(nx, ny, nz, hw, h) || inFill(Math.floor(nx), ny, Math.floor(nz)) || (targetDim === "nether" && pigeonLavaAt(nx, ny, nz, null))); t++) ny++;
+    ny = Math.max(lo, Math.min(hi, ny));
+    return { x: nx, y: ny, z: nz };
+  }
+  const baseGy = groundYForMob(spot.x, spot.z, spot.y, hw);
+  const cands = [];
+  for (let ix = cx - 5; ix <= cx + 5; ix++) {
+    for (let iz = cz - 5; iz <= cz + 5; iz++) {
+      if (ix < -WORLD_RADIUS + 1 || ix > WORLD_RADIUS - 1 || iz < -WORLD_RADIUS + 1 || iz > WORLD_RADIUS - 1) continue;
+      if (ix === Math.floor(spot.x) && iz === Math.floor(spot.z)) continue;
+      const gy = groundYForMob(ix + 0.5, iz + 0.5, spot.y, hw);
+      if (Math.abs(gy - baseGy) > 1) continue;
+      if (aabbCollidesWorld(ix + 0.5, gy, iz + 0.5, hw, h)) continue;
+      if (inFill(ix, gy, iz)) continue;
+      cands.push({ x: ix + 0.5, y: gy, z: iz + 0.5 });
+    }
+  }
+  if (cands.length) return cands[(Math.random() * cands.length) | 0];
+  const down = groundYDown(cx + 0.5, cz + 0.5, spot.y - 1, hw);
+  if (down != null && !aabbCollidesWorld(cx + 0.5, down, cz + 0.5, hw, h) && !inFill(cx, down, cz)) {
+    let dx = cx + 0.5, dz = cz + 0.5;
+    if (targetDim === "end") { dx = endSquareCoord(dx); dz = endSquareCoord(dz); }
+    return { x: dx, y: down, z: dz };
+  }
+  return { x: spot.x, y: spot.y, z: spot.z };
+}
+
+function mobPortalPlan(mob, fl) {
+  const srcDim = dim;
+  const targetDim = srcDim === "over" ? (fl.nether ? "nether" : "end")
+    : srcDim === "nether" ? (fl.nether ? "over" : "end")
+    : (fl.nether ? "nether" : "over");
+  const keepDim = dim, keepWorld = world;
+  dim = targetDim; world = worlds[targetDim];
+  let arrival;
+  try {
+    if (targetDim === "end" && !worlds.end.size) { generateEnd(); buildReturnPortal(true); }
+    else if (targetDim === "nether" && !worlds.nether.size) { generateNether(); buildNetherPortal(true); }
+    let spot;
+    if (targetDim === "end") {
+      spot = resolveDimArrival(endExit, { spot: { x: END_SPAWN.x, y: END_SPAWN.y, z: END_SPAWN.z }, yaw: 0 }).spot;
+    } else if (targetDim === "nether") {
+      spot = resolveDimArrival(netherExit, { spot: { x: NETHER_SPAWN.x, y: NETHER_SPAWN.y, z: NETHER_SPAWN.z }, yaw: Math.PI }).spot;
+    } else {
+      spot = resolveOverworldReturn().spot;
+    }
+    arrival = mobPortalArrival(mob, spot, targetDim);
+  } finally {
+    dim = keepDim; world = keepWorld;
+  }
+  worldDirty = true;
+  portalDirty = true;
+  return { targetDim, arrival };
+}
+
+function startMobPortalTx(mob, b, fl) {
+  const plan = mobPortalPlan(mob, fl);
+  if (!plan || !plan.arrival) return false;
+  mob._portalTx = true;
+  mobPortalTx = {
+    mob, t: 0, srcDim: dim,
+    fromScale: (mob.mesh && mob.mesh.scale.x) || 1,
+    targetDim: plan.targetDim, arrival: plan.arrival,
+  };
+  setMobTransparent(mob, 1);
+  if (carryGrappleCubes) carryGrappleCubes.visible = false;
+  if (carryGrappleHead) carryGrappleHead.visible = false;
+  return true;
+}
+
+function abortMobPortalTx() {
+  const tx = mobPortalTx;
+  mobPortalTx = null;
+  if (!tx) return;
+  const mob = tx.mob;
+  if (!mob || !mobs.includes(mob)) return;
+  mob._portalTx = false;
+  if (mob.mesh) mob.mesh.scale.setScalar(tx.fromScale);
+  if (dim !== tx.srcDim && mob !== carryMob && mob !== carryGrappleMob) {
+    carryGrappleMob = null;
+    carryMob = mob;
+    mob.mode = "carried";
+    mob.vel.set(0, 0, 0);
+    mob.target = null;
+    mob.path = null;
+    mob.blockedT = 0; mob._stuckT = 0;
+    if (mob.isBaby) mob._followDetourUntil = 0;
+    mob.mesh.visible = true;
+    setMobTransparent(mob, 0.35);
+    playerArms.visible = true;
+    worldDirty = true;
+  }
+}
+
+function tickMobPortalTx(dt) {
+  const tx = mobPortalTx;
+  const mob = tx && tx.mob;
+  if (!mob || !mobs.includes(mob) || mob === carryMob || carryGrappleMob !== mob || carryGrappleMode !== "release" || dim !== tx.srcDim) {
+    abortMobPortalTx();
+    return;
+  }
+  tx.t += dt;
+  const k = Math.min(1, tx.t / MOB_PORTAL_TX_TIME);
+  if (mob.mesh) mob.mesh.scale.setScalar(Math.max(0.001, tx.fromScale * (1 - k * k)));
+  if (k >= 1) finishMobPortalTx();
+}
+
+function finishMobPortalTx() {
+  const tx = mobPortalTx;
+  mobPortalTx = null;
+  const mob = tx && tx.mob;
+  if (!mob || !mobs.includes(mob)) return;
+  mob._portalTx = false;
+  const kindCode = mobKindCode(mob);
+  const look = mobLookIndex(mob);
+  const isBaby = !!mob.isBaby && mob.kind === "villager";
+  if (mob.mesh) scene.remove(mob.mesh);
+  if (mob.fallMesh) scene.remove(mob.fallMesh);
+  mobById.delete(mob.id);
+  const mi = mobs.indexOf(mob);
+  if (mi >= 0) mobs.splice(mi, 1);
+  const ei = endermen.indexOf(mob);
+  if (ei >= 0) endermen.splice(ei, 1);
+  if (pigeonLock === mob) { pigeonLock = null; pigeonLockT = 0; pigeonLockShots = 0; }
+  if (carryGrappleMob === mob) carryGrappleMob = null;
+  let cache = mobPortalCacheFor(tx.targetDim);
+  if (tx.targetDim === "over" && !cache.length && !mobs.some((m) => mobDimOf(m) === "over")) {
+    const keepDim = dim, keepWorld = world;
+    dim = "over"; world = worlds.over;
+    try {
+      const before = mobs.length;
+      spawnVillagers();
+      spawnPigeons();
+      for (let i = before; i < mobs.length; i++) mobs[i].mesh.visible = false;
+      overworldMobCache = snapshotMobsForDim("over", false);
+      cache = overworldMobCache;
+    } finally {
+      dim = keepDim; world = keepWorld;
+    }
+  }
+  let gid = mobs.length ? Math.max(...mobs.map((m) => m.id)) + 1 : 0;
+  for (const c of [overworldMobCache, endMobCache, netherMobCache]) {
+    if (!c) continue;
+    for (const e of c) if (e.id != null && e.id >= gid) gid = e.id + 1;
+  }
+  const entry = {
+    id: gid, kind: kindCode, isBaby, homeId: -1, parentIdx: -1,
+    x: tx.arrival.x, y: tx.arrival.y, z: tx.arrival.z,
+    yaw: Math.random() * Math.PI * 2, look,
+    villageBound: false, penBound: false,
+  };
+  stripPanicEntries([entry]);
+  cache.push(entry);
+  worldDirty = true;
+}
+
 function chainAttachTarget() {
   chainAttachMode = "behind";
   if ((dim !== "over" && dim !== "end" && dim !== "nether") || !started || loading || helpOpen) return null;
@@ -5943,7 +6137,10 @@ function updateCarryGrapple(dt) {
     }
     return;
   }
-  if (!carryGrappleActive && !carryGrapplePulling) return;
+  if (!carryGrappleActive && !carryGrapplePulling) {
+    if (mobPortalTx) tickMobPortalTx(dt);
+    return;
+  }
   if (!carryGrapplePulling) {
     if (carryGrappleMode === "grab") {
       const mob = carryGrappleMob;
@@ -6161,13 +6358,20 @@ function updateCarryGrapple(dt) {
         if (b) {
           carryGrappleBlock = null;
           carryGrappleHookPos.copy(carryGrappleTarget);
-          releaseCarriedMobAt(b.x, b.y, b.z);
+          const fl = fillAt(b.x, b.y, b.z);
+          if (fl && startMobPortalTx(mob, b, fl)) {
+            carryGrappleMob = mob;
+            carryMob = null;
+          } else {
+            releaseCarriedMobAt(b.x, b.y, b.z);
+            carryGrappleRetracting = true;
+          }
         } else {
           mob.pos.set(tx, ty - mob.h * 0.5, tz);
           mob.mesh.position.copy(mob.pos);
           setMobTransparent(mob, 1);
+          carryGrappleRetracting = true;
         }
-        carryGrappleRetracting = true;
       } else {
         const s = step / dist;
         mob.pos.x += dx * s;
@@ -12159,6 +12363,16 @@ function portalFrameSkip(win, nether) {
   return skip;
 }
 
+function fillAt(x, y, z) {
+  for (const f of portalFills.values()) {
+    if (f.dim !== dim) continue;
+    for (const [cx, cy, cz] of portalFillCells(f.win, f.nether)) {
+      if (cx === x && cy === y && cz === z) return { win: f.win, nether: f.nether };
+    }
+  }
+  return null;
+}
+
 function pickBlock(origin, dir, skipLiquid) {
   let x = Math.floor(origin.x), y = Math.floor(origin.y), z = Math.floor(origin.z);
   const stepX = dir.x > 0 ? 1 : -1, stepY = dir.y > 0 ? 1 : -1, stepZ = dir.z > 0 ? 1 : -1;
@@ -13590,7 +13804,7 @@ const protKey = (x, y, z) => dim + ":" + key(x, y, z);
 let endCleared = false;
 let dormantMsgAt = 0;
 
-function buildReturnPortal() {
+function buildReturnPortal(skipMesh = false) {
   purgeProtectedForDim("end");
   const coords = [];
   for (let x = -2; x <= 2; x++)
@@ -13608,7 +13822,7 @@ function buildReturnPortal() {
       for (let y = END_PLATFORM_TOP; y <= END_PLATFORM_TOP; y++)
         protectedBlocks.add(protKey(x, y, z));
   endReturnWin = { orient: "v", minX: -2, minY: END_RETURN_BASE_Y, minZ: END_RETURN_Z };
-  refreshBlocks(coords);
+  if (!skipMesh) refreshBlocks(coords);
 }
 
 const NETHER_RETURN_BASE_Y = 30;
@@ -13616,7 +13830,7 @@ const NETHER_RETURN_Z = 0;
 let netReturnWin = null;
 const NETHER_SPAWN = { x: 0.5, y: NETHER_RETURN_BASE_Y + 1.01, z: 2.5 };
 
-function buildNetherPortal() {
+function buildNetherPortal(skipMesh = false) {
   purgeProtectedForDim("nether");
   const coords = [];
   const base = NETHER_RETURN_BASE_Y;
@@ -13636,7 +13850,7 @@ function buildNetherPortal() {
       protectedBlocks.add(protKey(x, base + y, NETHER_RETURN_Z));
     }
   netReturnWin = { minX: -2, minY: base, minZ: NETHER_RETURN_Z };
-  refreshBlocks(coords);
+  if (!skipMesh) refreshBlocks(coords);
 }
 
 function returnPortalFrameMissing() {
@@ -17011,6 +17225,7 @@ async function buildWorld() {
     carryGrappleBlock = null;
     carryGrappleChainTarget = null;
     carryGrappleAttachMode = "behind";
+    abortMobPortalTx();
     if (carryGrappleCubes) carryGrappleCubes.visible = false;
     if (carryGrappleHead) carryGrappleHead.visible = false;
     for (const gm of [carryMob, carryGrappleMob]) {
