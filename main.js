@@ -4171,6 +4171,12 @@ let carryGrappleChainTarget = null;
 let mobPortalTx = null;
 const MOB_PORTAL_TX_TIME = 0.3;
 const MOB_PORTAL_TX_STANDOFF = 2.0;
+const PORTAL_ARRIVAL_FREEZE = 2;
+function isArrivalFrozen(m) {
+  if (!m || m._frozenUntil == null) return false;
+  if (performance.now() / 1000 >= m._frozenUntil) { delete m._frozenUntil; return false; }
+  return true;
+}
 let chainAttachMode = "behind";
 let carryGrappleAttachMode = "behind";
 function isMobFrozenByGrapple(m) {
@@ -6027,6 +6033,7 @@ function finishMobPortalTx() {
     villageBound: false, penBound: false,
   };
   stripPanicEntries([entry]);
+  entry.portalSent = true;
   cache.push(entry);
   worldDirty = true;
 }
@@ -7318,6 +7325,7 @@ function snapshotMobsForDim(dimName, includeCarried) {
     look: mobLookIndex(m),
     villageBound: m.villageBound !== false,
     penBound: !!m.penBound,
+    portalSent: m._frozenUntil != null && m._frozenUntil > now,
   }, mobPanicSnapshot(m, now)));
 }
 const DRAGON_CHAIN_CARRIER = 65535;
@@ -7427,6 +7435,7 @@ function snapshotOverworldMobs(includeCarried) {
     look: mobLookIndex(m),
     villageBound: m.villageBound !== false,
     penBound: !!m.penBound,
+    portalSent: m._frozenUntil != null && m._frozenUntil > now,
   }, mobPanicSnapshot(m, now)));
 }
 function settleMobSpot(sx, sy, sz, hw, h, isWolf) {
@@ -7662,6 +7671,7 @@ function restoreOverworldMobs(list, opts) {
     mobById.set(base.id, base);
     idByListIdx[i] = base.id;
     created.push(base);
+    if (e.portalSent || ((e.panicFlags & 4) !== 0)) base._frozenUntil = performance.now() / 1000 + PORTAL_ARRIVAL_FREEZE;
   }
   list.forEach((e, i) => {
     const nid = idByListIdx[i];
@@ -7852,6 +7862,7 @@ function restoreDimMobs(list, dimName, opts) {
     mobById.set(base.id, base);
     idByListIdx[i] = base.id;
     created.push(base);
+    if (e.portalSent || ((e.panicFlags & 4) !== 0)) base._frozenUntil = performance.now() / 1000 + PORTAL_ARRIVAL_FREEZE;
   }
   list.forEach((e, i) => {
     const nid = idByListIdx[i];
@@ -7928,6 +7939,7 @@ function separateMobs() {
       if (isChained(m)) continue;
       if (isFlyingKind(m.kind) || m.kind === "enderman") continue;
       if (isMobFrozenByGrapple(m)) continue;
+      if (isArrivalFrozen(m)) continue;
       if (m.dim !== undefined && m.dim !== dim) continue;
       let sx = 0, sz = 0, cnt = 0;
       const nearby = nearbyMobsFor(m.pos.x, m.pos.z, 1);
@@ -8001,6 +8013,7 @@ function pushMobsFromPlayer() {
     if (isChained(m)) continue;
     if (m.kind === "dragon" || m.kind === "enderman") continue;
     if (isMobFrozenByGrapple(m)) continue;
+    if (isArrivalFrozen(m)) continue;
     if (m.dim !== undefined && m.dim !== dim) continue;
     const fleeing = m.fleeUntil && performance.now() / 1000 < m.fleeUntil;
     const dx = m.pos.x - pos.x, dz = m.pos.z - pos.z;
@@ -8188,6 +8201,11 @@ function updateMobs(dt) {
     if (isMobHeld(m)) continue;
     if (isChained(m)) { m.mesh.position.copy(m.pos); continue; }
     if (isMobFrozenByGrapple(m)) continue;
+    if (isArrivalFrozen(m)) {
+      if (m.vel) m.vel.set(0, 0, 0);
+      if (m.mesh) m.mesh.position.copy(m.pos);
+      continue;
+    }
     if (m.dim !== undefined && m.dim !== dim) {
       if (isFlyingKind(m.kind) || m.kind === "enderman") { m.mesh.position.copy(m.pos); continue; }
       if (m.pos.y < -15) { scene.remove(m.mesh); mobById.delete(m.id); mobs.splice(idx, 1); continue; }
@@ -8978,6 +8996,7 @@ function shiftPausedTimers(d) {
   for (const m of mobs) {
     if (m.fleeUntil != null && m.fleeUntil > simPauseStart) m.fleeUntil += d;
     if (m._panicUntil != null && m._panicUntil > simPauseStart) m._panicUntil += d;
+    if (m._frozenUntil != null && m._frozenUntil > simPauseStart) m._frozenUntil += d;
   }
   if (villagePanicUntil > simPauseStart) villagePanicUntil += d;
   if (explosionQueue && explosionQueue.length) {
@@ -16155,7 +16174,9 @@ function serialize() {
     dv.setFloat32(o, isFinite(em.panicUntilRemain) ? Math.max(0, em.panicUntilRemain) : 0, true); o += 4;
     dv.setFloat32(o, isFinite(em.panicSrcX) ? em.panicSrcX : 0, true); o += 4;
     dv.setFloat32(o, isFinite(em.panicSrcZ) ? em.panicSrcZ : 0, true); o += 4;
-    dv.setUint8(o++, (em.panicFlags & 255) || 0);
+    let pf = (em.panicFlags & 255) || 0;
+    if (em.portalSent) pf |= 4;
+    dv.setUint8(o++, pf);
   };
   dv.setUint32(o, mobN, true); o += 4;
   for (const em of overMobs) writeMob(em);
@@ -18039,7 +18060,7 @@ if (location.search.includes('test')) {
     goToDimension, removeVillagers,
     get DEV_START_DIM(){ return DEV_START_DIM; },
     get dragon(){ return dragon; }, spawnDragon, removeDragon, updateDragon, paintDragon, damageDragon, dragonShotsCap, aimedDragon, get DRAGON_FULL_DMG(){ return DRAGON_FULL_DMG; }, get DRAGON_SPEED(){ return DRAGON_SPEED; }, get DRAGON_FOLLOW_DIST(){ return DRAGON_FOLLOW_DIST; },
-    get endermen(){ return endermen; }, get mobPortalTx(){ return mobPortalTx; }, startMobPortalTx, tickMobPortalTx, finishMobPortalTx, abortMobPortalTx, get ENDERMEN_COUNT(){ return ENDERMEN_COUNT; }, get END_PLATFORM_R(){ return END_PLATFORM_R; }, get END_MOB_R(){ return END_MOB_R; }, get END_RETURN_Z(){ return END_RETURN_Z; }, get END_RETURN_BASE_Y(){ return END_RETURN_BASE_Y; }, get DRAGON_MIN_Y(){ return DRAGON_MIN_Y; }, get DRAGON_MAX_Y(){ return DRAGON_MAX_Y; }, endMobInEnd, endClampXZPos, endClampYFlying, pigeonEndPortalTopAt, get ENDERMAN_STARE_TIME(){ return ENDERMAN_STARE_TIME; }, get ENDERMAN_ANGRY_TIME(){ return ENDERMAN_ANGRY_TIME; }, spawnEndermen, removeEndermen, updateEnderman, updateEndermen, endermanTeleport, endermanPickSpot, endermanSpotFor, ensureEndermanAssets, makeEndermanMesh, syncEndermanHalo, syncEndermanHalos, endermanChainHaloVisible, endermanHaloMode,
+    get endermen(){ return endermen; }, get mobPortalTx(){ return mobPortalTx; }, startMobPortalTx, tickMobPortalTx, finishMobPortalTx, abortMobPortalTx, get PORTAL_ARRIVAL_FREEZE(){ return PORTAL_ARRIVAL_FREEZE; }, isArrivalFrozen, get ENDERMEN_COUNT(){ return ENDERMEN_COUNT; }, get END_PLATFORM_R(){ return END_PLATFORM_R; }, get END_MOB_R(){ return END_MOB_R; }, get END_RETURN_Z(){ return END_RETURN_Z; }, get END_RETURN_BASE_Y(){ return END_RETURN_BASE_Y; }, get DRAGON_MIN_Y(){ return DRAGON_MIN_Y; }, get DRAGON_MAX_Y(){ return DRAGON_MAX_Y; }, endMobInEnd, endClampXZPos, endClampYFlying, pigeonEndPortalTopAt, get ENDERMAN_STARE_TIME(){ return ENDERMAN_STARE_TIME; }, get ENDERMAN_ANGRY_TIME(){ return ENDERMAN_ANGRY_TIME; }, spawnEndermen, removeEndermen, updateEnderman, updateEndermen, endermanTeleport, endermanPickSpot, endermanSpotFor, ensureEndermanAssets, makeEndermanMesh, syncEndermanHalo, syncEndermanHalos, endermanChainHaloVisible, endermanHaloMode,
   };
 }
 
