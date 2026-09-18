@@ -4173,6 +4173,8 @@ const MOB_PORTAL_TX_TIME = 0.3;
 const MOB_PORTAL_TX_STANDOFF = 2.0;
 const MOB_PORTAL_ARRIVAL_R = 5;
 const PORTAL_ARRIVAL_FREEZE = 2;
+const FILL_SLIDE_TRIGGER_T = 0.2;
+const FILL_SLIDE_SPEED = 12;
 function isArrivalFrozen(m) {
   if (!m || m._frozenUntil == null) return false;
   if (performance.now() / 1000 >= m._frozenUntil) { delete m._frozenUntil; return false; }
@@ -5851,6 +5853,7 @@ function mobPortalCacheFor(d) {
 
 function mobPortalDestCells() {
   const banned = new Set();
+  if (dim === "end" && !endCleared) return banned;
   for (const pk of worldPortalSets.get(world)) {
     const [px, py, pz] = keyXYZ(pk);
     for (const w of collectEndWins(px, py, pz, 6))
@@ -6421,7 +6424,7 @@ function updateCarryGrapple(dt) {
           carryGrappleBlock = null;
           carryGrappleHookPos.copy(carryGrappleTarget);
           const fl = fillAt(b.x, b.y, b.z);
-          if (fl && startMobPortalTx(mob, b, fl)) {
+          if (fl && !(dim === "end" && !endCleared) && startMobPortalTx(mob, b, fl)) {
             carryGrappleMob = mob;
             carryMob = null;
           } else {
@@ -7976,6 +7979,7 @@ function separateMobs() {
       if (isFlyingKind(m.kind) || m.kind === "enderman") continue;
       if (isMobFrozenByGrapple(m)) continue;
       if (isArrivalFrozen(m)) continue;
+      if (m._fillSlide) continue;
       if (m.dim !== undefined && m.dim !== dim) continue;
       let sx = 0, sz = 0, cnt = 0;
       const nearby = nearbyMobsFor(m.pos.x, m.pos.z, 1);
@@ -8050,6 +8054,7 @@ function pushMobsFromPlayer() {
     if (m.kind === "dragon" || m.kind === "enderman") continue;
     if (isMobFrozenByGrapple(m)) continue;
     if (isArrivalFrozen(m)) continue;
+    if (m._fillSlide) continue;
     if (m.dim !== undefined && m.dim !== dim) continue;
     const fleeing = m.fleeUntil && performance.now() / 1000 < m.fleeUntil;
     const dx = m.pos.x - pos.x, dz = m.pos.z - pos.z;
@@ -8216,8 +8221,113 @@ function resolveHeadOn() {
     }
   }
 }
+let liveFillCells = null;
+let liveFillWin = null;
+function rebuildLiveFillCells() {
+  liveFillCells = new Set();
+  liveFillWin = new Map();
+  for (const f of portalFills.values()) {
+    if (f.dim !== dim) continue;
+    if (f.dim === "end" && !endCleared) continue;
+    if (!portalFillValid(f)) continue;
+    for (const [x, y, z] of portalFillCells(f.win, f.nether)) {
+      const k = x + "," + y + "," + z;
+      liveFillCells.add(k);
+      if (!liveFillWin.has(k)) liveFillWin.set(k, f);
+    }
+  }
+}
+function mobBodyFillCells(m) {
+  const out = [];
+  if (!liveFillCells || !liveFillCells.size || !m) return out;
+  const x0 = Math.floor(m.pos.x - m.hw), x1 = Math.floor(m.pos.x + m.hw);
+  const y0 = Math.floor(m.pos.y), y1 = Math.floor(m.pos.y + m.h - 0.001);
+  const z0 = Math.floor(m.pos.z - m.hw), z1 = Math.floor(m.pos.z + m.hw);
+  for (let bx = x0; bx <= x1; bx++)
+    for (let by = y0; by <= y1; by++)
+      for (let bz = z0; bz <= z1; bz++)
+        if (liveFillCells.has(bx + "," + by + "," + bz)) out.push([bx, by, bz]);
+  return out;
+}
+function fillSlideGroundSpot(m, sx, sy, sz, boxes) {
+  for (let r = 1; r <= 16; r++) {
+    for (let dx = -r; dx <= r; dx++) for (let dz = -r; dz <= r; dz++) {
+      if (Math.max(Math.abs(dx), Math.abs(dz)) !== r) continue;
+      for (const dy of [0, 1, -1, 2, -2, 3, -3, 4, -4, 5, -5, 6, -6, 7, -7, 8, -8]) {
+        const ix = Math.floor(sx) + dx, iz = Math.floor(sz) + dz;
+        if (ix < -WORLD_RADIUS + 1 || ix > WORLD_RADIUS - 1 || iz < -WORLD_RADIUS + 1 || iz > WORLD_RADIUS - 1) continue;
+        if (boxes) {
+          let framed = false;
+          for (const box of boxes) {
+            if (chebDistToBox(ix, iz, box) < 1) { framed = true; break; }
+          }
+          if (framed) continue;
+        }
+        const gy = groundYForMob(ix + 0.5, iz + 0.5, sy + dy, m.hw);
+        if (!isFinite(gy) || gy < 1 || gy > MAX_Y - 2) continue;
+        if (aabbCollidesWorld(ix + 0.5, gy, iz + 0.5, m.hw, m.h)) continue;
+        if (!hasMobGround(ix + 0.5, iz + 0.5, m.hw, gy)) continue;
+        let bad = false;
+        for (let by = Math.floor(gy); by <= Math.floor(gy + m.h - 0.001); by++) {
+          if (liveFillCells.has(ix + "," + by + "," + iz)) { bad = true; break; }
+        }
+        if (bad) continue;
+        return { x: ix + 0.5, y: gy, z: iz + 0.5 };
+      }
+    }
+  }
+  return null;
+}
+function startFillSlide(m) {
+  m._fillOverlapT = 0;
+  if (!liveFillCells || !liveFillCells.size) return;
+  const overlap = mobBodyFillCells(m);
+  const boxes = [];
+  const seenBox = new Set();
+  for (const [bx, by, bz] of overlap) {
+    const f = liveFillWin ? liveFillWin.get(bx + "," + by + "," + bz) : null;
+    if (!f || seenBox.has(f)) continue;
+    seenBox.add(f);
+    boxes.push(portalFrameBBox(f.win));
+  }
+  let sx = m.pos.x, sy = m.pos.y, sz = m.pos.z;
+  let bestD = Infinity, best = null;
+  const seen = new Set();
+  const DIRS = [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]];
+  for (const [bx, by, bz] of overlap) {
+    for (const [ox, oy, oz] of DIRS) {
+      const nx = bx + ox, ny = by + oy, nz = bz + oz;
+      const k = nx + "," + ny + "," + nz;
+      if (seen.has(k)) continue;
+      seen.add(k);
+      if (ny < 1 || ny > MAX_Y - 2) continue;
+      if (liveFillCells.has(k)) continue;
+      if (isSolid(nx, ny, nz)) continue;
+      const d = (nx + 0.5 - m.pos.x) ** 2 + (ny - m.pos.y) ** 2 + (nz + 0.5 - m.pos.z) ** 2;
+      if (d < bestD) { bestD = d; best = [nx, ny, nz]; }
+    }
+  }
+  if (best) { sx = best[0] + 0.5; sy = best[1]; sz = best[2] + 0.5; }
+  const pts = [[sx, sy, sz]];
+  const g = fillSlideGroundSpot(m, sx, sy, sz, boxes.length ? boxes : null);
+  if (g) pts.push([g.x, g.y, g.z]);
+  else {
+    const down = groundYDown(sx, sz, sy, m.hw);
+    let downOk = down != null && down >= 1 && down <= MAX_Y - 2;
+    if (downOk && boxes.length) {
+      const ix = Math.floor(sx), iz = Math.floor(sz);
+      for (const box of boxes) {
+        if (chebDistToBox(ix, iz, box) < 1) { downOk = false; break; }
+      }
+    }
+    if (downOk) pts.push([sx, down, sz]);
+  }
+  m._fillSlide = { pts, i: 0 };
+  if (m.kind === "pigeon") { m.perchSpot = null; m.perchGroup = null; }
+}
 function updateMobs(dt) {
   if (!mobs.length) return;
+  rebuildLiveFillCells();
   const over = (dim === "over" && villageHouses.length) || dim === "nether";
   if (over) {
     mobTick++;
@@ -8241,6 +8351,37 @@ function updateMobs(dt) {
       if (m.vel) m.vel.set(0, 0, 0);
       if (m.mesh) m.mesh.position.copy(m.pos);
       continue;
+    }
+    if (m.kind !== "dragon" && mobDimOf(m) === dim) {
+      if (m._fillSlide) {
+        const s = m._fillSlide;
+        const t = s.pts[s.i];
+        if (t) {
+          const dx = t[0] - m.pos.x, dy = t[1] - m.pos.y, dz = t[2] - m.pos.z;
+          const dist = Math.hypot(dx, dy, dz);
+          const step = FILL_SLIDE_SPEED * dt;
+          if (dist <= step + 0.02) {
+            m.pos.set(t[0], t[1], t[2]);
+            s.i++;
+            if (s.i >= s.pts.length) {
+              delete m._fillSlide;
+              if (m.vel) m.vel.set(0, 0, 0);
+              if (m.kind === "enderman") m.baseY = m.pos.y;
+            }
+          } else {
+            m.pos.x += dx / dist * step;
+            m.pos.y += dy / dist * step;
+            m.pos.z += dz / dist * step;
+          }
+        } else delete m._fillSlide;
+        if (m.vel) m.vel.set(0, 0, 0);
+        if (m.mesh) m.mesh.position.copy(m.pos);
+        continue;
+      }
+      if (mobBodyFillCells(m).length) {
+        m._fillOverlapT = (m._fillOverlapT || 0) + dt;
+        if (m._fillOverlapT > FILL_SLIDE_TRIGGER_T && !m._fillSlide) startFillSlide(m);
+      } else if (m._fillOverlapT) m._fillOverlapT = 0;
     }
     if (m.dim !== undefined && m.dim !== dim) {
       if (isFlyingKind(m.kind) || m.kind === "enderman") { m.mesh.position.copy(m.pos); continue; }
@@ -18096,7 +18237,7 @@ if (location.search.includes('test')) {
     goToDimension, removeVillagers,
     get DEV_START_DIM(){ return DEV_START_DIM; },
     get dragon(){ return dragon; }, spawnDragon, removeDragon, updateDragon, paintDragon, damageDragon, dragonShotsCap, aimedDragon, get DRAGON_FULL_DMG(){ return DRAGON_FULL_DMG; }, get DRAGON_SPEED(){ return DRAGON_SPEED; }, get DRAGON_FOLLOW_DIST(){ return DRAGON_FOLLOW_DIST; },
-    get endermen(){ return endermen; }, get mobPortalTx(){ return mobPortalTx; }, startMobPortalTx, tickMobPortalTx, finishMobPortalTx, abortMobPortalTx, get PORTAL_ARRIVAL_FREEZE(){ return PORTAL_ARRIVAL_FREEZE; }, isArrivalFrozen, get ENDERMEN_COUNT(){ return ENDERMEN_COUNT; }, get END_PLATFORM_R(){ return END_PLATFORM_R; }, get END_MOB_R(){ return END_MOB_R; }, get END_RETURN_Z(){ return END_RETURN_Z; }, get END_RETURN_BASE_Y(){ return END_RETURN_BASE_Y; }, get DRAGON_MIN_Y(){ return DRAGON_MIN_Y; }, get DRAGON_MAX_Y(){ return DRAGON_MAX_Y; }, endMobInEnd, endClampXZPos, endClampYFlying, pigeonEndPortalTopAt, get ENDERMAN_STARE_TIME(){ return ENDERMAN_STARE_TIME; }, get ENDERMAN_ANGRY_TIME(){ return ENDERMAN_ANGRY_TIME; }, spawnEndermen, removeEndermen, updateEnderman, updateEndermen, endermanTeleport, endermanPickSpot, endermanSpotFor, ensureEndermanAssets, makeEndermanMesh, syncEndermanHalo, syncEndermanHalos, endermanChainHaloVisible, endermanHaloMode,
+    get endermen(){ return endermen; }, get mobPortalTx(){ return mobPortalTx; }, startMobPortalTx, tickMobPortalTx, finishMobPortalTx, abortMobPortalTx,     get PORTAL_ARRIVAL_FREEZE(){ return PORTAL_ARRIVAL_FREEZE; }, isArrivalFrozen, get FILL_SLIDE_TRIGGER_T(){ return FILL_SLIDE_TRIGGER_T; }, get FILL_SLIDE_SPEED(){ return FILL_SLIDE_SPEED; }, mobBodyFillCells, startFillSlide, get ENDERMEN_COUNT(){ return ENDERMEN_COUNT; }, get END_PLATFORM_R(){ return END_PLATFORM_R; }, get END_MOB_R(){ return END_MOB_R; }, get END_RETURN_Z(){ return END_RETURN_Z; }, get END_RETURN_BASE_Y(){ return END_RETURN_BASE_Y; }, get DRAGON_MIN_Y(){ return DRAGON_MIN_Y; }, get DRAGON_MAX_Y(){ return DRAGON_MAX_Y; }, endMobInEnd, endClampXZPos, endClampYFlying, pigeonEndPortalTopAt, get ENDERMAN_STARE_TIME(){ return ENDERMAN_STARE_TIME; }, get ENDERMAN_ANGRY_TIME(){ return ENDERMAN_ANGRY_TIME; }, spawnEndermen, removeEndermen, updateEnderman, updateEndermen, endermanTeleport, endermanPickSpot, endermanSpotFor, ensureEndermanAssets, makeEndermanMesh, syncEndermanHalo, syncEndermanHalos, endermanChainHaloVisible, endermanHaloMode,
   };
 }
 
