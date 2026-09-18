@@ -1883,7 +1883,7 @@ function pigeonPerchSupports(x, y, z) {
     return false;
   }
   if (id === CLOUD || id === LOG || id === LEAVES) return true;
-  if ((id === STONE || id === PLANKS) && villageHouses.length) {
+  if ((id === STONE || id === PLANKS || id === PORTAL || id === OBSIDIAN) && villageHouses.length) {
     const h = houseAtRoof(bx + 0.5, bz + 0.5);
     if (h && houseRoofCell(h, bx, by, bz)) return true;
   }
@@ -1897,7 +1897,7 @@ function pigeonRoofTopAt(cx, cz) {
   for (let y = h.vy + 8; y >= h.vy + 5; y--) {
     if (!houseRoofCell(h, bx, y, bz)) continue;
     const id = getBlock(bx, y, bz);
-    if (id !== STONE && id !== PLANKS && id !== LOG) continue;
+    if (id !== STONE && id !== PLANKS && id !== LOG && id !== PORTAL && id !== OBSIDIAN) continue;
     const spot = new THREE.Vector3(bx + 0.5, y + 1, bz + 0.5);
     if (aabbCollidesWorld(spot.x, spot.y, spot.z, PIGEON_COL_HW, PIGEON_COL_H)) return null;
     return spot;
@@ -2323,16 +2323,19 @@ function placeVillageHouses() {
         setBlock(x, y, z, mat);
       }
     }
-    const centerMat = h.varId === 1 ? PLANKS : (h.roofIsPlank ? PLANKS : STONE);
     for (let x = minX; x <= maxX; x++) for (let z = minZ; z <= maxZ; z++) {
       const isRoofEdge = x === minX || x === maxX || z === minZ || z === maxZ;
-      let roofMat = centerMat;
-      if (isRoofEdge) roofMat = h.varId === 1 ? PLANKS : LOG;
-      setBlock(x, vy + hh, z, roofMat);
+      setBlock(x, vy + hh, z, isRoofEdge ? PORTAL : OBSIDIAN);
     }
-    for (let x = minX + 1; x <= maxX - 1; x++) for (let z = minZ + 1; z <= maxZ - 1; z++) setBlock(x, vy + hh + 1, z, centerMat);
-    for (let x = minX + 2; x <= maxX - 2; x++) for (let z = minZ + 2; z <= maxZ - 2; z++) setBlock(x, vy + hh + 2, z, centerMat);
-    setBlock(h.cx, vy + hh + 3, h.cz, centerMat);
+    for (let x = minX + 1; x <= maxX - 1; x++) for (let z = minZ + 1; z <= maxZ - 1; z++) {
+      const isStepEdge = x === minX + 1 || x === maxX - 1 || z === minZ + 1 || z === maxZ - 1;
+      setBlock(x, vy + hh + 1, z, isStepEdge ? PORTAL : OBSIDIAN);
+    }
+    for (let x = minX + 2; x <= maxX - 2; x++) for (let z = minZ + 2; z <= maxZ - 2; z++) {
+      const isTopEdge = x === minX + 2 || x === maxX - 2 || z === minZ + 2 || z === maxZ - 2;
+      setBlock(x, vy + hh + 2, z, isTopEdge ? PORTAL : OBSIDIAN);
+    }
+    setBlock(h.cx, vy + hh + 3, h.cz, PORTAL);
     for (let x = minX + 1; x <= maxX - 1; x++) for (let z = minZ + 1; z <= maxZ - 1; z++) setBlock(x, vy + 1, z, AIR);
     setBlock(h.d0x, vy + 1, h.d0z, AIR); setBlock(h.d1x, vy + 1, h.d1z, AIR);
     setBlock(h.d0x, vy + 2, h.d0z, AIR); setBlock(h.d1x, vy + 2, h.d1z, AIR);
