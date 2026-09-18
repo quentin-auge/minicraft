@@ -1707,9 +1707,12 @@ function houseMouths(h) {
       list.push({ x, y, z });
     }
   }
-  for (let x = h.minX; x <= h.maxX; x++) for (let z = h.minZ; z <= h.maxZ; z++) {
-    if (isSolid(x, h.vy + 5, z)) continue;
-    list.push({ x, y: h.vy + 5, z });
+  for (let y = h.vy + 5; y <= h.vy + 8; y++) {
+    const inset = houseRoofInset(h, y);
+    for (let x = h.minX + inset; x <= h.maxX - inset; x++) for (let z = h.minZ + inset; z <= h.maxZ - inset; z++) {
+      if (isSolid(x, y, z)) continue;
+      list.push({ x, y, z });
+    }
   }
   if (h._mouthSet) {
     for (const c of list) {
@@ -1863,6 +1866,14 @@ function pigeonTreeTopAt(cx, cz) {
   }
   return null;
 }
+function houseRoofInset(h, y) {
+  return y - (h.vy + 5);
+}
+function houseRoofCell(h, bx, by, bz) {
+  if (by < h.vy + 5 || by > h.vy + 8) return false;
+  const inset = houseRoofInset(h, by);
+  return bx >= h.minX + inset && bx <= h.maxX - inset && bz >= h.minZ + inset && bz <= h.maxZ - inset;
+}
 function pigeonPerchSupports(x, y, z) {
   const bx = Math.floor(x), by = Math.floor(y) - 1, bz = Math.floor(z);
   const id = getBlock(bx, by, bz);
@@ -1874,7 +1885,7 @@ function pigeonPerchSupports(x, y, z) {
   if (id === CLOUD || id === LOG || id === LEAVES) return true;
   if ((id === STONE || id === PLANKS) && villageHouses.length) {
     const h = houseAtRoof(bx + 0.5, bz + 0.5);
-    if (h && by === h.vy + 5) return true;
+    if (h && houseRoofCell(h, bx, by, bz)) return true;
   }
   return false;
 }
@@ -1883,11 +1894,15 @@ function pigeonRoofTopAt(cx, cz) {
   const h = houseAtRoof(cx, cz);
   if (!h) return null;
   const bx = Math.floor(cx), bz = Math.floor(cz);
-  const id = getBlock(bx, h.vy + 5, bz);
-  if (id !== STONE && id !== PLANKS && id !== LOG) return null;
-  const spot = new THREE.Vector3(bx + 0.5, h.vy + 6, bz + 0.5);
-  if (aabbCollidesWorld(spot.x, spot.y, spot.z, PIGEON_COL_HW, PIGEON_COL_H)) return null;
-  return spot;
+  for (let y = h.vy + 8; y >= h.vy + 5; y--) {
+    if (!houseRoofCell(h, bx, y, bz)) continue;
+    const id = getBlock(bx, y, bz);
+    if (id !== STONE && id !== PLANKS && id !== LOG) continue;
+    const spot = new THREE.Vector3(bx + 0.5, y + 1, bz + 0.5);
+    if (aabbCollidesWorld(spot.x, spot.y, spot.z, PIGEON_COL_HW, PIGEON_COL_H)) return null;
+    return spot;
+  }
+  return null;
 }
 function pigeonEndPortalTopAt(cx, cz) {
   let best = null, bestD = Infinity;
@@ -2308,14 +2323,16 @@ function placeVillageHouses() {
         setBlock(x, y, z, mat);
       }
     }
+    const centerMat = h.varId === 1 ? PLANKS : (h.roofIsPlank ? PLANKS : STONE);
     for (let x = minX; x <= maxX; x++) for (let z = minZ; z <= maxZ; z++) {
       const isRoofEdge = x === minX || x === maxX || z === minZ || z === maxZ;
-      let roofMat = STONE;
-      if (isRoofEdge) roofMat = LOG;
-      else roofMat = h.roofIsPlank ? PLANKS : STONE;
-      if (h.varId === 1) roofMat = PLANKS;
+      let roofMat = centerMat;
+      if (isRoofEdge) roofMat = h.varId === 1 ? PLANKS : LOG;
       setBlock(x, vy + hh, z, roofMat);
     }
+    for (let x = minX + 1; x <= maxX - 1; x++) for (let z = minZ + 1; z <= maxZ - 1; z++) setBlock(x, vy + hh + 1, z, centerMat);
+    for (let x = minX + 2; x <= maxX - 2; x++) for (let z = minZ + 2; z <= maxZ - 2; z++) setBlock(x, vy + hh + 2, z, centerMat);
+    setBlock(h.cx, vy + hh + 3, h.cz, centerMat);
     for (let x = minX + 1; x <= maxX - 1; x++) for (let z = minZ + 1; z <= maxZ - 1; z++) setBlock(x, vy + 1, z, AIR);
     setBlock(h.d0x, vy + 1, h.d0z, AIR); setBlock(h.d1x, vy + 1, h.d1z, AIR);
     setBlock(h.d0x, vy + 2, h.d0z, AIR); setBlock(h.d1x, vy + 2, h.d1z, AIR);
@@ -6605,6 +6622,8 @@ function wanderGoalForRoof(m) {
     const z = h.minZ + Math.random() * (h.maxZ - h.minZ + 1);
     const cx = Math.floor(x) + 0.5, cz = Math.floor(z) + 0.5;
     if (houseAtRoof(cx, cz) !== h) continue;
+    const bx = Math.floor(cx), bz = Math.floor(cz);
+    if (bx !== h.minX && bx !== h.maxX && bz !== h.minZ && bz !== h.maxZ) continue;
     if (cx - m.hw < h.minX || cx + m.hw > h.maxX + 1 || cz - m.hw < h.minZ || cz + m.hw > h.maxZ + 1) continue;
     if (aabbCollidesWorld(cx, roofY, cz, m.hw, m.h)) continue;
     if (!hasMobGround(cx, cz, m.hw, roofY)) continue;
@@ -6632,6 +6651,8 @@ function wanderGoalForRoof(m) {
     const z = h.minZ + Math.random() * (h.maxZ - h.minZ + 1);
     const cx = Math.floor(x) + 0.5, cz = Math.floor(z) + 0.5;
     if (houseAtRoof(cx, cz) !== h) continue;
+    const bx = Math.floor(cx), bz = Math.floor(cz);
+    if (bx !== h.minX && bx !== h.maxX && bz !== h.minZ && bz !== h.maxZ) continue;
     if (cx - m.hw < h.minX || cx + m.hw > h.maxX + 1 || cz - m.hw < h.minZ || cz + m.hw > h.maxZ + 1) continue;
     if (aabbCollidesWorld(cx, roofY, cz, m.hw, m.h)) continue;
     if (!hasMobGround(cx, cz, m.hw, roofY)) continue;
