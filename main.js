@@ -4223,14 +4223,26 @@ const chainLinks = new Map();
 const CHAIN_LINK_CUBES = 128;
 const chainLinkGeo = new THREE.BoxGeometry(0.1, 0.1, 0.1);
 const chainLinkMat = new THREE.MeshBasicMaterial({ color: 0x8a6d3b });
+const chainLinkMatNoFog = new THREE.MeshBasicMaterial({ color: 0x8a6d3b, fog: false });
 const chainLinkHeadGeo = new THREE.BoxGeometry(0.17, 0.17, 0.17);
 const chainLinkHeadMat = new THREE.MeshBasicMaterial({ color: 0x4a3a1e });
+const chainLinkHeadMatNoFog = new THREE.MeshBasicMaterial({ color: 0x4a3a1e, fog: false });
 let chainLinkDragonMat = null;
 let chainLinkDragonHeadMat = null;
+let chainLinkDragonMatNoFog = null;
+let chainLinkDragonHeadMatNoFog = null;
+// When the eye is inside a liquid the murk fog would wash fogged ropes to the
+// fog color (near-invisible in lava), so ropes swap to fog-ignoring variants
+// with identical colors. Air keeps the fogged variants for distance fading.
+let ropeNoFog = false;
 function ensureChainDragonMats() {
   if (!chainLinkDragonMat) {
     chainLinkDragonMat = new THREE.MeshBasicMaterial({ color: DRAGON_FINISH.eye });
     chainLinkDragonHeadMat = new THREE.MeshBasicMaterial({ color: DRAGON_FINISH.eye });
+  }
+  if (!chainLinkDragonMatNoFog) {
+    chainLinkDragonMatNoFog = new THREE.MeshBasicMaterial({ color: DRAGON_FINISH.eye, fog: false });
+    chainLinkDragonHeadMatNoFog = new THREE.MeshBasicMaterial({ color: DRAGON_FINISH.eye, fog: false });
   }
 }
 function syncChainLinkColor(childId) {
@@ -4240,11 +4252,11 @@ function syncChainLinkColor(childId) {
   const root = child ? chainRootOf(child) : null;
   if (root && root.kind === "dragon") {
     ensureChainDragonMats();
-    link.rope.material = chainLinkDragonMat;
-    link.head.material = chainLinkDragonHeadMat;
+    link.rope.material = ropeNoFog ? chainLinkDragonMatNoFog : chainLinkDragonMat;
+    link.head.material = ropeNoFog ? chainLinkDragonHeadMatNoFog : chainLinkDragonHeadMat;
   } else {
-    link.rope.material = chainLinkMat;
-    link.head.material = chainLinkHeadMat;
+    link.rope.material = ropeNoFog ? chainLinkMatNoFog : chainLinkMat;
+    link.head.material = ropeNoFog ? chainLinkHeadMatNoFog : chainLinkHeadMat;
   }
 }
 function syncChainLinkColors() {
@@ -4252,6 +4264,8 @@ function syncChainLinkColors() {
   if (dragon && dragon.mats && dragon.mats.eye) {
     chainLinkDragonMat.color.copy(dragon.mats.eye.color);
     chainLinkDragonHeadMat.color.copy(dragon.mats.eye.color).multiplyScalar(0.6);
+    chainLinkDragonMatNoFog.color.copy(dragon.mats.eye.color);
+    chainLinkDragonHeadMatNoFog.color.copy(dragon.mats.eye.color).multiplyScalar(0.6);
   }
   for (const childId of chainLinks.keys()) syncChainLinkColor(childId);
   syncGrappleColor();
@@ -4260,11 +4274,11 @@ function syncGrappleColor() {
   const isDragon = !!grappleMob && grappleMob.kind === "dragon";
   if (isDragon) {
     ensureChainDragonMats();
-    grappleCubes.material = chainLinkDragonMat;
-    grappleHead.material = chainLinkDragonHeadMat;
+    grappleCubes.material = ropeNoFog ? chainLinkDragonMatNoFog : chainLinkDragonMat;
+    grappleHead.material = ropeNoFog ? chainLinkDragonHeadMatNoFog : chainLinkDragonHeadMat;
   } else {
-    grappleCubes.material = grappleCubeMat;
-    grappleHead.material = grappleHeadMat;
+    grappleCubes.material = ropeNoFog ? grappleCubeMatNoFog : grappleCubeMat;
+    grappleHead.material = ropeNoFog ? grappleHeadMatNoFog : grappleHeadMat;
   }
 }
 const chainLinkMatrix = new THREE.Matrix4();
@@ -11102,10 +11116,14 @@ const DRAGON_FOLLOW_DIST = 8;
 const MOB_GRAPPLE_THROW = GRAPPLE_THROW * 1.25;
 const MOB_GRAPPLE_RETRACT = MOB_GRAPPLE_THROW * 1.25;
 const FLOAT_SPEED = 3.6;
-const SWIM_ACCEL = 2.0;
+const SWIM_ACCEL = 8;
 const SWIM_AREA = 10;
-const SWIM_BRAKE = 1.5;
+const SWIM_BRAKE = 2.0;
 const SWIM_MAX = 64;
+// Deep-water fast-descent brake (player only): below this sink speed water
+// drag eases vel.y back toward it, so a kept inertia visibly slows before
+// buoyancy reverses it. Normal swim speeds never reach it.
+const SWIM_SOFT_CAP = 4;
 
 const pos = new THREE.Vector3(0, 20, 0);
 let grappleActive = false;
@@ -11133,6 +11151,11 @@ const grappleRideAxP = new THREE.Vector3(0, 0, 1);
 const grappleRideAxV = new THREE.Vector3();
 let grapplePendingInsert = null;
 let flingActive = false;
+const LIQUID_INERTIA_TIME = 0.7;
+let liquidInertiaT = 0;
+const LIQUID_BRAKE_TIME = 0.65;
+let liquidBrakeT = 0;
+const liquidBrakeV = new THREE.Vector3();
 const vel = new THREE.Vector3();
 const camPos = new THREE.Vector3();
 let yaw = 0, pitch = 0;
@@ -11741,6 +11764,8 @@ function detachDisplacementGrapple() {
 
 function fireGrapple() {
   if (freeCam) return;
+  liquidInertiaT = 0;
+  liquidBrakeT = 0;
   const dir = new THREE.Vector3();
   camera.getWorldDirection(dir);
   const b = pickBlock(camera.position, dir, true);
@@ -12410,6 +12435,7 @@ function updatePlayer(dt) {
   if (a) move.sub(right);
 
   let inWater = headInWater();
+  if (!inWater) { liquidInertiaT = 0; liquidBrakeT = 0; }
   const enteredWater = inWater && !wasInWater;
   const spaceNow = !!(keys["ShiftLeft"] || keys["ShiftRight"] || keys["Space"] || keys[" "]);
   const spaceJustPressed = spaceNow && !prevSpace;
@@ -12491,10 +12517,32 @@ function updatePlayer(dt) {
     // steady deceleration (SWIM_BRAKE) settles you back to a calm FLOAT_SPEED
     // drift. Both the deep accel and the surface drift are doubled speed.
     // Shift does nothing in water.
+    if (liquidInertiaT > 0) {
+      // Grapple-release inertia: coast at the kept velocity, no swim forces.
+      liquidInertiaT -= dt;
+      if (liquidInertiaT <= 0) {
+        liquidInertiaT = 0;
+        liquidBrakeV.copy(vel);
+        liquidBrakeT = LIQUID_BRAKE_TIME;
+      }
+    } else if (liquidBrakeT > 0) {
+      // Constant deceleration: linear ramp of the snapshotted velocity to
+      // zero over LIQUID_BRAKE_TIME, then buoyancy takes over.
+      const step = Math.min(liquidBrakeT, dt);
+      vel.x -= liquidBrakeV.x * (step / LIQUID_BRAKE_TIME);
+      vel.y -= liquidBrakeV.y * (step / LIQUID_BRAKE_TIME);
+      vel.z -= liquidBrakeV.z * (step / LIQUID_BRAKE_TIME);
+      liquidBrakeT -= step;
+      if (liquidBrakeT <= 0) { liquidBrakeT = 0; vel.set(0, 0, 0); }
+    } else {
     const speed = (sprintKey && move.lengthSq() > 0) ? SPRINT : 4.2;
     if (move.lengthSq() > 0) move.normalize().multiplyScalar(speed);
     vel.x += (move.x - vel.x) * Math.min(1, dt * 8);
     vel.z += (move.z - vel.z) * Math.min(1, dt * 8);
+    // A block-hooked grapple (arrived or blocked, rope still attached) beats
+    // liquid buoyancy: the player hangs on the rope and can still swim
+    // horizontally, but never drifts up while hooked.
+    const anchored = grappleActive && grappleHooked && !grappleMob;
     if (stepUp) {
       const glide = Math.max(STEP_UP_MIN, Math.min(STEP_UP, (stepUpClearY - pos.y) / STEP_UP_EASE));
       vel.y = glide;
@@ -12507,6 +12555,8 @@ function updatePlayer(dt) {
     } else if (stepHop) {
       vel.y -= g * dt;
       if (vel.y <= 0 || onGround) stepHop = false;
+      } else if (anchored) {
+        vel.y = 0;
       } else {
         const surface = waterSurfaceTop();
         if (surface === -Infinity) {
@@ -12516,12 +12566,14 @@ function updatePlayer(dt) {
           const err = targetY - pos.y;
           if (err > SWIM_AREA) {
             vel.y += SWIM_ACCEL * dt;
+            if (vel.y < -SWIM_SOFT_CAP) vel.y += (-SWIM_SOFT_CAP - vel.y) * Math.min(1, dt * SWIM_BRAKE * 2);
           } else {
             const want = err * 4;
             vel.y += (want - vel.y) * Math.min(1, dt * SWIM_BRAKE * 2);
           }
         }
       vel.y = Math.min(Math.max(vel.y, -SWIM_MAX), SWIM_MAX);
+      }
     }
   } else {
     stepFromWater = false;
@@ -12819,6 +12871,7 @@ scene.add(highlight);
 const ropeA = new THREE.Vector3(), ropeB = new THREE.Vector3();
 const grappleCubeGeo = new THREE.BoxGeometry(0.1, 0.1, 0.1);
 const grappleCubeMat = new THREE.MeshBasicMaterial({ color: 0x8a6d3b });
+const grappleCubeMatNoFog = new THREE.MeshBasicMaterial({ color: 0x8a6d3b, fog: false });
 const GRAPPLE_CUBES = 2600;
 const grappleCubes = new THREE.InstancedMesh(grappleCubeGeo, grappleCubeMat, GRAPPLE_CUBES);
 grappleCubes.frustumCulled = false;
@@ -12826,20 +12879,34 @@ grappleCubes.visible = false;
 scene.add(grappleCubes);
 const grappleCubeMatrix = new THREE.Matrix4();
 const grappleHeadMat = new THREE.MeshBasicMaterial({ color: 0x4a3a1e });
+const grappleHeadMatNoFog = new THREE.MeshBasicMaterial({ color: 0x4a3a1e, fog: false });
 const grappleHead = new THREE.Mesh(new THREE.BoxGeometry(0.17, 0.17, 0.17), grappleHeadMat);
 grappleHead.visible = false;
 scene.add(grappleHead);
 const carryGrappleCubeGeo = new THREE.BoxGeometry(0.1, 0.1, 0.1);
 const carryGrappleCubeMat = new THREE.MeshBasicMaterial({ color: 0x870000, transparent: true, opacity: 1 });
+const carryGrappleCubeMatNoFog = new THREE.MeshBasicMaterial({ color: 0x870000, transparent: true, opacity: 1, fog: false });
 const CARRY_GRAPPLE_CUBES = 2600;
 const carryGrappleCubes = new THREE.InstancedMesh(carryGrappleCubeGeo, carryGrappleCubeMat, CARRY_GRAPPLE_CUBES);
 carryGrappleCubes.frustumCulled = false;
 carryGrappleCubes.visible = false;
 scene.add(carryGrappleCubes);
-const carryGrappleHead = new THREE.Mesh(new THREE.BoxGeometry(0.17, 0.17, 0.17), new THREE.MeshBasicMaterial({ color: 0x5a0000, transparent: true, opacity: 1 }));
+const carryGrappleHeadMat = new THREE.MeshBasicMaterial({ color: 0x5a0000, transparent: true, opacity: 1 });
+const carryGrappleHead = new THREE.Mesh(new THREE.BoxGeometry(0.17, 0.17, 0.17), carryGrappleHeadMat);
+const carryGrappleHeadMatNoFog = new THREE.MeshBasicMaterial({ color: 0x5a0000, transparent: true, opacity: 1, fog: false });
 carryGrappleHead.visible = false;
 scene.add(carryGrappleHead);
 const carryGrappleCubeMatrix = new THREE.Matrix4();
+function updateRopeFog(submerged) {
+  if (submerged === ropeNoFog) return;
+  ropeNoFog = submerged;
+  carryGrappleCubeMatNoFog.opacity = carryGrappleCubeMat.opacity;
+  carryGrappleHeadMatNoFog.opacity = carryGrappleHeadMat.opacity;
+  carryGrappleCubes.material = submerged ? carryGrappleCubeMatNoFog : carryGrappleCubeMat;
+  carryGrappleHead.material = submerged ? carryGrappleHeadMatNoFog : carryGrappleHeadMat;
+  syncGrappleColor();
+  for (const childId of chainLinks.keys()) syncChainLinkColor(childId);
+}
 
 let currentBlock = null;
 function updateTarget() {
@@ -17996,6 +18063,19 @@ document.addEventListener("mouseup", (e) => {
       stepDown = false;
       wasOnGround = false;
       onGround = false;
+    } else if (headInWater()) {
+      // Releasing mid-pull inside a liquid: the pull velocity is kept as-is
+      // (inertia) for LIQUID_INERTIA_TIME, then a constant deceleration ramp
+      // over LIQUID_BRAKE_TIME, then buoyancy takes over. No flingActive.
+      const dx = grappleTarget.x - grappleStart.x, dy = grappleTarget.y - grappleStart.y, dz = grappleTarget.z - grappleStart.z;
+      const dist = Math.hypot(dx, dy, dz) || 1;
+      vel.set((dx / dist) * GRAPPLE_SPEED, (dy / dist) * GRAPPLE_SPEED, (dz / dist) * GRAPPLE_SPEED);
+      liquidInertiaT = LIQUID_INERTIA_TIME;
+      liquidBrakeT = 0;
+      flingActive = false;
+      stepDown = false;
+      wasOnGround = false;
+      onGround = false;
     } else {
       const dx = grappleTarget.x - grappleStart.x, dy = grappleTarget.y - grappleStart.y, dz = grappleTarget.z - grappleStart.z;
       const dist = Math.hypot(dx, dy, dz) || 1;
@@ -18363,8 +18443,12 @@ function loop(now) {
     if (showCarryRope) {
       carryGrappleCubeMat.opacity = 0.3;
       carryGrappleCubeMat.transparent = true;
-      carryGrappleHead.material.opacity = 0.3;
-      carryGrappleHead.material.transparent = true;
+      carryGrappleCubeMatNoFog.opacity = 0.3;
+      carryGrappleCubeMatNoFog.transparent = true;
+      carryGrappleHeadMat.opacity = 0.3;
+      carryGrappleHeadMat.transparent = true;
+      carryGrappleHeadMatNoFog.opacity = 0.3;
+      carryGrappleHeadMatNoFog.transparent = true;
       carryGrappleCubes.visible = true;
       carryGrappleHead.visible = true;
       const cdx = carryRopeB.x - carryRopeA.x, cdy = carryRopeB.y - carryRopeA.y, cdz = carryRopeB.z - carryRopeA.z;
@@ -18509,6 +18593,7 @@ function loop(now) {
     const tint = liquidTintColors[underTintId];
     const fogFar = LIQUID_FOG_FAR[underTintId] || 14;
     const k = underSubSmooth * UNDERWATER_TINT;
+    updateRopeFog(!!eid);
     scene.background.copy(envBackground).lerp(tint, k);
     scene.fog.color.copy(scene.background);
     scene.fog.near = THREE.MathUtils.lerp(envFogNear, UNDERWATER_FOG_NEAR, underSubSmooth);
