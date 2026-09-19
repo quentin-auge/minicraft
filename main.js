@@ -28,6 +28,7 @@ const BLOCK_INFO = {
   [MOON_WATER]:{ name: "Moon Water", solid: false, opaque: false, placeable: true },
   [GLOWSTONE]:{ name: "Glowstone",  solid: true, opaque: true, placeable: true },
 };
+function isLiquid(id) { return id === WATER || id === LAVA || id === MOON_WATER; }
 
 // Glowstone comes in six colours (green, red, blue, yellow, purple,
 // turquoise). Each
@@ -405,7 +406,7 @@ const CLOUD_SPAN = CLOUD_TOP - CLOUD_BASE;
 const MOON_THICK = 5;
 const MOON_Y = Math.min(MAX_Y - 1, CLOUD_TOP + CLOUD_SPAN);
 const MOON_R = WORLD_RADIUS;
-const MOON_FADE_START = CLOUD_BASE + CLOUD_SPAN * 5 / 8;
+const MOON_FADE_START = CLOUD_BASE + CLOUD_SPAN * 5 / 6;
 const MOON_FADE_END = CLOUD_BASE + CLOUD_SPAN * 7 / 8;
 const MOON_BOTTOM = MOON_Y - MOON_R;
 const LAKES_FADE_START = MOON_FADE_END;
@@ -10347,6 +10348,111 @@ const PIGEON_MAX_Y = SKY_SPACE_START;
 const boxGeo = new THREE.BoxGeometry(1, 1, 1);
 const dummy = new THREE.Object3D();
 
+// Liquid rendering: liquids are drawn as edge-free boundary faces (only faces
+// against air or another transparent block; liquid/liquid and liquid/solid
+// faces are culled) instead of full cubes, so adjacent liquid blocks no longer
+// show seams. Top faces get a per-column depth bucket (deeper = more opaque)
+// while sides/bottom use one body opacity. Underwater, the main loop fades the
+// fog/background toward the liquid tint. Face geometries are shared exactly
+// like boxGeo.
+const liquidFaceGeos = {
+  px: new THREE.PlaneGeometry(1, 1).rotateY( Math.PI / 2).translate( 0.5, 0, 0),
+  nx: new THREE.PlaneGeometry(1, 1).rotateY(-Math.PI / 2).translate(-0.5, 0, 0),
+  py: new THREE.PlaneGeometry(1, 1).rotateX(-Math.PI / 2).translate(0,  0.5, 0),
+  ny: new THREE.PlaneGeometry(1, 1).rotateX( Math.PI / 2).translate(0, -0.5, 0),
+  pz: new THREE.PlaneGeometry(1, 1).translate(0, 0,  0.5),
+  nz: new THREE.PlaneGeometry(1, 1).rotateY( Math.PI).translate(0, 0, -0.5),
+};
+
+const WATER_BUCKETS     = [0.60, 0.75, 0.88, 0.96];
+const WATER_BODY        = 0.70;
+const LAVA_BUCKETS      = [0.45, 0.60, 0.70, 0.80];
+const LAVA_BODY         = 0.85;
+const MOONWATER_BUCKETS = [0.45, 0.60, 0.70, 0.80];
+const MOONWATER_BODY    = 0.85;
+const LIQUID_INSIDE = 0.15;
+const WATER_INSIDE_EMISSIVE = 0x4a90d9;
+const LIQUID_TINT = { [WATER]: 0x0d3b7a, [LAVA]: 0x14145a, [MOON_WATER]: 0x7a7e82 };
+const liquidTintColors = {
+  [WATER]: new THREE.Color(LIQUID_TINT[WATER]),
+  [LAVA]: new THREE.Color(LIQUID_TINT[LAVA]),
+  [MOON_WATER]: new THREE.Color(LIQUID_TINT[MOON_WATER]),
+};
+const UNDERWATER_FOG_NEAR = 1.0;
+const UNDERWATER_FOG_FAR = 14;
+const LIQUID_FOG_FAR = { [WATER]: 14, [LAVA]: 14, [MOON_WATER]: 8 };
+const WATER_FOG_DEPTH = 0.01;
+let envFogNear = 60, envFogFar = 160;
+const envBackground = new THREE.Color(0x87ceeb);
+const envFogColor = new THREE.Color(0x87ceeb);
+let underSubSmooth = 0;
+let underTintId = WATER;
+
+const liquidBodyMats = new Map();    // id -> material
+const liquidBucketMats = new Map();  // id -> material[4]
+const liquidBucketMatsIn = new Map(); // id -> material[4] (BackSide, seen from inside)
+
+function makeLiquidMat(id, opacity, side) {
+  const opts = { transparent: true, opacity, depthWrite: false, side: side || THREE.DoubleSide };
+  let m;
+  if (id === WATER) m = new THREE.MeshLambertMaterial({ map: TEX.water, ...opts });
+  else if (id === LAVA) m = new THREE.MeshBasicMaterial({ map: TEX.lava, fog: false, ...opts });
+  else m = new THREE.MeshBasicMaterial({ map: TEX.moonwater, fog: false, ...opts });
+  m.userData.baseOpacity = opacity;
+  return m;
+}
+function liquidBodyMat(id) {
+  if (!liquidBodyMats.has(id)) {
+    const body = id === WATER ? WATER_BODY : (id === LAVA ? LAVA_BODY : MOONWATER_BODY);
+    liquidBodyMats.set(id, makeLiquidMat(id, body));
+  }
+  return liquidBodyMats.get(id);
+}
+function liquidBucketMat(id, bucket) {
+  if (!liquidBucketMats.has(id)) liquidBucketMats.set(id, []);
+  const arr = liquidBucketMats.get(id);
+  if (!arr[bucket]) {
+    const b = id === WATER ? WATER_BUCKETS : (id === LAVA ? LAVA_BUCKETS : MOONWATER_BUCKETS);
+    arr[bucket] = makeLiquidMat(id, b[bucket], THREE.FrontSide);
+  }
+  return arr[bucket];
+}
+function liquidBucketMatIn(id, bucket) {
+  if (!liquidBucketMatsIn.has(id)) liquidBucketMatsIn.set(id, []);
+  const arr = liquidBucketMatsIn.get(id);
+  if (!arr[bucket]) {
+    const b = id === WATER ? WATER_BUCKETS : (id === LAVA ? LAVA_BUCKETS : MOONWATER_BUCKETS);
+    arr[bucket] = makeLiquidMat(id, b[bucket] * LIQUID_INSIDE, THREE.BackSide);
+    if (id === WATER) arr[bucket].emissive.setHex(WATER_INSIDE_EMISSIVE);
+  }
+  return arr[bucket];
+}
+function liquidFaceVisible(x, y, z, id, dx, dy, dz) {
+  const n = getBlock(x + dx, y + dy, z + dz);
+  if (n === id) return false;
+  const info = BLOCK_INFO[n];
+  if (!info) return true;
+  if (info.opaque) return false;
+  return true;
+}
+function liquidColumnDepth(x, y, z, id) {
+  let d = 0;
+  for (let yy = y; yy >= 0; yy--) {
+    if (getBlock(x, yy, z) === id) d++; else break;
+  }
+  return d;
+}
+function eyeLiquidId(ex, ey, ez) {
+  const id = getBlock(Math.floor(ex), Math.floor(ey), Math.floor(ez));
+  return isLiquid(id) ? id : 0;
+}
+function liquidTopAbove(bx, by, bz, id) {
+  let top = by;
+  let guard = 0;
+  while (guard++ < 160 && top + 1 <= MAX_Y && getBlock(bx, top + 1, bz) === id) top++;
+  return top + 1;
+}
+
 // Blocky flowers: each FLOWER block is a cluster of 1/30-size cubes in a
 // 30x30x30 grid filling exactly one block cell, geometry centered on the cell
 // so it sits on the ground (base flush with the grass top). A thin green stem
@@ -10698,6 +10804,7 @@ function rebuildChunk(cx, cz) {
   const exposed = [];
   const flowers = [];
   const glows = [];
+  const liquidSkip = [];
   for (let x = x0; x <= x1; x++)
     for (let z = z0; z <= z1; z++) {
       const ct = colTops[dim][colTopIdx(x, z)];
@@ -10716,6 +10823,7 @@ function rebuildChunk(cx, cz) {
           if (isExposed(x, y, z)) glows.push([x, y, z]);
           continue;
         }
+        if (isLiquid(id)) { liquidSkip.push([x, y, z, id]); continue; }
         if (!isExposed(x, y, z)) continue;
         counts[id] = (counts[id] || 0) + 1;
         exposed.push([x, y, z, id]);
@@ -10741,6 +10849,55 @@ function rebuildChunk(cx, cz) {
       mesh.computeBoundingSphere();
       scene.add(mesh);
       meshes.set(id, mesh);
+    }
+  }
+  if (liquidSkip.length) {
+    const liquidFaces = { px: [], nx: [], py: [], ny: [], pz: [], nz: [] };
+    const faceDirs = [["px",1,0,0],["nx",-1,0,0],["py",0,1,0],["ny",0,-1,0],["pz",0,0,1],["nz",0,0,-1]];
+    for (const [lx, ly, lz, lid] of liquidSkip) {
+      for (const [d, dx, dy, dz] of faceDirs)
+        if (liquidFaceVisible(lx, ly, lz, lid, dx, dy, dz))
+          liquidFaces[d].push([lx, ly, lz, lid]);
+    }
+    const placeLiquid = (geo, mat, list, key) => {
+      const mesh = new THREE.InstancedMesh(geo, mat, list.length);
+      mesh.count = list.length;
+      for (let i = 0; i < list.length; i++) {
+        const [lx, ly, lz] = list[i];
+        dummy.position.set(lx + 0.5, ly + 0.5, lz + 0.5);
+        dummy.rotation.set(0, 0, 0);
+        dummy.scale.set(1, 1, 1);
+        dummy.updateMatrix();
+        mesh.setMatrixAt(i, dummy.matrix);
+      }
+      mesh.instanceMatrix.needsUpdate = true;
+      mesh.computeBoundingSphere();
+      scene.add(mesh);
+      meshes.set(key, mesh);
+    };
+    for (const d of ["px", "nx", "ny", "pz", "nz"]) {
+      const perId = {};
+      for (const [, , , lid] of liquidFaces[d]) perId[lid] = (perId[lid] || 0) + 1;
+      for (const idStr in perId) {
+        const lid = +idStr;
+        const list = liquidFaces[d].filter((f) => f[3] === lid);
+        placeLiquid(liquidFaceGeos[d], liquidBodyMat(lid), list, "liquid_" + lid + "_" + d);
+      }
+    }
+    const topPerIdBucket = {};
+    for (const [lx, ly, lz, lid] of liquidFaces.py) {
+      const bucket = Math.max(0, Math.min(3, liquidColumnDepth(lx, ly, lz, lid) - 1));
+      topPerIdBucket[lid] = topPerIdBucket[lid] || [[], [], [], []];
+      topPerIdBucket[lid][bucket].push([lx, ly, lz]);
+    }
+    for (const idStr in topPerIdBucket) {
+      const lid = +idStr;
+      for (let b = 0; b < 4; b++) {
+        const list = topPerIdBucket[lid][b];
+        if (!list.length) continue;
+        placeLiquid(liquidFaceGeos.py, liquidBucketMat(lid, b), list, "liquid_" + lid + "_top_" + b);
+        placeLiquid(liquidFaceGeos.py, liquidBucketMatIn(lid, b), list, "liquid_" + lid + "_topin_" + b);
+      }
     }
   }
   if (flowers.length) {
@@ -10808,12 +10965,7 @@ function streamChunks() {
       if (wz * CHUNK > WORLD_RADIUS || wz * CHUNK + CHUNK - 1 < -WORLD_RADIUS) continue;
       keep.add(wx + "_" + wz);
     }
-  const ax = freeCam ? camPos.x : pos.x, ay = freeCam ? camPos.y : pos.y, az = freeCam ? camPos.z : pos.z;
-  const nearMoon = dim === "over" && (() => {
-    const dx = ax, dy = ay - MOON_Y, dz = az;
-    return dx * dx + dy * dy + dz * dz < (MOON_R + 120) * (MOON_R + 120);
-  })();
-  if (nearMoon) {
+  if (dim === "over") {
     const minC = Math.floor(-WORLD_RADIUS / CHUNK), maxC = Math.floor(WORLD_RADIUS / CHUNK);
     for (let wx = minC; wx <= maxC; wx++) for (let wz = minC; wz <= maxC; wz++) {
       if (wx * CHUNK > WORLD_RADIUS || wx * CHUNK + CHUNK - 1 < -WORLD_RADIUS) continue;
@@ -14163,6 +14315,7 @@ function setDimensionEnv() {
     scene.background.setHex(0x000000);
     scene.fog.color.setHex(0x000000);
     scene.fog.near = 30; scene.fog.far = 150;
+    envFogNear = 30; envFogFar = 150;
     sun.color.setHex(0xfff5e0); sun.intensity = 0.35;
     hemi.color.setHex(0xbfd4ff); hemi.intensity = 0.45;
   } else if (dim === "nether") {
@@ -14171,6 +14324,7 @@ function setDimensionEnv() {
     scene.background.setHex(0x111114);
     scene.fog.color.setHex(0x1c1c21);
     scene.fog.near = 20; scene.fog.far = 110;
+    envFogNear = 20; envFogFar = 110;
     sun.color.setHex(0xe8e8ea); sun.intensity = 0.6;
     hemi.color.setHex(0x85858c); hemi.intensity = 0.55;
   } else {
@@ -14178,9 +14332,14 @@ function setDimensionEnv() {
     scene.background.setHex(0x87ceeb);
     scene.fog.color.setHex(0x87ceeb);
     scene.fog.near = 60; scene.fog.far = 160;
+    envFogNear = 60; envFogFar = 160;
     sun.color.setHex(0xfff5e0); sun.intensity = 1.1;
     hemi.color.setHex(0xbfd4ff); hemi.intensity = 0.75;
   }
+  envBackground.copy(scene.background);
+  envFogColor.copy(scene.fog.color);
+  underSubSmooth = 0;
+  underTintId = WATER;
 }
 
 function suspendLiveDim() {
@@ -18157,6 +18316,8 @@ function loop(now) {
       const s = ts * ts * (3 - 2 * ts);
       scene.background.copy(DAY_SKY).lerp(SPACE_SKY, s);
       scene.fog.color.copy(scene.background);
+      envBackground.copy(scene.background);
+      envFogColor.copy(scene.fog.color);
       sun.intensity = 1.1 * (1 - 0.55 * s);
       hemi.intensity = 0.75 * (1 - 0.55 * s);
       skyStars.material.opacity = s;
@@ -18187,7 +18348,7 @@ function loop(now) {
           }
         }
       }
-      if (typeMats.has(MOON_WATER)) {
+      if (liquidBodyMats.has(MOON_WATER) || liquidBucketMats.has(MOON_WATER) || liquidBucketMatsIn.has(MOON_WATER)) {
         let ls = (y - LAKES_FADE_START) / (LAKES_FADE_END - LAKES_FADE_START);
         ls = Math.max(0, Math.min(1, ls));
         ls = ls * ls * (3 - 2 * ls);
@@ -18202,9 +18363,13 @@ function loop(now) {
           }
         }
         const useMoon = !wantLakes;
-        for (const mm of typeMats.get(MOON_WATER)) {
+        const moonMats = [];
+        if (liquidBodyMats.has(MOON_WATER)) moonMats.push(liquidBodyMats.get(MOON_WATER));
+        if (liquidBucketMats.has(MOON_WATER)) for (const mm of liquidBucketMats.get(MOON_WATER)) if (mm) moonMats.push(mm);
+        if (liquidBucketMatsIn.has(MOON_WATER)) for (const mm of liquidBucketMatsIn.get(MOON_WATER)) if (mm) moonMats.push(mm);
+        for (const mm of moonMats) {
           if (mm.map !== (useMoon ? TEX.moon : TEX.moonwater)) { mm.map = useMoon ? TEX.moon : TEX.moonwater; mm.needsUpdate = true; }
-          const o = useMoon ? ms : ls;
+          const o = useMoon ? ms : (mm.userData.baseOpacity || 0.85) * ls;
           mm.opacity = o; mm.transparent = o < 0.99; mm.depthWrite = o >= 0.99;
         }
       }
@@ -18216,16 +18381,40 @@ function loop(now) {
       }
     }
 
-    // Gentle water shimmer
-    if (typeMats.has(WATER)) {
-      const o = 0.55 + 0.1 * Math.sin(now * 0.002);
-      for (const m of typeMats.get(WATER)) m.opacity = o;
+    // Underwater fog + colour filter: active only while the eye cell itself
+    // holds liquid (so air pockets below a tall liquid column, e.g. the hollow
+    // moon interior under a lake, never tint). The factor bites immediately on
+    // crossing (exponential in immersion depth, ~full within a few
+    // centimeters) and is smoothed in time, so even a fast plunge or side entry
+    // can never pop the distance fog in a single frame. Runs unconditionally so
+    // the base env is restored the instant the eye exits.
+    const eye = camera.position;
+    const ebx = Math.floor(eye.x), eby = Math.floor(eye.y), ebz = Math.floor(eye.z);
+    const eid = eyeLiquidId(eye.x, eye.y, eye.z);
+    let underSub = 0;
+    if (eid) {
+      const stop = liquidTopAbove(ebx, eby, ebz, eid);
+      const d = Math.max(0, stop - eye.y);
+      underSub = 1 - Math.exp(-d / WATER_FOG_DEPTH);
+      underTintId = eid;
     }
+    underSubSmooth += (underSub - underSubSmooth) * (1 - Math.exp(-dt * 45));
+    if (Math.abs(underSubSmooth - underSub) < 0.001) underSubSmooth = underSub;
+    const tint = liquidTintColors[underTintId];
+    const fogFar = LIQUID_FOG_FAR[underTintId] || UNDERWATER_FOG_FAR;
+    scene.background.copy(envBackground).lerp(tint, underSubSmooth);
+    scene.fog.color.copy(envFogColor).lerp(tint, underSubSmooth);
+    scene.fog.near = THREE.MathUtils.lerp(envFogNear, UNDERWATER_FOG_NEAR, underSubSmooth);
+    scene.fog.far = THREE.MathUtils.lerp(envFogFar, fogFar, underSubSmooth);
 
     // Glowing lava flicker
-    if (typeMats.has(LAVA)) {
+    if (liquidBodyMats.has(LAVA) || liquidBucketMats.has(LAVA) || liquidBucketMatsIn.has(LAVA)) {
       const k = 1.1 + 0.15 * Math.sin(now * 0.005) * Math.sin(now * 0.0013 + 1);
-      for (const m of typeMats.get(LAVA)) m.color.setScalar(k);
+      const lavaMats = [];
+      if (liquidBodyMats.has(LAVA)) lavaMats.push(liquidBodyMats.get(LAVA));
+      if (liquidBucketMats.has(LAVA)) for (const m of liquidBucketMats.get(LAVA)) if (m) lavaMats.push(m);
+      if (liquidBucketMatsIn.has(LAVA)) for (const m of liquidBucketMatsIn.get(LAVA)) if (m) lavaMats.push(m);
+      for (const m of lavaMats) m.color.setScalar(k);
     }
 
     const pcx = chunkOf(freeCam ? camPos.x : pos.x);

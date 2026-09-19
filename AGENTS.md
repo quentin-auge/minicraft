@@ -88,11 +88,11 @@ small Python server for saving/loading worlds.
   Overworld sky and fog from day blue (`DAY_SKY`) to starry night
   (`SPACE_SKY`, smoothstep) while a camera-following star sphere (`skyStars`,
   ~520 points) fades in and sun/hemi light dim; `setDimensionEnv` hides the
-  stars in the Nether/End. The moon fades in from 5/8 to 7/8 of the cloud span
-  (`MOON_FADE_START` 325 → `MOON_FADE_END` 415, surface `MOON` fades 325→406
+  stars in the Nether/End. The moon fades in from 5/6 to 7/8 of the cloud span
+  (`MOON_FADE_START` 400 → `MOON_FADE_END` 415, surface `MOON` fades 400→414
   while `MOON_WATER` stays hidden; when the moon is full (`MOON_FADE_END`
   415) the six lakes are generated on the fly (`generateMoonLakes`,
-  `moonLakesGenerated`) then `MOON_WATER` `basicFace` `fog:false` fades
+  `moonLakesGenerated`) then `MOON_WATER` (unlit `fog:false` liquid material) fades
   415→820 (`LAKES_FADE_START` 415 → `LAKES_FADE_END` 820, flat on top at the
   same level as the moon surface) starting when the sky is already black. At
   one
@@ -101,14 +101,16 @@ small Python server for saving/loading worlds.
   820, clamped to `MAX_Y`) a hollow hemisphere (`MOON`, `MOON_R` =
   `WORLD_RADIUS`, `MOON_THICK` 5, `generateMoon`) spans the full Overworld
   diameter: flat on top at `MOON_Y` 5 blocks thick full, half-sphere hollow
-  below (shell 5), made of a darker grey cratered `TEX.moon` block — craters
+  below (shell 5), made of a darker grey cratered `TEX.moon` block (unlit
+  `fog:false`, so the shell is solid from any distance; the whole footprint is
+  always meshed in the Overworld, so the sky never shows through it) — craters
   are texture only, more random per block with close grey tones for realism
   from below. Six vertical grey lakes
   (`MOON_WATER`, `TEX.moonwater`, closer tone, irregular wavy edges, flat on top
   at the same level as the moon surface, distributed on the central 2/3 of the
   flat top) are carved as aesthetic crater-lakes through the whole thickness
   from the flat top to the dome bottom, so you can enter from below and swim up
-  to the surface. Rendered unlit (`basicFace`, `fog: false`) but darker so it
+  to the surface. Rendered unlit but darker so it
   reads grey from below with visible relief. It is `placeable:
   false`, skipped by `spawnPlayer`/`resolveSpawn` so respawns stay on ground.
 - **Textures**: 16×16 pixel-art textures drawn procedurally on canvas
@@ -116,19 +118,40 @@ small Python server for saving/loading worlds.
 - **Rendering**: chunked streaming. The overworld is split into `CHUNK` (16)×
   16-column chunks and only the square of chunks within `RENDER_DIST` (8) of
   the player are meshed (added/removed as you cross chunk borders in
-  `streamChunks()`/`rebuildChunk`), but when near the Moon (`dist < MOON_R+120`) every world chunk is kept meshed so the whole hemisphere stays visible from any point inside or around it. Each chunk is one `InstancedMesh` per
+  `streamChunks()`/`rebuildChunk`), and in the Overworld the whole Moon footprint is always kept meshed (the whole hemisphere stays solid from any distance/angle; staggered by `drainChunkQueue`, frustum-culled) so the sky never shows through it from afar. Each chunk is one `InstancedMesh` per
   block type with only exposed faces; every mesh calls `computeBoundingSphere()`
   so Three.js frustum-culls off-screen chunks. Each column's highest set block
   is cached per dimension (`colTops`, updated in `setBlock` and rebuilt after
   world gen/load via `rebuildColTops`), so chunk meshing and the water-surface
   scan only walk up to each column's real top instead of the full 1000-row
   sky. Shared per-type materials
-  (`typeMats`). Editing rebuilds just the touched chunk(s) via
+  (`typeMats`). Liquids (WATER/LAVA/MOON_WATER) skip the cube path: `rebuildChunk`
+  draws only their boundary faces (faces against air or another transparent
+  block; liquid/liquid and liquid/solid faces culled) as single-face
+  `PlaneGeometry` quads (`liquidFaceGeos`, `liquidFaceVisible`), so adjacent
+  liquid blocks show no seams. Top faces are depth-bucketed
+  (`liquidColumnDepth` → 4 opacity levels, deeper = more opaque) and built as
+  an outside/inside pair: `liquidBucketMat` (`FrontSide`, seen from above) and
+  `liquidBucketMatIn` (`BackSide`, bucket × `LIQUID_INSIDE` 0.15, seen from below,
+  water lifted with a `WATER_INSIDE_EMISSIVE` glow so the surface reads as a
+  light translucent veil from underneath), so the surface is more opaque from
+  outside and faint/lighter from inside; sides/bottom
+  `use one `liquidBodyMat`. WATER is a lit
+  `MeshLambertMaterial`, LAVA/MOON_WATER stay unlit `fog:false`. The main loop computes an exponential immersion factor
+  (`eyeLiquidId` gates on the eye cell holding liquid, `liquidTopAbove`,
+  `WATER_FOG_DEPTH` sets how fast it bites, immediate on crossing) smoothed in
+  time and lerps
+  `scene.background`/
+  `scene.fog` toward the per-liquid tint (`LIQUID_TINT`) while shrinking fog to
+  `UNDERWATER_FOG_NEAR` and the per-liquid far (`LIQUID_FOG_FAR`: 14 water/lava,
+  8 moon water), so entering water is a
+  smooth continuous fade, the world shows through the surface with a colour
+  filter, and underwater visibility falls off with distance. Editing rebuilds just the touched chunk(s) via
   `refreshBlocks()`, not the whole world. No shadow maps; fog +
   hemisphere/directional light.
 - **Blocks**: numeric constants + `BLOCK_INFO` (solid/opaque/placeable).
   Types incl. GRASS, DIRT, STONE, SAND, LOG, LEAVES, PLANKS, GLASS, WATER
-  (non-solid, animated opacity; WATER and LAVA are placeable only
+  (non-solid, depth-bucketed transparent surface; WATER and LAVA are placeable only
   onto a cell already holding the same liquid — water on water, lava
   on lava — and nothing else can be placed into a liquid cell
   (but any block may be stacked directly on a liquid surface);
