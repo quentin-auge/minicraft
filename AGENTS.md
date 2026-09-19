@@ -1099,12 +1099,25 @@ or phase. Step-up is root-gated by jumping leadership: when the chain root is a 
   same-height slots ≥`PIGEON_PERCH_SEP` 1.3 apart, path checked via `pigeonSegmentFree`)
   or picking a fresh top (≤90 blocks, village-biased roof sampling for the low
   band, y-clamped cloud sampling otherwise); `updateToPerchPigeon` flies
-  there (direct homing under 12 blocks, aborts on block/timeout) and `updatePerchedPigeon`
-  sits 2–10 s (`PIGEON_PERCH_MIN_T/MAX_T`) shuffling within ~0.7 blocks with folded wings,
+  there (direct homing under 12 blocks, aborts on block/timeout/taken spot, lands
+  with a 0.3-block snap (`PIGEON_PERCH_SNAP_D`) after a slowed final approach, so
+  landings glide in instead of teleporting; inside the final 6 blocks
+  (`PIGEON_PERCH_FINAL_D`) the approach is committed — no flock separation, no
+  avoidance deflection, homing plus collision slide only) and `updatePerchedPigeon`
+  sits 2–10 s (`PIGEON_PERCH_MIN_T/MAX_T`, 2–4 s in the End) shuffling within ~0.7 blocks with folded wings,
   taking off (`pigeonTakeoff`) on expiry, dug-out perch or displacement-grapple latch.
+  An inbound bird whose spot gets taken yields (`pigeonTakeoff`) — sitters keep seniority.
   Takeoff hops straight back to a nearby perch (`PIGEON_HOP_CHANCE` 0.9, 2 short-leg
-  retries via `perchRetry`), and every leg re-pick goes through `pigeonNextLeg`
-  (perch roll `PIGEON_PERCH_CHANCE` 0.65, min 1.2 s between full decisions via `_decideT`),
+  retries via `perchRetry`) — except in the End, where takeoffs always cruise
+  (a portal→portal hop would land <1.5 blocks away and snap invisibly, so the hop
+  is skipped and birds fly real legs between sits; takeoffs also arm a 1.2 s `_decideT`
+  grace and a 10 s global no-perch window (`PIGEON_NOPERCH_T`, ticked down in flight,
+  so no leg-end or retry can re-perch the bird for its first ~10 s airborne) and start
+  from a validated reachable target, so the fresh leg can't be
+  re-rolled back onto the portal a frame later), and any hop spot within 1.5
+  blocks is rejected in favour of cruising — and every leg re-pick goes through `pigeonNextLeg`
+  (perch roll `PIGEON_PERCH_CHANCE` 0.65, `PIGEON_END_PERCH_CHANCE` 0.1 in the End
+  for ~10% sitting time, min 1.2 s between full decisions via `_decideT`),
   so flight legs stay short and duty cycle holds across worlds.
 - **Save/load**: binary format (`SAVE_MAGIC`, version 21) capturing world
   blocks (over/end/nether), dim, seeds (over/end/nether), player pos/yaw/pitch,

@@ -930,6 +930,12 @@ const PIGEON_SEP_DIST = 2.5;
 const PIGEON_PROBE_DIST = 3;
 const PIGEON_SPEED = 8.8;
 const PIGEON_PERCH_CHANCE = 0.65;
+const PIGEON_END_PERCH_CHANCE = 0.1;
+const PIGEON_END_PERCH_MIN_T = 2;
+const PIGEON_END_PERCH_MAX_T = 4;
+const PIGEON_PERCH_SNAP_D = 0.3;
+const PIGEON_PERCH_FINAL_D = 6;
+const PIGEON_NOPERCH_T = 10;
 const PIGEON_HOP_CHANCE = 0.9;
 const PIGEON_HOP_R = 30;
 const PIGEON_HOP_RETRY = 2;
@@ -2088,7 +2094,7 @@ function pigeonFindPerchSpot(m, nearMax = 0) {
 }
 function pigeonNextLeg(m) {
   m._decideT = 1.2;
-  if (pigeonDimOf(m) !== "nether" && !pigeonOnMoon(m) && !(m._panicUntil && performance.now() / 1000 < m._panicUntil) && Math.random() < PIGEON_PERCH_CHANCE && !chainChild.has(m.id)) {
+  if ((m._noPerchT || 0) <= 0 && pigeonDimOf(m) !== "nether" && !pigeonOnMoon(m) && !(m._panicUntil && performance.now() / 1000 < m._panicUntil) && Math.random() < (pigeonDimOf(m) === "end" ? PIGEON_END_PERCH_CHANCE : PIGEON_PERCH_CHANCE) && !chainChild.has(m.id)) {
     const found = pigeonFindPerchSpot(m);
     if (found && !(performance.now() / 1000 < villagePanicUntil && villageSqContains(found.spot.x, found.spot.z))) {
       m.mode = "toPerch";
@@ -2156,9 +2162,11 @@ function pigeonTakeoff(m) {
   m.perchWanderT = 0;
   m.perchTimeout = 0;
   m.perchRetry = 0;
-  if (pigeonDimOf(m) !== "nether" && !pigeonOnMoon(m) && !(m._panicUntil && performance.now() / 1000 < m._panicUntil) && Math.random() < PIGEON_HOP_CHANCE && !chainChild.has(m.id)) {
+  m._decideT = 1.2;
+  m._noPerchT = PIGEON_NOPERCH_T;
+  if (pigeonDimOf(m) !== "nether" && pigeonDimOf(m) !== "end" && !pigeonOnMoon(m) && !(m._panicUntil && performance.now() / 1000 < m._panicUntil) && Math.random() < PIGEON_HOP_CHANCE && !chainChild.has(m.id)) {
     const found = pigeonFindPerchSpot(m, PIGEON_HOP_R);
-    if (found) {
+    if (found && Math.hypot(found.spot.x - m.pos.x, found.spot.y - m.pos.y, found.spot.z - m.pos.z) >= 1.5) {
       m.mode = "toPerch";
       m.arc = null;
       m.perchSpot = found.spot;
@@ -2177,7 +2185,8 @@ function pigeonTakeoff(m) {
   }
   m.mode = "straight";
   m.arc = null;
-  m.target = pigeonDimOf(m) === "nether" ? pigeonRandomTarget(m.pos, 12, 30) : pigeonRandomTarget(m.pos);
+  if (pigeonDimOf(m) === "end") m.target = pigeonReachableTarget(m) || pigeonRandomTarget(m.pos);
+  else m.target = pigeonDimOf(m) === "nether" ? pigeonRandomTarget(m.pos, 12, 30) : pigeonRandomTarget(m.pos);
   m.targetMode = null;
 }
 function isInsidePen(x, z) {
@@ -3643,16 +3652,19 @@ function updateToPerchPigeon(m, dt) {
     pigeonTakeoff(m); return;
   }
   if (!s || !pigeonPerchSupports(s.x, s.y, s.z)) { pigeonTakeoff(m); return; }
+  if (pigeonPerchSpotTaken(s.x, s.y, s.z, m)) { pigeonTakeoff(m); return; }
   m.perchTimeout -= dt;
   if (m.perchTimeout <= 0) { pigeonTakeoff(m); return; }
   const dx = s.x - m.pos.x, dy = s.y - m.pos.y, dz = s.z - m.pos.z;
   const dist = Math.hypot(dx, dy, dz);
-  if (dist < 1.5) {
+  if (dist < PIGEON_PERCH_SNAP_D) {
     m.pos.set(s.x, s.y, s.z);
     m.vel.set(0, 0, 0);
     m.mode = "perch";
     m.target = null; m.targetMode = null; m.arc = null;
-    m.perchT = PIGEON_PERCH_MIN_T + Math.random() * (PIGEON_PERCH_MAX_T - PIGEON_PERCH_MIN_T);
+    m.perchT = pigeonDimOf(m) === "end"
+      ? PIGEON_END_PERCH_MIN_T + Math.random() * (PIGEON_END_PERCH_MAX_T - PIGEON_END_PERCH_MIN_T)
+      : PIGEON_PERCH_MIN_T + Math.random() * (PIGEON_PERCH_MAX_T - PIGEON_PERCH_MIN_T);
     m.perchWander = null; m.perchWanderT = 0;
     m.mesh.position.copy(m.pos);
     if (m.mesh.userData.wingL) m.mesh.userData.wingL.rotation.z = 0.12;
@@ -3660,10 +3672,11 @@ function updateToPerchPigeon(m, dt) {
     return;
   }
   const sp = PIGEON_SPEED;
-  const spd = dist < 6 ? sp * Math.max(0.25, dist / 6) : sp;
+  const spd = dist < 6 ? sp * Math.max(0.06, dist / 6) : sp;
   let sx = dx / dist, sy = dy / dist, sz = dz / dist;
   let pClear = pigeonClearance(m.pos.x, m.pos.y, m.pos.z, sx, sy, sz);
-  if (pClear === 0) {
+  const final = dist < PIGEON_PERCH_FINAL_D;
+  if (!final && pClear === 0) {
     const best = pigeonBestSteer(m, Math.atan2(sx, sz), sy);
     if (best && best.clear > 0) { sx = best.x; sy = best.y; sz = best.z; pClear = best.clear; }
     else if (dist > 4) { pigeonTakeoff(m); return; }
@@ -3674,7 +3687,7 @@ function updateToPerchPigeon(m, dt) {
   let vy = m.vel.y + (sy * effSpd - m.vel.y) * k;
   let vz = m.vel.z + (sz * effSpd - m.vel.z) * k;
   const vel = { x: vx, y: vy, z: vz };
-  pigeonSeparate(m, dt, vel, sp);
+  if (!final) pigeonSeparate(m, dt, vel, sp);
   vx = vel.x; vy = vel.y; vz = vel.z;
   const slid = pigeonMoveSlide(m, vx, vy, vz, dt);
   vx = slid.vx; vy = slid.vy; vz = slid.vz;
@@ -3770,6 +3783,7 @@ function updatePigeon(m, dt) {
     m.target = null; m.targetMode = null; m._decideT = 0;
   }
   m._decideT = Math.max(0, (m._decideT || 0) - dt);
+  m._noPerchT = Math.max(0, (m._noPerchT || 0) - dt);
   const moon = pigeonOnMoon(m);
   const inEnd = endMobInEnd(m);
   const loB = pigeonBandMin(m), hiB = pigeonBandMax(m);
@@ -3843,7 +3857,7 @@ function updatePigeon(m, dt) {
     }
     if (!m.target || Math.hypot(m.target.x - m.pos.x, m.target.y - m.pos.y, m.target.z - m.pos.z) < 2.5) {
       if (outBand) { m.target = bandReturnTarget(m.pos, m); m.targetMode = "return"; m.perchRetry = 0; }
-      else if (m.perchRetry > 0) {
+      else if (m.perchRetry > 0 && (m._noPerchT || 0) <= 0) {
         m.perchRetry--;
         const found = pigeonFindPerchSpot(m, PIGEON_HOP_R);
         if (found) {
@@ -5651,8 +5665,9 @@ function releaseCarriedMobAt(px, py, pz) {
     m.perchT = 0;
     m.perchWander = null;
     m.perchWanderT = 0;
-    m.perchTimeout = 0;
-    m.perchRetry = 0;
+  m.perchTimeout = 0;
+  m.perchRetry = 0;
+  m._decideT = 1.2;
     m.yaw = yaw2;
     m.yawTarget = yaw2;
     m.mesh.visible = true;
