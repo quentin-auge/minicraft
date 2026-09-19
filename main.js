@@ -12930,7 +12930,7 @@ function breakBlock() {
   if (aimOnMob()) return;
   const { x, y, z } = currentBlock;
   if (protectedBlocks.has(protKey(x, y, z))) return;
-  if (getBlock(x, y, z) === STONE && y === 0) return;
+  if ((getBlock(x, y, z) === STONE || getBlock(x, y, z) === NETHERRACK) && y === 0) return;
   if (isMobStandingOn(x, y, z, true) || intersectsMob(x, y, z, true)) return;
   if (getBlock(x, y, z) === TNT) { igniteTNT(x, y, z); return; }
   const bid = getBlock(x, y, z);
@@ -13826,7 +13826,7 @@ function processExplosionQueue() {
     if (!protectedBlocks.has(dim + ":" + k0) && !batchKeys.has(k0)) {
       const id0 = getBlock(bx, by, bz);
       if (id0 === TNT || (!isMobStandingOn(bx, by, bz) && !intersectsMob(bx, by, bz))) {
-        if (id0 !== WATER && id0 !== LAVA && !(id0 === STONE && by === 0)) {
+        if (id0 !== WATER && id0 !== LAVA && !((id0 === STONE || id0 === NETHERRACK) && by === 0)) {
           batchKeys.add(k0);
           setBlock(bx, by, bz, AIR);
           refreshDefer.push([bx, by, bz]);
@@ -13844,7 +13844,7 @@ function processExplosionQueue() {
       const id = getBlock(gx, gy, gz);
       if (id !== TNT && (isMobStandingOn(gx, gy, gz) || intersectsMob(gx, gy, gz))) continue;
       if (id === AIR || id === WATER || id === LAVA) continue;
-      if (id === STONE && gy === 0) continue;
+      if ((id === STONE || id === NETHERRACK) && gy === 0) continue;
       if (protectedBlocks.has(dim + ":" + kk)) continue;
       if (id === TNT) {
         if (tntLit.has(kk)) {
@@ -14397,6 +14397,9 @@ function buildNetherPortal(skipMesh = false) {
       for (let y = base - 2; y < base; y++) setBlock(x, y, z, NETHERRACK);
   for (let x = -5; x <= 5; x++)
     for (let z = -4; z <= 4; z++)
+      for (let y = base - 2; y < base; y++) protectedBlocks.add(protKey(x, y, z));
+  for (let x = -5; x <= 5; x++)
+    for (let z = -4; z <= 4; z++)
       for (let y = base; y <= base + 4; y++)
         if (worlds.nether.has(key(x, y, z))) worlds.nether.delete(key(x, y, z));
   for (let x = -2; x <= 2; x++)
@@ -14462,6 +14465,9 @@ function ensureNetherPortal() {
         const isEdge = x === -2 || x === 2 || y === 0 || y === 3;
         if (isEdge) protectedBlocks.add("nether:" + key(x, base + y, NETHER_RETURN_Z));
       }
+    for (let x = -5; x <= 5; x++)
+      for (let z = -4; z <= 4; z++)
+        for (let y = base - 2; y < base; y++) protectedBlocks.add("nether:" + key(x, y, z));
     netReturnWin = { minX: -2, minY: base, minZ: NETHER_RETURN_Z };
     return;
   }

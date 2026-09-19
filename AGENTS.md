@@ -595,9 +595,12 @@ stays bright at distance, `placeable: true` so it
   can't be removed, and TNT blasts never destroy
   LAVA. The Nether's auto-built return portal (`buildNetherPortal`, an obsidian
   frame standing on a 11×9 netherrack pad at spawn (x −5…5, z −4…4, 3 blocks past
-  each frame edge along X and 4 each side along Z, cleared 5 high), protected, or any Nether-frame
+  each frame edge along X and 4 each side along Z, cleared 5 high), frame + pad
+  indestructible (`protectedBlocks`, re-protected in `ensureNetherPortal`), or any Nether-frame
   you build in the Nether) brings you
-  back to the Overworld's last portal entry point.
+  back to the Overworld's last portal entry point. The Nether floor is sealed
+  like the Overworld: NETHERRACK at y=0 is unbreakable (`breakBlock` + TNT blast
+  guards, mirroring STONE at y=0).
 - **Ender Dragon**: ambient dragon that spawns in the End and flies along a
   random closed aerial path (arc-length-sampled Catmull-Rom spline through
   random waypoints 7–22 above the platform (`DRAGON_MIN_Y`/
