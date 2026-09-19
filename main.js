@@ -10485,18 +10485,24 @@ const FLOWER_MAT = new THREE.MeshLambertMaterial({ vertexColors: true });
 // The glowstone block glows by itself — it is drawn with an unlit texture
 // (`basicFace`) so it shines at full strength no matter how far
 // away you stand — and it casts a steady pool of light in its own colour
-// onto the terrain around it. Glowstones are merged into stable clusters (a whole volcano-door
-// ring is one cluster) whose centroids are recomputed only when blocks change
-// (`recomputeGlowClusters`), and a fixed pool of `PointLight`s is assigned to
+// onto the terrain around it. Glowstones are bucketed into stable grid cells
+// whose centroids are recomputed only when blocks change
+// (`recomputeGlowClusters`: stones are bucketed into `GLOW_LIGHT_CELL`-wide
+// grid cells, one centroid + majority colour per occupied cell, so a long row
+// spans several cells and gets several overlapping pools instead of one), and
+// a fixed pool of `PointLight`s is assigned to
 // the clusters nearest the player. The assignment re-evaluates at most every
 // `GLOW_LIGHT_REFRESH` seconds and only when the player crosses a chunk, and a
 // light keeps its current cluster while that cluster stays among the nearest
 // lit ones — so the glow never jumps between the stones of a ring, never
 // flickers while you walk toward a cluster, and costs nothing in between.
+// Kept lights snap to the live centroid on every re-assignment, and a block
+// change drops all assignments so the next sync re-slots by distance — a
+// light can never sit frozen at a stale spot while its stones moved on.
 const GLOW_LIGHT_RADIUS = 12;
 const GLOW_LIGHT_DIST = Math.ceil(RENDER_DIST * CHUNK * Math.SQRT2);
 const GLOW_LIGHT_MAX = 16;
-const GLOW_LIGHT_CLUSTER = GLOW_LIGHT_RADIUS * 0.7;
+const GLOW_LIGHT_CELL = 5;
 const GLOW_LIGHT_REFRESH = 0.5;
 let glowClusters = [];      // [{x, y, z, v}] centroid + dominant colour of each cluster
 let glowLights = [];        // pooled PointLights, each { cur: clusterIdx|-1, light }
@@ -10509,23 +10515,19 @@ function recomputeGlowClusters() {
   glowClusters = [];
   glowLightT = 0;
   glowLightCx = glowLightCz = Infinity;
+  for (const L of glowLights) if (L) { L.cur = -1; L.light.visible = false; }
   if (!set || !set.size) return;
-  const groups = [];
+  const groups = new Map();
   for (const k of set) {
     const [x, y, z] = keyXYZ(k);
-    let gi = -1;
-    for (let i = 0; i < groups.length; i++) {
-      const g = groups[i];
-      const mx = g.sx / g.n - x, my = g.sy / g.n - y, mz = g.sz / g.n - z;
-      if (mx * mx + my * my + mz * mz < GLOW_LIGHT_CLUSTER * GLOW_LIGHT_CLUSTER) { gi = i; break; }
-    }
-    if (gi < 0) { groups.push({ n: 0, sx: 0, sy: 0, sz: 0, votes: {} }); gi = groups.length - 1; }
-    const g = groups[gi];
+    const ck = Math.floor(x / GLOW_LIGHT_CELL) + "," + Math.floor(y / GLOW_LIGHT_CELL) + "," + Math.floor(z / GLOW_LIGHT_CELL);
+    let g = groups.get(ck);
+    if (!g) { g = { n: 0, sx: 0, sy: 0, sz: 0, votes: {} }; groups.set(ck, g); }
     g.n++; g.sx += x; g.sy += y; g.sz += z;
     const v = gv.get(k);
     if (v !== undefined) g.votes[v] = (g.votes[v] || 0) + 1;
   }
-  for (const g of groups) {
+  for (const g of groups.values()) {
     let best = 0, bestN = -1;   // default to green on ties
     for (let v = 0; v < GLOW_VARIANT_COUNT; v++) {
       const n = g.votes[v] || 0;
@@ -10559,6 +10561,9 @@ function syncGlowLights(dt = 0) {
   const active = new Uint8Array(glowClusters.length);
   // First keep every light that already sits on a still-ranked cluster, so the
   // pool never hops between clusters while the player walks around.
+  // Kept lights snap to the live centroid: the cluster may have moved since
+  // the light was assigned (blocks added/removed), and holding a stale spot
+  // is exactly the frozen-pool bug.
   for (let i = 0; i < glowLights.length; i++) {
     const L = glowLights[i];
     if (!L || L.cur < 0 || L.cur >= glowClusters.length) continue;
@@ -10566,6 +10571,8 @@ function syncGlowLights(dt = 0) {
       if (ranked[j][1] === L.cur) {
         active[L.cur] = 1;
         L.light.color.setHex(GLOW_PALETTES[glowClusters[L.cur].v].glow);
+        L.light.position.set(glowClusters[L.cur].x, glowClusters[L.cur].y - 0.15, glowClusters[L.cur].z);
+        L.light.visible = true;
         break;
       }
     }

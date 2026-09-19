@@ -191,10 +191,12 @@ stays bright at distance, `placeable: true` so it
   `InstancedMesh` per colour (`getGlowMats`, keyed `glowstone_v`), and the
   auto-built volcano door rings each get one random colour of their own. Each
   cluster casts a steady pool of light in its own colour:
-  glowstones are merged into stable clusters (`recomputeGlowClusters`, a whole
-  6×6 volcano door ring shares one cluster, and each cluster's colour is the
-  majority variant among its stones) whose centroids are recomputed only
-  when blocks change, and a fixed pool of `PointLight`s
+  glowstones are bucketed into `GLOW_LIGHT_CELL`-wide grid cells
+  (`recomputeGlowClusters`, one centroid + majority-variant colour per occupied
+  cell, so a long row spans several cells and gets several overlapping pools
+  instead of one frozen spot) whose centroids are recomputed only
+  when blocks change, and a block change drops all light assignments so the
+  next sync re-slots by distance, and a fixed pool of `PointLight`s
   (`syncGlowLights`/`clearGlowLights`, `GLOW_LIGHT_MAX` 16, intensity 60,
   `distance: 12`, decay 1, colour set from `GLOW_PALETTES[v].glow`) is
   assigned to the clusters nearest the player — the
@@ -202,7 +204,9 @@ stays bright at distance, `placeable: true` so it
   when the player crosses a chunk, and each light keeps its current cluster
   while that cluster stays among the nearest lit ones, so the glow never jumps
   between the stones of a ring, never flickers while you walk toward a cluster,
-  and costs nothing in between (no per-frame world scan) —
+  and costs nothing in between (no per-frame world scan; kept lights snap to
+  the live centroid on every re-assignment, so no pool ever sits frozen at a
+  stale spot) —
   and it replaces FLOWER in the
   Nether/End hotbar; volcano door frames are built from it so tunnel mouths
   also glow). Each volcano is now **hollow**: after the tunnels are carved,
