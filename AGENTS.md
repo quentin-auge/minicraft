@@ -456,19 +456,23 @@ stays bright at distance, `placeable: true` so it
   `portalFillGeo`
   and two `MeshBasicMaterial`s (purple `0x9b30ff` for Nether, black for End)
   with the same per-orientation `layoutPortalFill`; the purple glow marks an
-  active portal. The End return portal's fill is exempt from proximity
+  active portal. Each fill is one sealed box per portal (`portalFillBox` spans
+  the whole interior from `portalFillCells` bounds at exact block size, so no
+  seam and no overflow past the open End-frame corners, plus a negative
+  `polygonOffset` on both fill materials so the fill wins the depth test at any
+  distance with no z-fighting). The End return portal's fill is exempt from proximity
   registration: `refreshPortalFills` always registers `endReturnWin` once the
   End is cleared, so its black stays rendered from anywhere on the platform
   (distance culling at ≈182 blocks still covers the whole floor), and the
   death sequence registers plus shows it synchronously
   (`ensurePortalFill` + `updatePortalVisual` right after `buildReturnPortal`),
-  so the black is there the instant the dragon dies. Fills render as per-cube `Mesh`s in a `THREE.Group` and are
+  so the black is there the instant the dragon dies. Fills render as one `Mesh` in a `THREE.Group` and are
   culled per-frame: hidden when you're in another dimension, when beyond
   `PORTAL_FILL_DIST` (scales with render distance: 8 chunks × 16 × √2 ≈ 182
   blocks, so the glow stays lit as far as the frame itself is visible, plus
   squared-distance test from the eye with ±4-block hysteresis so swimming past
   the limit never blinks the fill), or
-  when off-view/behind the camera (three.js frustum culling on each cube).
+  when off-view/behind the camera (three.js frustum culling on each fill box).
   Portals work
   both ways, so the Nether's auto-built upright return portal
   (`buildNetherPortal`,

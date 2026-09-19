@@ -14918,9 +14918,9 @@ function findNetherWinNear(bx, by, bz, R) {
 
 const PORTAL_FILL_DIST = Math.ceil(RENDER_DIST * CHUNK * Math.SQRT2);
 const portalFills = new Map();
-const portalFillGeo = new THREE.BoxGeometry(0.98, 0.98, 0.98);
-const portalFillMatBlack = new THREE.MeshBasicMaterial({ color: 0x000000 });
-const portalFillMatPurple = new THREE.MeshBasicMaterial({ color: 0x9b30ff });
+const portalFillGeo = new THREE.BoxGeometry(1, 1, 1);
+const portalFillMatBlack = new THREE.MeshBasicMaterial({ color: 0x000000, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 });
+const portalFillMatPurple = new THREE.MeshBasicMaterial({ color: 0x9b30ff, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 });
 
 function portalFillCells(win, nether) {
   const cells = [];
@@ -14966,15 +14966,26 @@ function portalFillCells(win, nether) {
   return cells;
 }
 
+function portalFillBox(win, nether) {
+  let x0 = Infinity, y0 = Infinity, z0 = Infinity, x1 = -Infinity, y1 = -Infinity, z1 = -Infinity;
+  for (const [x, y, z] of portalFillCells(win, nether)) {
+    if (x < x0) x0 = x; if (x > x1) x1 = x;
+    if (y < y0) y0 = y; if (y > y1) y1 = y;
+    if (z < z0) z0 = z; if (z > z1) z1 = z;
+  }
+  const cx = (x0 + x1 + 1) / 2, cy = (y0 + y1 + 1) / 2, cz = (z0 + z1 + 1) / 2;
+  if (win.orient === "h") return { cx, cy, cz, sx: (x1 - x0 + 1), sy: 1, sz: (z1 - z0 + 1) };
+  if (win.face === "x") return { cx, cy, cz, sx: 1, sy: (y1 - y0 + 1), sz: (z1 - z0 + 1) };
+  return { cx, cy, cz, sx: (x1 - x0 + 1), sy: (y1 - y0 + 1), sz: 1 };
+}
+
 function layoutPortalFill(group, win, nether) {
-  let i = 0;
-  const set = (x, y, z) => {
-    const m = group.children[i++];
-    m.visible = true;
-    m.position.set(x + 0.5, y + 0.5, z + 0.5);
-  };
-  for (const [x, y, z] of portalFillCells(win, nether)) set(x, y, z);
-  for (; i < group.children.length; i++) group.children[i].visible = false;
+  const b = portalFillBox(win, nether);
+  const m = group.children[0];
+  m.visible = true;
+  m.position.set(b.cx, b.cy, b.cz);
+  m.scale.set(b.sx, b.sy, b.sz);
+  for (let i = 1; i < group.children.length; i++) group.children[i].visible = false;
 }
 
 // A portal only fires when the player's actual body touches its fill blocks —
@@ -14996,7 +15007,7 @@ function ensurePortalFill(win, nether) {
   const key = `${nether ? "n" : "e"}:${win.orient}:${win.face || "z"}:${win.minX},${win.minY},${win.minZ}${win.dims || ""}`;
   if (portalFills.has(key)) return;
   const group = new THREE.Group();
-  for (let i = 0; i < 9; i++) group.add(new THREE.Mesh(portalFillGeo, nether ? portalFillMatPurple : portalFillMatBlack));
+  group.add(new THREE.Mesh(portalFillGeo, nether ? portalFillMatPurple : portalFillMatBlack));
   layoutPortalFill(group, win, nether);
   group.visible = false;
   scene.add(group);
