@@ -113,7 +113,9 @@ function canvasTex(draw, size = 16) {
   draw(ctx);
   const t = new THREE.CanvasTexture(c);
   t.magFilter = THREE.NearestFilter;
-  t.minFilter = THREE.NearestFilter;
+  t.minFilter = THREE.LinearMipmapLinearFilter;
+  t.generateMipmaps = true;
+  t.anisotropy = 4;
   t.colorSpace = THREE.SRGBColorSpace;
   return t;
 }
@@ -2410,7 +2412,7 @@ function villagerFaceTex() {
   ctx.fillStyle = "#a67c52"; ctx.fillRect(7, 10, 2, 3);
   ctx.fillStyle = "#8a5f3d"; ctx.fillRect(7, 13, 2, 1);
   const t = new THREE.CanvasTexture(c);
-  t.magFilter = THREE.NearestFilter; t.minFilter = THREE.NearestFilter; t.colorSpace = THREE.SRGBColorSpace;
+  t.magFilter = THREE.NearestFilter; t.minFilter = THREE.LinearMipmapLinearFilter; t.generateMipmaps = true; t.anisotropy = 4; t.colorSpace = THREE.SRGBColorSpace;
   return t;
 }
 function villagerHeadMats(tex) {
@@ -10366,12 +10368,12 @@ const liquidFaceGeos = {
 
 const WATER_BUCKETS     = [0.60, 0.75, 0.88, 0.96];
 const WATER_BODY        = 0.70;
-const LAVA_BUCKETS      = [0.45, 0.60, 0.70, 0.80];
-const LAVA_BODY         = 0.85;
+const LAVA_BUCKETS      = [1, 1, 1, 1];
+const LAVA_BODY         = 1;
 const MOONWATER_BUCKETS = [0.45, 0.60, 0.70, 0.80];
 const MOONWATER_BODY    = 0.85;
-const LIQUID_INSIDE = 0.15;
-const WATER_INSIDE_EMISSIVE = 0x4a90d9;
+const LIQUID_INSIDE = 0.06;
+const WATER_INSIDE_EMISSIVE = 0x8fc3ff;
 const LIQUID_TINT = { [WATER]: 0x0d3b7a, [LAVA]: 0x14145a, [MOON_WATER]: 0x7a7e82 };
 const liquidTintColors = {
   [WATER]: new THREE.Color(LIQUID_TINT[WATER]),
@@ -10379,9 +10381,9 @@ const liquidTintColors = {
   [MOON_WATER]: new THREE.Color(LIQUID_TINT[MOON_WATER]),
 };
 const UNDERWATER_FOG_NEAR = 1.0;
-const UNDERWATER_FOG_FAR = 14;
-const LIQUID_FOG_FAR = { [WATER]: 14, [LAVA]: 14, [MOON_WATER]: 8 };
+const LIQUID_FOG_FAR = { [WATER]: 14, [LAVA]: 1.5, [MOON_WATER]: 6 };
 const WATER_FOG_DEPTH = 0.01;
+const UNDERWATER_TINT = 0.45;
 let envFogNear = 60, envFogFar = 160;
 const envBackground = new THREE.Color(0x87ceeb);
 const envFogColor = new THREE.Color(0x87ceeb);
@@ -10393,7 +10395,10 @@ const liquidBucketMats = new Map();  // id -> material[4]
 const liquidBucketMatsIn = new Map(); // id -> material[4] (BackSide, seen from inside)
 
 function makeLiquidMat(id, opacity, side) {
-  const opts = { transparent: true, opacity, depthWrite: false, side: side || THREE.DoubleSide };
+  const opaqueLava = id === LAVA && side !== THREE.BackSide;
+  const opts = opaqueLava
+    ? { transparent: false, opacity: 1, depthWrite: true, side: side || THREE.DoubleSide }
+    : { transparent: true, opacity, depthWrite: false, side: side || THREE.DoubleSide };
   let m;
   if (id === WATER) m = new THREE.MeshLambertMaterial({ map: TEX.water, ...opts });
   else if (id === LAVA) m = new THREE.MeshBasicMaterial({ map: TEX.lava, fog: false, ...opts });
@@ -10432,7 +10437,7 @@ function liquidFaceVisible(x, y, z, id, dx, dy, dz) {
   if (n === id) return false;
   const info = BLOCK_INFO[n];
   if (!info) return true;
-  if (info.opaque) return false;
+  if (info.opaque || info.solid) return false;
   return true;
 }
 function liquidColumnDepth(x, y, z, id) {
@@ -13985,6 +13990,7 @@ function spawnExplosion(cx, cy, cz) {
 function tickEffects(dt) {
   updateNetherEmbers(dt, performance.now() / 1000);
   updateVolcanoEmbers(dt, performance.now() / 1000);
+  updateLavaMotes(dt, performance.now() / 1000);
   for (let i = bursts.length - 1; i >= 0; i--) {
     const b = bursts[i];
     b.life -= dt;
@@ -14036,7 +14042,7 @@ function ensureEmbers() {
   emberMaxLife = new Float32Array(EMBER_COUNT);
   for (let i = 0; i < EMBER_COUNT; i++) {
     posA[i * 3] = 0; posA[i * 3 + 1] = -100; posA[i * 3 + 2] = 0;
-    colA[i * 3] = 0.35 + Math.random() * 0.25; colA[i * 3 + 1] = 0.7 + Math.random() * 0.3; colA[i * 3 + 2] = 1;
+    colA[i * 3] = 0.85 + Math.random() * 0.15; colA[i * 3 + 1] = 0.9 + Math.random() * 0.1; colA[i * 3 + 2] = 1;
     emberLife[i] = 0; emberMaxLife[i] = 0;
   }
   const geo = new THREE.BufferGeometry();
@@ -14101,6 +14107,93 @@ function updateNetherEmbers(dt, time) {
   attr.needsUpdate = true;
 }
 
+// Lava motes: camera-local ember sparks visible while submerged in lava.
+// World-space embers are fully fogged out inside the murk, so this field
+// rides with the camera and is gated on the eye cell holding lava. Small
+// points in declinations of blue fill the visible range into the fog;
+// white is reserved for the exterior embers above the surface.
+const LAVA_MOTE_COUNT = 900;
+const LAVA_MOTE_RANGE = 15;
+const LAVA_MOTE_BLUES = [
+  [0.10, 0.30, 1.0],
+  [0.25, 0.50, 1.0],
+  [0.45, 0.85, 1.0],
+];
+let lavaMotes = null;
+
+function seedLavaMote(cloud, i) {
+  const e = camera.position;
+  const R = cloud.range;
+  const posA = cloud.pts.geometry.attributes.position.array;
+  posA[i * 3] = e.x + (Math.random() * 2 - 1) * R;
+  posA[i * 3 + 1] = e.y + (Math.random() * 2 - 1) * R;
+  posA[i * 3 + 2] = e.z + (Math.random() * 2 - 1) * R;
+  cloud.vel[i * 3] = (Math.random() * 2 - 1) * 0.4;
+  cloud.vel[i * 3 + 1] = 0.5 + Math.random() * 1.0;
+  cloud.vel[i * 3 + 2] = (Math.random() * 2 - 1) * 0.4;
+}
+
+function makeLavaMoteCloud(count, range, size, bright) {
+  const posA = new Float32Array(count * 3);
+  const colA = new Float32Array(count * 3);
+  const vel = new Float32Array(count * 3);
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute("position", new THREE.BufferAttribute(posA, 3));
+  geo.setAttribute("color", new THREE.BufferAttribute(colA, 3));
+  const mat = new THREE.PointsMaterial({
+    size, vertexColors: true, transparent: true, opacity: 1, fog: false,
+    depthWrite: false, blending: THREE.AdditiveBlending,
+  });
+  const pts = new THREE.Points(geo, mat);
+  pts.visible = false;
+  pts.frustumCulled = false;
+  scene.add(pts);
+  const cloud = { pts, vel, count, range };
+  for (let i = 0; i < count; i++) {
+    seedLavaMote(cloud, i);
+    const b = LAVA_MOTE_BLUES[(Math.random() * LAVA_MOTE_BLUES.length) | 0];
+    colA[i * 3] = b[0] * bright;
+    colA[i * 3 + 1] = b[1] * bright;
+    colA[i * 3 + 2] = b[2] * bright;
+  }
+  return cloud;
+}
+
+function ensureLavaMotes() {
+  if (!lavaMotes) lavaMotes = makeLavaMoteCloud(LAVA_MOTE_COUNT, LAVA_MOTE_RANGE, 0.07, 0.55);
+}
+
+function stepLavaMotes(cloud, dt, time) {
+  const e = camera.position;
+  const attr = cloud.pts.geometry.attributes.position;
+  const R = cloud.range;
+  for (let i = 0; i < cloud.count; i++) {
+    let x = attr.array[i * 3] + (cloud.vel[i * 3] + Math.sin(time * 2 + i) * 0.3) * dt;
+    let y = attr.array[i * 3 + 1] + cloud.vel[i * 3 + 1] * dt;
+    let z = attr.array[i * 3 + 2] + (cloud.vel[i * 3 + 2] + Math.cos(time * 1.7 + i) * 0.3) * dt;
+    if (x - e.x > R) x -= 2 * R; else if (x - e.x < -R) x += 2 * R;
+    if (y - e.y > R) y -= 2 * R; else if (y - e.y < -R) y += 2 * R;
+    if (z - e.z > R) z -= 2 * R; else if (z - e.z < -R) z += 2 * R;
+    if (getBlock(Math.floor(x), Math.floor(y), Math.floor(z)) !== LAVA) {
+      seedLavaMote(cloud, i);
+      continue;
+    }
+    attr.array[i * 3] = x;
+    attr.array[i * 3 + 1] = y;
+    attr.array[i * 3 + 2] = z;
+  }
+  attr.needsUpdate = true;
+}
+
+function updateLavaMotes(dt, time) {
+  ensureLavaMotes();
+  const e = camera.position;
+  const inside = eyeLiquidId(e.x, e.y, e.z) === LAVA;
+  lavaMotes.pts.visible = inside;
+  if (!inside) return;
+  stepLavaMotes(lavaMotes, dt, time);
+}
+
 // Volcano eruption fountains: lava blobs belched from each volcano's
 // crater, arcing high into the sky then splashing back down into the fire.
 const VOLCANO_EMBER_COUNT = 340;
@@ -14120,7 +14213,7 @@ function ensureVolcanoEmbers() {
   volcanoMaxLife = new Float32Array(VOLCANO_EMBER_COUNT);
   for (let i = 0; i < VOLCANO_EMBER_COUNT; i++) {
     posA[i * 3] = 0; posA[i * 3 + 1] = -100; posA[i * 3 + 2] = 0;
-    colA[i * 3] = 0.5 + Math.random() * 0.3; colA[i * 3 + 1] = 0.8 + Math.random() * 0.2; colA[i * 3 + 2] = 1;
+    colA[i * 3] = 0.85 + Math.random() * 0.15; colA[i * 3 + 1] = 0.9 + Math.random() * 0.1; colA[i * 3 + 2] = 1;
     volcanoLife[i] = 0; volcanoMaxLife[i] = 0;
   }
   const geo = new THREE.BufferGeometry();
@@ -14930,10 +15023,14 @@ function updatePortalVisual() {
     refreshPortalFills(bx, by, bz);
   }
   const maxD2 = PORTAL_FILL_DIST * PORTAL_FILL_DIST;
+  const showD2 = (PORTAL_FILL_DIST - 4) * (PORTAL_FILL_DIST - 4);
   for (const f of portalFills.values()) {
-    if (f.dim !== dim) { f.group.visible = false; continue; }
+    if (f.dim !== dim) { f.group.visible = false; f.shown = false; continue; }
     const dx = f.cx - px, dy = f.cy - py, dz = f.cz - pz;
-    f.group.visible = dx * dx + dy * dy + dz * dz <= maxD2;
+    const d2 = dx * dx + dy * dy + dz * dz;
+    if (f.shown) f.shown = d2 <= maxD2;
+    else f.shown = d2 <= showD2;
+    f.group.visible = f.shown;
   }
 }
 
@@ -18365,11 +18462,24 @@ function loop(now) {
         const useMoon = !wantLakes;
         const moonMats = [];
         if (liquidBodyMats.has(MOON_WATER)) moonMats.push(liquidBodyMats.get(MOON_WATER));
-        if (liquidBucketMats.has(MOON_WATER)) for (const mm of liquidBucketMats.get(MOON_WATER)) if (mm) moonMats.push(mm);
-        if (liquidBucketMatsIn.has(MOON_WATER)) for (const mm of liquidBucketMatsIn.get(MOON_WATER)) if (mm) moonMats.push(mm);
+        const moonTopMats = [];
+        if (liquidBucketMats.has(MOON_WATER)) for (const mm of liquidBucketMats.get(MOON_WATER)) if (mm) moonTopMats.push(mm);
+        if (liquidBucketMatsIn.has(MOON_WATER)) for (const mm of liquidBucketMatsIn.get(MOON_WATER)) if (mm) moonTopMats.push(mm);
         for (const mm of moonMats) {
           if (mm.map !== (useMoon ? TEX.moon : TEX.moonwater)) { mm.map = useMoon ? TEX.moon : TEX.moonwater; mm.needsUpdate = true; }
           const o = useMoon ? ms : (mm.userData.baseOpacity || 0.85) * ls;
+          mm.opacity = o; mm.transparent = o < 0.99; mm.depthWrite = o >= 0.99;
+        }
+        // Lake shafts show black sky through the dome from far below: keep tops
+        // opaque until the camera approaches under the surface, then relax to
+        // their buckets (subtle see-through up close, never from afar).
+        let lt = (y - 550) / 150;
+        lt = Math.max(0, Math.min(1, lt));
+        const lakeSee = lt * lt * (3 - 2 * lt);
+        for (const mm of moonTopMats) {
+          if (mm.map !== (useMoon ? TEX.moon : TEX.moonwater)) { mm.map = useMoon ? TEX.moon : TEX.moonwater; mm.needsUpdate = true; }
+          let o = useMoon ? ms : (mm.userData.baseOpacity || 0.85) * ls;
+          if (wantLakes) o = o + (1 - o) * (1 - lakeSee);
           mm.opacity = o; mm.transparent = o < 0.99; mm.depthWrite = o >= 0.99;
         }
       }
@@ -18381,13 +18491,9 @@ function loop(now) {
       }
     }
 
-    // Underwater fog + colour filter: active only while the eye cell itself
-    // holds liquid (so air pockets below a tall liquid column, e.g. the hollow
-    // moon interior under a lake, never tint). The factor bites immediately on
-    // crossing (exponential in immersion depth, ~full within a few
-    // centimeters) and is smoothed in time, so even a fast plunge or side entry
-    // can never pop the distance fog in a single frame. Runs unconditionally so
-    // the base env is restored the instant the eye exits.
+    // Underwater murk: eye-gated, fast bite, per-liquid distances. Fog colour
+    // always equals background (both partially tinted together), so far
+    // clouds/terrain dissolve into it like air — never silhouettes.
     const eye = camera.position;
     const ebx = Math.floor(eye.x), eby = Math.floor(eye.y), ebz = Math.floor(eye.z);
     const eid = eyeLiquidId(eye.x, eye.y, eye.z);
@@ -18401,9 +18507,10 @@ function loop(now) {
     underSubSmooth += (underSub - underSubSmooth) * (1 - Math.exp(-dt * 45));
     if (Math.abs(underSubSmooth - underSub) < 0.001) underSubSmooth = underSub;
     const tint = liquidTintColors[underTintId];
-    const fogFar = LIQUID_FOG_FAR[underTintId] || UNDERWATER_FOG_FAR;
-    scene.background.copy(envBackground).lerp(tint, underSubSmooth);
-    scene.fog.color.copy(envFogColor).lerp(tint, underSubSmooth);
+    const fogFar = LIQUID_FOG_FAR[underTintId] || 14;
+    const k = underSubSmooth * UNDERWATER_TINT;
+    scene.background.copy(envBackground).lerp(tint, k);
+    scene.fog.color.copy(scene.background);
     scene.fog.near = THREE.MathUtils.lerp(envFogNear, UNDERWATER_FOG_NEAR, underSubSmooth);
     scene.fog.far = THREE.MathUtils.lerp(envFogFar, fogFar, underSubSmooth);
 

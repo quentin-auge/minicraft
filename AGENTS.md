@@ -111,10 +111,15 @@ small Python server for saving/loading worlds.
   flat top) are carved as aesthetic crater-lakes through the whole thickness
   from the flat top to the dome bottom, so you can enter from below and swim up
   to the surface. Rendered unlit but darker so it
-  reads grey from below with visible relief. It is `placeable:
+  reads grey from below with visible relief. Lake top faces stay opaque until
+  the camera approaches under the surface (`lakeSee` smoothstep on camera
+  height 550→700), then relax to their depth buckets — no black sky shafts
+  visible from far below, only a subtle see-through up close. It is `placeable:
   false`, skipped by `spawnPlayer`/`resolveSpawn` so respawns stay on ground.
 - **Textures**: 16×16 pixel-art textures drawn procedurally on canvas
-  (`TEX`, `makeTex`, `pxNoise`, `canvasTex`), NearestFilter + sRGB.
+  (`TEX`, `makeTex`, `pxNoise`, `canvasTex`), NearestFilter magnification with
+  mipmapped minification + anisotropy 4 and sRGB (pixel-crisp up close, no
+  shimmer at distance or through water).
 - **Rendering**: chunked streaming. The overworld is split into `CHUNK` (16)×
   16-column chunks and only the square of chunks within `RENDER_DIST` (8) of
   the player are meshed (added/removed as you cross chunk borders in
@@ -126,27 +131,27 @@ small Python server for saving/loading worlds.
   scan only walk up to each column's real top instead of the full 1000-row
   sky. Shared per-type materials
   (`typeMats`). Liquids (WATER/LAVA/MOON_WATER) skip the cube path: `rebuildChunk`
-  draws only their boundary faces (faces against air or another transparent
-  block; liquid/liquid and liquid/solid faces culled) as single-face
+  draws only their boundary faces (faces against air or another non-solid
+  transparent block; liquid/liquid and liquid/solid faces culled, solid
+  PORTAL/GLASS frames included so no coplanar z-fighting) as single-face
   `PlaneGeometry` quads (`liquidFaceGeos`, `liquidFaceVisible`), so adjacent
   liquid blocks show no seams. Top faces are depth-bucketed
   (`liquidColumnDepth` → 4 opacity levels, deeper = more opaque) and built as
   an outside/inside pair: `liquidBucketMat` (`FrontSide`, seen from above) and
-  `liquidBucketMatIn` (`BackSide`, bucket × `LIQUID_INSIDE` 0.15, seen from below,
-  water lifted with a `WATER_INSIDE_EMISSIVE` glow so the surface reads as a
-  light translucent veil from underneath), so the surface is more opaque from
-  outside and faint/lighter from inside; sides/bottom
+  `liquidBucketMatIn` (`BackSide`, bucket × `LIQUID_INSIDE` 0.06, seen from below,
+  water lifted with a bright `WATER_INSIDE_EMISSIVE` glow so the surface reads as a
+  faint luminous film from underneath), so the surface is more opaque from
+  outside and nearly see-through from inside; sides/bottom
   `use one `liquidBodyMat`. WATER is a lit
-  `MeshLambertMaterial`, LAVA/MOON_WATER stay unlit `fog:false`. The main loop computes an exponential immersion factor
-  (`eyeLiquidId` gates on the eye cell holding liquid, `liquidTopAbove`,
-  `WATER_FOG_DEPTH` sets how fast it bites, immediate on crossing) smoothed in
-  time and lerps
-  `scene.background`/
-  `scene.fog` toward the per-liquid tint (`LIQUID_TINT`) while shrinking fog to
-  `UNDERWATER_FOG_NEAR` and the per-liquid far (`LIQUID_FOG_FAR`: 14 water/lava,
-  8 moon water), so entering water is a
-  smooth continuous fade, the world shows through the surface with a colour
-  filter, and underwater visibility falls off with distance. Editing rebuilds just the touched chunk(s) via
+  `MeshLambertMaterial`, LAVA/MOON_WATER stay unlit `fog:false`. There is an
+  underwater murk regime, eye-gated (`eyeLiquidId` on the eye cell, fast
+  exponential bite `WATER_FOG_DEPTH`, temporal smooth): `scene.background` and
+  `scene.fog.color` lerp together toward the per-liquid tint (`LIQUID_TINT ×
+  UNDERWATER_TINT`, so the outside stays fairly bright) while fog shrinks to
+  `UNDERWATER_FOG_NEAR` and the per-liquid far (`LIQUID_FOG_FAR`: 14 water, 1.5
+  lava, 6 moon water). Fog colour always equals background (same partial tint),
+  so far clouds/terrain dissolve into it like air — near or far, never
+  silhouettes. Editing rebuilds just the touched chunk(s) via
   `refreshBlocks()`, not the whole world. No shadow maps; fog +
   hemisphere/directional light.
 - **Blocks**: numeric constants + `BLOCK_INFO` (solid/opaque/placeable).
@@ -183,7 +188,16 @@ small Python server for saving/loading worlds.
   OBSIDIAN (dark purple-black rock from the Nether, in the hotbar after the
   Portal block, `placeable: true`, used as the mandatory frame of the 5×4
   Nether portal), LAVA (blue lava liquid, unlit `MeshBasicMaterial`
-  face materials whose color shimmers in the main loop, `fog: false` so the sea
+  face materials whose color shimmers in the main loop, opaque outside
+  (`makeLiquidMat` forces `transparent: false, depthWrite: true` for every
+  non-`BackSide` lava face, so no lava shows through lava; only the faint
+  `BackSide` inside film stays transparent), dense murk inside
+  (`LIQUID_FOG_FAR` 1.5) with a camera-local ember-mote field
+  (`updateLavaMotes`: ~900 small blue-shade additive points
+  (`LAVA_MOTE_BLUES` deep/royal/ice, size 0.07) filling a ~30-block box around
+  the camera into the fog, `fog: false`, gated on the eye cell holding lava,
+  reseeded out of non-lava cells; white is reserved for the exterior embers),
+  `fog: false` so the sea
 stays bright at distance, `placeable: true` so it
   can sit in the hotbar and be placed in the Nether/End),
   NETHERRACK (dark grey Nether rock, in the hotbar after OBSIDIAN,
@@ -452,7 +466,8 @@ stays bright at distance, `placeable: true` so it
   culled per-frame: hidden when you're in another dimension, when beyond
   `PORTAL_FILL_DIST` (scales with render distance: 8 chunks × 16 × √2 ≈ 182
   blocks, so the glow stays lit as far as the frame itself is visible, plus
-  squared-distance test from the eye), or
+  squared-distance test from the eye with ±4-block hysteresis so swimming past
+  the limit never blinks the fill), or
   when off-view/behind the camera (three.js frustum culling on each cube).
   Portals work
   both ways, so the Nether's auto-built upright return portal
@@ -561,7 +576,7 @@ stays bright at distance, `placeable: true` so it
   cuts a tapering trench through any island in its way down to fire level and
   floods it, so the coulees pour straight into the great lava lake),
   and a constant eruption fountain
-  (`updateVolcanoEmbers`/`spawnVolcanoEmber`, ~340 additive `THREE.Points`
+  (`updateVolcanoEmbers`/`spawnVolcanoEmber`, ~340 near-white additive `THREE.Points`
   launched up out of the crater fire, arcing and splashing back down; torn
   down on leaving the Nether). Everything in the Nether is dark grey: terrain
   is NETHERRACK (dark grey rock, placeable, in the hotbar) instead of plain
@@ -569,7 +584,7 @@ stays bright at distance, `placeable: true` so it
   SOULSAND, giving the sea a grim black beach;
   and `setDimensionEnv` uses neutral grey-white sun light with dark grey
   fog so the whole dimension reads grey — neutral, so glowstone
-  colours stand out untinted. Rising blue embers (`updateNetherEmbers`/`ensureEmbers`, ~220 additive
+  colours stand out untinted. Rising near-white embers (`updateNetherEmbers`/`ensureEmbers`, ~220 additive
   `THREE.Points` spawned only over the fire sea, drifting upward with a sway,
   fading
   and respawning every ~2–5 s; torn down on leaving the Nether) float up off
