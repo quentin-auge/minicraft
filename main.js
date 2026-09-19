@@ -15689,21 +15689,36 @@ function removeDragon() {
     const freed = [];
     {
       const seen = new Set();
-      let c = mobById.get(chainChild.get(dragon.mob.id));
+      let c = chainMobById(chainChild.get(dragon.mob.id));
       while (c && !seen.has(c.id)) {
         seen.add(c.id);
-        freed.push(c);
+        if (c !== playerChainAvatar) freed.push(c);
         const nid = chainChild.get(c.id);
-        c = nid !== undefined ? mobById.get(nid) : null;
+        c = nid !== undefined ? chainMobById(nid) : null;
       }
     }
     const dx = dragon.mesh.position.x, dy = dragon.mesh.position.y, dz = dragon.mesh.position.z;
-    dropChainFrom(dragon.mob);
+    const childId = chainChild.get(dragon.mob.id);
+    const back = childId !== undefined && childId !== PLAYER_CHAIN_ID ? mobById.get(childId) : null;
+    const backLive = !!(back && mobs.includes(back) && back !== dragon.mob && !isMobHeld(back));
+    chainChild.delete(dragon.mob.id);
+    if (grappleMob === dragon.mob) detachDisplacementGrapple();
     if (pigeonLock === dragon.mob) { pigeonLock = null; pigeonLockT = 0; pigeonLockShots = 0; }
     mobById.delete(dragon.mob.id);
     const mi = mobs.indexOf(dragon.mob);
     if (mi >= 0) mobs.splice(mi, 1);
     dragon.mob = null;
+    if (backLive) freeChainRoot(back);
+    else if (back && mobs.includes(back)) {
+      const bl = chainLinks.get(back.id);
+      if (bl) {
+        scene.remove(bl.rope);
+        scene.remove(bl.head);
+        if (bl.rope.dispose) bl.rope.dispose();
+        chainLinks.delete(back.id);
+      }
+      chainParent.delete(back.id);
+    }
     for (const f of freed) panicSingleMob(f, dx, dy, dz, true);
   }
   scene.remove(dragon.mesh);
