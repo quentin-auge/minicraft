@@ -1593,6 +1593,11 @@ const WOLF_COUNT = 20;
 const GOLEM_COUNT = 1;
 const GOLEM_HW = 0.6;
 const GOLEM_HH = 3.6;
+const CAT_COUNT = 8;
+const CAT_HW = 0.16;
+const CAT_HH = 0.98;
+const CAT_ROBES = [0xdd8a3c, 0x1a1a1a, 0xf5f0e6];
+const CAT_ROBE_WEIGHTS = [2, 1, 1];
 const BIRD_COUNT = 50;
 const BIRD_MIN_Y = 50;
 const BIRD_SEP_DIST = 2.5;
@@ -3600,6 +3605,96 @@ function makeWolfMesh(furHex, collarHex) {
   g.userData = { sc, legBL, legBR, legFL, legFR, body, head, tail, furHex: fur, collarHex: collar, kind: "wolf" };
   return g;
 }
+function pickCatRobe() {
+  let total = 0;
+  for (const w of CAT_ROBE_WEIGHTS) total += w;
+  let r = Math.random() * total;
+  for (let i = 0; i < CAT_ROBES.length; i++) {
+    r -= CAT_ROBE_WEIGHTS[i];
+    if (r < 0) return i;
+  }
+  return 0;
+}
+function makeCatMesh(variant = 0) {
+  if (variant == null || variant < 0 || variant >= CAT_ROBES.length) variant = 0;
+  const g = new THREE.Group();
+  const sc = 1;
+  if (!villagerGeo) villagerGeo = new THREE.BoxGeometry(1, 1, 1);
+  const geo = villagerGeo;
+  const hexToRgb = (h) => [(h>>16)&255,(h>>8)&255,h&255];
+  const rgbToHex = (r,gg,b) => (r<<16)|(gg<<8)|b;
+  const shade = (h, f) => { const [r,gg,b]=hexToRgb(h); return rgbToHex(Math.round(Math.min(255,r*f)),Math.round(Math.min(255,gg*f)),Math.round(Math.min(255,b*f))); };
+  const fur = CAT_ROBES[variant];
+  const furMat = new THREE.MeshStandardMaterial({ color: fur, roughness: 0.9 });
+  const darkMat = new THREE.MeshStandardMaterial({ color: shade(fur, 0.62), roughness: 0.9 });
+  const lightMat = new THREE.MeshStandardMaterial({ color: variant === 2 ? shade(fur, 0.82) : 0xf5f0e6, roughness: 0.9 });
+  const noseMat = new THREE.MeshStandardMaterial({ color: 0xd98a94, roughness: 0.9 });
+  const eyeMat = new THREE.MeshStandardMaterial({ color: 0x111111 });
+  const body = new THREE.Mesh(geo, furMat);
+  body.scale.set(0.30 * sc, 0.28 * sc, 0.55 * sc);
+  body.position.set(0, 0.42 * sc, 0);
+  g.add(body);
+  const belly = new THREE.Mesh(geo, lightMat);
+  belly.scale.set(0.22 * sc, 0.10 * sc, 0.40 * sc);
+  belly.position.set(0, 0.30 * sc, 0.02 * sc);
+  g.add(belly);
+  for (let i = 0; i < 3; i++) {
+    const stripe = new THREE.Mesh(geo, darkMat);
+    stripe.scale.set(0.32 * sc, 0.06 * sc, 0.07 * sc);
+    stripe.position.set(0, 0.55 * sc, (-0.15 + i * 0.15) * sc);
+    g.add(stripe);
+  }
+  const head = new THREE.Mesh(geo, furMat);
+  head.scale.set(0.30 * sc, 0.28 * sc, 0.28 * sc);
+  head.position.set(0, 0.68 * sc, 0.36 * sc);
+  g.add(head);
+  const muzzle = new THREE.Mesh(geo, lightMat);
+  muzzle.scale.set(0.16 * sc, 0.10 * sc, 0.10 * sc);
+  muzzle.position.set(0, 0.63 * sc, 0.52 * sc);
+  g.add(muzzle);
+  const nose = new THREE.Mesh(geo, noseMat);
+  nose.scale.set(0.06 * sc, 0.05 * sc, 0.04 * sc);
+  nose.position.set(0, 0.67 * sc, 0.57 * sc);
+  g.add(nose);
+  for (const sx of [1, -1]) {
+    const eye = new THREE.Mesh(geo, eyeMat);
+    eye.scale.set(0.06 * sc, 0.07 * sc, 0.02 * sc);
+    eye.position.set(sx * 0.09 * sc, 0.72 * sc, 0.50 * sc);
+    g.add(eye);
+    const ear = new THREE.Mesh(geo, furMat);
+    ear.scale.set(0.10 * sc, 0.12 * sc, 0.05 * sc);
+    ear.position.set(sx * 0.10 * sc, 0.86 * sc, 0.32 * sc);
+    g.add(ear);
+  }
+  const tail = new THREE.Mesh(geo, furMat);
+  tail.scale.set(0.08 * sc, 0.45 * sc, 0.08 * sc);
+  tail.position.set(0, 0.74 * sc, -0.30 * sc);
+  tail.rotation.x = -0.15;
+  g.add(tail);
+  const tailTip = new THREE.Mesh(geo, lightMat);
+  tailTip.scale.set(0.085 * sc, 0.10 * sc, 0.085 * sc);
+  tailTip.position.set(0, 0.94 * sc, -0.335 * sc);
+  tailTip.rotation.x = -0.15;
+  g.add(tailTip);
+  const legBL = new THREE.Mesh(geo, furMat);
+  legBL.scale.set(0.11 * sc, 0.30 * sc, 0.11 * sc);
+  legBL.position.set(-0.10 * sc, 0.15 * sc, -0.18 * sc);
+  g.add(legBL);
+  const legBR = new THREE.Mesh(geo, furMat);
+  legBR.scale.set(0.11 * sc, 0.30 * sc, 0.11 * sc);
+  legBR.position.set(0.10 * sc, 0.15 * sc, -0.18 * sc);
+  g.add(legBR);
+  const legFL = new THREE.Mesh(geo, furMat);
+  legFL.scale.set(0.11 * sc, 0.30 * sc, 0.11 * sc);
+  legFL.position.set(-0.10 * sc, 0.15 * sc, 0.18 * sc);
+  g.add(legFL);
+  const legFR = new THREE.Mesh(geo, furMat);
+  legFR.scale.set(0.11 * sc, 0.30 * sc, 0.11 * sc);
+  legFR.position.set(0.10 * sc, 0.15 * sc, 0.18 * sc);
+  g.add(legFR);
+  g.userData = { sc, legBL, legBR, legFL, legFR, body, head, tail, catVar: variant, kind: "cat" };
+  return g;
+}
 const birdBodyMat = new THREE.MeshStandardMaterial({ color: 0x9aa0a6, roughness: 0.9 });
 const birdDarkMat = new THREE.MeshStandardMaterial({ color: 0x6b7076, roughness: 0.9 });
 const birdHeadMat = new THREE.MeshStandardMaterial({ color: 0xb9bec4, roughness: 0.9 });
@@ -3985,7 +4080,7 @@ function removeBirds() {
   birdLockShots = 0;
   pruneChains();
 }
-const CHAIN_SPAWN_KINDS = ["villager", "pig", "cow", "wolf"];
+const CHAIN_SPAWN_KINDS = ["villager", "pig", "cow", "wolf", "cat"];
 function spawnChainMob(kind, sx, sy, sz) {
   let mesh, hw, hh, canStep = false, speed = WALK / 2, extra = null;
   if (kind === "pig") { mesh = makePigMesh(); hw = 0.32; hh = 0.92; speed = WALK / 2.2; }
@@ -4032,7 +4127,7 @@ function spawnBirdChain() {
   const total = 3 + Math.floor(Math.random() * 6);
   const kinds = [];
   for (let i = 1; i < total; i++) kinds.push(CHAIN_SPAWN_KINDS[Math.floor(Math.random() * CHAIN_SPAWN_KINDS.length)]);
-  const sizes = { villager: [0.27, 1.82], pig: [0.32, 0.92], cow: [0.32, 1.30], wolf: [0.30, 0.90], pigeon: [0.25, 0.5], parrot: [0.25, 0.5] };
+  const sizes = { villager: [0.27, 1.82], pig: [0.32, 0.92], cow: [0.32, 1.30], wolf: [0.30, 0.90], cat: [CAT_HW, CAT_HH], pigeon: [0.25, 0.5], parrot: [0.25, 0.5] };
   const aimDir = new THREE.Vector3();
   camera.getWorldDirection(aimDir);
   const aimHit = pickBlock(camera.position, aimDir, true);
@@ -4981,6 +5076,7 @@ function villagerHW(m) {
   if (m.kind === "enderman") return 0.31;
   if (isBirdKind(m.kind)) return 0.25;
   if (m.kind === "wolf") return 0.30;
+  if (m.kind === "cat") return CAT_HW;
   if (m.kind === "pig" || m.kind === "cow") return 0.32;
   if (m.kind === "iron_golem") return GOLEM_HW;
   return m.isBaby ? 0.16 : 0.27;
@@ -4990,6 +5086,7 @@ function villagerH(m) {
   if (m.kind === "enderman") return 2.7;
   if (isBirdKind(m.kind)) return 0.5;
   if (m.kind === "wolf") return 0.90;
+  if (m.kind === "cat") return CAT_HH;
   if (m.kind === "pig") return 0.92;
   if (m.kind === "cow") return 1.30;
   if (m.kind === "iron_golem") return GOLEM_HH;
@@ -5296,7 +5393,7 @@ function isBirdKind(kind) {
   return kind === "pigeon" || kind === "parrot";
 }
 function isJumpingKind(kind) {
-  return kind === "wolf";
+  return kind === "wolf" || kind === "cat";
 }
 function chainAttachModeFor(carriedKind, target) {
   if (target && target.kind === "iron_golem") return "behind";
@@ -5889,6 +5986,18 @@ function babyTrailSpot(m, p) {
   const inWater = dim === "over" && (isInsidePool(bx, bz) || isInsidePenPool(bx, bz));
   if (!inWater && !aabbCollidesWorld(bx, m.pos.y, bz, m.hw, m.h) && hasMobGround(bx, bz, m.hw, m.pos.y)) return { x: bx, z: bz };
   return { x: p.pos.x, z: p.pos.z };
+}
+function catParentFor(m) {
+  const p = mobById.get(m.parentId);
+  if (!p || mobDimOf(p) !== dim || Math.abs(m.pos.y - p.pos.y) >= 1) return null;
+  return p;
+}
+function catTrailSpot(m, p) {
+  return babyTrailSpot(m, p);
+}
+function mobBondedPair(a, b) {
+  if (!a || !b) return false;
+  return ((a.isBaby || a.kind === "cat") && b.id === a.parentId) || ((b.isBaby || b.kind === "cat") && a.id === b.parentId);
 }
 function chainTakeForCarry(mob) {
   if (!mob || !mobs.includes(mob)) return;
@@ -8238,7 +8347,7 @@ function mobCollidesOther(mob, nx, nz) {
     let need = hw + villagerHW(o) + 0.04;
     if (!fleeing) {
       const oflee = o.fleeUntil && performance.now() / 1000 < o.fleeUntil;
-      if (!oflee && ((mob.isBaby && o.id === mob.parentId) || (o.isBaby && o.parentId === mob.id))) {
+      if (!oflee && mobBondedPair(mob, o)) {
         need = (hw + villagerHW(o)) * 0.62 + 0.06;
       }
     }
@@ -8260,8 +8369,10 @@ function spawnVillagers() {
   const livestockCount = () => mobs.filter((m) => (m.dim === "over" || m.dim === undefined) && (m.kind === "pig" || m.kind === "cow")).length;
   const wolfCount = () => mobs.filter((m) => (m.dim === "over" || m.dim === undefined) && m.kind === "wolf").length;
   const golemCount = () => mobs.filter((m) => (m.dim === "over" || m.dim === undefined) && m.kind === "iron_golem").length;
+  const babyCount = () => mobs.filter((m) => (m.dim === "over" || m.dim === undefined) && (!m.kind || m.kind === "villager") && m.isBaby).length;
+  const catCount = () => mobs.filter((m) => (m.dim === "over" || m.dim === undefined) && m.kind === "cat").length;
   const overCount = () => mobs.filter((m) => m.dim === "over" || m.dim === undefined).length;
-  if (villagerCount() >= villagerTarget && (!villagePen || livestockCount() >= livestockTarget) && wolfCount() >= WOLF_COUNT && golemCount() >= GOLEM_COUNT) return;
+  if (villagerCount() >= villagerTarget && (!villagePen || livestockCount() >= livestockTarget) && wolfCount() >= WOLF_COUNT && golemCount() >= GOLEM_COUNT && catCount() >= Math.min(CAT_COUNT, babyCount())) return;
   if (!villageHouses.length) computeVillageLayout();
   if (!villagerGeo) villagerGeo = new THREE.BoxGeometry(1, 1, 1);
   else if (villagerGeo.attributes.position.getY(0) > -0.4) { villagerGeo.dispose(); villagerGeo = new THREE.BoxGeometry(1, 1, 1); }
@@ -8513,6 +8624,58 @@ function spawnVillagers() {
       mobById.set(m.id, m);
     }
   }
+  // — 1 cat per baby villager (follows its baby, jumps like a wolf, rallies home on TNT panic) —
+  {
+    const babies = mobs.filter((m) => (m.dim === "over" || m.dim === undefined) && (!m.kind || m.kind === "villager") && m.isBaby);
+    const cats = mobs.filter((m) => (m.dim === "over" || m.dim === undefined) && m.kind === "cat");
+    const orphans = babies.filter((b) => !cats.some((c) => c.parentId === b.id));
+    const needCat = Math.min(CAT_COUNT, babies.length) - cats.length;
+    for (let i = 0; i < needCat && i < orphans.length; i++) {
+      const baby = orphans[i];
+      const robe = pickCatRobe();
+      const mesh = makeCatMesh(robe);
+      const hw = CAT_HW, hh = CAT_HH;
+      let sx = Math.floor(baby.pos.x) + 0.5, sz = Math.floor(baby.pos.z) + 0.5, tries = 0;
+      const babyKey = `${Math.floor(sx)},${Math.floor(baby.pos.y)},${Math.floor(sz)}`;
+      if (usedBlocks.has(babyKey) || mobBlockedAt(sx, sz, hw, baby.pos.y, hh) || aabbCollidesWorld(sx, baby.pos.y, sz, hw, hh)) {
+        do {
+          const ang = Math.random() * Math.PI * 2, rad = Math.random() * 6 + 1;
+          sx = baby.pos.x + Math.cos(ang) * rad;
+          sz = baby.pos.z + Math.sin(ang) * rad;
+          sx = Math.max(villageMinX + 1.5, Math.min(villageMaxX - 1.5, sx));
+          sz = Math.max(villageMinZ + 1.5, Math.min(villageMaxZ - 1.5, sz));
+          sx = Math.floor(sx) + 0.5; sz = Math.floor(sz) + 0.5;
+          const blockKey = `${Math.floor(sx)},${villageCenter.y + 1},${Math.floor(sz)}`;
+          if (usedBlocks.has(blockKey)) { tries++; continue; }
+          if (isInsideAnyHouse(sx, sz) || isInsidePool(sx, sz) || isInsidePenPool(sx, sz) || mobBlockedAt(sx, sz, hw, villageCenter.y + 1, hh) || aabbCollidesWorld(sx, villageCenter.y + 1, sz, hw, hh)) { tries++; continue; }
+          if (used.some((u) => (u[0] - sx) ** 2 + (u[1] - sz) ** 2 < 1.4)) { tries++; continue; }
+          break;
+        } while (tries < 30);
+      }
+      sx = Math.floor(sx) + 0.5; sz = Math.floor(sz) + 0.5;
+      const sy = groundYForMob(sx, sz, villageCenter.y + 1, hw);
+      used.push([sx, sz]);
+      usedBlocks.add(`${Math.floor(sx)},${sy},${Math.floor(sz)}`);
+      mesh.position.set(sx, sy, sz);
+      const yaw = Math.random() * Math.PI * 2;
+      mesh.rotation.y = yaw;
+      scene.add(mesh);
+      const m = {
+        id: gid++, kind: "cat", canStep: true, catVar: robe, homeId: baby.homeId, isBaby: false, parentId: baby.id, dim: "over",
+        pos: new THREE.Vector3(sx, sy, sz),
+        vel: new THREE.Vector3(0, 0, 0),
+        hw, h: hh, mesh, onGround: false,
+        target: { x: baby.pos.x, z: baby.pos.z }, mode: "follow", wanderT: 3 + Math.random() * 4, insideT: 0,
+        legPhase: Math.random() * Math.PI * 2, speed: WALK / 2,
+        blockedT: 0, yaw, yawTarget: yaw, villageBound: true,
+        _stuckT: 0, _prevX: sx, _prevZ: sz,
+        path: null, pathIdx: 0, pathKey: null, sc: 1, steerX: 0, steerZ: 0, steerCooldown: 0, lastTarget: null, _wasInWater: false, wolfInWater: false
+      };
+      stampSpawn(m);
+      mobs.push(m);
+      mobById.set(m.id, m);
+    }
+  }
 }
 function removeVillagers() {
   const keepCarry = carryMob && mobs.includes(carryMob) ? carryMob : null;
@@ -8632,6 +8795,7 @@ function mobKindCode(m) {
   if (m.kind === "enderman") return 5;
   if (m.kind === "iron_golem") return 6;
   if (m.kind === "parrot") return 7;
+  if (m.kind === "cat") return 8;
   return 0;
 }
 function mobKindFromCode(c) {
@@ -8642,6 +8806,7 @@ function mobKindFromCode(c) {
   if (c === 5) return "enderman";
   if (c === 6) return "iron_golem";
   if (c === 7) return "parrot";
+  if (c === 8) return "cat";
   return "villager";
 }
 function mobLookIndex(m) {
@@ -8660,6 +8825,12 @@ function mobLookIndex(m) {
     if (m.parrotVar != null && m.parrotVar >= 0 && m.parrotVar < PARROT_VARIANT_COUNT) return m.parrotVar;
     const uv = m.mesh && m.mesh.userData ? m.mesh.userData.parrotVar : null;
     if (uv != null && uv >= 0 && uv < PARROT_VARIANT_COUNT) return uv;
+    return 0;
+  }
+  if (m.kind === "cat") {
+    if (m.catVar != null && m.catVar >= 0 && m.catVar < CAT_ROBES.length) return m.catVar;
+    const cv = m.mesh && m.mesh.userData ? m.mesh.userData.catVar : null;
+    if (cv != null && cv >= 0 && cv < CAT_ROBES.length) return cv;
     return 0;
   }
   return 0;
@@ -8767,6 +8938,13 @@ function settleMobSpot(sx, sy, sz, hw, h, isWolf) {
 function restoreInitialTarget(m) {
   if (dim === "over" && m.kind === "villager" && !m.isBaby && houseAtRoof(m.pos.x, m.pos.z)) return wanderGoalForRoof(m);
   if (dim === "over" && (m.kind === "pig" || m.kind === "cow") && m.penBound !== false && villagePen && isInsidePen(m.pos.x, m.pos.z)) return wanderGoalForPen(m);
+  if (m.kind === "cat") {
+    const p = catParentFor(m);
+    if (p) {
+      if (Math.hypot(p.pos.x - m.pos.x, p.pos.z - m.pos.z) > 2) return catTrailSpot(m, p);
+      return { x: p.pos.x + (Math.random() - 0.5) * 2, z: p.pos.z + (Math.random() - 0.5) * 2 };
+    }
+  }
   if (isJumpingKind(m.kind)) return wanderGoalForWolf(m);
   if (m.kind === "villager" && m.isBaby) {
     const p = babyParentFor(m);
@@ -8833,8 +9011,8 @@ function restoreOverworldMobs(list, opts) {
     const e = list[i];
     const kind = mobKindFromCode(e.kind);
     const isBaby = !!e.isBaby && kind === "villager";
-    const hw = isBirdKind(kind) ? 0.25 : kind === "wolf" ? 0.30 : (kind === "pig" || kind === "cow") ? 0.32 : kind === "enderman" ? ENDERMAN_HW : kind === "iron_golem" ? GOLEM_HW : (isBaby ? 0.16 : 0.27);
-    const hh = isBirdKind(kind) ? 0.5 : kind === "wolf" ? 0.90 : kind === "pig" ? 0.92 : kind === "cow" ? 1.30 : kind === "enderman" ? ENDERMAN_H : kind === "iron_golem" ? GOLEM_HH : (isBaby ? 0.98 : 1.82);
+    const hw = isBirdKind(kind) ? 0.25 : kind === "wolf" ? 0.30 : kind === "cat" ? CAT_HW : (kind === "pig" || kind === "cow") ? 0.32 : kind === "enderman" ? ENDERMAN_HW : kind === "iron_golem" ? GOLEM_HW : (isBaby ? 0.16 : 0.27);
+    const hh = isBirdKind(kind) ? 0.5 : kind === "wolf" ? 0.90 : kind === "cat" ? CAT_HH : kind === "pig" ? 0.92 : kind === "cow" ? 1.30 : kind === "enderman" ? ENDERMAN_H : kind === "iron_golem" ? GOLEM_HH : (isBaby ? 0.98 : 1.82);
     const isWolf = isJumpingKind(kind);
     let sx = e.x, sy = e.y, sz = e.z;
     if (!isFinite(sx) || !isFinite(sy) || !isFinite(sz)) continue;
@@ -8870,11 +9048,11 @@ function restoreOverworldMobs(list, opts) {
     }
     }
     let homeId = e.homeId;
-    if (kind === "villager" && (homeId == null || homeId < 0 || homeId >= villageHouses.length)) homeId = villageHouses.length ? 0 : -1;
-    if (kind !== "villager") homeId = -1;
+    if ((kind === "villager" || kind === "cat") && (homeId == null || homeId < 0 || homeId >= villageHouses.length)) homeId = villageHouses.length ? 0 : -1;
+    if (kind !== "villager" && kind !== "cat") homeId = -1;
     const ryaw = isFinite(e.yaw) ? e.yaw : 0;
     let mesh = null;
-    let palIdx = 0, collar = WOLF_COLLAR_COLORS[0];
+    let palIdx = 0, collar = WOLF_COLLAR_COLORS[0], catVar = 0;
     let endermanVis = null;
     if (kind === "villager") {
       palIdx = (e.look >= 0 && e.look < VILLAGER_PALETTES.length) ? e.look : 0;
@@ -8883,7 +9061,10 @@ function restoreOverworldMobs(list, opts) {
     else if (kind === "cow") mesh = makeCowMesh();
     else if (kind === "pigeon") mesh = makeBirdMesh();
     else if (kind === "parrot") mesh = makeParrotMesh((e.look >= 0 && e.look < PARROT_VARIANT_COUNT) ? e.look : 0);
-    else if (kind === "enderman") {
+    else if (kind === "cat") {
+      catVar = (e.look >= 0 && e.look < CAT_ROBES.length) ? e.look : 0;
+      mesh = makeCatMesh(catVar);
+    } else if (kind === "enderman") {
       ensureEndermanAssets();
       endermanVis = makeEndermanMesh();
       mesh = endermanVis.g;
@@ -8923,6 +9104,15 @@ function restoreOverworldMobs(list, opts) {
       base.canStep = false;
       base.speed = WALK / 2;
       base.sc = 1;
+    } else if (kind === "cat") {
+      base.canStep = true;
+      base.speed = WALK / 2;
+      base.catVar = catVar;
+      base.sc = 1;
+      base.wolfStepUp = false;
+      base.wolfStepUpClearY = 0;
+      base.wolfInWater = false;
+      base.wasOnGroundWolf = false;
     } else if (isBirdKind(kind)) {
       base.canStep = false;
       base.speed = BIRD_SPEED;
@@ -8987,7 +9177,7 @@ function restoreOverworldMobs(list, opts) {
     if (nid == null) return;
     const cm = mobById.get(nid);
     if (!cm || e.parentIdx == null || e.parentIdx < 0 || e.parentIdx >= list.length) return;
-    if (cm.kind !== "villager" || !cm.isBaby) return;
+    if (!((cm.kind === "villager" && cm.isBaby) || cm.kind === "cat")) return;
     const pid = idByListIdx[e.parentIdx];
     if (pid == null) return;
     cm.parentId = pid;
@@ -9109,8 +9299,8 @@ function restoreDimMobs(list, dimName, opts) {
     const kind = mobKindFromCode(e.kind);
     if (kind === "dragon") continue;
     const isBaby = !!e.isBaby && kind === "villager";
-    const hw = isBirdKind(kind) ? 0.25 : kind === "wolf" ? 0.30 : (kind === "pig" || kind === "cow") ? 0.32 : kind === "enderman" ? ENDERMAN_HW : kind === "iron_golem" ? GOLEM_HW : (isBaby ? 0.16 : 0.27);
-    const hh = isBirdKind(kind) ? 0.5 : kind === "wolf" ? 0.90 : kind === "pig" ? 0.92 : kind === "cow" ? 1.30 : kind === "enderman" ? ENDERMAN_H : kind === "iron_golem" ? GOLEM_HH : (isBaby ? 0.98 : 1.82);
+    const hw = isBirdKind(kind) ? 0.25 : kind === "wolf" ? 0.30 : kind === "cat" ? CAT_HW : (kind === "pig" || kind === "cow") ? 0.32 : kind === "enderman" ? ENDERMAN_HW : kind === "iron_golem" ? GOLEM_HW : (isBaby ? 0.16 : 0.27);
+    const hh = isBirdKind(kind) ? 0.5 : kind === "wolf" ? 0.90 : kind === "cat" ? CAT_HH : kind === "pig" ? 0.92 : kind === "cow" ? 1.30 : kind === "enderman" ? ENDERMAN_H : kind === "iron_golem" ? GOLEM_HH : (isBaby ? 0.98 : 1.82);
     let sx = e.x, sy = e.y, sz = e.z;
     if (!isFinite(sx) || !isFinite(sy) || !isFinite(sz)) continue;
     sx = Math.max(-WORLD_RADIUS + 1, Math.min(WORLD_RADIUS - 1, sx));
@@ -9125,7 +9315,7 @@ function restoreDimMobs(list, dimName, opts) {
       sx = fixed.x; sy = fixed.y; sz = fixed.z;
     }
     const ryaw = isFinite(e.yaw) ? e.yaw : 0;
-    let mesh = null, palIdx = 0, collar = WOLF_COLLAR_COLORS[0], endermanVis = null;
+    let mesh = null, palIdx = 0, collar = WOLF_COLLAR_COLORS[0], endermanVis = null, catVar = 0;
     if (kind === "villager") {
       palIdx = (e.look >= 0 && e.look < VILLAGER_PALETTES.length) ? e.look : 0;
       mesh = makeVillagerMesh(isBaby, palIdx);
@@ -9133,7 +9323,10 @@ function restoreDimMobs(list, dimName, opts) {
     else if (kind === "cow") mesh = makeCowMesh();
     else if (kind === "pigeon") mesh = makeBirdMesh();
     else if (kind === "parrot") mesh = makeParrotMesh((e.look >= 0 && e.look < PARROT_VARIANT_COUNT) ? e.look : 0);
-    else if (kind === "enderman") {
+    else if (kind === "cat") {
+      catVar = (e.look >= 0 && e.look < CAT_ROBES.length) ? e.look : 0;
+      mesh = makeCatMesh(catVar);
+    } else if (kind === "enderman") {
       ensureEndermanAssets();
       endermanVis = makeEndermanMesh();
       mesh = endermanVis.g;
@@ -9147,7 +9340,7 @@ function restoreDimMobs(list, dimName, opts) {
     mesh.rotation.y = ryaw;
     scene.add(mesh);
     const base = {
-      id: gid++, kind, homeId: (kind === "villager" && e.homeId != null && e.homeId >= 0) ? e.homeId : -1, isBaby, parentId: -1, dim: dimName,
+      id: gid++, kind, homeId: ((kind === "villager" || kind === "cat") && e.homeId != null && e.homeId >= 0) ? e.homeId : -1, isBaby, parentId: -1, dim: dimName,
       pos: new THREE.Vector3(sx, sy, sz),
       vel: new THREE.Vector3(0, 0, 0),
       hw, h: hh, mesh, onGround: false,
@@ -9162,7 +9355,13 @@ function restoreDimMobs(list, dimName, opts) {
     if (kind === "villager") { base.canStep = false; base.speed = WALK / 2; base.sc = isBaby ? 0.52 : 1; base.palIdx = palIdx; }
     else if (kind === "pig" || kind === "cow") { base.canStep = false; base.speed = WALK / 2.2; if (e.penBound == null) base.penBound = false; base.sc = 1; }
     else if (kind === "iron_golem") { base.canStep = false; base.speed = WALK / 2; base.sc = 1; }
-    else if (isBirdKind(kind)) {
+    else if (kind === "cat") { base.canStep = true; base.speed = WALK / 2; base.catVar = catVar; base.sc = 1; base.wolfStepUp = false; base.wolfStepUpClearY = 0; base.wolfInWater = false; base.wasOnGroundWolf = false; }
+  else if (kind === "cat") {
+    mesh = makeCatMesh(pickCatRobe());
+    hw = CAT_HW; hh = CAT_HH; canStep = true;
+    extra = { catVar: mesh.userData.catVar, wolfStepUp: false, wolfStepUpClearY: 0, wolfInWater: false, wasOnGroundWolf: false };
+  }
+  else if (isBirdKind(kind)) {
       base.canStep = false; base.speed = BIRD_SPEED; base.sc = 1; base.arc = null; base.mode = "straight";
       if (kind === "parrot") base.parrotVar = mesh.userData.parrotVar;
       base.perchSpot = null; base.perchGroup = null; base.perchT = 0; base.perchWander = null; base.perchWanderT = 0;
@@ -9188,7 +9387,7 @@ function restoreDimMobs(list, dimName, opts) {
     if (nid == null) return;
     const cm = mobById.get(nid);
     if (!cm || e.parentIdx == null || e.parentIdx < 0 || e.parentIdx >= list.length) return;
-    if (cm.kind !== "villager" || !cm.isBaby) return;
+    if (!((cm.kind === "villager" && cm.isBaby) || cm.kind === "cat")) return;
     const pid = idByListIdx[e.parentIdx];
     if (pid == null) return;
     cm.parentId = pid;
@@ -9284,7 +9483,7 @@ function separateMobs() {
         let need = villagerHW(m) + villagerHW(o) + 0.18;
         if (!fleeingSelf) {
           const oflee = o.fleeUntil && performance.now() / 1000 < o.fleeUntil;
-          if (!oflee && ((m.isBaby && o.id === m.parentId) || (o.isBaby && o.parentId === m.id))) {
+          if (!oflee && mobBondedPair(m, o)) {
             need = (villagerHW(m) + villagerHW(o)) * 0.62 + 0.10;
           }
         }
@@ -9381,7 +9580,7 @@ function mobWouldCollide(mob, nx, nz) {
     let need = hw + villagerHW(o) + 0.04;
     if (!fleeingSelf) {
       const oflee = o.fleeUntil && performance.now() / 1000 < o.fleeUntil;
-      if (!oflee && ((mob.isBaby && o.id === mob.parentId) || (o.isBaby && o.parentId === mob.id))) {
+      if (!oflee && mobBondedPair(mob, o)) {
         need = (hw + villagerHW(o)) * 0.62 + 0.06;
       }
     }
@@ -9432,7 +9631,7 @@ function isHeadonWalker(m) {
   if (!m || isMobHeld(m) || isChained(m) || isMobFrozenByGrapple(m)) return false;
   if (m.dim !== undefined && m.dim !== dim) return false;
   if (isFlyingKind(m.kind) || m.kind === "dragon" || m.kind === "enderman") return false;
-  return !m.kind || m.kind === "villager" || m.kind === "pig" || m.kind === "cow" || m.kind === "wolf";
+  return !m.kind || m.kind === "villager" || m.kind === "pig" || m.kind === "cow" || m.kind === "wolf" || m.kind === "cat";
 }
 function headonSidestepOk(m, tx, tz) {
   if (aabbCollidesWorld(tx, m.pos.y, tz, m.hw, m.h)) return false;
@@ -9481,7 +9680,7 @@ function resolveHeadOn() {
       if (nowS < (b._headonCooldown || 0)) continue;
       if (Math.hypot(b.vel.x, b.vel.z) < 0.5) continue;
       if (Math.abs(a.pos.y - b.pos.y) > 1.2) continue;
-      if ((a.isBaby && b.id === a.parentId) || (b.isBaby && b.parentId === a.id)) continue;
+      if (mobBondedPair(a, b)) continue;
       const dx = b.pos.x - a.pos.x, dz = b.pos.z - a.pos.z;
       const d = Math.hypot(dx, dz);
       if (d > HEADON_DIST || d < 0.0001) continue;
@@ -9755,7 +9954,7 @@ function updateMobs(dt) {
     addVisit(m.pos.x, m.pos.z);
     if (aabbCollidesWorld(m.pos.x, m.pos.y, m.pos.z, m.hw, m.h)) { mobInvariantsViolated++; if (mobStats) mobStats.invariants++; }
     // Step-capable mobs (wolves) — instant step, no block feeling (leave the village when panicking inside it, or flee away outside)
-    if (m.canStep) {
+    if (m.canStep && m.kind !== "cat") {
       if (m.fleeUntil != null && now < m.fleeUntil) {
         if (m._outsideFlee || m._villageFlee) {
           m.speed = WALK * 2;
@@ -9895,9 +10094,10 @@ function updateMobs(dt) {
         m.target = dest;
       }
     } else {
-      // wander / follow — babies without an available parent wander like adults
-      if (m.isBaby && now >= (m.fleeUntil || 0)) {
-        const p = babyParentFor(m);
+      // wander / follow — babies and cats without an available parent wander like adults
+      const followKind = m.isBaby || m.kind === "cat";
+      if (followKind && now >= (m.fleeUntil || 0)) {
+        const p = m.isBaby ? babyParentFor(m) : catParentFor(m);
         if (p) {
           const pd = Math.hypot(p.pos.x - m.pos.x, p.pos.z - m.pos.z);
           const ph = villageHouses[p.homeId], mh = villageHouses[m.homeId];
@@ -9911,7 +10111,7 @@ function updateMobs(dt) {
           } else if (pd > 2.0 || (m.mode === "follow" && pd > 1.2)) {
             m.mode = "follow";
             m.speed = WALK / 2 * 1.3;
-            m.target = babyTrailSpot(m, p);
+            m.target = m.isBaby ? babyTrailSpot(m, p) : catTrailSpot(m, p);
           } else if (pd < 1.2 && m.target && Math.hypot(m.target.x - p.pos.x, m.target.z - p.pos.z) < 1) {
             // stay near parent
             if (m.mode === "follow") m.mode = "wander";
@@ -9921,7 +10121,7 @@ function updateMobs(dt) {
             m.speed = WALK / 2;
             m.target = { x: p.pos.x + (Math.random()-0.5)*2, z: p.pos.z + (Math.random()-0.5)*2 };
           } else if (m.mode === "follow") {
-            m.target = babyTrailSpot(m, p);
+            m.target = m.isBaby ? babyTrailSpot(m, p) : catTrailSpot(m, p);
           }
         } else if (m.mode === "follow") {
           m.mode = "wander";
@@ -9944,7 +10144,7 @@ function updateMobs(dt) {
       }
       if (m.target && Math.hypot(m.target.x - m.pos.x, m.target.z - m.pos.z) < 0.6) {
         if (m.mode === "wander") {
-          const bp = m.isBaby ? babyParentFor(m) : null;
+          const bp = m.isBaby ? babyParentFor(m) : (m.kind === "cat" ? catParentFor(m) : null);
           if (bp && Math.hypot(bp.pos.x - m.pos.x, bp.pos.z - m.pos.z) < 6) {
             m.target = { x: bp.pos.x + (Math.random()-0.5)*2, z: bp.pos.z + (Math.random()-0.5)*2 };
           } else if (m.villageBound === false) {
@@ -9958,7 +10158,7 @@ function updateMobs(dt) {
     }
     // TNT panic override — fleeing takes precedence over mode dispatch
     // Hardcoded: fleeing villagers hard-converge to the CENTRE of their house
-    if ((!m.kind || m.kind === "villager") && m.fleeUntil != null && now < m.fleeUntil) {
+    if ((!m.kind || m.kind === "villager" || m.kind === "cat") && m.fleeUntil != null && now < m.fleeUntil) {
       m.speed = WALK * 2;
       if (dim !== "over") {
         m.wanderT -= dt;
@@ -9992,7 +10192,7 @@ function updateMobs(dt) {
       }
       }
       }
-    } else if ((!m.kind || m.kind === "villager") && m.fleeUntil) { m.fleeUntil = 0; m.speed = WALK / 2; delete m._outsideFlee; delete m._fleeSrcX; delete m._fleeSrcZ; }
+    } else if ((!m.kind || m.kind === "villager" || m.kind === "cat") && m.fleeUntil) { m.fleeUntil = 0; m.speed = WALK / 2; delete m._outsideFlee; delete m._fleeSrcX; delete m._fleeSrcZ; }
 
     // Pine planting task (Overworld adult villagers only): walk to a claimed
     // growable soil, bow the neck 40deg toward it for 1.5s while the 2.5s
@@ -10335,7 +10535,7 @@ function updateMobs(dt) {
         const fleeingSelf = m.fleeUntil && performance.now() / 1000 < m.fleeUntil;
         if (!fleeingSelf) {
           const oflee = o.fleeUntil && performance.now() / 1000 < o.fleeUntil;
-          if (!oflee && ((m.isBaby && o.id === m.parentId) || (o.isBaby && o.parentId === m.id))) need = (villagerHW(m) + villagerHW(o)) * 0.62 + 0.22;
+          if (!oflee && mobBondedPair(m, o)) need = (villagerHW(m) + villagerHW(o)) * 0.62 + 0.22;
         }
         if (Math.abs(m.pos.y - o.pos.y) > 1.2) continue;
         const dx = m.pos.x - o.pos.x, dz = m.pos.z - o.pos.z;
@@ -10437,7 +10637,7 @@ function updateMobs(dt) {
         m.vel.x = td.x * (WALK / 2) * 0.6; m.vel.z = td.z * (WALK / 2) * 0.6;
         m.steerX = m.vel.x; m.steerZ = m.vel.z; m.steerCooldown = 0.6;
       } else if (m.canStep && isJumpingKind(m.kind)) {
-        m.target = wanderGoalForWolf(m);
+        m.target = m.kind === "cat" ? wanderGoalFor(m) : wanderGoalForWolf(m);
         m.path = null; m.pathKey = null;
         const td = obstacleTurnDir(m, probeFree);
         m.vel.x = td.x * (WALK / 2) * 0.6; m.vel.z = td.z * (WALK / 2) * 0.6;
@@ -10595,7 +10795,7 @@ function resumeMobPanic(m, e) {
   else { delete m._outsideFlee; delete m._fleeSrcX; delete m._fleeSrcZ; }
   m.steerCooldown = 0; m.path = null; m.pathKey = null;
   if (dim === "over" && !(flags & 1)) {
-    if ((!m.kind || m.kind === "villager")) {
+    if ((!m.kind || m.kind === "villager" || m.kind === "cat")) {
       const house = villageHouses[m.homeId];
       if (house) {
         const centre = { x: house.cx + 0.5, z: house.cz + 0.5 };
@@ -10672,6 +10872,45 @@ function panicVillagers(cx, cy, cz) {
     const inHome = m.pos.x > house.minX && m.pos.x < house.maxX && m.pos.z > house.minZ && m.pos.z < house.maxZ;
     if (inHome) {
       m.insideT = Math.max(m.insideT, VILLAGER_PANIC_TIME);
+      m.mode = "inside";
+      m.target = centre;
+    } else {
+      m.mode = "goOut";
+      m.target = centre;
+      m.path = null; m.pathKey = null; m.wanderT = 99;
+    }
+  }
+}
+function panicCats(cx, cy, cz) {
+  if (!mobs.length) return;
+  if (dim === "over" && !villageHouses.length) return;
+  if (dim === "over" && !blastInVillageSq(cx, cy, cz)) return;
+  const now = performance.now() / 1000;
+  for (const m of mobs) {
+    if (isMobHeld(m)) continue;
+    if (isChained(m)) continue;
+    if (m.dim !== undefined && m.dim !== dim) continue;
+    if (m.kind !== "cat") continue;
+    if (dim === "over" && !mobInVillageSq(m)) continue;
+    if (dim !== "over") {
+      const dx = m.pos.x - cx, dy = m.pos.y - cy, dz = m.pos.z - cz;
+      if (Math.hypot(dx, dy, dz) > OUTSIDE_PANIC_DIST) continue;
+      m.fleeUntil = Math.max(m.fleeUntil || 0, now + PANIC_TIME);
+      m.speed = WALK * 2;
+      m._outsideFlee = true; m._fleeSrcX = cx; m._fleeSrcZ = cz;
+      m.target = fleePointAway(m, cx, cz);
+      m.wanderT = 1.2 + Math.random() * 0.8; m.steerCooldown = 0; m.path = null; m.pathKey = null;
+      continue;
+    }
+    const stagger = Math.random() * 3;
+    m.fleeUntil = Math.max(m.fleeUntil || 0, now + VILLAGER_PANIC_TIME + stagger);
+    m.speed = WALK * 2;
+    const house = villageHouses[m.homeId];
+    if (!house) continue;
+    const centre = { x: house.cx + 0.5, z: house.cz + 0.5 };
+    const inHome = m.pos.x > house.minX && m.pos.x < house.maxX && m.pos.z > house.minZ && m.pos.z < house.maxZ;
+    if (inHome) {
+      m.insideT = Math.max(m.insideT, VILLAGER_PANIC_TIME + stagger);
       m.mode = "inside";
       m.target = centre;
     } else {
@@ -10949,7 +11188,7 @@ function panicSingleMob(m, cx, cy, cz, force) {
 }
 function handleMobExplosion(cx, cy, cz) {
   if (blastInVillageSq(cx, cy, cz)) villagePanicUntil = performance.now() / 1000 + VILLAGE_PANIC_TIME;
-  if (dim === "over" || dim === "nether") { panicVillagers(cx, cy, cz); panicPenMobs(cx, cy, cz); panicWolves(cx, cy, cz); }
+  if (dim === "over" || dim === "nether") { panicVillagers(cx, cy, cz); panicCats(cx, cy, cz); panicPenMobs(cx, cy, cz); panicWolves(cx, cy, cz); }
   panicGeneric(cx, cy, cz);
 }
 
@@ -12747,7 +12986,7 @@ function moveMobAxisX(mob, dx) {
         const fleeingSelf = mob.fleeUntil && performance.now() / 1000 < mob.fleeUntil;
         if (!fleeingSelf) {
           const oflee = o.fleeUntil && performance.now() / 1000 < o.fleeUntil;
-          if (!oflee && ((mob.isBaby && o.id === mob.parentId) || (o.isBaby && o.parentId === mob.id))) need = (villagerHW(mob) + villagerHW(o)) * 0.62 + 0.06;
+          if (!oflee && mobBondedPair(mob, o)) need = (villagerHW(mob) + villagerHW(o)) * 0.62 + 0.06;
         }
         if (Math.abs(mob.pos.y - o.pos.y) > 1.2) continue;
         const dNew = Math.hypot(mob.pos.x - o.pos.x, mob.pos.z - o.pos.z);
@@ -12819,7 +13058,7 @@ function moveMobAxisZ(mob, dz) {
         const fleeingSelf = mob.fleeUntil && performance.now() / 1000 < mob.fleeUntil;
         if (!fleeingSelf) {
           const oflee = o.fleeUntil && performance.now() / 1000 < o.fleeUntil;
-          if (!oflee && ((mob.isBaby && o.id === mob.parentId) || (o.isBaby && o.parentId === mob.id))) need = (villagerHW(mob) + villagerHW(o)) * 0.62 + 0.06;
+          if (!oflee && mobBondedPair(mob, o)) need = (villagerHW(mob) + villagerHW(o)) * 0.62 + 0.06;
         }
         if (Math.abs(mob.pos.y - o.pos.y) > 1.2) continue;
         const dNew = Math.hypot(mob.pos.x - o.pos.x, mob.pos.z - o.pos.z);
@@ -12979,7 +13218,7 @@ function wolfMoveAxisX(mob, dx) {
         const fleeingSelf = mob.fleeUntil && performance.now() / 1000 < mob.fleeUntil;
         if (!fleeingSelf) {
           const oflee = o.fleeUntil && performance.now() / 1000 < o.fleeUntil;
-          if (!oflee && ((mob.isBaby && o.id === mob.parentId) || (o.isBaby && o.parentId === mob.id))) need = (villagerHW(mob) + villagerHW(o)) * 0.62 + 0.06;
+          if (!oflee && mobBondedPair(mob, o)) need = (villagerHW(mob) + villagerHW(o)) * 0.62 + 0.06;
         }
         if (Math.abs(mob.pos.y - o.pos.y) > 1.2) continue;
         const dNew = Math.hypot(mob.pos.x - o.pos.x, mob.pos.z - o.pos.z);
@@ -13025,7 +13264,7 @@ function wolfMoveAxisZ(mob, dz) {
         const fleeingSelf = mob.fleeUntil && performance.now() / 1000 < mob.fleeUntil;
         if (!fleeingSelf) {
           const oflee = o.fleeUntil && performance.now() / 1000 < o.fleeUntil;
-          if (!oflee && ((mob.isBaby && o.id === mob.parentId) || (o.isBaby && o.parentId === mob.id))) need = (villagerHW(mob) + villagerHW(o)) * 0.62 + 0.06;
+          if (!oflee && mobBondedPair(mob, o)) need = (villagerHW(mob) + villagerHW(o)) * 0.62 + 0.06;
         }
         if (Math.abs(mob.pos.y - o.pos.y) > 1.2) continue;
         const dNew = Math.hypot(mob.pos.x - o.pos.x, mob.pos.z - o.pos.z);
@@ -18259,7 +18498,7 @@ function serialize() {
   const dv = new DataView(buf);
   let o = 0;
   new Uint8Array(buf, o, 9).set(SAVE_MAGIC); o += 9;
-  dv.setUint8(o++, 31); // format version
+  dv.setUint8(o++, 32); // format version
   dv.setUint8(o++, dim === "end" ? 1 : dim === "nether" ? 2 : 0);
   dv.setInt32(o, seed, true); o += 4;
   dv.setInt32(o, endSeed, true); o += 4;
@@ -18495,7 +18734,7 @@ function deserialize(buf) {
   for (let i = 0; i < 9; i++) if (new Uint8Array(buf, o, 9)[i] !== SAVE_MAGIC[i]) throw new Error("Not a MiniCraft save");
   o += 9;
   const ver = dv.getUint8(o++);
-  if (ver !== 1 && ver !== 2 && ver !== 3 && ver !== 4 && ver !== 5 && ver !== 6 && ver !== 7 && ver !== 8 && ver !== 9 && ver !== 10 && ver !== 11 && ver !== 12 && ver !== 13 && ver !== 14 && ver !== 15 && ver !== 16 && ver !== 17 && ver !== 18 && ver !== 19 && ver !== 20 && ver !== 21 && ver !== 22 && ver !== 23 && ver !== 24 && ver !== 25 && ver !== 26 && ver !== 27 && ver !== 28 && ver !== 29 && ver !== 30 && ver !== 31) throw new Error("Unsupported save version");
+  if (ver !== 1 && ver !== 2 && ver !== 3 && ver !== 4 && ver !== 5 && ver !== 6 && ver !== 7 && ver !== 8 && ver !== 9 && ver !== 10 && ver !== 11 && ver !== 12 && ver !== 13 && ver !== 14 && ver !== 15 && ver !== 16 && ver !== 17 && ver !== 18 && ver !== 19 && ver !== 20 && ver !== 21 && ver !== 22 && ver !== 23 && ver !== 24 && ver !== 25 && ver !== 26 && ver !== 27 && ver !== 28 && ver !== 29 && ver !== 30 && ver !== 31 && ver !== 32) throw new Error("Unsupported save version");
   const yWidth = ver >= 8 ? 2 : 1;
   const readY = () => { const y = yWidth === 2 ? dv.getUint16(o, true) : dv.getUint8(o); o += yWidth; return y; };
   placedFlowers.clear();
@@ -20375,7 +20614,7 @@ if (location.search.includes('test')) {
     getTypeMats, get typeMats(){ return typeMats; }, buildWorld, generateWorld, generateMoonLakes, get moonLakesGenerated(){ return moonLakesGenerated; }, computeVillageLayout, spawnVillagers, refreshBlocks, rebuildMeshes, get chunkMeshes(){ return chunkMeshes; }, get boxGeo(){ return boxGeo; }, THREE,
     get pos(){ return pos; }, get vel(){ return vel; }, get camera(){ return camera; }, get scene(){ return scene; }, get freeCam(){ return freeCam; }, set freeCam(v){ freeCam = v; }, get camPos(){ return camPos; }, get yaw(){ return yaw; }, set yaw(v){ yaw=v; }, get pitch(){ return pitch; }, set pitch(v){ pitch=v; },
     get carryMob(){ return carryMob; }, set carryMob(v){ carryMob = v; }, handleCarryEnterDown, handleCarryEnterUp, pickMob, get carryGrappleActive(){ return carryGrappleActive; }, get carryGrapplePulling(){ return carryGrapplePulling; }, get carryGrappleMob(){ return carryGrappleMob; }, get carryGrappleBlock(){ return carryGrappleBlock; }, get carryGrappleHookPos(){ return carryGrappleHookPos; }, get carryGrappleOffset(){ return carryGrappleOffset; }, get carryGrappleMode(){ return carryGrappleMode; }, get isMobFrozenByGrapple(){ return isMobFrozenByGrapple; }, isChained, isChainCarrier, chainRootOf, chainTailOf, linkChain, dropChainFrom, chainTakeForCarry, severChainMob, groundChainFrom, insertChainBefore, insertChainBehind, insertBehindRide, prependChainLead, clearChains, pruneChains, updateChains, syncChainLinkColor, syncChainLinkColors, syncGrappleColor, stampSpawn, get mobById(){ return mobById; }, chainAttachTarget, startCarryAttachGrapple, killChainMob, respawnChainMob, unchainMob, severGroundedChainVictim, isGroundedChainVictim, get chainLinks(){ return chainLinks; }, get chainParent(){ return chainParent; }, get chainChild(){ return chainChild; }, playerChainAvatar, playerInChain, PLAYER_CHAIN_ID, spliceChainLink, chainHasJumping, chainPushCrumb, chainTrailTarget, latchPlayerTo, latchPlayerInMiddle, playerInsertCutAndLink, insertChainAheadOfPlayer, insertChainBehindPlayer, playerLeadLink, dropPlayerLeadEntry, readyLeadForLatch, leadAwareLatchInsert, appendCutFollowerBehindLeadTail, grabRideForCarry, fireGrapple, detachDisplacementGrapple, get grappleActive(){ return grappleActive; }, get grappleHooked(){ return grappleHooked; }, get grappleRetracting(){ return grappleRetracting; }, get grappleMob(){ return grappleMob; }, get grappleMobOffset(){ return grappleMobOffset; }, get grappleHookPos(){ return grappleHookPos; }, get grappleTarget(){ return grappleTarget; }, updateCarryGrapple, updateCarry, get currentBlock(){ return currentBlock; }, updateTarget, hotbarList, placeBlock, breakBlock, get selected(){ return selected; }, set selected(v){ selected=v; }, toggleCarry: handleCarryEnterDown, findNearestMobForGrab: (...a)=>{ const d=new THREE.Vector3(); camera.getWorldDirection(d); return pickMob(d); }, get playerArms(){ return playerArms; }, get started(){ return started; }, set started(v){ started=v; }, get loading(){ return loading; }, get freeCam(){ return freeCam; }, set freeCam(v){ freeCam=v; }, get helpOpen(){ return helpOpen; },
-    get WOLF_COUNT(){ return WOLF_COUNT; }, get GOLEM_COUNT(){ return GOLEM_COUNT; }, get GOLEM_HW(){ return GOLEM_HW; }, get GOLEM_HH(){ return GOLEM_HH; }, makeWolfMesh, makeIronGolemMesh, villagerHW, villagerH, wolfHasMobGround, wolfBlockedAt, wolfProbeFree, wanderGoalForWolf, wolfFindPath, wolfFlatSpot, wolfLeaveTarget, panicLeaveDir, panicWolves, wolfInWater, mobInWater, waterSurfaceForMob, mobPhysicsStep, wolfPhysicsStep, updateMobs, obstacleTurnDir, buildMobGrid,     get isPigCow(){ return isPigCow; }, get pigOverlapsFence(){ return pigOverlapsFence; }, pigFenceSlideOut, get MOB_FLOAT_FRAC(){ return MOB_FLOAT_FRAC; }, mobFloatTargetY, mobWaterExitJump, poolExitTarget, penPoolExitTarget, isInsidePenPool, moonLakeExitTarget, isMobInPoolWater, isMobInMoonLake, get BATH_MIN_T(){ return BATH_MIN_T; }, get BATH_MAX_T(){ return BATH_MAX_T; },
+    get WOLF_COUNT(){ return WOLF_COUNT; }, get GOLEM_COUNT(){ return GOLEM_COUNT; }, get GOLEM_HW(){ return GOLEM_HW; }, get GOLEM_HH(){ return GOLEM_HH; }, get CAT_COUNT(){ return CAT_COUNT; }, get CAT_HW(){ return CAT_HW; }, get CAT_HH(){ return CAT_HH; }, makeWolfMesh, makeCatMesh, pickCatRobe, catParentFor, catTrailSpot, panicCats, makeIronGolemMesh, villagerHW, villagerH, wolfHasMobGround, wolfBlockedAt, wolfProbeFree, wanderGoalForWolf, wolfFindPath, wolfFlatSpot, wolfLeaveTarget, panicLeaveDir, panicWolves, wolfInWater, mobInWater, waterSurfaceForMob, mobPhysicsStep, wolfPhysicsStep, updateMobs, obstacleTurnDir, buildMobGrid,     get isPigCow(){ return isPigCow; }, get pigOverlapsFence(){ return pigOverlapsFence; }, pigFenceSlideOut, get MOB_FLOAT_FRAC(){ return MOB_FLOAT_FRAC; }, mobFloatTargetY, mobWaterExitJump, poolExitTarget, penPoolExitTarget, isInsidePenPool, moonLakeExitTarget, isMobInPoolWater, isMobInMoonLake, get BATH_MIN_T(){ return BATH_MIN_T; }, get BATH_MAX_T(){ return BATH_MAX_T; },
     get BIRD_COUNT(){ return BIRD_COUNT; }, get BIRD_MIN_Y(){ return BIRD_MIN_Y; }, get BIRD_MAX_Y(){ return BIRD_MAX_Y; }, get BIRD_SPEED(){ return BIRD_SPEED; }, get TNT_HOME_SPEED(){ return TNT_HOME_SPEED; }, get BIRD_AIM_DIST(){ return BIRD_AIM_DIST; }, get BIRD_LOCK_TIME(){ return BIRD_LOCK_TIME; }, get birdLock(){ return birdLock; }, get birdLockT(){ return birdLockT; }, set birdLockT(v){ birdLockT = v; }, get birdLockShots(){ return birdLockShots; }, liveBirdLock, tntTargeted, tryFireLockedTNT, tntChainAimMob, aimOnMob, get chainBreaking(){ return chainBreaking; }, set chainBreaking(v){ chainBreaking = v; },     makeBirdMesh, spawnBirds, spawnSingleBird, removeBirds, spawnBirdChain, updateBird, updatePerchedBird, updateToPerchBird, birdTakeoff, birdNextLeg, birdFindPerchSpot, birdCloudTopAt, birdTreeTopAt, birdRoofTopAt, birdPerchBand, birdPerchSupports, killBird, birdSpotOutOfView, birdProbeFree, birdRandomTarget, birdSeparate,     houseInteriorFor, houseMouths, birdCoopTarget,     birdSegmentFree, birdClearance, birdBestSteer, birdMillHop, birdConfinedSteer, birdMoveSlide, bandReturnTarget, birdNoticeBreak, setMobTransparent, birdIsConfined, birdHoleCell, chainSegmentFree, chainThreadRide, birdTunnelPlan, updateTunnelBird, birdTunnelSeparate, birdSkyClear, birdSidestep, birdUTurn, birdNarrow, birdColHW, birdColH,     get BIRD_NARROW_SCALE(){ return BIRD_NARROW_SCALE; }, get BIRD_SKY_CLEAR(){ return BIRD_SKY_CLEAR; }, get NETHER_BIRD_MIN_Y(){ return NETHER_BIRD_MIN_Y; }, get NETHER_BIRD_MAX_Y(){ return NETHER_BIRD_MAX_Y; }, birdDimOf, birdBandMinFor, birdBandMaxFor, birdBandMin, birdBandMax, birdNetherLegY, netherBirdCeiling, birdLavaAt, get BIRD_TUNNEL_SCALE(){ return BIRD_TUNNEL_SCALE; }, get BIRD_COL_HW(){ return BIRD_COL_HW; }, get BIRD_COL_H(){ return BIRD_COL_H; },     get tntLit(){ return tntLit; }, get explosionQueue(){ return explosionQueue; }, get tntEta(){ return tntEta; }, get pendingTNTBombs(){ return pendingTNTBombs; }, get pendingTNTEta(){ return pendingTNTEta; }, get bursts(){ return bursts; }, get flashes(){ return flashes; }, snapshotLiveFx, replayLiveFx, spawnExplosion, igniteTNT, fireTNTAtBird, purgeLiveTNT, tickTNT, snapshotLiveTNT, restoreLiveTNT, get pendingDragon(){ return pendingDragon; }, get tntEta(){ return tntEta; }, igniteTNT, aimedBird, fireTNTAtBird, explodeBird, spawnBirdBurst, get bursts(){ return bursts; }, get flashes(){ return flashes; }, updateTNTTarget, tickTNT, fireGrapple, updateGrapple, updatePlayer, get grappleActive(){ return grappleActive; }, get grapplePulling(){ return grapplePulling; }, get grappleHooked(){ return grappleHooked; },
     get overPortalWin(){ return overPortalWin; }, get overPortalDir(){ return overPortalDir; }, get overPortalSpawn(){ return overPortalSpawn; }, get overPortalFace(){ return overPortalFace; },
     portalWinValid, portalFrameBBox, findReturnSpot, frameTopSpot, facePortalFrom, faceAwayFromPortal, recordOverPortal, recordDimExit, resolveDimArrival, nearestReturnWin, resolveOverworldReturn, nearPortalSpawn, resolveSpawn, collectEndWins, collectNetherWins, collectReturnWins, insideEndInterior, insideNetherInterior, winCenter, windowDist, isSolid,
