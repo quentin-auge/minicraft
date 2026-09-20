@@ -1590,6 +1590,9 @@ const VILLAGE_PEN_POOL_DEPTH = 1;
 const PIG_COUNT = 4;
 const COW_COUNT = 4;
 const WOLF_COUNT = 20;
+const GOLEM_COUNT = 1;
+const GOLEM_HW = 0.6;
+const GOLEM_HH = 3.6;
 const PIGEON_COUNT = 50;
 const PIGEON_MIN_Y = 50;
 const PIGEON_SEP_DIST = 2.5;
@@ -3299,6 +3302,95 @@ function makeCowMesh() {
   g.userData = { sc, legBL, legBR, legFL, legFR, body, head, kind: "cow" };
   return g;
 }
+const golemIronMat = new THREE.MeshStandardMaterial({ color: 0xdfe3e6, roughness: 0.85 });
+const golemIronDarkMat = new THREE.MeshStandardMaterial({ color: 0xb9bdc1, roughness: 0.9 });
+const golemBrowMat = new THREE.MeshStandardMaterial({ color: 0x6e6a63, roughness: 0.9 });
+const golemNoseMat = new THREE.MeshStandardMaterial({ color: 0x7a6a58, roughness: 0.9 });
+const golemMossMat = new THREE.MeshStandardMaterial({ color: 0x5d8a3c, roughness: 0.95 });
+const golemMossLightMat = new THREE.MeshStandardMaterial({ color: 0x8aa83e, roughness: 0.95 });
+const golemEyeMat = new THREE.MeshBasicMaterial({ color: 0x8b0000 });
+function makeIronGolemMesh() {
+  const g = new THREE.Group();
+  const sc = 1;
+  if (!villagerGeo) villagerGeo = new THREE.BoxGeometry(1, 1, 1);
+  const geo = villagerGeo;
+  const legL = new THREE.Mesh(geo, golemIronDarkMat);
+  legL.scale.set(0.44 * sc, 1.0 * sc, 0.52 * sc);
+  legL.position.set(-0.30 * sc, 0.5 * sc, 0);
+  g.add(legL);
+  const legR = new THREE.Mesh(geo, golemIronDarkMat);
+  legR.scale.set(0.44 * sc, 1.0 * sc, 0.52 * sc);
+  legR.position.set(0.30 * sc, 0.5 * sc, 0);
+  g.add(legR);
+  const body = new THREE.Mesh(geo, golemIronMat);
+  body.scale.set(1.5 * sc, 1.5 * sc, 0.95 * sc);
+  body.position.set(0, 1.75 * sc, 0);
+  g.add(body);
+  const moss1 = new THREE.Mesh(geo, golemMossMat);
+  moss1.scale.set(0.55 * sc, 0.8 * sc, 0.04 * sc);
+  moss1.position.set(-0.3 * sc, 1.7 * sc, 0.49 * sc);
+  g.add(moss1);
+  const moss2 = new THREE.Mesh(geo, golemMossMat);
+  moss2.scale.set(0.4 * sc, 0.5 * sc, 0.04 * sc);
+  moss2.position.set(0.38 * sc, 1.35 * sc, 0.49 * sc);
+  g.add(moss2);
+  const moss3 = new THREE.Mesh(geo, golemMossMat);
+  moss3.scale.set(0.04 * sc, 0.9 * sc, 0.5 * sc);
+  moss3.position.set(0.76 * sc, 1.8 * sc, 0);
+  g.add(moss3);
+  const mossDot = new THREE.Mesh(geo, golemMossLightMat);
+  mossDot.scale.set(0.2 * sc, 0.2 * sc, 0.04 * sc);
+  mossDot.position.set(-0.05 * sc, 2.15 * sc, 0.49 * sc);
+  g.add(mossDot);
+  const armL = new THREE.Group();
+  armL.position.set(-1.02 * sc, 2.45 * sc, 0);
+  const armLMesh = new THREE.Mesh(geo, golemIronMat);
+  armLMesh.scale.set(0.5 * sc, 2.1 * sc, 0.5 * sc);
+  armLMesh.position.set(0, -1.0 * sc, 0);
+  armL.add(armLMesh);
+  const armLMoss = new THREE.Mesh(geo, golemMossMat);
+  armLMoss.scale.set(0.52 * sc, 0.5 * sc, 0.52 * sc);
+  armLMoss.position.set(0, -0.55 * sc, 0);
+  armL.add(armLMoss);
+  g.add(armL);
+  const armR = new THREE.Group();
+  armR.position.set(1.02 * sc, 2.45 * sc, 0);
+  const armRMesh = new THREE.Mesh(geo, golemIronMat);
+  armRMesh.scale.set(0.5 * sc, 2.1 * sc, 0.5 * sc);
+  armRMesh.position.set(0, -1.0 * sc, 0);
+  armR.add(armRMesh);
+  const armRMoss = new THREE.Mesh(geo, golemMossMat);
+  armRMoss.scale.set(0.52 * sc, 0.5 * sc, 0.52 * sc);
+  armRMoss.position.set(0, -1.3 * sc, 0);
+  armR.add(armRMoss);
+  g.add(armR);
+  const head = new THREE.Mesh(geo, golemIronMat);
+  head.scale.set(1.0 * sc, 1.0 * sc, 1.0 * sc);
+  head.position.set(0, 3.0 * sc, 0);
+  g.add(head);
+  const brow = new THREE.Mesh(geo, golemBrowMat);
+  brow.scale.set(1.02 * sc, 0.2 * sc, 1.02 * sc);
+  brow.position.set(0, 3.18 * sc, 0);
+  g.add(brow);
+  const nose = new THREE.Mesh(geo, golemNoseMat);
+  nose.scale.set(0.24 * sc, 0.5 * sc, 0.2 * sc);
+  nose.position.set(0, 2.82 * sc, 0.55 * sc);
+  g.add(nose);
+  const eyeL = new THREE.Mesh(geo, golemEyeMat);
+  eyeL.scale.set(0.14 * sc, 0.18 * sc, 0.04 * sc);
+  eyeL.position.set(-0.22 * sc, 3.02 * sc, 0.51 * sc);
+  g.add(eyeL);
+  const eyeR = new THREE.Mesh(geo, golemEyeMat);
+  eyeR.scale.set(0.14 * sc, 0.18 * sc, 0.04 * sc);
+  eyeR.position.set(0.22 * sc, 3.02 * sc, 0.51 * sc);
+  g.add(eyeR);
+  const headMoss = new THREE.Mesh(geo, golemMossMat);
+  headMoss.scale.set(0.04 * sc, 0.5 * sc, 0.4 * sc);
+  headMoss.position.set(0.51 * sc, 2.9 * sc, 0.1 * sc);
+  g.add(headMoss);
+  g.userData = { sc, legL, legR, armL, armR, body, head, kind: "iron_golem" };
+  return g;
+}
 function makeWolfMesh(furHex, collarHex) {
   const g = new THREE.Group();
   const sc = 1;
@@ -4683,6 +4775,7 @@ function villagerHW(m) {
   if (m.kind === "pigeon") return 0.25;
   if (m.kind === "wolf") return 0.30;
   if (m.kind === "pig" || m.kind === "cow") return 0.32;
+  if (m.kind === "iron_golem") return GOLEM_HW;
   return m.isBaby ? 0.16 : 0.27;
 }
 function villagerH(m) {
@@ -4692,6 +4785,7 @@ function villagerH(m) {
   if (m.kind === "wolf") return 0.90;
   if (m.kind === "pig") return 0.92;
   if (m.kind === "cow") return 1.30;
+  if (m.kind === "iron_golem") return GOLEM_HH;
   return m.isBaby ? 0.98 : 1.82;
 }
 function doorBlocked(h) {
@@ -4995,6 +5089,7 @@ function isJumpingKind(kind) {
   return kind === "wolf";
 }
 function chainAttachModeFor(carriedKind, target) {
+  if (target && target.kind === "iron_golem") return "behind";
   if (isFlyingKind(carriedKind) && !isFlyingKind(target.kind) && chainRootOf(target) === target) {
     return "prepend";
   }
@@ -5264,6 +5359,7 @@ function linkChain(carrier, child) {
   if (!carrierIsPlayer && !mobs.includes(carrier)) return false;
   if (!mobs.includes(child)) return false;
   if (child.kind === "dragon") return false;
+  if (child.kind === "iron_golem") return false;
   if (isChained(child) || (chainChild.has(child.id) && chainParent.has(child.id))) return false;
   if (child === carryMob || child === carryGrappleMob) return false;
   if (carrier === carryMob || carrier === carryGrappleMob) return false;
@@ -6480,6 +6576,7 @@ function startCarryGrabGrapple() {
   const mob = pickMob(dir);
   if (!mob) return false;
   if (mob.kind === "dragon") { showMsg("The dragon is too powerful to grab"); return false; }
+  if (mob.kind === "iron_golem") { showMsg("The iron golem refuses to be carried"); return false; }
   const eye = camera.position;
   const off = getMobHitOffset(eye, dir, mob);
   if (mob.kind === "enderman") carryGrappleOffset.set(0, mob.h * 0.5, 0);
@@ -7283,7 +7380,7 @@ function wanderGoalFor(m) {
     if (isInsidePool(x, z)) continue;
     if (isInsidePenPool(x, z)) continue;
     if (x < villageMinX + 1 || x > villageMaxX - 1 || z < villageMinZ + 1 || z > villageMaxZ - 1) continue;
-    if (mobBlockedAt(x, z, m.hw, villageCenter.y + 1)) continue;
+    if (mobBlockedAt(x, z, m.hw, villageCenter.y + 1, m.h)) continue;
     if (aabbCollidesWorld(x, villageCenter.y + 1, z, m.hw, m.h)) continue;
     const ix = Math.floor(x), iz = Math.floor(z);
     const dCur = Math.hypot(ix - m.pos.x, iz - m.pos.z);
@@ -7565,7 +7662,7 @@ function mobBlockedAt(x, z, hw, y, h) {
 }
 function mobProbeFree(x, z, dirX, dirZ, maxDist, hw, y) {
   const py = y != null ? y : villageCenter.y + 1;
-  const h = hw <= 0.18 ? 0.98 : 1.82;
+  const h = hw >= GOLEM_HW ? GOLEM_HH : (hw <= 0.18 ? 0.98 : 1.82);
   const startInside = x >= villageMinX && x <= villageMaxX && z >= villageMinZ && z <= villageMaxZ;
   const startHasGround = hasMobGround(x, z, hw, py);
   const steps = Math.ceil(maxDist / 0.28);
@@ -7928,8 +8025,9 @@ function spawnVillagers() {
   const villagerCount = () => mobs.filter((m) => (m.dim === "over" || m.dim === undefined) && (!m.kind || m.kind === "villager")).length;
   const livestockCount = () => mobs.filter((m) => (m.dim === "over" || m.dim === undefined) && (m.kind === "pig" || m.kind === "cow")).length;
   const wolfCount = () => mobs.filter((m) => (m.dim === "over" || m.dim === undefined) && m.kind === "wolf").length;
+  const golemCount = () => mobs.filter((m) => (m.dim === "over" || m.dim === undefined) && m.kind === "iron_golem").length;
   const overCount = () => mobs.filter((m) => m.dim === "over" || m.dim === undefined).length;
-  if (villagerCount() >= villagerTarget && (!villagePen || livestockCount() >= livestockTarget) && wolfCount() >= WOLF_COUNT) return;
+  if (villagerCount() >= villagerTarget && (!villagePen || livestockCount() >= livestockTarget) && wolfCount() >= WOLF_COUNT && golemCount() >= GOLEM_COUNT) return;
   if (!villageHouses.length) computeVillageLayout();
   if (!villagerGeo) villagerGeo = new THREE.BoxGeometry(1, 1, 1);
   else if (villagerGeo.attributes.position.getY(0) > -0.4) { villagerGeo.dispose(); villagerGeo = new THREE.BoxGeometry(1, 1, 1); }
@@ -8130,6 +8228,57 @@ function spawnVillagers() {
       mobById.set(m.id, m);
     }
   }
+  // — 1 iron golem (villager-like wander, chain lead only, never panics) —
+  {
+    const curGolem = mobs.filter((m) => m.kind === "iron_golem" && (m.dim === "over" || m.dim === undefined)).length;
+    const needGolem = Math.max(0, GOLEM_COUNT - curGolem);
+    for (let i = 0; i < needGolem; i++) {
+      const mesh = makeIronGolemMesh();
+      const hw = GOLEM_HW, hh = GOLEM_HH;
+      let sx, sz, tries = 0;
+      do {
+        const ang = Math.random() * Math.PI * 2, rad = Math.random() * (VILLAGE_RADIUS - 8) + 4;
+        sx = villageCenter.x + Math.cos(ang) * rad;
+        sz = villageCenter.z + Math.sin(ang) * rad;
+        sx = Math.max(villageMinX + 2, Math.min(villageMaxX - 2, sx));
+        sz = Math.max(villageMinZ + 2, Math.min(villageMaxZ - 2, sz));
+        sx = Math.floor(sx) + 0.5; sz = Math.floor(sz) + 0.5;
+        const blockKey = `${Math.floor(sx)},${villageCenter.y + 1},${Math.floor(sz)}`;
+        if (usedBlocks.has(blockKey)) { tries++; continue; }
+        if (isInsideAnyHouse(sx, sz) || isInsidePool(sx, sz) || isInsidePenPool(sx, sz) || isInsidePen(sx, sz)) { tries++; continue; }
+        if (mobBlockedAt(sx, sz, hw, villageCenter.y + 1, hh) || aabbCollidesWorld(sx, villageCenter.y + 1, sz, hw, hh)) { tries++; continue; }
+        if (used.some((u) => (u[0] - sx) ** 2 + (u[1] - sz) ** 2 < 6)) { tries++; continue; }
+        break;
+      } while (tries < 40);
+      sx = Math.floor(sx) + 0.5; sz = Math.floor(sz) + 0.5;
+      if (usedBlocks.has(`${Math.floor(sx)},${villageCenter.y + 1},${Math.floor(sz)}`) || isInsidePenPool(sx, sz) || isInsidePen(sx, sz) || mobBlockedAt(sx, sz, hw, villageCenter.y + 1, hh)) {
+        const alt = wanderGoalFor({ pos: new THREE.Vector3(sx, villageCenter.y + 1, sz), hw, h: hh, lastTarget: null });
+        if (alt && !isInsidePen(alt.x, alt.z)) { sx = Math.floor(alt.x) + 0.5; sz = Math.floor(alt.z) + 0.5; }
+        else { sx = Math.floor(villageCenter.x) + 0.5; sz = Math.floor(villageCenter.z) + 0.5; }
+      }
+      used.push([sx, sz]);
+      usedBlocks.add(`${Math.floor(sx)},${villageCenter.y + 1},${Math.floor(sz)}`);
+      mesh.position.set(sx, villageCenter.y + 1, sz);
+      const yaw = Math.random() * Math.PI * 2;
+      mesh.rotation.y = yaw;
+      scene.add(mesh);
+      const m = {
+        id: gid++, kind: "iron_golem", canStep: false, homeId: -1, isBaby: false, parentId: -1, dim: "over",
+        pos: new THREE.Vector3(sx, villageCenter.y + 1, sz),
+        vel: new THREE.Vector3(0, 0, 0),
+        hw, h: hh, mesh, onGround: false,
+        target: null, mode: "wander", wanderT: 3 + Math.random() * 4, insideT: 0,
+        legPhase: Math.random() * Math.PI * 2, speed: WALK / 2,
+        blockedT: 0, yaw, yawTarget: yaw, villageBound: true,
+        _stuckT: 0, _prevX: sx, _prevZ: sz,
+        path: null, pathIdx: 0, pathKey: null, sc: 1, steerX: 0, steerZ: 0, steerCooldown: 0, lastTarget: null, _wasInWater: false, wolfInWater: false
+      };
+      m.target = wanderGoalFor(m);
+      stampSpawn(m);
+      mobs.push(m);
+      mobById.set(m.id, m);
+    }
+  }
 }
 function removeVillagers() {
   const keepCarry = carryMob && mobs.includes(carryMob) ? carryMob : null;
@@ -8247,6 +8396,7 @@ function mobKindCode(m) {
   if (m.kind === "wolf") return 3;
   if (m.kind === "pigeon") return 4;
   if (m.kind === "enderman") return 5;
+  if (m.kind === "iron_golem") return 6;
   return 0;
 }
 function mobKindFromCode(c) {
@@ -8255,6 +8405,7 @@ function mobKindFromCode(c) {
   if (c === 3) return "wolf";
   if (c === 4) return "pigeon";
   if (c === 5) return "enderman";
+  if (c === 6) return "iron_golem";
   return "villager";
 }
 function mobLookIndex(m) {
@@ -8402,8 +8553,8 @@ function restoreOverworldMobs(list, opts) {
     const e = list[i];
     const kind = mobKindFromCode(e.kind);
     const isBaby = !!e.isBaby && kind === "villager";
-    const hw = kind === "pigeon" ? 0.25 : kind === "wolf" ? 0.30 : (kind === "pig" || kind === "cow") ? 0.32 : kind === "enderman" ? ENDERMAN_HW : (isBaby ? 0.16 : 0.27);
-    const hh = kind === "pigeon" ? 0.5 : kind === "wolf" ? 0.90 : kind === "pig" ? 0.92 : kind === "cow" ? 1.30 : kind === "enderman" ? ENDERMAN_H : (isBaby ? 0.98 : 1.82);
+    const hw = kind === "pigeon" ? 0.25 : kind === "wolf" ? 0.30 : (kind === "pig" || kind === "cow") ? 0.32 : kind === "enderman" ? ENDERMAN_HW : kind === "iron_golem" ? GOLEM_HW : (isBaby ? 0.16 : 0.27);
+    const hh = kind === "pigeon" ? 0.5 : kind === "wolf" ? 0.90 : kind === "pig" ? 0.92 : kind === "cow" ? 1.30 : kind === "enderman" ? ENDERMAN_H : kind === "iron_golem" ? GOLEM_HH : (isBaby ? 0.98 : 1.82);
     const isWolf = isJumpingKind(kind);
     let sx = e.x, sy = e.y, sz = e.z;
     if (!isFinite(sx) || !isFinite(sy) || !isFinite(sz)) continue;
@@ -8456,6 +8607,8 @@ function restoreOverworldMobs(list, opts) {
       ensureEndermanAssets();
       endermanVis = makeEndermanMesh();
       mesh = endermanVis.g;
+    } else if (kind === "iron_golem") {
+      mesh = makeIronGolemMesh();
     } else {
       collar = WOLF_COLLAR_COLORS[(e.look >= 0 && e.look < WOLF_COLLAR_COLORS.length) ? e.look : 0];
       mesh = makeWolfMesh(WOLF_FUR, collar);
@@ -8485,6 +8638,10 @@ function restoreOverworldMobs(list, opts) {
       base.villageBound = false;
       base.penBound = true;
       base.penId = 0;
+      base.sc = 1;
+    } else if (kind === "iron_golem") {
+      base.canStep = false;
+      base.speed = WALK / 2;
       base.sc = 1;
     } else if (kind === "pigeon") {
       base.canStep = false;
@@ -8659,8 +8816,8 @@ function restoreDimMobs(list, dimName, opts) {
     const kind = mobKindFromCode(e.kind);
     if (kind === "dragon") continue;
     const isBaby = !!e.isBaby && kind === "villager";
-    const hw = kind === "pigeon" ? 0.25 : kind === "wolf" ? 0.30 : (kind === "pig" || kind === "cow") ? 0.32 : kind === "enderman" ? ENDERMAN_HW : (isBaby ? 0.16 : 0.27);
-    const hh = kind === "pigeon" ? 0.5 : kind === "wolf" ? 0.90 : kind === "pig" ? 0.92 : kind === "cow" ? 1.30 : kind === "enderman" ? ENDERMAN_H : (isBaby ? 0.98 : 1.82);
+    const hw = kind === "pigeon" ? 0.25 : kind === "wolf" ? 0.30 : (kind === "pig" || kind === "cow") ? 0.32 : kind === "enderman" ? ENDERMAN_HW : kind === "iron_golem" ? GOLEM_HW : (isBaby ? 0.16 : 0.27);
+    const hh = kind === "pigeon" ? 0.5 : kind === "wolf" ? 0.90 : kind === "pig" ? 0.92 : kind === "cow" ? 1.30 : kind === "enderman" ? ENDERMAN_H : kind === "iron_golem" ? GOLEM_HH : (isBaby ? 0.98 : 1.82);
     let sx = e.x, sy = e.y, sz = e.z;
     if (!isFinite(sx) || !isFinite(sy) || !isFinite(sz)) continue;
     sx = Math.max(-WORLD_RADIUS + 1, Math.min(WORLD_RADIUS - 1, sx));
@@ -8694,6 +8851,8 @@ function restoreDimMobs(list, dimName, opts) {
       ensureEndermanAssets();
       endermanVis = makeEndermanMesh();
       mesh = endermanVis.g;
+    } else if (kind === "iron_golem") {
+      mesh = makeIronGolemMesh();
     } else {
       collar = WOLF_COLLAR_COLORS[(e.look >= 0 && e.look < WOLF_COLLAR_COLORS.length) ? e.look : 0];
       mesh = makeWolfMesh(WOLF_FUR, collar);
@@ -8716,6 +8875,7 @@ function restoreDimMobs(list, dimName, opts) {
     if (kind === "wolf") base.villageBound = false;
     if (kind === "villager") { base.canStep = false; base.speed = WALK / 2; base.sc = isBaby ? 0.52 : 1; base.palIdx = palIdx; }
     else if (kind === "pig" || kind === "cow") { base.canStep = false; base.speed = WALK / 2.2; if (e.penBound == null) base.penBound = false; base.sc = 1; }
+    else if (kind === "iron_golem") { base.canStep = false; base.speed = WALK / 2; base.sc = 1; }
     else if (kind === "pigeon") {
       base.canStep = false; base.speed = PIGEON_SPEED; base.sc = 1; base.arc = null; base.mode = "straight";
       base.perchSpot = null; base.perchGroup = null; base.perchT = 0; base.perchWander = null; base.perchWanderT = 0;
@@ -9476,7 +9636,7 @@ function updateMobs(dt) {
           // outside village: wander near current pos
           m.target = wanderNear(m);
           m.wanderT = 3 + Math.random() * 4;
-        } else if (Math.random() < 0.25) {
+        } else if (m.homeId >= 0 && Math.random() < 0.25) {
           m.mode = "goHome";
           m.target = { x: villageHouses[m.homeId].apronX, z: villageHouses[m.homeId].apronZ };
         } else {
@@ -10037,6 +10197,10 @@ function updateMobs(dt) {
       m.mesh.userData.legFL.rotation.x = Math.sin(m.legPhase + Math.PI) * 0.65;
       m.mesh.userData.legFR.rotation.x = Math.sin(m.legPhase) * 0.65;
     }
+    if (m.kind === "iron_golem" && m.mesh.userData.armL) {
+      m.mesh.userData.armL.rotation.x = Math.sin(m.legPhase + Math.PI) * 0.4;
+      m.mesh.userData.armR.rotation.x = Math.sin(m.legPhase) * 0.4;
+    }
     // ensure not embedded
     if (aabbCollidesWorld(m.pos.x, m.pos.y, m.pos.z, m.hw, m.h)) {
       // nudge out: try small random
@@ -10421,7 +10585,7 @@ function panicGeneric(cx, cy, cz) {
   const now = performance.now() / 1000;
   const villageBlast = blastInVillageSq(cx, cy, cz);
   for (const m of mobs) {
-    if (!m || m.kind === "dragon") continue;
+    if (!m || m.kind === "dragon" || m.kind === "iron_golem") continue;
     if (isMobHeld(m)) continue;
     if (isChained(m)) continue;
     if (m.dim !== undefined && m.dim !== dim) continue;
@@ -10453,7 +10617,7 @@ function chainDownstreamOf(v) {
 }
 function panicSingleMob(m, cx, cy, cz, force) {
   if (!m || !mobs.includes(m)) return;
-  if (m.kind === "dragon") return;
+  if (m.kind === "dragon" || m.kind === "iron_golem") return;
   if (isMobHeld(m)) return;
   if (isChained(m)) return;
   if (m.dim !== undefined && m.dim !== dim) return;
@@ -17788,7 +17952,7 @@ function serialize() {
   const dv = new DataView(buf);
   let o = 0;
   new Uint8Array(buf, o, 9).set(SAVE_MAGIC); o += 9;
-  dv.setUint8(o++, 28); // format version
+  dv.setUint8(o++, 29); // format version
   dv.setUint8(o++, dim === "end" ? 1 : dim === "nether" ? 2 : 0);
   dv.setInt32(o, seed, true); o += 4;
   dv.setInt32(o, endSeed, true); o += 4;
@@ -18024,7 +18188,7 @@ function deserialize(buf) {
   for (let i = 0; i < 9; i++) if (new Uint8Array(buf, o, 9)[i] !== SAVE_MAGIC[i]) throw new Error("Not a MiniCraft save");
   o += 9;
   const ver = dv.getUint8(o++);
-  if (ver !== 1 && ver !== 2 && ver !== 3 && ver !== 4 && ver !== 5 && ver !== 6 && ver !== 7 && ver !== 8 && ver !== 9 && ver !== 10 && ver !== 11 && ver !== 12 && ver !== 13 && ver !== 14 && ver !== 15 && ver !== 16 && ver !== 17 && ver !== 18 && ver !== 19 && ver !== 20 && ver !== 21 && ver !== 22 && ver !== 23 && ver !== 24 && ver !== 25 && ver !== 26 && ver !== 27 && ver !== 28) throw new Error("Unsupported save version");
+  if (ver !== 1 && ver !== 2 && ver !== 3 && ver !== 4 && ver !== 5 && ver !== 6 && ver !== 7 && ver !== 8 && ver !== 9 && ver !== 10 && ver !== 11 && ver !== 12 && ver !== 13 && ver !== 14 && ver !== 15 && ver !== 16 && ver !== 17 && ver !== 18 && ver !== 19 && ver !== 20 && ver !== 21 && ver !== 22 && ver !== 23 && ver !== 24 && ver !== 25 && ver !== 26 && ver !== 27 && ver !== 28 && ver !== 29) throw new Error("Unsupported save version");
   const yWidth = ver >= 8 ? 2 : 1;
   const readY = () => { const y = yWidth === 2 ? dv.getUint16(o, true) : dv.getUint8(o); o += yWidth; return y; };
   placedFlowers.clear();
@@ -19898,7 +20062,7 @@ if (location.search.includes('test')) {
     getTypeMats, get typeMats(){ return typeMats; }, buildWorld, generateWorld, computeVillageLayout, spawnVillagers, refreshBlocks, rebuildMeshes, get chunkMeshes(){ return chunkMeshes; }, get boxGeo(){ return boxGeo; }, THREE,
     get pos(){ return pos; }, get vel(){ return vel; }, get camera(){ return camera; }, get scene(){ return scene; }, get freeCam(){ return freeCam; }, set freeCam(v){ freeCam = v; }, get camPos(){ return camPos; }, get yaw(){ return yaw; }, set yaw(v){ yaw=v; }, get pitch(){ return pitch; }, set pitch(v){ pitch=v; },
     get carryMob(){ return carryMob; }, set carryMob(v){ carryMob = v; }, handleCarryEnterDown, handleCarryEnterUp, pickMob, get carryGrappleActive(){ return carryGrappleActive; }, get carryGrapplePulling(){ return carryGrapplePulling; }, get carryGrappleMob(){ return carryGrappleMob; }, get carryGrappleBlock(){ return carryGrappleBlock; }, get carryGrappleHookPos(){ return carryGrappleHookPos; }, get carryGrappleOffset(){ return carryGrappleOffset; }, get carryGrappleMode(){ return carryGrappleMode; }, get isMobFrozenByGrapple(){ return isMobFrozenByGrapple; }, isChained, isChainCarrier, chainRootOf, chainTailOf, linkChain, dropChainFrom, chainTakeForCarry, severChainMob, groundChainFrom, insertChainBefore, insertChainBehind, insertBehindRide, prependChainLead, clearChains, pruneChains, updateChains, syncChainLinkColor, syncChainLinkColors, syncGrappleColor, stampSpawn, get mobById(){ return mobById; }, chainAttachTarget, startCarryAttachGrapple, killChainMob, respawnChainMob, unchainMob, severGroundedChainVictim, isGroundedChainVictim, get chainLinks(){ return chainLinks; }, get chainParent(){ return chainParent; }, get chainChild(){ return chainChild; }, playerChainAvatar, playerInChain, PLAYER_CHAIN_ID, spliceChainLink, chainHasJumping, chainPushCrumb, chainTrailTarget, latchPlayerTo, latchPlayerInMiddle, playerInsertCutAndLink, insertChainAheadOfPlayer, insertChainBehindPlayer, playerLeadLink, dropPlayerLeadEntry, readyLeadForLatch, leadAwareLatchInsert, appendCutFollowerBehindLeadTail, grabRideForCarry, fireGrapple, detachDisplacementGrapple, get grappleActive(){ return grappleActive; }, get grappleHooked(){ return grappleHooked; }, get grappleRetracting(){ return grappleRetracting; }, get grappleMob(){ return grappleMob; }, get grappleMobOffset(){ return grappleMobOffset; }, get grappleHookPos(){ return grappleHookPos; }, get grappleTarget(){ return grappleTarget; }, updateCarryGrapple, updateCarry, get currentBlock(){ return currentBlock; }, updateTarget, hotbarList, placeBlock, breakBlock, get selected(){ return selected; }, set selected(v){ selected=v; }, toggleCarry: handleCarryEnterDown, findNearestMobForGrab: (...a)=>{ const d=new THREE.Vector3(); camera.getWorldDirection(d); return pickMob(d); }, get playerArms(){ return playerArms; }, get started(){ return started; }, set started(v){ started=v; }, get loading(){ return loading; }, get freeCam(){ return freeCam; }, set freeCam(v){ freeCam=v; }, get helpOpen(){ return helpOpen; },
-    get WOLF_COUNT(){ return WOLF_COUNT; }, makeWolfMesh, villagerHW, villagerH, wolfHasMobGround, wolfBlockedAt, wolfProbeFree, wanderGoalForWolf, wolfFindPath, wolfFlatSpot, wolfLeaveTarget, panicLeaveDir, panicWolves, wolfInWater, mobInWater, waterSurfaceForMob, mobPhysicsStep, wolfPhysicsStep, updateMobs, obstacleTurnDir, buildMobGrid,     get isPigCow(){ return isPigCow; }, get pigOverlapsFence(){ return pigOverlapsFence; }, get MOB_FLOAT_FRAC(){ return MOB_FLOAT_FRAC; }, mobFloatTargetY, mobWaterExitJump, poolExitTarget, penPoolExitTarget, isInsidePenPool,
+    get WOLF_COUNT(){ return WOLF_COUNT; }, get GOLEM_COUNT(){ return GOLEM_COUNT; }, get GOLEM_HW(){ return GOLEM_HW; }, get GOLEM_HH(){ return GOLEM_HH; }, makeWolfMesh, makeIronGolemMesh, villagerHW, villagerH, wolfHasMobGround, wolfBlockedAt, wolfProbeFree, wanderGoalForWolf, wolfFindPath, wolfFlatSpot, wolfLeaveTarget, panicLeaveDir, panicWolves, wolfInWater, mobInWater, waterSurfaceForMob, mobPhysicsStep, wolfPhysicsStep, updateMobs, obstacleTurnDir, buildMobGrid,     get isPigCow(){ return isPigCow; }, get pigOverlapsFence(){ return pigOverlapsFence; }, get MOB_FLOAT_FRAC(){ return MOB_FLOAT_FRAC; }, mobFloatTargetY, mobWaterExitJump, poolExitTarget, penPoolExitTarget, isInsidePenPool,
     get PIGEON_COUNT(){ return PIGEON_COUNT; }, get PIGEON_MIN_Y(){ return PIGEON_MIN_Y; }, get PIGEON_MAX_Y(){ return PIGEON_MAX_Y; }, get PIGEON_SPEED(){ return PIGEON_SPEED; }, get TNT_HOME_SPEED(){ return TNT_HOME_SPEED; }, get PIGEON_AIM_DIST(){ return PIGEON_AIM_DIST; }, get PIGEON_LOCK_TIME(){ return PIGEON_LOCK_TIME; }, get pigeonLock(){ return pigeonLock; }, get pigeonLockT(){ return pigeonLockT; }, set pigeonLockT(v){ pigeonLockT = v; }, get pigeonLockShots(){ return pigeonLockShots; }, livePigeonLock, tntTargeted, tryFireLockedTNT, tntChainAimMob, aimOnMob, get chainBreaking(){ return chainBreaking; }, set chainBreaking(v){ chainBreaking = v; },     makePigeonMesh, spawnPigeons, spawnSinglePigeon, removePigeons, spawnPigeonChain, updatePigeon, updatePerchedPigeon, updateToPerchPigeon, pigeonTakeoff, pigeonNextLeg, pigeonFindPerchSpot, pigeonCloudTopAt, pigeonTreeTopAt, pigeonRoofTopAt, pigeonPerchBand, pigeonPerchSupports, killPigeon, pigeonSpotOutOfView, pigeonProbeFree, pigeonRandomTarget, pigeonSeparate,     houseInteriorFor, houseMouths, pigeonCoopTarget,     pigeonSegmentFree, pigeonClearance, pigeonBestSteer, pigeonMillHop, pigeonConfinedSteer, pigeonMoveSlide, bandReturnTarget, pigeonNoticeBreak, setMobTransparent, pigeonIsConfined, pigeonHoleCell, chainSegmentFree, chainThreadRide, pigeonTunnelPlan, updateTunnelPigeon, pigeonTunnelSeparate, pigeonSkyClear, pigeonSidestep, pigeonUTurn, pigeonNarrow, pigeonColHW, pigeonColH,     get PIGEON_NARROW_SCALE(){ return PIGEON_NARROW_SCALE; }, get PIGEON_SKY_CLEAR(){ return PIGEON_SKY_CLEAR; }, get NETHER_PIGEON_MIN_Y(){ return NETHER_PIGEON_MIN_Y; }, get NETHER_PIGEON_MAX_Y(){ return NETHER_PIGEON_MAX_Y; }, pigeonDimOf, pigeonBandMinFor, pigeonBandMaxFor, pigeonBandMin, pigeonBandMax, pigeonNetherLegY, netherPigeonCeiling, pigeonLavaAt, get PIGEON_TUNNEL_SCALE(){ return PIGEON_TUNNEL_SCALE; }, get PIGEON_COL_HW(){ return PIGEON_COL_HW; }, get PIGEON_COL_H(){ return PIGEON_COL_H; },     get tntLit(){ return tntLit; }, get explosionQueue(){ return explosionQueue; }, get tntEta(){ return tntEta; }, get pendingTNTBombs(){ return pendingTNTBombs; }, get pendingTNTEta(){ return pendingTNTEta; }, get bursts(){ return bursts; }, get flashes(){ return flashes; }, snapshotLiveFx, replayLiveFx, spawnExplosion, igniteTNT, fireTNTAtPigeon, purgeLiveTNT, tickTNT, snapshotLiveTNT, restoreLiveTNT, get pendingDragon(){ return pendingDragon; }, get tntEta(){ return tntEta; }, igniteTNT, aimedPigeon, fireTNTAtPigeon, explodePigeon, spawnPigeonBurst, get bursts(){ return bursts; }, get flashes(){ return flashes; }, updateTNTTarget, tickTNT, fireGrapple, updateGrapple, updatePlayer, get grappleActive(){ return grappleActive; }, get grapplePulling(){ return grapplePulling; }, get grappleHooked(){ return grappleHooked; },
     get overPortalWin(){ return overPortalWin; }, get overPortalDir(){ return overPortalDir; }, get overPortalSpawn(){ return overPortalSpawn; }, get overPortalFace(){ return overPortalFace; },
     portalWinValid, portalFrameBBox, findReturnSpot, frameTopSpot, facePortalFrom, faceAwayFromPortal, recordOverPortal, recordDimExit, resolveDimArrival, nearestReturnWin, resolveOverworldReturn, nearPortalSpawn, resolveSpawn, collectEndWins, collectNetherWins, collectReturnWins, insideEndInterior, insideNetherInterior, winCenter, windowDist, isSolid,
