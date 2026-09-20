@@ -1033,6 +1033,144 @@ function tickSoilTimers(dt) {
     }
   }
 }
+const GROWTH_PUSH_SPEED = 8;
+let growthSettlePasses = 0;
+function growthExitTarget(px, py, pz, hw, h, over) {
+  let bx = 0, by = 0, bz = 0, bd = Infinity;
+  const consider = (tx, ty, tz) => {
+    const cx = Math.max(-WORLD_RADIUS + 1, Math.min(WORLD_RADIUS - 1, tx));
+    const cz = Math.max(-WORLD_RADIUS + 1, Math.min(WORLD_RADIUS - 1, tz));
+    if (aabbCollidesWorld(cx, ty, cz, hw, h)) return;
+    const d = Math.hypot(tx - px, ty - py, tz - pz);
+    if (d < bd) { bd = d; bx = cx; by = ty; bz = cz; }
+  };
+  for (const c of over) {
+    consider(c[0] - hw - 0.002, py, pz);
+    consider(c[0] + 1 + hw + 0.002, py, pz);
+    consider(px, py, c[2] - hw - 0.002);
+    consider(px, py, c[2] + 1 + hw + 0.002);
+    consider(px, c[1] - h - 0.002, pz);
+    consider(px, c[1] + 1 + 0.002, pz);
+  }
+  return bd < Infinity ? [bx, by, bz] : null;
+}
+function growthCollidesExcept(px, py, pz, hw, h, ignore) {
+  for (let by = Math.floor(py + 0.001); by <= Math.floor(py + h - 0.001); by++)
+    for (let bx = Math.floor(px - hw + 0.001); bx <= Math.floor(px + hw - 0.001); bx++)
+      for (let bz = Math.floor(pz - hw + 0.001); bz <= Math.floor(pz + hw - 0.001); bz++) {
+        if (ignore.has(bx + "," + by + "," + bz)) continue;
+        if (isSolid(bx, by, bz)) return true;
+      }
+  return false;
+}
+function growthSlide(px, py, pz, hw, h, tx, ty, tz, maxStep, over) {
+  let dx = tx - px, dy = ty - py, dz = tz - pz;
+  const d = Math.hypot(dx, dy, dz);
+  if (d <= 0.0001) return [px, py, pz];
+  const s = Math.min(d, maxStep) / d;
+  dx *= s; dy *= s; dz *= s;
+  const ignore = new Set();
+  for (const c of over) ignore.add(c[0] + "," + c[1] + "," + c[2]);
+  const steps = Math.min(60, Math.ceil(d / 0.05));
+  for (let i = 1; i <= steps; i++) {
+    const f = i / steps;
+    const sx = px + (tx - px) * f, sy = py + (ty - py) * f, sz = pz + (tz - pz) * f;
+    for (let by = Math.floor(sy + 0.001); by <= Math.floor(sy + h - 0.001); by++)
+      for (let bx = Math.floor(sx - hw + 0.001); bx <= Math.floor(sx + hw - 0.001); bx++)
+        for (let bz = Math.floor(sz - hw + 0.001); bz <= Math.floor(sz + hw - 0.001); bz++)
+          ignore.add(bx + "," + by + "," + bz);
+  }
+  let nx = px, ny = py, nz = pz;
+  if (dx && !growthCollidesExcept(px + dx, py, pz, hw, h, ignore)) nx = px + dx;
+  if (dz && !growthCollidesExcept(nx, py, pz + dz, hw, h, ignore)) nz = pz + dz;
+  if (dy && !growthCollidesExcept(nx, py + dy, nz, hw, h, ignore)) ny = py + dy;
+  return [nx, ny, nz];
+}
+function growthSolidOverlap(px, py, pz, hw, h) {
+  const out = [];
+  for (let by = Math.floor(py + 0.001); by <= Math.floor(py + h - 0.001); by++)
+    for (let bx = Math.floor(px - hw + 0.001); bx <= Math.floor(px + hw - 0.001); bx++)
+      for (let bz = Math.floor(pz - hw + 0.001); bz <= Math.floor(pz + hw - 0.001); bz++)
+        if (isSolid(bx, by, bz)) out.push([bx, by, bz]);
+  return out;
+}
+function pushOutOfGrowth(touched, dt) {
+  if (dim !== "over" || world !== worlds.over) return 0;
+  if (!pineGrowths.length && !touched.length) return 0;
+  const maxStep = GROWTH_PUSH_SPEED * Math.min(Math.max(dt, 0), 0.1);
+  if (maxStep <= 0) return 0;
+  const anchors = [];
+  for (const g of pineGrowths) {
+    const a = { sx: g.sx, sz: g.sz, minX: Infinity, maxX: -Infinity, minY: Infinity, maxY: -Infinity, minZ: Infinity, maxZ: -Infinity };
+    for (const c of g.cells) {
+      if (c.x < a.minX) a.minX = c.x;
+      if (c.x > a.maxX) a.maxX = c.x;
+      if (c.y < a.minY) a.minY = c.y;
+      if (c.y > a.maxY) a.maxY = c.y;
+      if (c.z < a.minZ) a.minZ = c.z;
+      if (c.z > a.maxZ) a.maxZ = c.z;
+    }
+    anchors.push(a);
+  }
+  const nearGrowth = (px, py, pz, hw, h) => {
+    for (const a of anchors) {
+      if (px + hw >= a.minX - 3 && px - hw <= a.maxX + 3 &&
+          pz + hw >= a.minZ - 3 && pz - hw <= a.maxZ + 3 &&
+          py <= a.maxY + 3 && py + h >= a.minY - 3) return a;
+    }
+    return null;
+  };
+  const freshKey = new Set();
+  for (const c of touched) freshKey.add(c[0] + "," + c[1] + "," + c[2]);
+  const pushOne = (px, py, pz, hw, h) => {
+    const over = growthSolidOverlap(px, py, pz, hw, h);
+    if (!over.length) return null;
+    let anchor = nearGrowth(px, py, pz, hw, h);
+    if (!anchor) {
+      let fresh = false;
+      for (const c of over) if (freshKey.has(c[0] + "," + c[1] + "," + c[2])) { fresh = true; break; }
+      if (!fresh) return null;
+    }
+    const exit = growthExitTarget(px, py, pz, hw, h, over);
+    if (exit) return growthSlide(px, py, pz, hw, h, exit[0], exit[1], exit[2], maxStep, over);
+    const a = anchor || nearGrowth(px, py, pz, hw, h);
+    let ox = 0.5, oz = 0;
+    if (a) { ox = px - (a.sx + 0.5); oz = pz - (a.sz + 0.5); }
+    if (ox * ox + oz * oz < 0.0001) { ox = 1; oz = 0; }
+    const rl = Math.hypot(ox, oz);
+    return growthSlide(px, py, pz, hw, h, px + ox / rl * 2, py, pz + oz / rl * 2, maxStep, over);
+  };
+  let moved = 0;
+  if (freeCam) {
+    const pr = pushOne(camPos.x, camPos.y - 0.3, camPos.z, 0.3, 0.6);
+    if (pr) {
+      if (Math.hypot(pr[0] - camPos.x, pr[1] - (camPos.y - 0.3), pr[2] - camPos.z) > 0.0001) moved++;
+      camPos.set(pr[0], pr[1] + 0.3, pr[2]);
+    }
+  } else {
+    const pr = pushOne(pos.x, pos.y, pos.z, PLAYER_HW, PLAYER_H);
+    if (pr) {
+      if (Math.hypot(pr[0] - pos.x, pr[1] - pos.y, pr[2] - pos.z) > 0.0001) moved++;
+      pos.x = pr[0]; pos.y = pr[1]; pos.z = pr[2];
+    }
+  }
+  for (const m of mobs) {
+    if (!m || m.pos == null) continue;
+    if (m.kind === "pigeon" || m.kind === "dragon") continue;
+    if (isMobHeld(m) || isChained(m) || isMobFrozenByGrapple(m)) continue;
+    if (isArrivalFrozen(m)) continue;
+    if (mobDimOf(m) !== "over") continue;
+    const hw = m.hw != null ? m.hw : villagerHW(m);
+    const h = m.h != null ? m.h : villagerH(m);
+    const r = pushOne(m.pos.x, m.pos.y, m.pos.z, hw, h);
+    if (r) {
+      if (Math.hypot(r[0] - m.pos.x, r[1] - m.pos.y, r[2] - m.pos.z) > 0.0001) moved++;
+      m.pos.x = r[0]; m.pos.y = r[1]; m.pos.z = r[2];
+      if (m.mesh) m.mesh.position.copy(m.pos);
+    }
+  }
+  return moved;
+}
 function tickPineGrowths(dt) {
   if (!pineGrowths.length || dim !== "over" || world !== worlds.over) return;
   const touched = [];
@@ -1053,14 +1191,15 @@ function tickPineGrowths(dt) {
         if (pineFolReserved(c.x, c.y, c.z, key(g.sx, g.sy, g.sz))) continue;
       } else if (getBlock(c.x, c.y, c.z) !== AIR) continue;
       setBlock(c.x, c.y, c.z, c.id);
-      touched.push([c.x, c.y, c.z]);
+      touched.push([c.x, c.y, c.z, g.sx, g.sz]);
     }
     if (g.idx >= g.cells.length) {
       releasePineCells(key(g.sx, g.sy, g.sz));
+      for (let k = 0; k < 40 && pushOutOfGrowth([], dt) > 0; k++) growthSettlePasses++;
       pineGrowths.splice(gi, 1);
     }
   }
-  if (touched.length) { refreshBlocks(touched); queueSave(); }
+  if (touched.length) { refreshBlocks(touched); queueSave(); pushOutOfGrowth(touched, dt); }
 }
 
 function rebuildPortalBlocks() {
@@ -19622,8 +19761,8 @@ if (location.search.includes('test')) {
   Object.assign(window._test, {
     get growableSoils(){ return growableSoils; }, get plantClaims(){ return plantClaims; }, get pineGrowths(){ return pineGrowths; }, get soilTimerSprites(){ return soilTimerSprites; }, get wetSoilSet(){ return wetSoilSet; }, get soakMeshes(){ return soakMeshes; }, get pineFailBlinks(){ return pineFailBlinks; }, get reservedPineCells(){ return reservedPineCells; },
     get DIRT(){ return DIRT; }, get LEAVES(){ return LEAVES; },
-    get GROWABLE_DIST(){ return GROWABLE_DIST; }, get PLANT_NECK(){ return PLANT_NECK; }, get PINE_RATE(){ return PINE_RATE; }, get PINE_PHASE_TIME(){ return PINE_PHASE_TIME; }, get SOIL_TIMER(){ return SOIL_TIMER; }, get SOIL_SOAK_TIME(){ return SOIL_SOAK_TIME; }, get PLANT_BEND_TIME(){ return PLANT_BEND_TIME; }, get PLANT_LEAVE_DIST(){ return PLANT_LEAVE_DIST; },     get PINE_MIN_M(){ return PINE_MIN_M; }, get PINE_MAX_M(){ return PINE_MAX_M; },     get PINE_LIFT_MAX(){ return PINE_LIFT_MAX; }, get PLANT_STEAL_D(){ return PLANT_STEAL_D; },
-    isSoilHole, isSoilFloor, releaseGrowable, armSoak, absorbSoak, spawnSoakDrips, plantWalkGoal, soilSameY, pickPineDims, fitTrunkRange, pineCellsFor, pineFits, pineSpotBlocked, pineLayerWidths, pineSpiralOrder, pineSummit, pineTrunkE0, pineFolReserved, reservePineCells, releasePineCells, clearAllPineReservations, startPineGrowth, tickPineGrowths, tickSoilTimers, startPineFailBlink, clearPineFailBlink, clearAllPineFailBlinks, tickPineFailBlinks, setVillagerNeck, findPlantPath, soilClaimant, plantLeaveTarget,
+    get GROWABLE_DIST(){ return GROWABLE_DIST; }, get PLANT_NECK(){ return PLANT_NECK; }, get PINE_RATE(){ return PINE_RATE; }, get PINE_PHASE_TIME(){ return PINE_PHASE_TIME; }, get SOIL_TIMER(){ return SOIL_TIMER; }, get SOIL_SOAK_TIME(){ return SOIL_SOAK_TIME; }, get PLANT_BEND_TIME(){ return PLANT_BEND_TIME; }, get PLANT_LEAVE_DIST(){ return PLANT_LEAVE_DIST; },     get PINE_MIN_M(){ return PINE_MIN_M; }, get PINE_MAX_M(){ return PINE_MAX_M; },     get PINE_LIFT_MAX(){ return PINE_LIFT_MAX; }, get PLANT_STEAL_D(){ return PLANT_STEAL_D; }, get GROWTH_PUSH_SPEED(){ return GROWTH_PUSH_SPEED; }, get growthSettlePasses(){ return growthSettlePasses; },
+    isSoilHole, isSoilFloor, releaseGrowable, armSoak, absorbSoak, spawnSoakDrips, plantWalkGoal, soilSameY, pickPineDims, fitTrunkRange, pineCellsFor, pineFits, pineSpotBlocked, pineLayerWidths, pineSpiralOrder, pineSummit, pineTrunkE0, pineFolReserved, reservePineCells, releasePineCells, clearAllPineReservations, pushOutOfGrowth, growthSolidOverlap, growthExitTarget, growthSlide, startPineGrowth, tickPineGrowths, tickSoilTimers, startPineFailBlink, clearPineFailBlink, clearAllPineFailBlinks, tickPineFailBlinks, setVillagerNeck, findPlantPath, soilClaimant, plantLeaveTarget,
   });
 }
 
