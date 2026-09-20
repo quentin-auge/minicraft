@@ -153,6 +153,7 @@ const TEX = {
     for (let x = 0; x < 16; x++) if (Math.random() < 0.35) { ctx.fillStyle = "#8fce6b"; ctx.fillRect(x, 3, 1, 1); }
   }),
   dirt: makeTex([138, 90, 53], 26),
+  dirtWet: makeTex([76, 49, 29], 26),
   stone: canvasTex((ctx) => {
     ctx.fillStyle = "#8d8d8d"; ctx.fillRect(0, 0, 16, 16);
     pxNoise(ctx, [141, 141, 141], 16);
@@ -537,23 +538,28 @@ let glowDefer = 0;
 let glowDirtyDeferred = false;
 let placeBatch = null;
 
-// Villager-planted pines (Overworld, anywhere including the Moon). A DIRT
-// block placed by the player in the middle of 8 solid non-DIRT neighbours
-// (same y, incl. diagonals) is flagged growable. A nearby adult villager
-// walks over, bows the neck 40deg toward it while a 2.5s TNT-style timer ticks
-// above the block, then the timer vanishes and a pine grows at PINE_RATE/s.
+// Villager-planted pines (Overworld, anywhere including the Moon). Pouring
+// WATER or MOON_WATER directly on top of any DIRT block soaks in over 0.5s: the water is
+// absorbed and the soil turns wet. Only wet soil amid 8 solid neighbours
+// (same y, incl. diagonals and DIRT itself) or sitting on solid ground
+// (solid block below, 8 solid neighbours at y-1) attracts a nearby adult
+// villager, which walks over, bows the neck 40deg toward it while a 2.5s
+// TNT-style timer ticks above the block, then the timer vanishes and a pine
+// grows at PINE_RATE/s.
 const growableSoils = new Map();
+const wetSoilSet = new Set(); // keys of growableSoils entries with wet=true
 const plantClaims = new Map();
 const pineGrowths = [];
 const soilTimerSprites = new Map();
 const GROWABLE_DIST = 100; // detection radius, not tied to VILLAGE_RADIUS (declared below)
-const GROWABLE_SAME_Y = 1.0;
 const PLANT_STEAL_D = 2;
 const PLANT_NECK = 40 * Math.PI / 180;
 const PLANT_NECK_Y = 1.45;
 const SOIL_TIMER = 2.5;
+const SOIL_SOAK_TIME = 0.5;
 const PLANT_BEND_TIME = 1.5;
 const PLANT_LEAVE_DIST = 8;
+function soilSameY(m, g) { return Math.abs(Math.floor(m.pos.y) - (g.y + 1)) <= 1; }
 function setVillagerNeck(m, on) {
   const mesh = m.mesh;
   const parts = mesh && mesh.userData ? [mesh.userData.neck, mesh.userData.head, mesh.userData.nose].filter(Boolean) : [];
@@ -586,18 +592,18 @@ function isSoilHole(x, y, z) {
   for (let dx = -1; dx <= 1; dx++)
     for (let dz = -1; dz <= 1; dz++) {
       if (!dx && !dz) continue;
-      const n = getBlock(x + dx, y, z + dz);
-      if (n === DIRT || !isSolidId(n)) return false;
+      if (!isSolidId(getBlock(x + dx, y, z + dz))) return false;
     }
   return true;
 }
-function refreshGrowableAt(x, y, z) {
-  if (dim !== "over" || world !== worlds.over) return;
-  const k = key(x, y, z);
-  if (getBlock(x, y, z) === DIRT && isSoilHole(x, y, z)) {
-    if (!growableSoils.has(k)) growableSoils.set(k, { x, y, z, timer: null });
-  }
-  else if (growableSoils.has(k)) releaseGrowable(k);
+function isSoilFloor(x, y, z) {
+  if (y <= 0 || !isSolidId(getBlock(x, y - 1, z))) return false;
+  for (let dx = -1; dx <= 1; dx++)
+    for (let dz = -1; dz <= 1; dz++) {
+      if (!dx && !dz) continue;
+      if (!isSolidId(getBlock(x + dx, y - 1, z + dz))) return false;
+    }
+  return true;
 }
 function soilTimerSprite(k, g) {
   let spr = soilTimerSprites.get(k);
@@ -625,6 +631,8 @@ function clearAllSoilTimerSprites() {
 }
 function releaseGrowable(k) {
   growableSoils.delete(k);
+  wetSoilSet.delete(k);
+  clearSoakMesh(k);
   clearSoilTimerSprite(k);
   const holder = plantClaims.get(k);
   if (holder != null) {
@@ -634,10 +642,96 @@ function releaseGrowable(k) {
       hm.mode = "wander"; hm.speed = WALK / 2;
       hm.plantKey = null;
       hm.plantTarget = null;
+      hm.plantGoal = null;
       hm.plantPhase = null;
       setVillagerNeck(hm, false);
     }
   }
+}
+const soakMeshes = new Map(); // soil key -> sinking water mesh (wet look "soak")
+let soakMeshGeo = null, soakMeshMat = null, soakMeshMatMoon = null;
+function clearSoakMesh(k) {
+  const m = soakMeshes.get(k);
+  if (m) { soakMeshes.delete(k); scene.remove(m); }
+}
+function clearAllSoakMeshes() { for (const k of [...soakMeshes.keys()]) clearSoakMesh(k); }
+function syncSoakMesh(k, g) {
+  if (g.soak == null) { clearSoakMesh(k); return; }
+  if (!soakMeshGeo) soakMeshGeo = new THREE.BoxGeometry(0.9, 1, 0.9);
+  if (!soakMeshMat) soakMeshMat = new THREE.MeshLambertMaterial({ color: 0x3a6fd8, transparent: true, opacity: 0.75 });
+  if (!soakMeshMatMoon) soakMeshMatMoon = new THREE.MeshLambertMaterial({ color: 0x7a7e82, transparent: true, opacity: 0.75 });
+  const mat = g.liq === MOON_WATER ? soakMeshMatMoon : soakMeshMat;
+  let m = soakMeshes.get(k);
+  if (!m) {
+    m = new THREE.Mesh(soakMeshGeo, mat);
+    scene.add(m);
+    soakMeshes.set(k, m);
+  } else if (m.material !== mat) m.material = mat;
+  const p = Math.max(0, Math.min(1, g.soak / SOIL_SOAK_TIME));
+  m.position.set(g.x + 0.5, g.y + 1 + p / 2, g.z + 0.5);
+  m.scale.set(1, Math.max(0.001, p), 1);
+}
+function spawnSoakDrips(cx, cy, cz, liq) {
+  const N = 14;
+  const posA = new Float32Array(N * 3);
+  const colA = new Float32Array(N * 3);
+  const vel = new Float32Array(N * 3);
+  const moon = liq === MOON_WATER;
+  for (let i = 0; i < N; i++) {
+    posA[i * 3] = cx; posA[i * 3 + 1] = cy; posA[i * 3 + 2] = cz;
+    if (moon) {
+      colA[i * 3] = 0.45 + Math.random() * 0.15;
+      colA[i * 3 + 1] = 0.46 + Math.random() * 0.15;
+      colA[i * 3 + 2] = 0.48 + Math.random() * 0.15;
+    } else {
+      colA[i * 3] = 0.25 + Math.random() * 0.2;
+      colA[i * 3 + 1] = 0.45 + Math.random() * 0.2;
+      colA[i * 3 + 2] = 0.85 + Math.random() * 0.15;
+    }
+    const th = Math.random() * Math.PI * 2;
+    const s = 0.5 + Math.random() * 1.5;
+    vel[i * 3] = s * Math.cos(th);
+    vel[i * 3 + 1] = -1 - Math.random() * 2;
+    vel[i * 3 + 2] = s * Math.sin(th);
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute("position", new THREE.BufferAttribute(posA, 3));
+  geo.setAttribute("color", new THREE.BufferAttribute(colA, 3));
+  const mat = new THREE.PointsMaterial({
+    size: 0.22, vertexColors: true, transparent: true, opacity: 1,
+    depthWrite: false, blending: THREE.AdditiveBlending,
+  });
+  const pts = new THREE.Points(geo, mat);
+  scene.add(pts);
+  bursts.push({ pts, geo, mat, vel, life: 0.5, max: 0.5, tag: 4, fx: cx, fy: cy, fz: cz });
+}
+function armSoak(x, y, z, liq) {
+  if (dim !== "over" || world !== worlds.over) return false;
+  if (getBlock(x, y, z) !== DIRT) return false;
+  if (liq !== MOON_WATER && liq !== WATER) liq = WATER;
+  const k = key(x, y, z);
+  let g = growableSoils.get(k);
+  if (!g) { g = { x, y, z, timer: null, wet: false, soak: null, liq }; growableSoils.set(k, g); }
+  if (g.wet || g.soak != null) return false;
+  g.soak = SOIL_SOAK_TIME;
+  g.liq = liq;
+  setBlock(x, y + 1, z, AIR);
+  refreshBlocks([[x, y + 1, z]]);
+  spawnSoakDrips(x + 0.5, y + 1.5, z + 0.5, liq);
+  syncSoakMesh(k, g);
+  queueSave();
+  return true;
+}
+function absorbSoak(k, g) {
+  g.soak = null;
+  g.wet = true;
+  wetSoilSet.add(k);
+  clearSoakMesh(k);
+  const above = getBlock(g.x, g.y + 1, g.z);
+  if (above === WATER || above === MOON_WATER) setBlock(g.x, g.y + 1, g.z, AIR);
+  spawnSoakDrips(g.x + 0.5, g.y + 1.2, g.z + 0.5, g.liq);
+  refreshBlocks([[g.x, g.y, g.z], [g.x, g.y + 1, g.z]]);
+  queueSave();
 }
 function claimFree(k, m) {
   const holder = plantClaims.get(k);
@@ -751,12 +845,13 @@ function pickPineDims(x, y, z) {
 function startPineGrowth(x, y, z) {
   if (dim !== "over" || world !== worlds.over) return false;
   growableSoils.delete(key(x, y, z));
+  wetSoilSet.delete(key(x, y, z));
   const k = key(x, y, z);
   const hm = soilClaimant(k);
   if (hm) {
     if (plantClaims.get(k) === hm.id) plantClaims.delete(k);
     setVillagerNeck(hm, false);
-    hm.plantKey = null; hm.plantTarget = null; hm.plantPhase = null;
+    hm.plantKey = null; hm.plantTarget = null; hm.plantGoal = null; hm.plantPhase = null;
     hm.mode = "wander"; hm.speed = WALK / 2; hm.wanderT = 2 + Math.random() * 2;
     if (soilOutsideClamp(x + 0.5, z + 0.5, hm.hw)) hm.villageBound = false;
     hm.target = hm.villageBound === false ? wanderNear(hm) : wanderGoalFor(hm);
@@ -767,6 +862,8 @@ function startPineGrowth(x, y, z) {
   if (!dims) return false;
   const cells = pineCellsFor(x, y, z, dims.m, dims.e);
   if (!cells.length) return false;
+  setBlock(x, y, z, LOG);
+  refreshBlocks([[x, y, z]]);
   pineGrowths.push({ cells, idx: 0, acc: 0, dims, sx: x, sy: y, sz: z, phaseCounts: pinePhaseCounts(cells) });
   queueSave();
   return true;
@@ -780,13 +877,26 @@ function soilClaimant(k) {
 }
 function tickSoilTimers(dt) {
   if (dim !== "over" || world !== worlds.over) return;
+  if (wetShellMat || wetShellMatMoon) {
+    const wetOp = 0.16 + 0.12 * (0.5 + 0.5 * Math.sin(performance.now() / 300));
+    if (wetShellMat) wetShellMat.opacity = wetOp;
+    if (wetShellMatMoon) wetShellMatMoon.opacity = wetOp;
+  }
   for (const [k, g] of growableSoils) {
+    if (g.soak != null) {
+      if (getBlock(g.x, g.y, g.z) !== DIRT) { releaseGrowable(k); continue; }
+      g.soak -= dt;
+      if (g.soak <= 0) absorbSoak(k, g);
+      else syncSoakMesh(k, g);
+      continue;
+    }
     if (g.timer == null) continue;
     if (getBlock(g.x, g.y, g.z) !== DIRT) { releaseGrowable(k); continue; }
     g.timer -= dt;
     if (g.timer <= 0) {
       clearSoilTimerSprite(k);
       growableSoils.delete(k);
+      wetSoilSet.delete(k);
       if (!startPineGrowth(g.x, g.y, g.z)) {
         setBlock(g.x, g.y, g.z, AIR);
         refreshBlocks([[g.x, g.y, g.z]]);
@@ -7408,6 +7518,24 @@ function soilOutsideClamp(x, z, hw) {
   return x < villageMinX + hw + 0.5 || x > villageMaxX - hw - 0.5 ||
     z < villageMinZ + hw + 0.5 || z > villageMaxZ - hw - 0.5;
 }
+// Walk goal for a soil: the soil center when standable at the mob's feet
+// level (soil sunk in a hole); otherwise the nearest standable orthogonal
+// neighbour (soil sitting on the ground, whose own cell is a wall at feet
+// level); null when nothing is reachable at feet level.
+function plantWalkGoal(m, best) {
+  const feetY = Math.floor(m.pos.y);
+  if (!mobBlockedAt(best.x + 0.5, best.z + 0.5, m.hw, feetY)) return { x: best.x + 0.5, z: best.z + 0.5 };
+  let bx = null, bz = null, bd = Infinity;
+  for (const [ox, oz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+    const nx = best.x + ox, nz = best.z + oz;
+    if (Math.abs(nx) > WORLD_RADIUS || Math.abs(nz) > WORLD_RADIUS) continue;
+    if (mobBlockedAt(nx + 0.5, nz + 0.5, m.hw, feetY)) continue;
+    const d = Math.hypot(nx + 0.5 - m.pos.x, nz + 0.5 - m.pos.z);
+    if (d < bd) { bd = d; bx = nx + 0.5; bz = nz + 0.5; }
+  }
+  if (bx == null) return null;
+  return { x: bx, z: bz };
+}
 // Wander target straight away from the soil (fallback: null): the planter
 // leaves opposite the dirt block unless no validated spot exists.
 function plantLeaveTarget(m, g) {
@@ -9132,7 +9260,7 @@ function updateMobs(dt) {
         const g = m.plantKey != null ? growableSoils.get(m.plantKey) : null;
         if (plantFleeing || !g || getBlock(g.x, g.y, g.z) !== DIRT) {
           if (m.plantKey != null && plantClaims.get(m.plantKey) === m.id) plantClaims.delete(m.plantKey);
-          m.plantKey = null; m.plantTarget = null; m.plantPhase = null;
+          m.plantKey = null; m.plantTarget = null; m.plantGoal = null; m.plantPhase = null;
           setVillagerNeck(m, false);
           if (!plantFleeing) { m.mode = "wander"; m.speed = WALK / 2; m.wanderT = 2 + Math.random() * 2; m.target = wanderGoalFor(m); }
           m.path = null; m.pathKey = null;
@@ -9144,7 +9272,7 @@ function updateMobs(dt) {
           if (m.bendT <= 0 || plantClaims.get(m.plantKey) !== m.id) {
             setVillagerNeck(m, false);
             if (m.plantKey != null && plantClaims.get(m.plantKey) === m.id) plantClaims.delete(m.plantKey);
-            m.plantKey = null; m.plantTarget = null; m.plantPhase = null;
+            m.plantKey = null; m.plantTarget = null; m.plantGoal = null; m.plantPhase = null;
             m.mode = "wander"; m.speed = WALK / 2; m.wanderT = 2 + Math.random() * 2;
             if (soilOutsideClamp(g.x + 0.5, g.z + 0.5, m.hw)) m.villageBound = false;
             m.target = plantLeaveTarget(m, g) || (m.villageBound === false ? wanderNear(m) : wanderGoalFor(m));
@@ -9155,7 +9283,7 @@ function updateMobs(dt) {
         } else {
           const dx = (g.x + 0.5) - m.pos.x, dz = (g.z + 0.5) - m.pos.z;
           const dXZ = Math.hypot(dx, dz);
-          const sameY = Math.abs(m.pos.y - (g.y + 1)) <= GROWABLE_SAME_Y;
+          const sameY = soilSameY(m, g);
           if (dXZ < 1.15 && sameY) {
             m.plantPhase = "bend";
             m.bendT = PLANT_BEND_TIME;
@@ -9166,15 +9294,36 @@ function updateMobs(dt) {
             if (g.timer == null) g.timer = SOIL_TIMER;
             setVillagerNeck(m, true);
           } else {
-            m.target = { x: g.x + 0.5, z: g.z + 0.5 };
-            if (dXZ < 2.2 && sameY) {
-              m._plantMile = true;
-              m.speed = WALK / 2;
-              m.path = null; m.pathKey = null; m.steerCooldown = 0;
-              m._headonSteerT = 0; m._headonTX = null; m._headonTZ = null;
+            // Re-validate reachability once a second: a holder that fell a
+            // level or got walled in can never arrive and would squat the
+            // claim forever, so release it for a better-placed rival.
+            m._plantReT = (m._plantReT == null ? 1 : m._plantReT) - dt;
+            if (m._plantReT <= 0) {
+              m._plantReT = 1;
+              const gg = plantWalkGoal(m, g);
+              if (!gg || !findPlantPath(m.pos.x, m.pos.z, gg.x, gg.z, m.hw, Math.floor(m.pos.y))) {
+                if (m.plantKey != null && plantClaims.get(m.plantKey) === m.id) plantClaims.delete(m.plantKey);
+                m.plantKey = null; m.plantTarget = null; m.plantGoal = null; m.plantPhase = null;
+                setVillagerNeck(m, false);
+                m.mode = "wander"; m.speed = WALK / 2; m.wanderT = 2 + Math.random() * 2; m.target = wanderGoalFor(m);
+                m.path = null; m.pathKey = null;
+              } else {
+                m.plantGoal = { x: gg.x, z: gg.z };
+              }
+            }
+            if (m.mode === "goPlant" && m.plantGoal) {
+              m.target = { x: m.plantGoal.x, z: m.plantGoal.z };
+              if (dXZ < 2.2 && sameY) {
+                m._plantMile = true;
+                m.speed = WALK / 2;
+                m.path = null; m.pathKey = null; m.steerCooldown = 0;
+                m._headonSteerT = 0; m._headonTX = null; m._headonTZ = null;
+              } else {
+                m._plantMile = false;
+                m.speed = WALK * 2;
+              }
             } else {
-              m._plantMile = false;
-              m.speed = WALK * 2;
+              m.path = null; m.pathKey = null;
             }
           }
         }
@@ -9184,11 +9333,12 @@ function updateMobs(dt) {
           m._plantScanT = 0;
           let best = null, bestD = Infinity;
           for (const g of growableSoils.values()) {
-            if (g.timer != null) continue;
+            if (g.timer != null || !g.wet) continue;
+            if (!isSoilHole(g.x, g.y, g.z) && !isSoilFloor(g.x, g.y, g.z)) continue;
             const d = Math.hypot(g.x + 0.5 - m.pos.x, (g.y + 1) - m.pos.y, g.z + 0.5 - m.pos.z);
             if (d < bestD) { bestD = d; best = g; }
           }
-          if (best && Math.abs(m.pos.y - (best.y + 1)) <= GROWABLE_SAME_Y) {
+          if (best && soilSameY(m, best)) {
             const k = key(best.x, best.y, best.z);
             // Nearest capable villager wins: a live holder walking to the soil
             // loses the claim to a strictly closer rival (hysteresis avoids
@@ -9201,7 +9351,7 @@ function updateMobs(dt) {
                 const hd = Math.hypot(best.x + 0.5 - hm.pos.x, (best.y + 1) - hm.pos.y, best.z + 0.5 - hm.pos.z);
                 if (bestD < hd - PLANT_STEAL_D) {
                   hm.mode = "wander"; hm.speed = WALK / 2; hm.wanderT = 2 + Math.random() * 2;
-                  hm.plantKey = null; hm.plantTarget = null; hm.plantPhase = null;
+                  hm.plantKey = null; hm.plantTarget = null; hm.plantGoal = null; hm.plantPhase = null;
                   setVillagerNeck(hm, false);
                   hm.target = wanderGoalFor(hm);
                   hm.path = null; hm.pathKey = null;
@@ -9211,15 +9361,17 @@ function updateMobs(dt) {
               }
             }
             if (take) {
-              const p = findPlantPath(m.pos.x, m.pos.z, best.x + 0.5, best.z + 0.5, m.hw, best.y + 1);
+              const gg0 = plantWalkGoal(m, best);
+              const p = gg0 && findPlantPath(m.pos.x, m.pos.z, gg0.x, gg0.z, m.hw, Math.floor(m.pos.y));
               if (p) {
                 plantClaims.set(k, m.id);
                 if (soilOutsideClamp(best.x + 0.5, best.z + 0.5, m.hw)) m.villageBound = false;
                 m.mode = "goPlant";
                 m.plantKey = k;
                 m.plantTarget = { x: best.x, y: best.y, z: best.z };
+                m.plantGoal = { x: gg0.x, z: gg0.z };
                 m.plantPhase = "walk";
-                m.target = { x: best.x + 0.5, z: best.z + 0.5 };
+                m.target = { x: gg0.x, z: gg0.z };
                 m.speed = WALK * 2;
                 m.path = null; m.pathKey = null;
               }
@@ -9229,7 +9381,7 @@ function updateMobs(dt) {
       }
     } else if (m.mode === "goPlant" || (m.plantKey != null && (isMobHeld(m) || isChained(m)))) {
       if (m.plantKey != null && plantClaims.get(m.plantKey) === m.id) plantClaims.delete(m.plantKey);
-      m.plantKey = null; m.plantTarget = null; m.plantPhase = null;
+      m.plantKey = null; m.plantTarget = null; m.plantGoal = null; m.plantPhase = null;
       setVillagerNeck(m, false);
       if (m.mode === "goPlant") { m.mode = "wander"; m.speed = WALK / 2; m.path = null; m.pathKey = null; }
     }
@@ -11300,6 +11452,20 @@ function getGlowMats(v) {
   if (!glowMats.has(v)) glowMats.set(v, basicFace(GLOW_TEX[v], { fog: false }));
   return glowMats.get(v);
 }
+let wetDirtMatsCache = null;
+function getWetDirtMats() {
+  if (!wetDirtMatsCache) wetDirtMatsCache = faceTex(TEX.dirtWet);
+  return wetDirtMatsCache;
+}
+let wetShellMat = null, wetShellMatMoon = null, wetShellGeo = null;
+function getWetShellMat() {
+  if (!wetShellMat) wetShellMat = new THREE.MeshBasicMaterial({ color: 0x2a5fd0, transparent: true, opacity: 0.22, depthWrite: false });
+  return wetShellMat;
+}
+function getWetShellMatMoon() {
+  if (!wetShellMatMoon) wetShellMatMoon = new THREE.MeshBasicMaterial({ color: 0xeef1f4, transparent: true, opacity: 0.22, depthWrite: false });
+  return wetShellMatMoon;
+}
 function disposeChunkMeshes(meshes) {
   for (const mesh of meshes.values()) { scene.remove(mesh); mesh.geometry.dispose(); }
 }
@@ -11318,6 +11484,7 @@ function rebuildChunk(cx, cz) {
   const exposed = [];
   const flowers = [];
   const glows = [];
+  const wetDirts = [];
   const liquidSkip = [];
   for (let x = x0; x <= x1; x++)
     for (let z = z0; z <= z1; z++) {
@@ -11335,6 +11502,10 @@ function rebuildChunk(cx, cz) {
         if (id === FLOWER) { flowers.push([x, y, z]); continue; }
         if (id === GLOWSTONE) {
           if (isExposed(x, y, z)) glows.push([x, y, z]);
+          continue;
+        }
+        if (id === DIRT && wetSoilSet.has(key(x, y, z))) {
+          if (isExposed(x, y, z)) wetDirts.push([x, y, z]);
           continue;
         }
         if (isLiquid(id)) { liquidSkip.push([x, y, z, id]); continue; }
@@ -11457,6 +11628,47 @@ function rebuildChunk(cx, cz) {
       scene.add(mesh);
       meshes.set("glowstone_" + v, mesh);
     }
+  }
+  if (wetDirts.length) {
+    const cube = new THREE.InstancedMesh(boxGeo, getWetDirtMats(), wetDirts.length);
+    cube.count = wetDirts.length;
+    let i = 0;
+    for (const [wx, wy, wz] of wetDirts) {
+      dummy.position.set(wx + 0.5, wy + 0.5, wz + 0.5);
+      dummy.rotation.set(0, 0, 0);
+      dummy.scale.set(1, 1, 1);
+      dummy.updateMatrix();
+      cube.setMatrixAt(i++, dummy.matrix);
+    }
+    cube.instanceMatrix.needsUpdate = true;
+    cube.computeBoundingSphere();
+    scene.add(cube);
+    meshes.set("wetdirt", cube);
+    if (!wetShellGeo) wetShellGeo = new THREE.BoxGeometry(1.06, 1.06, 1.06);
+    const wetBlue = [], wetGrey = [];
+    for (const [wx, wy, wz] of wetDirts) {
+      const sg = growableSoils.get(key(wx, wy, wz));
+      if (sg && sg.liq === MOON_WATER) wetGrey.push([wx, wy, wz]);
+      else wetBlue.push([wx, wy, wz]);
+    }
+    const placeShell = (list, mat, meshKey) => {
+      const shell = new THREE.InstancedMesh(wetShellGeo, mat, list.length);
+      shell.count = list.length;
+      let j = 0;
+      for (const [wx, wy, wz] of list) {
+        dummy.position.set(wx + 0.5, wy + 0.5, wz + 0.5);
+        dummy.rotation.set(0, 0, 0);
+        dummy.scale.set(1, 1, 1);
+        dummy.updateMatrix();
+        shell.setMatrixAt(j++, dummy.matrix);
+      }
+      shell.instanceMatrix.needsUpdate = true;
+      shell.computeBoundingSphere();
+      scene.add(shell);
+      meshes.set(meshKey, shell);
+    };
+    if (wetBlue.length) placeShell(wetBlue, getWetShellMat(), "wetshell");
+    if (wetGrey.length) placeShell(wetGrey, getWetShellMatMoon(), "wetshellMoon");
   }
   chunkMeshes.set(ck, meshes);
 }
@@ -13453,11 +13665,11 @@ function tryPlace(id, px, py, pz) {
   if (liquid || target === AIR) {
     if (BLOCK_INFO[id].solid && intersectsPlayer(px, py, pz)) return false;
     if (BLOCK_INFO[id].solid && intersectsMob(px, py, pz, true)) return false;
-  } else if (!(target === id && (id === WATER || id === LAVA))) return false;
+  } else if (!(target === id && (id === WATER || id === LAVA || id === MOON_WATER))) return false;
   if (id === FLOWER) placedFlowers.set(key(px, py, pz), { v: randomFlowerVariant(), a: Math.random() * Math.PI * 2 });
   if (id === GLOWSTONE) worldGlowVariants.get(world).set(key(px, py, pz), glowVariantNear(px, py, pz));
   setBlock(px, py, pz, id);
-  if (id === DIRT) refreshGrowableAt(px, py, pz);
+  if ((id === WATER || id === MOON_WATER) && getBlock(px, py - 1, pz) === DIRT) armSoak(px, py - 1, pz, id);
   if (placeBatch) placeBatch.push([px, py, pz]);
   else { refreshBlocks([[px, py, pz]]); queueSave(); }
   return true;
@@ -17148,11 +17360,11 @@ function serialize() {
   const villagePanicRemain = villagePanicUntil > 0 ? Math.min(Math.max(0, villagePanicUntil - performance.now() / 1000), VILLAGE_PANIC_TIME) : 0;
   const growN = growableSoils.size;
   const growthN = pineGrowths.length;
-  const buf = new ArrayBuffer(117 + 18 + (on + en + nn) * 5 + m * 6 + (gov + gev + gnv) * 5 + 4 + growN * 8 + 4 + growthN * 15 + winLen + 16 + 4 + (mobN + endMobN + netherMobN) * MOB_SAVE_BYTES + 24 + 4 + (chainPairs.length + chainPairsEnd.length + chainPairsNether.length) * 4 + 4 + 1 + 1 + 4 + exitBytes + tntBytes + fxBytes);
+  const buf = new ArrayBuffer(117 + 18 + (on + en + nn) * 5 + m * 6 + (gov + gev + gnv) * 5 + 4 + growN * 14 + 4 + growthN * 15 + winLen + 16 + 4 + (mobN + endMobN + netherMobN) * MOB_SAVE_BYTES + 24 + 4 + (chainPairs.length + chainPairsEnd.length + chainPairsNether.length) * 4 + 4 + 1 + 1 + 4 + exitBytes + tntBytes + fxBytes);
   const dv = new DataView(buf);
   let o = 0;
   new Uint8Array(buf, o, 9).set(SAVE_MAGIC); o += 9;
-  dv.setUint8(o++, 26); // format version
+  dv.setUint8(o++, 28); // format version
   dv.setUint8(o++, dim === "end" ? 1 : dim === "nether" ? 2 : 0);
   dv.setInt32(o, seed, true); o += 4;
   dv.setInt32(o, endSeed, true); o += 4;
@@ -17223,6 +17435,9 @@ function serialize() {
     dv.setUint16(o, g.y, true); o += 2;
     dv.setUint8(o++, g.z + 128);
     dv.setFloat32(o, g.timer != null ? g.timer : -1, true); o += 4;
+    dv.setUint8(o++, g.wet ? 1 : 0);
+    dv.setFloat32(o, g.soak != null ? g.soak : -1, true); o += 4;
+    dv.setUint8(o++, g.liq === MOON_WATER ? 1 : 0);
   });
   dv.setUint32(o, growthN, true); o += 4;
   for (const pg of pineGrowths) {
@@ -17385,11 +17600,13 @@ function deserialize(buf) {
   for (let i = 0; i < 9; i++) if (new Uint8Array(buf, o, 9)[i] !== SAVE_MAGIC[i]) throw new Error("Not a MiniCraft save");
   o += 9;
   const ver = dv.getUint8(o++);
-  if (ver !== 1 && ver !== 2 && ver !== 3 && ver !== 4 && ver !== 5 && ver !== 6 && ver !== 7 && ver !== 8 && ver !== 9 && ver !== 10 && ver !== 11 && ver !== 12 && ver !== 13 && ver !== 14 && ver !== 15 && ver !== 16 && ver !== 17 && ver !== 18 && ver !== 19 && ver !== 20 && ver !== 21 && ver !== 22 && ver !== 23 && ver !== 24 && ver !== 25 && ver !== 26) throw new Error("Unsupported save version");
+  if (ver !== 1 && ver !== 2 && ver !== 3 && ver !== 4 && ver !== 5 && ver !== 6 && ver !== 7 && ver !== 8 && ver !== 9 && ver !== 10 && ver !== 11 && ver !== 12 && ver !== 13 && ver !== 14 && ver !== 15 && ver !== 16 && ver !== 17 && ver !== 18 && ver !== 19 && ver !== 20 && ver !== 21 && ver !== 22 && ver !== 23 && ver !== 24 && ver !== 25 && ver !== 26 && ver !== 27 && ver !== 28) throw new Error("Unsupported save version");
   const yWidth = ver >= 8 ? 2 : 1;
   const readY = () => { const y = yWidth === 2 ? dv.getUint16(o, true) : dv.getUint8(o); o += yWidth; return y; };
   placedFlowers.clear();
   growableSoils.clear();
+  wetSoilSet.clear();
+  clearAllSoakMeshes();
   plantClaims.clear();
   pineGrowths.length = 0;
   clearAllSoilTimerSprites();
@@ -17555,7 +17772,17 @@ function deserialize(buf) {
         const tr = dv.getFloat32(o, true); o += 4;
         if (isFinite(tr) && tr > 0) timer = tr;
       }
-      growableSoils.set(key(x, y, z), { x, y, z, timer });
+      let wet = false, soak = null, liq = WATER;
+      if (ver >= 27) {
+        wet = dv.getUint8(o++) === 1;
+        const sr = dv.getFloat32(o, true); o += 4;
+        if (isFinite(sr) && sr > 0) soak = sr;
+      }
+      if (ver >= 28) liq = dv.getUint8(o++) === 1 ? MOON_WATER : WATER;
+      const gk = key(x, y, z);
+      growableSoils.set(gk, { x, y, z, timer, wet, soak, liq });
+      if (wet) wetSoilSet.add(gk);
+      if (soak != null) syncSoakMesh(gk, growableSoils.get(gk));
     }
   }
   if (ver >= 23) {
@@ -18408,6 +18635,8 @@ async function buildWorld() {
     netherSeed = Math.floor(Math.random() * 100000);
     placedFlowers.clear();
     growableSoils.clear();
+    wetSoilSet.clear();
+    clearAllSoakMeshes();
     plantClaims.clear();
     pineGrowths.length = 0;
     clearAllSoilTimerSprites();
@@ -19227,7 +19456,7 @@ if (location.search.includes('test')) {
     get world(){ return world; }, get worlds(){ return worlds; }, get mobs(){ return mobs; },
     getBlock, setBlock, handleMobExplosion, processExplosionQueue, isMobStandingOn, intersectsMob, key, BLAST_RADIUS, TNT, STONE, AIR, get SAND(){ return SAND; }, get WATER(){ return WATER; }, get VILLAGE_POOL_W(){ return VILLAGE_POOL_W; }, get VILLAGE_POOL_D(){ return VILLAGE_POOL_D; }, get VILLAGE_POOL_DEPTH(){ return VILLAGE_POOL_DEPTH; }, get VILLAGE_PEN_POOL_W(){ return VILLAGE_PEN_POOL_W; }, get VILLAGE_PEN_POOL_D(){ return VILLAGE_PEN_POOL_D; }, get VILLAGE_PEN_POOL_DEPTH(){ return VILLAGE_PEN_POOL_DEPTH; },
     get villageCenter(){ return villageCenter; }, get villageHouses(){ return villageHouses; }, get villagePen(){ return villagePen; }, get villagePool(){ return villagePool; }, get isInsidePen(){ return isInsidePen; }, get isInsidePool(){ return isInsidePool; }, get isInsidePenPool(){ return isInsidePenPool; }, get poolExitTarget(){ return poolExitTarget; }, get penPoolExitTarget(){ return penPoolExitTarget; }, get LOG(){ return LOG; }, findPenGaps, nearestPenGap, penGapInside, penGapOutside, hasMobGround, mobBlockedAt, aabbCollidesWorld, mobProbeFree, randomPenPoint, randomAroundPenPoint, groundYForMob, get CLOUD_BASE(){ return CLOUD_BASE; }, get CLOUD_TOP(){ return CLOUD_TOP; }, get MAX_Y(){ return MAX_Y; },
-    getTypeMats, get typeMats(){ return typeMats; }, buildWorld, generateWorld, computeVillageLayout, spawnVillagers, refreshBlocks, get boxGeo(){ return boxGeo; }, THREE,
+    getTypeMats, get typeMats(){ return typeMats; }, buildWorld, generateWorld, computeVillageLayout, spawnVillagers, refreshBlocks, rebuildMeshes, get chunkMeshes(){ return chunkMeshes; }, get boxGeo(){ return boxGeo; }, THREE,
     get pos(){ return pos; }, get vel(){ return vel; }, get camera(){ return camera; }, get scene(){ return scene; }, get freeCam(){ return freeCam; }, set freeCam(v){ freeCam = v; }, get camPos(){ return camPos; }, get yaw(){ return yaw; }, set yaw(v){ yaw=v; }, get pitch(){ return pitch; }, set pitch(v){ pitch=v; },
     get carryMob(){ return carryMob; }, set carryMob(v){ carryMob = v; }, handleCarryEnterDown, handleCarryEnterUp, pickMob, get carryGrappleActive(){ return carryGrappleActive; }, get carryGrapplePulling(){ return carryGrapplePulling; }, get carryGrappleMob(){ return carryGrappleMob; }, get carryGrappleBlock(){ return carryGrappleBlock; }, get carryGrappleHookPos(){ return carryGrappleHookPos; }, get carryGrappleOffset(){ return carryGrappleOffset; }, get carryGrappleMode(){ return carryGrappleMode; }, get isMobFrozenByGrapple(){ return isMobFrozenByGrapple; }, isChained, isChainCarrier, chainRootOf, chainTailOf, linkChain, dropChainFrom, chainTakeForCarry, severChainMob, groundChainFrom, insertChainBefore, insertChainBehind, insertBehindRide, prependChainLead, clearChains, pruneChains, updateChains, syncChainLinkColor, syncChainLinkColors, syncGrappleColor, stampSpawn, get mobById(){ return mobById; }, chainAttachTarget, startCarryAttachGrapple, killChainMob, respawnChainMob, unchainMob, severGroundedChainVictim, isGroundedChainVictim, get chainLinks(){ return chainLinks; }, get chainParent(){ return chainParent; }, get chainChild(){ return chainChild; }, playerChainAvatar, playerInChain, PLAYER_CHAIN_ID, spliceChainLink, chainHasJumping, chainPushCrumb, chainTrailTarget, latchPlayerTo, latchPlayerInMiddle, playerInsertCutAndLink, insertChainAheadOfPlayer, insertChainBehindPlayer, playerLeadLink, dropPlayerLeadEntry, readyLeadForLatch, leadAwareLatchInsert, appendCutFollowerBehindLeadTail, grabRideForCarry, fireGrapple, detachDisplacementGrapple, get grappleActive(){ return grappleActive; }, get grappleHooked(){ return grappleHooked; }, get grappleRetracting(){ return grappleRetracting; }, get grappleMob(){ return grappleMob; }, get grappleMobOffset(){ return grappleMobOffset; }, get grappleHookPos(){ return grappleHookPos; }, get grappleTarget(){ return grappleTarget; }, updateCarryGrapple, updateCarry, get currentBlock(){ return currentBlock; }, updateTarget, hotbarList, placeBlock, breakBlock, get selected(){ return selected; }, set selected(v){ selected=v; }, toggleCarry: handleCarryEnterDown, findNearestMobForGrab: (...a)=>{ const d=new THREE.Vector3(); camera.getWorldDirection(d); return pickMob(d); }, get playerArms(){ return playerArms; }, get started(){ return started; }, set started(v){ started=v; }, get loading(){ return loading; }, get freeCam(){ return freeCam; }, set freeCam(v){ freeCam=v; }, get helpOpen(){ return helpOpen; },
     get WOLF_COUNT(){ return WOLF_COUNT; }, makeWolfMesh, villagerHW, villagerH, wolfHasMobGround, wolfBlockedAt, wolfProbeFree, wanderGoalForWolf, wolfFindPath, wolfInWater, mobInWater, waterSurfaceForMob, mobPhysicsStep, wolfPhysicsStep, updateMobs, obstacleTurnDir, buildMobGrid,     get isPigCow(){ return isPigCow; }, get pigOverlapsFence(){ return pigOverlapsFence; }, get MOB_FLOAT_FRAC(){ return MOB_FLOAT_FRAC; }, mobFloatTargetY, mobWaterExitJump, poolExitTarget, penPoolExitTarget, isInsidePenPool,
@@ -19244,10 +19473,10 @@ if (location.search.includes('test')) {
     get endermen(){ return endermen; }, get mobPortalTx(){ return mobPortalTx; }, startMobPortalTx, tickMobPortalTx, finishMobPortalTx, abortMobPortalTx,     get PORTAL_ARRIVAL_FREEZE(){ return PORTAL_ARRIVAL_FREEZE; }, isArrivalFrozen, get FILL_SLIDE_TRIGGER_T(){ return FILL_SLIDE_TRIGGER_T; }, get FILL_SLIDE_SPEED(){ return FILL_SLIDE_SPEED; }, mobBodyFillCells, startFillSlide, get ENDERMEN_COUNT(){ return ENDERMEN_COUNT; }, get END_PLATFORM_R(){ return END_PLATFORM_R; }, get END_MOB_R(){ return END_MOB_R; }, get END_RETURN_Z(){ return END_RETURN_Z; }, get END_RETURN_BASE_Y(){ return END_RETURN_BASE_Y; }, get DRAGON_MIN_Y(){ return DRAGON_MIN_Y; }, get DRAGON_MAX_Y(){ return DRAGON_MAX_Y; }, endMobInEnd, endClampXZPos, endClampYFlying, pigeonEndPortalTopAt, get ENDERMAN_STARE_TIME(){ return ENDERMAN_STARE_TIME; }, get ENDERMAN_ANGRY_TIME(){ return ENDERMAN_ANGRY_TIME; }, spawnEndermen, removeEndermen, updateEnderman, updateEndermen, endermanTeleport, endermanPickSpot, endermanSpotFor, ensureEndermanAssets, makeEndermanMesh, syncEndermanHalo, syncEndermanHalos,     endermanChainHaloVisible, endermanHaloMode,
   };
   Object.assign(window._test, {
-    get growableSoils(){ return growableSoils; }, get plantClaims(){ return plantClaims; }, get pineGrowths(){ return pineGrowths; }, get soilTimerSprites(){ return soilTimerSprites; },
+    get growableSoils(){ return growableSoils; }, get plantClaims(){ return plantClaims; }, get pineGrowths(){ return pineGrowths; }, get soilTimerSprites(){ return soilTimerSprites; }, get wetSoilSet(){ return wetSoilSet; }, get soakMeshes(){ return soakMeshes; },
     get DIRT(){ return DIRT; }, get LEAVES(){ return LEAVES; },
-    get GROWABLE_DIST(){ return GROWABLE_DIST; }, get PLANT_NECK(){ return PLANT_NECK; }, get PINE_RATE(){ return PINE_RATE; }, get PINE_PHASE_TIME(){ return PINE_PHASE_TIME; }, get SOIL_TIMER(){ return SOIL_TIMER; }, get PLANT_BEND_TIME(){ return PLANT_BEND_TIME; }, get PLANT_LEAVE_DIST(){ return PLANT_LEAVE_DIST; }, get PINE_MIN_M(){ return PINE_MIN_M; }, get PINE_MAX_M(){ return PINE_MAX_M; }, get PINE_LIFT_MAX(){ return PINE_LIFT_MAX; }, get PLANT_STEAL_D(){ return PLANT_STEAL_D; },
-    isSoilHole, refreshGrowableAt, releaseGrowable, pickPineDims, pineCellsFor, pineFits, pineLayerWidths, pineSpiralOrder, pineSummit, pineTrunkE0, startPineGrowth, tickPineGrowths, tickSoilTimers, setVillagerNeck, findPlantPath, soilClaimant, plantLeaveTarget,
+    get GROWABLE_DIST(){ return GROWABLE_DIST; }, get PLANT_NECK(){ return PLANT_NECK; }, get PINE_RATE(){ return PINE_RATE; }, get PINE_PHASE_TIME(){ return PINE_PHASE_TIME; }, get SOIL_TIMER(){ return SOIL_TIMER; }, get SOIL_SOAK_TIME(){ return SOIL_SOAK_TIME; }, get PLANT_BEND_TIME(){ return PLANT_BEND_TIME; }, get PLANT_LEAVE_DIST(){ return PLANT_LEAVE_DIST; }, get PINE_MIN_M(){ return PINE_MIN_M; }, get PINE_MAX_M(){ return PINE_MAX_M; },     get PINE_LIFT_MAX(){ return PINE_LIFT_MAX; }, get PLANT_STEAL_D(){ return PLANT_STEAL_D; },
+    isSoilHole, isSoilFloor, releaseGrowable, armSoak, absorbSoak, spawnSoakDrips, plantWalkGoal, soilSameY, pickPineDims, pineCellsFor, pineFits, pineLayerWidths, pineSpiralOrder, pineSummit, pineTrunkE0, startPineGrowth, tickPineGrowths, tickSoilTimers, setVillagerNeck, findPlantPath, soilClaimant, plantLeaveTarget,
   });
 }
 
