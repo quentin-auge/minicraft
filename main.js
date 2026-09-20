@@ -633,6 +633,7 @@ function releaseGrowable(k) {
   growableSoils.delete(k);
   wetSoilSet.delete(k);
   releasePineCells(k);
+  if (plantedPines.delete(k)) garlandDirty = true;
   clearSoakMesh(k);
   clearSoilTimerSprite(k);
   const holder = plantClaims.get(k);
@@ -1196,6 +1197,7 @@ function tickPineGrowths(dt) {
     if (g.idx >= g.cells.length) {
       releasePineCells(key(g.sx, g.sy, g.sz));
       for (let k = 0; k < 40 && pushOutOfGrowth([], dt) > 0; k++) growthSettlePasses++;
+      registerPlantedPine(g.sx, g.sy, g.sz, g.dims.m, g.dims.e);
       pineGrowths.splice(gi, 1);
     }
   }
@@ -3832,12 +3834,15 @@ function makeParrotMesh(variant = 0) {
   g.userData = { wingL, wingR, body, head, kind: "parrot", parrotVar: variant };
   return g;
 }
-function inMoonZone(x, y, z) {
-  if (dim !== "over") return false;
+function moonZoneGeo(x, y, z) {
   if (y > MOON_Y) return true;
   const hd = Math.hypot(x, z);
   const dy = MOON_Y - y;
   return Math.sqrt(hd * hd + dy * dy) <= MOON_R - 2.5;
+}
+function inMoonZone(x, y, z) {
+  if (dim !== "over") return false;
+  return moonZoneGeo(x, y, z);
 }
 function flyingMobOnMoon(m) {
   return !!m && isFlyingKind(m.kind) && inMoonZone(m.pos.x, m.pos.y, m.pos.z);
@@ -12477,6 +12482,207 @@ function glowVariantAt(x, y, z) {
   return v === undefined ? 0 : v;   // default to green
 }
 
+// Pine garlands: glowing multicolor bulb ropes draped around villager-planted
+// pines. Each finished pine registers in plantedPines (soil key -> dims +
+// seed + a snapshot of the solid cells around it); the bulb path is derived
+// live from the dims, and every bulb is anchored to a nearby trunk/foliage
+// cell that was solid at build time — a bulb whose anchor is now AIR is
+// hidden, so breaking blocks eats the garland piece by piece. Visual only:
+// one global InstancedMesh (unlit, fog-free, like glowstone), no blocks. The
+// style is fixed: four counter-winding spirale strands (two clockwise, two
+// counter-clockwise, crossing each other) in blue, red, green and yellow.
+const GARLAND_BLUE = [0.1, 0.35, 1];
+const GARLAND_RED = [1, 0.08, 0.08];
+const GARLAND_GREEN = [0.05, 1, 0.25];
+const GARLAND_YELLOW = [1, 0.95, 0];
+const GARLAND_STEP = 0.22;
+const GARLAND_MAX = 20000;
+const GARLAND_PER_PINE = 5000;
+const plantedPines = new Map();
+let garlandMesh = null;
+let garlandDirty = true;
+let garlandBulbCount = 0;
+let garlandBase = null;
+let garlandPhase = null;
+let garlandPulseT = 0;
+const garlandMatrix = new THREE.Matrix4();
+const garlandColor = new THREE.Color();
+function ensureGarlandMesh() {
+  if (garlandMesh) return;
+  garlandMesh = new THREE.InstancedMesh(new THREE.BoxGeometry(0.14, 0.14, 0.14), new THREE.MeshBasicMaterial({ fog: false, toneMapped: false }), GARLAND_MAX);
+  garlandMesh.frustumCulled = false;
+  garlandMesh.visible = false;
+  garlandMesh.count = 0;
+  scene.add(garlandMesh);
+}
+function garlandRadiusAt(p, Y) {
+  const summit = pineSummit(p.y, p.m, p.e);
+  const ws = pineLayerWidths(p.m);
+  const l = summit - Math.floor(Y);
+  if (l >= 1 && l < ws.length) return (ws[l] - 1) / 2 + 0.8;
+  return 1.2;
+}
+function garlandAnchor(p, bx, by, bz) {
+  const summit = pineSummit(p.y, p.m, p.e);
+  if (by > summit + 0.5) return [p.x, summit, p.z];
+  const trunkTop = p.y + p.e;
+  if (by <= trunkTop + 0.5) return [p.x, Math.floor(by), p.z];
+  const dx = bx - (p.x + 0.5), dz = bz - (p.z + 0.5);
+  const d = Math.hypot(dx, dz) || 1;
+  const r = garlandRadiusAt(p, by) - 0.6;
+  return [Math.floor(p.x + 0.5 + dx / d * r), Math.floor(by), Math.floor(p.z + 0.5 + dz / d * r)];
+}
+function garlandPathFor(p) {
+  const pts = [];
+  const summit = pineSummit(p.y, p.m, p.e);
+  const yBase = p.y + 2;
+  const a0 = p.seed / 255 * Math.PI * 2;
+  const push = (bx, by, bz, rgb, ph) => {
+    if (pts.length >= GARLAND_PER_PINE) return;
+    const [ax, ay, az] = garlandAnchor(p, bx, by, bz);
+    pts.push({ x: bx, y: by, z: bz, ax, ay, az, r: rgb[0], g: rgb[1], b: rgb[2], ph });
+  };
+  const k = Math.PI * 2 / 3, phi = Math.PI / 4;
+  const strands = [
+    { dir: 1, off: 0, rgb: GARLAND_BLUE, ph0: 0 },
+    { dir: 1, off: Math.PI, rgb: GARLAND_RED, ph0: 2.4 },
+    { dir: -1, off: phi, rgb: GARLAND_GREEN, ph0: 4.8 },
+    { dir: -1, off: phi + Math.PI, rgb: GARLAND_YELLOW, ph0: 7.2 },
+  ];
+  const at = (s, Y) => {
+    const a = a0 + s.off + s.dir * Y * k;
+    const r = garlandRadiusAt(p, Y);
+    return [p.x + 0.5 + Math.cos(a) * r, Y + 0.15, p.z + 0.5 + Math.sin(a) * r];
+  };
+  for (const s of strands) {
+    let prev = at(s, yBase);
+    let arc = 0, next = GARLAND_STEP;
+    push(prev[0], prev[1], prev[2], s.rgb, s.ph0);
+    for (let Y = yBase + 0.1; Y <= summit + 0.2; Y += 0.1) {
+      const cur = at(s, Y);
+      const d = Math.hypot(cur[0] - prev[0], cur[1] - prev[1], cur[2] - prev[2]);
+      if (d > 1e-9) {
+        while (next <= arc + d) {
+          const f = (next - arc) / d;
+          push(prev[0] + (cur[0] - prev[0]) * f, prev[1] + (cur[1] - prev[1]) * f, prev[2] + (cur[2] - prev[2]) * f, s.rgb, s.ph0 + next * 0.9);
+          next += GARLAND_STEP;
+        }
+        arc += d;
+      }
+      prev = cur;
+      if (pts.length >= GARLAND_PER_PINE) break;
+    }
+    s.endPrev = prev; s.endArc = arc; s.endNext = next;
+    if (pts.length >= GARLAND_PER_PINE) break;
+  }
+  const SPIRE_H = 4.0, SPIRE_TURNS = 2;
+  const Y0 = summit + 0.2;
+  const r0 = garlandRadiusAt(p, Y0);
+  for (const s of strands) {
+    const aStart = a0 + s.off + s.dir * Y0 * k;
+    const tw = s.dir * SPIRE_TURNS * Math.PI * 2 / SPIRE_H;
+    let prev = s.endPrev, arc = s.endArc, next = s.endNext;
+    for (let h = 0.1; h <= SPIRE_H + 1e-6; h += 0.1) {
+      const a = aStart + tw * h;
+      const r = r0 + (0.2 - r0) * (h / SPIRE_H);
+      const cur = [p.x + 0.5 + Math.cos(a) * r, Y0 + 0.15 + h, p.z + 0.5 + Math.sin(a) * r];
+      const d = Math.hypot(cur[0] - prev[0], cur[1] - prev[1], cur[2] - prev[2]);
+      if (d > 1e-9) {
+        while (next <= arc + d) {
+          const f = (next - arc) / d;
+          push(prev[0] + (cur[0] - prev[0]) * f, prev[1] + (cur[1] - prev[1]) * f, prev[2] + (cur[2] - prev[2]) * f, s.rgb, s.ph0 + next * 0.9);
+          next += GARLAND_STEP;
+        }
+        arc += d;
+      }
+      prev = cur;
+      if (pts.length >= GARLAND_PER_PINE) break;
+    }
+    if (pts.length >= GARLAND_PER_PINE) break;
+  }
+  return pts;
+}
+function snapshotPineSolid(x, y, z, m, e) {
+  const s = new Set();
+  const summit = pineSummit(y, m, e);
+  const R = m + 2;
+  for (let by = y; by <= summit; by++)
+    for (let bx = x - R; bx <= x + R; bx++)
+      for (let bz = z - R; bz <= z + R; bz++) {
+        if (getBlock(bx, by, bz) !== AIR) s.add(bx + "," + by + "," + bz);
+      }
+  return s;
+}
+function registerPlantedPine(x, y, z, m, e) {
+  const k = key(x, y, z);
+  if (!inMoonZone(x, y, z)) return;
+  plantedPines.set(k, { x, y, z, m, e, seed: Math.floor(hash2(x, z, seed + 4242) * 255), solid: snapshotPineSolid(x, y, z, m, e) });
+  garlandDirty = true;
+}
+function garlandCubeVisible(p, ax, ay, az) {
+  const ak = ax + "," + ay + "," + az;
+  if (p.solid.has(ak)) return getBlock(ax, ay, az) !== AIR;
+  for (let dx = -2; dx <= 2; dx++) for (let dy = -2; dy <= 2; dy++) for (let dz = -2; dz <= 2; dz++)
+    if (getBlock(ax + dx, ay + dy, az + dz) !== AIR) return true;
+  return false;
+}
+function garlandBulbVisible(p, b) {
+  return garlandCubeVisible(p, b.ax, b.ay, b.az);
+}
+function rebuildGarlands() {
+  garlandDirty = false;
+  ensureGarlandMesh();
+  garlandBulbCount = 0;
+  if (dim !== "over" || world !== worlds.over || !plantedPines.size) {
+    garlandMesh.count = 0;
+    garlandMesh.visible = false;
+    return;
+  }
+  let n = 0;
+  const put = (x, y, z, r, g, b, ph) => {
+    if (n >= GARLAND_MAX) return;
+    garlandMatrix.setPosition(x, y, z);
+    garlandMesh.setMatrixAt(n, garlandMatrix);
+    garlandMesh.setColorAt(n, garlandColor.setRGB(r, g, b));
+    if (!garlandBase || garlandBase.length < GARLAND_MAX * 3) {
+      garlandBase = new Float32Array(GARLAND_MAX * 3);
+      garlandPhase = new Float32Array(GARLAND_MAX);
+    }
+    garlandBase[n * 3] = r; garlandBase[n * 3 + 1] = g; garlandBase[n * 3 + 2] = b;
+    garlandPhase[n] = ph;
+    n++;
+  };
+  for (const p of plantedPines.values()) {
+    const pts = garlandPathFor(p);
+    for (const b of pts) {
+      if (n >= GARLAND_MAX) break;
+      if (!garlandBulbVisible(p, b)) continue;
+      put(b.x, b.y, b.z, b.r, b.g, b.b, b.ph);
+    }
+    if (n >= GARLAND_MAX) break;
+  }
+  garlandBulbCount = n;
+  garlandMesh.count = n;
+  garlandMesh.instanceMatrix.needsUpdate = true;
+  if (garlandMesh.instanceColor) garlandMesh.instanceColor.needsUpdate = true;
+  garlandMesh.visible = n > 0;
+  garlandPulseT = 0;
+}
+function garlandTick(dt) {
+  if (!garlandMesh) return;
+  garlandMesh.visible = garlandBulbCount > 0 && dim === "over" && world === worlds.over;
+  if (!garlandMesh.visible || !garlandBase) return;
+  garlandPulseT += dt;
+  if (garlandPulseT < 0.12) return;
+  garlandPulseT = 0;
+  const t = performance.now() / 1000;
+  for (let i = 0; i < garlandBulbCount; i++) {
+    const k = 1 + 0.3 * Math.sin(t * 3.2 - garlandPhase[i] * 0.55);
+    garlandMesh.setColorAt(i, garlandColor.setRGB(garlandBase[i * 3] * k, garlandBase[i * 3 + 1] * k, garlandBase[i * 3 + 2] * k));
+  }
+  if (garlandMesh.instanceColor) garlandMesh.instanceColor.needsUpdate = true;
+}
+
 // Chunked streaming renderer: the world (now 2x) is split into CHUNK-chunks
 // and only chunks within RENDER_DIST of the player are meshed and drawn.
 // Each chunk is one InstancedMesh per block type (only exposed faces), and
@@ -14682,6 +14888,7 @@ function breakBlock() {
   if (bid === WATER || bid === LAVA || bid === MOON_WATER) return;
   setBlock(x, y, z, AIR);
   birdNoticeBreak(x, y, z);
+  if (plantedPines.size) garlandDirty = true;
   if (placeBatch) placeBatch.push([x, y, z]);
   else { refreshBlocks([[x, y, z]]); queueSave(); }
 }
@@ -15621,6 +15828,7 @@ function processExplosionQueue() {
   refreshDefer = null;
   if (toRefresh.length) {
     refreshBlocks(toRefresh);
+    if (plantedPines.size) garlandDirty = true;
     queueSave();
   }
 }
@@ -15801,6 +16009,8 @@ function spawnExplosion(cx, cy, cz) {
 }
 
 function tickEffects(dt) {
+  if (garlandDirty) rebuildGarlands();
+  else garlandTick(dt);
   updateNetherEmbers(dt, performance.now() / 1000);
   updateVolcanoEmbers(dt, performance.now() / 1000);
   updateLavaMotes(dt, performance.now() / 1000);
@@ -16507,6 +16717,7 @@ function goToDimension(name, sx, sy, sz) {
   vel.set(0, 0, 0);
   rebuildMeshes();
   scanWorldPortals();
+  garlandDirty = true;
   recomputeGlowClusters();
   syncGlowLights();
   if (freeCam) { camera.position.copy(camPos); camera.rotation.set(pitch, yaw, 0); }
@@ -18521,11 +18732,12 @@ function serialize() {
   const villagePanicRemain = villagePanicUntil > 0 ? Math.min(Math.max(0, villagePanicUntil - performance.now() / 1000), VILLAGE_PANIC_TIME) : 0;
   const growN = growableSoils.size;
   const growthN = pineGrowths.length;
-  const buf = new ArrayBuffer(117 + 18 + (on + en + nn) * 5 + m * 6 + (gov + gev + gnv) * 5 + 4 + growN * 14 + 4 + growthN * 15 + winLen + 16 + 4 + (mobN + endMobN + netherMobN) * MOB_SAVE_BYTES + 24 + 4 + (chainPairs.length + chainPairsEnd.length + chainPairsNether.length) * 4 + 4 + 1 + 1 + 4 + exitBytes + tntBytes + fxBytes);
+  const pineN = plantedPines.size;
+  const buf = new ArrayBuffer(117 + 18 + (on + en + nn) * 5 + m * 6 + (gov + gev + gnv) * 5 + 4 + growN * 14 + 4 + growthN * 15 + 5 + pineN * 8 + winLen + 16 + 4 + (mobN + endMobN + netherMobN) * MOB_SAVE_BYTES + 24 + 4 + (chainPairs.length + chainPairsEnd.length + chainPairsNether.length) * 4 + 4 + 1 + 1 + 4 + exitBytes + tntBytes + fxBytes);
   const dv = new DataView(buf);
   let o = 0;
   new Uint8Array(buf, o, 9).set(SAVE_MAGIC); o += 9;
-  dv.setUint8(o++, 32); // format version
+  dv.setUint8(o++, 33); // format version
   dv.setUint8(o++, dim === "end" ? 1 : dim === "nether" ? 2 : 0);
   dv.setInt32(o, seed, true); o += 4;
   dv.setInt32(o, endSeed, true); o += 4;
@@ -18609,6 +18821,16 @@ function serialize() {
     dv.setUint16(o, pg.dims.e, true); o += 2;
     dv.setUint32(o, pg.idx, true); o += 4;
     dv.setFloat32(o, pg.acc, true); o += 4;
+  }
+  dv.setUint8(o++, 1);   // garland style, fixed spirale
+  dv.setUint32(o, pineN, true); o += 4;
+  for (const p of plantedPines.values()) {
+    dv.setUint8(o++, p.x + 128);
+    dv.setUint16(o, p.y, true); o += 2;
+    dv.setUint8(o++, p.z + 128);
+    dv.setUint8(o++, p.m);
+    dv.setUint16(o, p.e, true); o += 2;
+    dv.setUint8(o++, p.seed & 255);
   }
   const writeMob = (em) => {
     dv.setUint8(o++, em.kind & 255);
@@ -18761,11 +18983,13 @@ function deserialize(buf) {
   for (let i = 0; i < 9; i++) if (new Uint8Array(buf, o, 9)[i] !== SAVE_MAGIC[i]) throw new Error("Not a MiniCraft save");
   o += 9;
   const ver = dv.getUint8(o++);
-  if (ver !== 1 && ver !== 2 && ver !== 3 && ver !== 4 && ver !== 5 && ver !== 6 && ver !== 7 && ver !== 8 && ver !== 9 && ver !== 10 && ver !== 11 && ver !== 12 && ver !== 13 && ver !== 14 && ver !== 15 && ver !== 16 && ver !== 17 && ver !== 18 && ver !== 19 && ver !== 20 && ver !== 21 && ver !== 22 && ver !== 23 && ver !== 24 && ver !== 25 && ver !== 26 && ver !== 27 && ver !== 28 && ver !== 29 && ver !== 30 && ver !== 31 && ver !== 32) throw new Error("Unsupported save version");
+  if (ver !== 1 && ver !== 2 && ver !== 3 && ver !== 4 && ver !== 5 && ver !== 6 && ver !== 7 && ver !== 8 && ver !== 9 && ver !== 10 && ver !== 11 && ver !== 12 && ver !== 13 && ver !== 14 && ver !== 15 && ver !== 16 && ver !== 17 && ver !== 18 && ver !== 19 && ver !== 20 && ver !== 21 && ver !== 22 && ver !== 23 && ver !== 24 && ver !== 25 && ver !== 26 && ver !== 27 && ver !== 28 && ver !== 29 && ver !== 30 && ver !== 31 && ver !== 32 && ver !== 33) throw new Error("Unsupported save version");
   const yWidth = ver >= 8 ? 2 : 1;
   const readY = () => { const y = yWidth === 2 ? dv.getUint16(o, true) : dv.getUint8(o); o += yWidth; return y; };
   placedFlowers.clear();
   growableSoils.clear();
+  plantedPines.clear();
+  garlandDirty = true;
   wetSoilSet.clear();
   clearAllSoakMeshes();
   clearAllPineFailBlinks();
@@ -18959,7 +19183,8 @@ function deserialize(buf) {
         const ee = dv.getUint16(o, true); o += 2;
         const idx = dv.getUint32(o, true); o += 4;
         const acc = dv.getFloat32(o, true); o += 4;
-        if (mm < PINE_MIN_M || mm > PINE_MAX_M || ee < 1 || y + ee + pineLayerWidths(mm).length > MAX_Y) continue;
+      if (mm < PINE_MIN_M || mm > PINE_MAX_M || ee < 1 || y + ee + pineLayerWidths(mm).length > MAX_Y) continue;
+      if (!moonZoneGeo(x, y, z)) continue;
         const cells = pineCellsFor(x, y, z, mm, ee);
         if (!cells.length || idx > cells.length) continue;
         pineGrowths.push({ cells, idx, acc: isFinite(acc) ? Math.max(0, acc) : 0, dims: { m: mm, e: ee }, sx: x, sy: y, sz: z, phaseCounts: pinePhaseCounts(cells) });
@@ -18970,6 +19195,21 @@ function deserialize(buf) {
       }
     }
   }
+  if (ver >= 33) {
+    dv.getUint8(o++);   // garland style byte, fixed spirale
+    const pn = dv.getUint32(o, true); o += 4;
+    for (let i = 0; i < pn; i++) {
+      const x = dv.getUint8(o++) - 128;
+      const y = readY();
+      const z = dv.getUint8(o++) - 128;
+      const mm = dv.getUint8(o++);
+      const ee = dv.getUint16(o, true); o += 2;
+      const sd = dv.getUint8(o++);
+      if (mm < PINE_MIN_M || mm > PINE_MAX_M || ee < 1 || y + ee + pineLayerWidths(mm).length > MAX_Y) continue;
+      plantedPines.set(key(x, y, z), { x, y, z, m: mm, e: ee, seed: sd, solid: snapshotPineSolid(x, y, z, mm, ee) });
+    }
+  }
+  garlandDirty = true;
   dim = dimFlag === 2 ? "nether" : dimFlag === 1 ? "end" : "over";
   world = worlds[dim];
   if (ver >= 10) {
@@ -19815,6 +20055,8 @@ async function buildWorld() {
     netherSeed = Math.floor(Math.random() * 100000);
     placedFlowers.clear();
     growableSoils.clear();
+    plantedPines.clear();
+    garlandDirty = true;
     wetSoilSet.clear();
     clearAllSoakMeshes();
     clearAllPineFailBlinks();
@@ -20659,6 +20901,7 @@ if (location.search.includes('test')) {
     get DIRT(){ return DIRT; }, get LEAVES(){ return LEAVES; },
     get GROWABLE_DIST(){ return GROWABLE_DIST; }, get PLANT_NECK(){ return PLANT_NECK; }, get PINE_RATE(){ return PINE_RATE; }, get PINE_PHASE_TIME(){ return PINE_PHASE_TIME; }, get SOIL_TIMER(){ return SOIL_TIMER; }, get SOIL_SOAK_TIME(){ return SOIL_SOAK_TIME; }, get PLANT_BEND_TIME(){ return PLANT_BEND_TIME; }, get PLANT_LEAVE_DIST(){ return PLANT_LEAVE_DIST; },     get PINE_MIN_M(){ return PINE_MIN_M; }, get PINE_MAX_M(){ return PINE_MAX_M; },     get PINE_LIFT_MAX(){ return PINE_LIFT_MAX; }, get PLANT_STEAL_D(){ return PLANT_STEAL_D; }, get GROWTH_PUSH_SPEED(){ return GROWTH_PUSH_SPEED; }, get growthSettlePasses(){ return growthSettlePasses; },
     isSoilHole, isSoilFloor, releaseGrowable, armSoak, absorbSoak, spawnSoakDrips, plantWalkGoal, soilSameY, pickPineDims, fitTrunkRange, pineCellsFor, pineFits, pineSpotBlocked, pineLayerWidths, pineSpiralOrder, pineSummit, pineTrunkE0, pineFolReserved, reservePineCells, releasePineCells, clearAllPineReservations, pushOutOfGrowth, growthSolidOverlap, growthExitTarget, growthSlide, startPineGrowth, tickPineGrowths, tickSoilTimers, startPineFailBlink, clearPineFailBlink, clearAllPineFailBlinks, tickPineFailBlinks, setVillagerNeck, findPlantPath, soilClaimant, plantLeaveTarget,
+    get plantedPines(){ return plantedPines; }, garlandPathFor, garlandRadiusAt, garlandAnchor, garlandCubeVisible, garlandBulbVisible, snapshotPineSolid, registerPlantedPine, rebuildGarlands, garlandTick,
   });
   Object.assign(window._test, {
     get PIGEON_COUNT(){ return BIRD_COUNT; }, get PIGEON_MIN_Y(){ return BIRD_MIN_Y; }, get PIGEON_MAX_Y(){ return BIRD_MAX_Y; },
