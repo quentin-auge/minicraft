@@ -2925,6 +2925,56 @@ function poolExitTarget(x, z, hx, hz) {
   }
   return best;
 }
+const BATH_MIN_T = 1, BATH_MAX_T = 5;
+function isMobInPoolWater(m) {
+  return !!villagePool && isInsidePool(m.pos.x, m.pos.z) && mobInWater(m);
+}
+function isMobInMoonLake(m) {
+  if (m.kind === "enderman" || isFlyingKind(m.kind)) return false;
+  if (dim !== "over") return false;
+  if (!mobInWater(m)) return false;
+  const hw = m.hw, hh = m.h;
+  const y0 = Math.floor(m.pos.y + 0.01), y1 = Math.floor(m.pos.y + hh - 0.01);
+  let moonWet = false;
+  for (let y = y0; y <= y1 && !moonWet; y++)
+    for (let bx = Math.floor(m.pos.x - hw); bx <= Math.floor(m.pos.x + hw) && !moonWet; bx++)
+      for (let bz = Math.floor(m.pos.z - hw); bz <= Math.floor(m.pos.z + hw); bz++) {
+        if (getBlock(bx, y, bz) === MOON_WATER) { moonWet = true; break; }
+      }
+  if (!moonWet) return false;
+  return inMoonZone(m.pos.x, m.pos.y, m.pos.z);
+}
+function moonLakeExitTarget(m) {
+  const feet = m.pos.y;
+  const dirs = [[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [1, -1], [-1, 1], [-1, -1]];
+  let best = null, bestD = Infinity;
+  for (const [dx, dz] of dirs) {
+    for (let d = 1; d <= 20; d++) {
+      const x = m.pos.x + dx * d, z = m.pos.z + dz * d;
+      if (Math.hypot(x, z) > MOON_R) break;
+      const bx = Math.floor(x), bz = Math.floor(z);
+      let wet = false;
+      for (let yy = MOON_Y - 2; yy <= MOON_Y + 1; yy++) {
+        if (getBlock(bx, yy, bz) === MOON_WATER) { wet = true; break; }
+      }
+      if (wet) continue;
+      let standY = null;
+      for (let yy = MOON_Y + 2; yy >= MOON_Y - 6; yy--) {
+        if (Math.abs(yy + 1 - feet) > 3) continue;
+        if (!isSolid(bx, yy, bz)) continue;
+        if (aabbCollidesWorld(x, yy + 1 + 0.001, z, m.hw, m.h)) continue;
+        if (!hasMobGround(x, z, m.hw, yy + 1)) continue;
+        standY = yy + 1;
+        break;
+      }
+      if (standY == null) continue;
+      const dist = Math.hypot(dx * d, dz * d);
+      if (dist < bestD) { bestD = dist; best = { x, z }; }
+      break;
+    }
+  }
+  return best;
+}
 function placeVillagePool() {
   if (!villagePool) return;
   const p = villagePool, vy = p.vy;
@@ -9932,16 +9982,36 @@ function updateMobs(dt) {
     const goalFor = canStep ? wanderGoalForWolf : wanderGoalFor;
     let poolEx = null;
     const pHead = mobHeadonHeading(m);
+    const bathable = m.kind !== "enderman" && !isFlyingKind(m.kind);
+    let inBath = false;
+    if (bathable && !isMobHeld(m) && !isMobFrozenByGrapple(m)) {
+      if (isMobInPoolWater(m) || isMobInMoonLake(m)) inBath = true;
+    }
+    if (inBath) {
+      if (!(m._bathMax > 0)) { m._bathT = 0; m._bathMax = BATH_MIN_T + Math.random() * (BATH_MAX_T - BATH_MIN_T); }
+      else m._bathT = (m._bathT || 0) + dt;
+    } else { m._bathT = 0; m._bathMax = 0; }
+    const bathDue = bathable && inBath && (m._bathT || 0) >= (m._bathMax || Infinity);
     if (m._poolEx && m._poolExKind) {
+      if (m._poolExKind === "moon") {
+        const arrived = Math.hypot(m.pos.x - m._poolEx.x, m.pos.z - m._poolEx.z) < 0.8;
+        if (arrived || !isMobInMoonLake(m)) { m._poolEx = null; m._poolExKind = null; }
+        else poolEx = m._poolEx;
+      } else {
       const q = m._poolExKind === "pen" ? (villagePen && villagePen.pool) : villagePool;
       const arrived = q && Math.hypot(m.pos.x - m._poolEx.x, m.pos.z - m._poolEx.z) < 0.8;
       const outside = q && (m.pos.x < q.minX - 1 || m.pos.x > q.maxX + 1 || m.pos.z < q.minZ - 1 || m.pos.z > q.maxZ + 1);
       if (!q || arrived || outside) { m._poolEx = null; m._poolExKind = null; }
       else poolEx = m._poolEx;
+      }
     }
-    if (!poolEx && villagePool && isInsidePool(m.pos.x, m.pos.z) && mobInWater(m)) {
+    if (!poolEx && bathDue && isMobInPoolWater(m)) {
       poolEx = poolExitTarget(m.pos.x, m.pos.z, pHead.x, pHead.z);
       if (poolEx) { m.path = null; m.pathKey = null; m._poolEx = poolEx; m._poolExKind = "pool"; }
+    }
+    if (!poolEx && bathDue && isMobInMoonLake(m)) {
+      poolEx = moonLakeExitTarget(m);
+      if (poolEx) { m.path = null; m.pathKey = null; m._poolEx = poolEx; m._poolExKind = "moon"; }
     }
     if (!poolEx && villagePen && villagePen.pool && isInsidePenPool(m.pos.x, m.pos.z) && mobInWater(m)) {
       poolEx = penPoolExitTarget(m.pos.x, m.pos.z, pHead.x, pHead.z);
@@ -20130,14 +20200,14 @@ if (location.search.includes('test')) {
     get world(){ return world; }, get worlds(){ return worlds; }, get mobs(){ return mobs; },
     getBlock, setBlock, handleMobExplosion, processExplosionQueue, isMobStandingOn, intersectsMob, key, BLAST_RADIUS, TNT, STONE, AIR, get SAND(){ return SAND; }, get WATER(){ return WATER; }, get VILLAGE_POOL_W(){ return VILLAGE_POOL_W; }, get VILLAGE_POOL_D(){ return VILLAGE_POOL_D; }, get VILLAGE_POOL_DEPTH(){ return VILLAGE_POOL_DEPTH; }, get VILLAGE_PEN_POOL_W(){ return VILLAGE_PEN_POOL_W; }, get VILLAGE_PEN_POOL_D(){ return VILLAGE_PEN_POOL_D; }, get VILLAGE_PEN_POOL_DEPTH(){ return VILLAGE_PEN_POOL_DEPTH; },
     get villageCenter(){ return villageCenter; }, get villageHouses(){ return villageHouses; }, get villagePen(){ return villagePen; }, get villagePool(){ return villagePool; }, get isInsidePen(){ return isInsidePen; }, get isInsidePool(){ return isInsidePool; }, get isInsidePenPool(){ return isInsidePenPool; }, get poolExitTarget(){ return poolExitTarget; }, get penPoolExitTarget(){ return penPoolExitTarget; }, get LOG(){ return LOG; }, findPenGaps, nearestPenGap, penGapInside, penGapOutside, hasMobGround, mobBlockedAt, aabbCollidesWorld, mobProbeFree, randomPenPoint, randomAroundPenPoint, groundYForMob, get CLOUD_BASE(){ return CLOUD_BASE; }, get CLOUD_TOP(){ return CLOUD_TOP; }, get MAX_Y(){ return MAX_Y; },
-    getTypeMats, get typeMats(){ return typeMats; }, buildWorld, generateWorld, computeVillageLayout, spawnVillagers, refreshBlocks, rebuildMeshes, get chunkMeshes(){ return chunkMeshes; }, get boxGeo(){ return boxGeo; }, THREE,
+    getTypeMats, get typeMats(){ return typeMats; }, buildWorld, generateWorld, generateMoonLakes, get moonLakesGenerated(){ return moonLakesGenerated; }, computeVillageLayout, spawnVillagers, refreshBlocks, rebuildMeshes, get chunkMeshes(){ return chunkMeshes; }, get boxGeo(){ return boxGeo; }, THREE,
     get pos(){ return pos; }, get vel(){ return vel; }, get camera(){ return camera; }, get scene(){ return scene; }, get freeCam(){ return freeCam; }, set freeCam(v){ freeCam = v; }, get camPos(){ return camPos; }, get yaw(){ return yaw; }, set yaw(v){ yaw=v; }, get pitch(){ return pitch; }, set pitch(v){ pitch=v; },
     get carryMob(){ return carryMob; }, set carryMob(v){ carryMob = v; }, handleCarryEnterDown, handleCarryEnterUp, pickMob, get carryGrappleActive(){ return carryGrappleActive; }, get carryGrapplePulling(){ return carryGrapplePulling; }, get carryGrappleMob(){ return carryGrappleMob; }, get carryGrappleBlock(){ return carryGrappleBlock; }, get carryGrappleHookPos(){ return carryGrappleHookPos; }, get carryGrappleOffset(){ return carryGrappleOffset; }, get carryGrappleMode(){ return carryGrappleMode; }, get isMobFrozenByGrapple(){ return isMobFrozenByGrapple; }, isChained, isChainCarrier, chainRootOf, chainTailOf, linkChain, dropChainFrom, chainTakeForCarry, severChainMob, groundChainFrom, insertChainBefore, insertChainBehind, insertBehindRide, prependChainLead, clearChains, pruneChains, updateChains, syncChainLinkColor, syncChainLinkColors, syncGrappleColor, stampSpawn, get mobById(){ return mobById; }, chainAttachTarget, startCarryAttachGrapple, killChainMob, respawnChainMob, unchainMob, severGroundedChainVictim, isGroundedChainVictim, get chainLinks(){ return chainLinks; }, get chainParent(){ return chainParent; }, get chainChild(){ return chainChild; }, playerChainAvatar, playerInChain, PLAYER_CHAIN_ID, spliceChainLink, chainHasJumping, chainPushCrumb, chainTrailTarget, latchPlayerTo, latchPlayerInMiddle, playerInsertCutAndLink, insertChainAheadOfPlayer, insertChainBehindPlayer, playerLeadLink, dropPlayerLeadEntry, readyLeadForLatch, leadAwareLatchInsert, appendCutFollowerBehindLeadTail, grabRideForCarry, fireGrapple, detachDisplacementGrapple, get grappleActive(){ return grappleActive; }, get grappleHooked(){ return grappleHooked; }, get grappleRetracting(){ return grappleRetracting; }, get grappleMob(){ return grappleMob; }, get grappleMobOffset(){ return grappleMobOffset; }, get grappleHookPos(){ return grappleHookPos; }, get grappleTarget(){ return grappleTarget; }, updateCarryGrapple, updateCarry, get currentBlock(){ return currentBlock; }, updateTarget, hotbarList, placeBlock, breakBlock, get selected(){ return selected; }, set selected(v){ selected=v; }, toggleCarry: handleCarryEnterDown, findNearestMobForGrab: (...a)=>{ const d=new THREE.Vector3(); camera.getWorldDirection(d); return pickMob(d); }, get playerArms(){ return playerArms; }, get started(){ return started; }, set started(v){ started=v; }, get loading(){ return loading; }, get freeCam(){ return freeCam; }, set freeCam(v){ freeCam=v; }, get helpOpen(){ return helpOpen; },
-    get WOLF_COUNT(){ return WOLF_COUNT; }, get GOLEM_COUNT(){ return GOLEM_COUNT; }, get GOLEM_HW(){ return GOLEM_HW; }, get GOLEM_HH(){ return GOLEM_HH; }, makeWolfMesh, makeIronGolemMesh, villagerHW, villagerH, wolfHasMobGround, wolfBlockedAt, wolfProbeFree, wanderGoalForWolf, wolfFindPath, wolfFlatSpot, wolfLeaveTarget, panicLeaveDir, panicWolves, wolfInWater, mobInWater, waterSurfaceForMob, mobPhysicsStep, wolfPhysicsStep, updateMobs, obstacleTurnDir, buildMobGrid,     get isPigCow(){ return isPigCow; }, get pigOverlapsFence(){ return pigOverlapsFence; }, pigFenceSlideOut, get MOB_FLOAT_FRAC(){ return MOB_FLOAT_FRAC; }, mobFloatTargetY, mobWaterExitJump, poolExitTarget, penPoolExitTarget, isInsidePenPool,
+    get WOLF_COUNT(){ return WOLF_COUNT; }, get GOLEM_COUNT(){ return GOLEM_COUNT; }, get GOLEM_HW(){ return GOLEM_HW; }, get GOLEM_HH(){ return GOLEM_HH; }, makeWolfMesh, makeIronGolemMesh, villagerHW, villagerH, wolfHasMobGround, wolfBlockedAt, wolfProbeFree, wanderGoalForWolf, wolfFindPath, wolfFlatSpot, wolfLeaveTarget, panicLeaveDir, panicWolves, wolfInWater, mobInWater, waterSurfaceForMob, mobPhysicsStep, wolfPhysicsStep, updateMobs, obstacleTurnDir, buildMobGrid,     get isPigCow(){ return isPigCow; }, get pigOverlapsFence(){ return pigOverlapsFence; }, pigFenceSlideOut, get MOB_FLOAT_FRAC(){ return MOB_FLOAT_FRAC; }, mobFloatTargetY, mobWaterExitJump, poolExitTarget, penPoolExitTarget, isInsidePenPool, moonLakeExitTarget, isMobInPoolWater, isMobInMoonLake, get BATH_MIN_T(){ return BATH_MIN_T; }, get BATH_MAX_T(){ return BATH_MAX_T; },
     get PIGEON_COUNT(){ return PIGEON_COUNT; }, get PIGEON_MIN_Y(){ return PIGEON_MIN_Y; }, get PIGEON_MAX_Y(){ return PIGEON_MAX_Y; }, get PIGEON_SPEED(){ return PIGEON_SPEED; }, get TNT_HOME_SPEED(){ return TNT_HOME_SPEED; }, get PIGEON_AIM_DIST(){ return PIGEON_AIM_DIST; }, get PIGEON_LOCK_TIME(){ return PIGEON_LOCK_TIME; }, get pigeonLock(){ return pigeonLock; }, get pigeonLockT(){ return pigeonLockT; }, set pigeonLockT(v){ pigeonLockT = v; }, get pigeonLockShots(){ return pigeonLockShots; }, livePigeonLock, tntTargeted, tryFireLockedTNT, tntChainAimMob, aimOnMob, get chainBreaking(){ return chainBreaking; }, set chainBreaking(v){ chainBreaking = v; },     makePigeonMesh, spawnPigeons, spawnSinglePigeon, removePigeons, spawnPigeonChain, updatePigeon, updatePerchedPigeon, updateToPerchPigeon, pigeonTakeoff, pigeonNextLeg, pigeonFindPerchSpot, pigeonCloudTopAt, pigeonTreeTopAt, pigeonRoofTopAt, pigeonPerchBand, pigeonPerchSupports, killPigeon, pigeonSpotOutOfView, pigeonProbeFree, pigeonRandomTarget, pigeonSeparate,     houseInteriorFor, houseMouths, pigeonCoopTarget,     pigeonSegmentFree, pigeonClearance, pigeonBestSteer, pigeonMillHop, pigeonConfinedSteer, pigeonMoveSlide, bandReturnTarget, pigeonNoticeBreak, setMobTransparent, pigeonIsConfined, pigeonHoleCell, chainSegmentFree, chainThreadRide, pigeonTunnelPlan, updateTunnelPigeon, pigeonTunnelSeparate, pigeonSkyClear, pigeonSidestep, pigeonUTurn, pigeonNarrow, pigeonColHW, pigeonColH,     get PIGEON_NARROW_SCALE(){ return PIGEON_NARROW_SCALE; }, get PIGEON_SKY_CLEAR(){ return PIGEON_SKY_CLEAR; }, get NETHER_PIGEON_MIN_Y(){ return NETHER_PIGEON_MIN_Y; }, get NETHER_PIGEON_MAX_Y(){ return NETHER_PIGEON_MAX_Y; }, pigeonDimOf, pigeonBandMinFor, pigeonBandMaxFor, pigeonBandMin, pigeonBandMax, pigeonNetherLegY, netherPigeonCeiling, pigeonLavaAt, get PIGEON_TUNNEL_SCALE(){ return PIGEON_TUNNEL_SCALE; }, get PIGEON_COL_HW(){ return PIGEON_COL_HW; }, get PIGEON_COL_H(){ return PIGEON_COL_H; },     get tntLit(){ return tntLit; }, get explosionQueue(){ return explosionQueue; }, get tntEta(){ return tntEta; }, get pendingTNTBombs(){ return pendingTNTBombs; }, get pendingTNTEta(){ return pendingTNTEta; }, get bursts(){ return bursts; }, get flashes(){ return flashes; }, snapshotLiveFx, replayLiveFx, spawnExplosion, igniteTNT, fireTNTAtPigeon, purgeLiveTNT, tickTNT, snapshotLiveTNT, restoreLiveTNT, get pendingDragon(){ return pendingDragon; }, get tntEta(){ return tntEta; }, igniteTNT, aimedPigeon, fireTNTAtPigeon, explodePigeon, spawnPigeonBurst, get bursts(){ return bursts; }, get flashes(){ return flashes; }, updateTNTTarget, tickTNT, fireGrapple, updateGrapple, updatePlayer, get grappleActive(){ return grappleActive; }, get grapplePulling(){ return grapplePulling; }, get grappleHooked(){ return grappleHooked; },
     get overPortalWin(){ return overPortalWin; }, get overPortalDir(){ return overPortalDir; }, get overPortalSpawn(){ return overPortalSpawn; }, get overPortalFace(){ return overPortalFace; },
     portalWinValid, portalFrameBBox, findReturnSpot, frameTopSpot, facePortalFrom, faceAwayFromPortal, recordOverPortal, recordDimExit, resolveDimArrival, nearestReturnWin, resolveOverworldReturn, nearPortalSpawn, resolveSpawn, collectEndWins, collectNetherWins, collectReturnWins, insideEndInterior, insideNetherInterior, winCenter, windowDist, isSolid,
-    get PORTAL(){ return PORTAL; }, get OBSIDIAN(){ return OBSIDIAN; }, get WORLD_RADIUS(){ return WORLD_RADIUS; }, get PLAYER_HW(){ return PLAYER_HW; }, get PLAYER_H(){ return PLAYER_H; }, get MOON(){ return MOON; }, get CLOUD(){ return CLOUD; }, get GRASS(){ return GRASS; }, get STONE(){ return STONE; }, get ENDSTONE(){ return ENDSTONE; }, get NETHERRACK(){ return NETHERRACK; }, get dim(){ return dim; },
+    get PORTAL(){ return PORTAL; }, get OBSIDIAN(){ return OBSIDIAN; }, get WORLD_RADIUS(){ return WORLD_RADIUS; }, get PLAYER_HW(){ return PLAYER_HW; }, get PLAYER_H(){ return PLAYER_H; },     get MOON(){ return MOON; }, get MOON_WATER(){ return MOON_WATER; }, get MOON_Y(){ return MOON_Y; }, get MOON_R(){ return MOON_R; }, inMoonZone, get CLOUD(){ return CLOUD; }, get GRASS(){ return GRASS; }, get STONE(){ return STONE; }, get ENDSTONE(){ return ENDSTONE; }, get NETHERRACK(){ return NETHERRACK; }, get dim(){ return dim; },
     serialize, deserialize, restoreSave, snapshotOverworldMobs, restoreOverworldMobs, get overworldMobCache(){ return overworldMobCache; }, get pendingOverworldMobs(){ return pendingOverworldMobs; }, get pendingChainLinks(){ return pendingChainLinks; }, get pendingCarriedIdx(){ return pendingCarriedIdx; },
     snapshotMobsForDim, snapshotChainPairsForDim, DRAGON_CHAIN_CARRIER, restoreDimMobs, relinkDimChainsByIds, mobDimOf, suspendLiveDim, placeMobExact, mobRestoreOverlapsPlaced, settleMobSpot, restoreInitialTarget, aabbOverlaps,
     get endMobCache(){ return endMobCache; }, get netherMobCache(){ return netherMobCache; }, get pendingEndMobs(){ return pendingEndMobs; }, get pendingNetherMobs(){ return pendingNetherMobs; }, get netherExit(){ return netherExit; }, get endExit(){ return endExit; }, get endCleared(){ return endCleared; },
