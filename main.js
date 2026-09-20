@@ -537,6 +537,290 @@ let glowDefer = 0;
 let glowDirtyDeferred = false;
 let placeBatch = null;
 
+// Villager-planted pines (Overworld, anywhere including the Moon). A DIRT
+// block placed by the player in the middle of 8 solid non-DIRT neighbours
+// (same y, incl. diagonals) is flagged growable. A nearby adult villager
+// walks over, bows the neck 40deg toward it while a 2.5s TNT-style timer ticks
+// above the block, then the timer vanishes and a pine grows at PINE_RATE/s.
+const growableSoils = new Map();
+const plantClaims = new Map();
+const pineGrowths = [];
+const soilTimerSprites = new Map();
+const GROWABLE_DIST = 100; // detection radius, not tied to VILLAGE_RADIUS (declared below)
+const GROWABLE_SAME_Y = 1.0;
+const PLANT_STEAL_D = 2;
+const PLANT_NECK = 40 * Math.PI / 180;
+const PLANT_NECK_Y = 1.45;
+const SOIL_TIMER = 2.5;
+const PLANT_BEND_TIME = 1.5;
+const PLANT_LEAVE_DIST = 8;
+function setVillagerNeck(m, on) {
+  const mesh = m.mesh;
+  const parts = mesh && mesh.userData ? [mesh.userData.neck, mesh.userData.head, mesh.userData.nose].filter(Boolean) : [];
+  if (!mesh || !parts.length) return;
+  const ud = mesh.userData;
+  if (on) {
+    if (!ud.neckBase || ud.neckBase.mesh !== mesh) {
+      ud.neckBase = { mesh, parts: parts.map((p) => ({ p, pos: p.position.clone(), rot: p.rotation.x })) };
+    }
+    const sc = ud.sc || 1;
+    const px = 0, py = PLANT_NECK_Y * sc, pz = 0;
+    const c = Math.cos(PLANT_NECK), s = Math.sin(PLANT_NECK);
+    for (const e of ud.neckBase.parts) {
+      e.p.rotation.x = e.rot + PLANT_NECK;
+      const dx = e.pos.x - px, dy = e.pos.y - py, dz = e.pos.z - pz;
+      e.p.position.set(px + dx, py + dy * c - dz * s, pz + dy * s + dz * c);
+    }
+  } else if (ud.neckBase && ud.neckBase.mesh === mesh) {
+    for (const e of ud.neckBase.parts) { e.p.rotation.x = e.rot; e.p.position.copy(e.pos); }
+    ud.neckBase = null;
+  }
+}
+const PINE_RATE = 40;
+const PINE_PHASE_TIME = 0.5;
+const PINE_MIN_M = 2;
+const PINE_MAX_M = 6;
+const PINE_LIFT_MAX = 24;
+function isSolidId(id) { return !!BLOCK_INFO[id] && BLOCK_INFO[id].solid; }
+function isSoilHole(x, y, z) {
+  for (let dx = -1; dx <= 1; dx++)
+    for (let dz = -1; dz <= 1; dz++) {
+      if (!dx && !dz) continue;
+      const n = getBlock(x + dx, y, z + dz);
+      if (n === DIRT || !isSolidId(n)) return false;
+    }
+  return true;
+}
+function refreshGrowableAt(x, y, z) {
+  if (dim !== "over" || world !== worlds.over) return;
+  const k = key(x, y, z);
+  if (getBlock(x, y, z) === DIRT && isSoilHole(x, y, z)) {
+    if (!growableSoils.has(k)) growableSoils.set(k, { x, y, z, timer: null });
+  }
+  else if (growableSoils.has(k)) releaseGrowable(k);
+}
+function soilTimerSprite(k, g) {
+  let spr = soilTimerSprites.get(k);
+  if (!spr) {
+    spr = makeFuseSprite();
+    spr.position.set(g.x + 0.5, g.y + 2.3, g.z + 0.5);
+    scene.add(spr);
+    soilTimerSprites.set(k, spr);
+  }
+  return spr;
+}
+function clearSoilTimerSprite(k) {
+  const spr = soilTimerSprites.get(k);
+  if (spr) {
+    soilTimerSprites.delete(k);
+    scene.remove(spr);
+    if (spr.material) {
+      if (spr.material.map) spr.material.map.dispose();
+      spr.material.dispose();
+    }
+  }
+}
+function clearAllSoilTimerSprites() {
+  for (const k of [...soilTimerSprites.keys()]) clearSoilTimerSprite(k);
+}
+function releaseGrowable(k) {
+  growableSoils.delete(k);
+  clearSoilTimerSprite(k);
+  const holder = plantClaims.get(k);
+  if (holder != null) {
+    plantClaims.delete(k);
+    const hm = typeof mobById !== "undefined" ? mobById.get(holder) : null;
+    if (hm && hm.plantKey === k) {
+      hm.mode = "wander"; hm.speed = WALK / 2;
+      hm.plantKey = null;
+      hm.plantTarget = null;
+      hm.plantPhase = null;
+      setVillagerNeck(hm, false);
+    }
+  }
+}
+function claimFree(k, m) {
+  const holder = plantClaims.get(k);
+  if (holder == null || holder === m.id) return true;
+  const hm = typeof mobById !== "undefined" ? mobById.get(holder) : null;
+  if (!hm || hm.mode !== "goPlant" || hm.plantKey !== k) { plantClaims.delete(k); return true; }
+  return false;
+}
+function pineLayerWidths(m) {
+  const ws = [1];
+  for (let k = 1; k <= m; k++) {
+    const w = 2 * k + 1;
+    const n = 3 + Math.floor((m - k) / 2);
+    for (let i = 0; i < n; i++) ws.push(w);
+  }
+  return ws;
+}
+function pineTrunkE0(m) {
+  return Math.max(1, Math.round((pineLayerWidths(m).length - 1) / 4));
+}
+function pineSpiralOrder(h) {
+  const cells = [];
+  const seen = new Set();
+  const total = (2 * h + 1) * (2 * h + 1);
+  let x = 0, z = 0;
+  const dirs = [[1, 0], [0, 1], [-1, 0], [0, -1]];
+  const take = (px, pz) => {
+    if (Math.abs(px) > h || Math.abs(pz) > h) return;
+    const k = px + "," + pz;
+    if (seen.has(k)) return;
+    seen.add(k);
+    cells.push([px, pz]);
+  };
+  take(0, 0);
+  for (let leg = 0; cells.length < total; leg++) {
+    const d = dirs[leg % 4], len = (leg >> 1) + 1;
+    for (let i = 0; i < len && cells.length < total; i++) { x += d[0]; z += d[1]; take(x, z); }
+  }
+  return cells;
+}
+function pineSummit(y, m, e) {
+  return y + e + pineLayerWidths(m).length;
+}
+function pineFits(x, y, z, m, e) {
+  const summit = pineSummit(y, m, e);
+  if (summit > MAX_Y) return false;
+  for (const c of pineCellsFor(x, y, z, m, e)) {
+    if (c.id === LOG) continue;
+    if (getBlock(c.x, c.y, c.z) !== AIR) return false;
+  }
+  return true;
+}
+function pineCellsFor(x, y, z, m, e) {
+  const cells = [];
+  const ws = pineLayerWidths(m);
+  const summit = pineSummit(y, m, e);
+  const lMax = ws.length - 1;
+  for (let cy = y + 1; cy <= y + e; cy++) cells.push({ x, y: cy, z, id: LOG, s: 0 });
+  const layerCells = (l, rMin, rMax, s) => {
+    const out = [];
+    const h = (ws[l] - 1) / 2, ly = summit - l;
+    for (const [ox, oz] of pineSpiralOrder(h)) {
+      const r = Math.max(Math.abs(ox), Math.abs(oz));
+      if (r < rMin || r > rMax) continue;
+      if (((ox + oz) & 1) !== (l % 2)) continue;
+      out.push({ x: x + ox, y: ly, z: z + oz, id: LEAVES, s });
+    }
+    return out;
+  };
+  for (let l = lMax; l >= 1; l--) cells.push(...layerCells(l, 0, 1, 3));
+  cells.push({ x, y: summit, z, id: LEAVES, s: 3 });
+  let topDown = true;
+  for (let s = 5; s <= 2 * m + 1; s += 2) {
+    const hs = (s - 1) / 2, ls = [];
+    for (let l = 1; l <= lMax; l++) if (ws[l] >= s) ls.push(l);
+    if (!topDown) ls.reverse();
+    for (const l of ls) cells.push(...layerCells(l, hs, hs, s));
+    topDown = !topDown;
+  }
+  return cells;
+}
+function pinePhaseCounts(cells) {
+  const counts = {};
+  for (const c of cells) counts[c.s] = (counts[c.s] || 0) + 1;
+  return counts;
+}
+function pickPineDims(x, y, z) {
+  const ms = [];
+  for (let m = PINE_MIN_M; m <= PINE_MAX_M; m++) ms.push(m);
+  for (let i = ms.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    const tmp = ms[i]; ms[i] = ms[j]; ms[j] = tmp;
+  }
+  for (const m of ms) {
+    const e0 = pineTrunkE0(m);
+    if (pineFits(x, y, z, m, e0)) return { m, e: e0 };
+    for (let e = e0 + 1; e <= e0 + PINE_LIFT_MAX; e++) {
+      if (pineSummit(y, m, e) > MAX_Y) break;
+      if (pineFits(x, y, z, m, e)) {
+        const eb = e + 2;
+        if (pineSummit(y, m, eb) <= MAX_Y && pineFits(x, y, z, m, eb)) return { m, e: eb };
+        return { m, e };
+      }
+    }
+    for (let e = e0 - 1; e >= 1; e--) {
+      if (pineFits(x, y, z, m, e)) return { m, e };
+    }
+  }
+  return null;
+}
+function startPineGrowth(x, y, z) {
+  if (dim !== "over" || world !== worlds.over) return false;
+  growableSoils.delete(key(x, y, z));
+  const k = key(x, y, z);
+  const hm = soilClaimant(k);
+  if (hm) {
+    if (plantClaims.get(k) === hm.id) plantClaims.delete(k);
+    setVillagerNeck(hm, false);
+    hm.plantKey = null; hm.plantTarget = null; hm.plantPhase = null;
+    hm.mode = "wander"; hm.speed = WALK / 2; hm.wanderT = 2 + Math.random() * 2;
+    if (soilOutsideClamp(x + 0.5, z + 0.5, hm.hw)) hm.villageBound = false;
+    hm.target = hm.villageBound === false ? wanderNear(hm) : wanderGoalFor(hm);
+    hm.path = null; hm.pathKey = null;
+  }
+  if (getBlock(x, y, z) !== DIRT) return false;
+  const dims = pickPineDims(x, y, z);
+  if (!dims) return false;
+  const cells = pineCellsFor(x, y, z, dims.m, dims.e);
+  if (!cells.length) return false;
+  pineGrowths.push({ cells, idx: 0, acc: 0, dims, sx: x, sy: y, sz: z, phaseCounts: pinePhaseCounts(cells) });
+  queueSave();
+  return true;
+}
+function soilClaimant(k) {
+  const holder = plantClaims.get(k);
+  if (holder == null) return null;
+  const hm = typeof mobById !== "undefined" ? mobById.get(holder) : null;
+  if (!hm || hm.mode !== "goPlant" || hm.plantKey !== k) return null;
+  return hm;
+}
+function tickSoilTimers(dt) {
+  if (dim !== "over" || world !== worlds.over) return;
+  for (const [k, g] of growableSoils) {
+    if (g.timer == null) continue;
+    if (getBlock(g.x, g.y, g.z) !== DIRT) { releaseGrowable(k); continue; }
+    g.timer -= dt;
+    if (g.timer <= 0) {
+      clearSoilTimerSprite(k);
+      growableSoils.delete(k);
+      if (!startPineGrowth(g.x, g.y, g.z)) {
+        setBlock(g.x, g.y, g.z, AIR);
+        refreshBlocks([[g.x, g.y, g.z]]);
+        queueSave();
+      }
+    } else {
+      drawFuseSprite(soilTimerSprite(k, g), Math.max(0, g.timer));
+    }
+  }
+}
+function tickPineGrowths(dt) {
+  if (!pineGrowths.length || dim !== "over" || world !== worlds.over) return;
+  const touched = [];
+  for (let gi = pineGrowths.length - 1; gi >= 0; gi--) {
+    const g = pineGrowths[gi];
+    if (!g.phaseCounts) g.phaseCounts = pinePhaseCounts(g.cells);
+    const cur = g.cells[g.idx];
+    const rate = !cur || cur.s === 0 ? PINE_RATE : (g.phaseCounts[cur.s] || 1) / PINE_PHASE_TIME;
+    g.acc += dt * rate;
+    let n = Math.floor(g.acc);
+    g.acc -= n;
+    while (n-- > 0 && g.idx < g.cells.length) {
+      const c = g.cells[g.idx++];
+      if (c.y < 0 || c.y > MAX_Y) continue;
+      if (protectedBlocks.has(protKey(c.x, c.y, c.z))) continue;
+      if (c.id !== LOG && getBlock(c.x, c.y, c.z) !== AIR) continue;
+      setBlock(c.x, c.y, c.z, c.id);
+      touched.push([c.x, c.y, c.z]);
+    }
+    if (g.idx >= g.cells.length) pineGrowths.splice(gi, 1);
+  }
+  if (touched.length) { refreshBlocks(touched); queueSave(); }
+}
+
 function rebuildPortalBlocks() {
   for (const name of ["over", "end", "nether"]) {
     const set = portalBlockSets[name];
@@ -572,6 +856,7 @@ function setBlock(x, y, z, id) {
     if (id !== GLOWSTONE) gv.delete(k);
   }
   if (id !== FLOWER) placedFlowers.delete(k);
+  if (dim === "over" && world === worlds.over && id !== DIRT && growableSoils.has(k)) releaseGrowable(k);
   if (wasG !== gs.has(k)) {
     if (glowDefer > 0) glowDirtyDeferred = true;
     else { recomputeGlowClusters(); syncGlowLights(); }
@@ -1680,7 +1965,7 @@ function isInsideAnyHouse(x, z) {
   return null;
 }
 function mobOnRoofLevel(y) {
-  return villageHouses.length && y >= villageCenter.y + 5.5;
+  return villageHouses.length && y >= villageCenter.y + 5.5 && y <= villageCenter.y + 12;
 }
 function houseAtRoof(x, z) {
   const bx = Math.floor(x), bz = Math.floor(z);
@@ -2503,7 +2788,7 @@ function makeVillagerMesh(isBaby, palIdxOrNull) {
   legR.scale.set(0.22 * sc, 0.16 * sc, 0.24 * sc);
   legR.position.set(0.15 * sc, 0.08 * sc, 0);
   g.add(legR);
-  g.userData = { isBaby, sc, legL, legR, armL, armR, body, head, palette: pal, palIdx };
+  g.userData = { isBaby, sc, legL, legR, armL, armR, armGroup, body, head, neck, nose, palette: pal, palIdx };
   return g;
 }
 // — Pigs and cows — same physics as villagers, boxy mesh —
@@ -7110,6 +7395,80 @@ function findVillagePath(sx, sz, tx, tz, hw, pyHint) {
   if (out.length) out[out.length-1] = [tx, tz];
   return out;
 }
+// Village-agnostic BFS for pine planting: same walkability as findVillagePath
+// but bounded only by the map edge instead of the village, so soils are
+// reachable anywhere in the Overworld (clouds, Moon, remote spots).
+const PLANT_PATH_R = 105;
+// A soil the mob can never stand on while village-bound (outside the clamp
+// rectangle enforced by mobPhysicsStep) unbinds its planter at claim time,
+// so the trip isn't snapped back mid-walk and the planter mills locally
+// afterwards instead of hiking home across the map (e.g. the Moon).
+function soilOutsideClamp(x, z, hw) {
+  if (typeof villageMinX === "undefined") return false;
+  return x < villageMinX + hw + 0.5 || x > villageMaxX - hw - 0.5 ||
+    z < villageMinZ + hw + 0.5 || z > villageMaxZ - hw - 0.5;
+}
+// Wander target straight away from the soil (fallback: null): the planter
+// leaves opposite the dirt block unless no validated spot exists.
+function plantLeaveTarget(m, g) {
+  let dx = m.pos.x - (g.x + 0.5), dz = m.pos.z - (g.z + 0.5);
+  let len = Math.hypot(dx, dz);
+  if (!(len > 1e-6)) { dx = 1; dz = 0; len = 1; }
+  dx /= len; dz /= len;
+  for (const a of [0, 35, -35, 70, -70]) {
+    const rad = a * Math.PI / 180;
+    const ux = Math.cos(rad) * dx - Math.sin(rad) * dz;
+    const uz = Math.sin(rad) * dx + Math.cos(rad) * dz;
+    const tx = m.pos.x + ux * PLANT_LEAVE_DIST, tz = m.pos.z + uz * PLANT_LEAVE_DIST;
+    if (Math.abs(tx) > WORLD_RADIUS - 1 || Math.abs(tz) > WORLD_RADIUS - 1) continue;
+    if (aabbCollidesWorld(tx, m.pos.y, tz, m.hw, m.h)) continue;
+    if (hasMobGround(tx, tz, m.hw, m.pos.y) || hasMobGround(tx, tz, m.hw, m.pos.y + 1) || hasMobGround(tx, tz, m.hw, m.pos.y - 1)) {
+      return { x: tx, z: tz };
+    }
+  }
+  return null;
+}
+function findPlantPath(sx, sz, tx, tz, hw, pyHint) {
+  if (hw == null) hw = 0.27;
+  const py = pyHint != null ? pyHint : 1;
+  // House/pool/pen avoidances are village-floor features: skip them far above
+  // or below the village (pads, clouds, Moon), where the XZ footprints below
+  // must not veto walking.
+  const nearVillage = typeof villageCenter !== "undefined" && villageCenter && Math.abs(py - (villageCenter.y + 1)) < 12;
+  const toKey = (x, z) => x + "," + z;
+  const s = [Math.floor(sx), Math.floor(sz)], g = [Math.floor(tx), Math.floor(tz)];
+  if (s[0] === g[0] && s[1] === g[1]) return [[tx, tz]];
+  const isOutsideGoal = !isInsideAnyHouse(tx, tz);
+  const q = [s], came = new Map([[toKey(s[0], s[1]), null]]);
+  const dirs = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+  let found = false;
+  while (q.length) {
+    const [cx, cz] = q.shift();
+    if (cx === g[0] && cz === g[1]) { found = true; break; }
+    for (const [dx, dz] of dirs) {
+      const nx = cx + dx, nz = cz + dz;
+      if (Math.abs(nx) > WORLD_RADIUS || Math.abs(nz) > WORLD_RADIUS) continue;
+      const k = toKey(nx, nz);
+      if (came.has(k)) continue;
+      if (nearVillage && isOutsideGoal && isInsideAnyHouse(nx + 0.5, nz + 0.5)) continue;
+      if (nearVillage && villagePool && isInsidePool(nx + 0.5, nz + 0.5)) continue;
+      if (nearVillage && isInsidePenPool(nx + 0.5, nz + 0.5)) continue;
+      if (mobBlockedAt(nx + 0.5, nz + 0.5, hw, py)) continue;
+      came.set(k, [cx, cz]);
+      q.push([nx, nz]);
+    }
+    if (came.size > 60000) break;
+  }
+  if (!found) return null;
+  const path = [];
+  let cur = g;
+  while (cur) { path.push([cur[0] + 0.5, cur[1] + 0.5]); cur = came.get(toKey(cur[0], cur[1])); }
+  path.reverse();
+  const out2 = [path[0]];
+  for (let i = 1; i < path.length; i++) if (Math.hypot(path[i][0]-out2[out2.length-1][0], path[i][1]-out2[out2.length-1][1]) > 0.9) out2.push(path[i]);
+  if (out2.length) out2[out2.length-1] = [tx, tz];
+  return out2;
+}
 function mobCollidesOther(mob, nx, nz) {
   if (isMobHeld(mob)) return null;
   if (mob.dim !== undefined && mob.dim !== dim) return null;
@@ -8762,6 +9121,119 @@ function updateMobs(dt) {
       }
     } else if ((!m.kind || m.kind === "villager") && m.fleeUntil) { m.fleeUntil = 0; m.speed = WALK / 2; delete m._outsideFlee; delete m._fleeSrcX; delete m._fleeSrcZ; }
 
+    // Pine planting task (Overworld adult villagers only): walk to a claimed
+    // growable soil, bow the neck 40deg toward it for 1.5s while the 2.5s
+    // TNT-style timer ticks above the block, leave away from the soil, then
+    // the timer vanishes and a pine grows (or the dirt is removed when
+    // nothing fits).
+    const plantFleeing = m.fleeUntil != null && now < m.fleeUntil;
+    if ((!m.kind || m.kind === "villager") && !m.isBaby && m.homeId >= 0 && dim === "over" && mobDimOf(m) === "over" && !isMobHeld(m) && !isChained(m) && !isMobOnRoof(m)) {
+      if (m.mode === "goPlant") {
+        const g = m.plantKey != null ? growableSoils.get(m.plantKey) : null;
+        if (plantFleeing || !g || getBlock(g.x, g.y, g.z) !== DIRT) {
+          if (m.plantKey != null && plantClaims.get(m.plantKey) === m.id) plantClaims.delete(m.plantKey);
+          m.plantKey = null; m.plantTarget = null; m.plantPhase = null;
+          setVillagerNeck(m, false);
+          if (!plantFleeing) { m.mode = "wander"; m.speed = WALK / 2; m.wanderT = 2 + Math.random() * 2; m.target = wanderGoalFor(m); }
+          m.path = null; m.pathKey = null;
+        } else if (m.plantPhase === "bend") {
+          // Bow for 1.5s, then leave while the soil timer runs on alone.
+          m.bendT -= dt;
+          m.vel.x = 0; m.vel.z = 0;
+          m.target = { x: g.x + 0.5, z: g.z + 0.5 };
+          if (m.bendT <= 0 || plantClaims.get(m.plantKey) !== m.id) {
+            setVillagerNeck(m, false);
+            if (m.plantKey != null && plantClaims.get(m.plantKey) === m.id) plantClaims.delete(m.plantKey);
+            m.plantKey = null; m.plantTarget = null; m.plantPhase = null;
+            m.mode = "wander"; m.speed = WALK / 2; m.wanderT = 2 + Math.random() * 2;
+            if (soilOutsideClamp(g.x + 0.5, g.z + 0.5, m.hw)) m.villageBound = false;
+            m.target = plantLeaveTarget(m, g) || (m.villageBound === false ? wanderNear(m) : wanderGoalFor(m));
+            m.path = null; m.pathKey = null;
+          } else {
+            setVillagerNeck(m, true);
+          }
+        } else {
+          const dx = (g.x + 0.5) - m.pos.x, dz = (g.z + 0.5) - m.pos.z;
+          const dXZ = Math.hypot(dx, dz);
+          const sameY = Math.abs(m.pos.y - (g.y + 1)) <= GROWABLE_SAME_Y;
+          if (dXZ < 1.15 && sameY) {
+            m.plantPhase = "bend";
+            m.bendT = PLANT_BEND_TIME;
+            m.vel.x = 0; m.vel.z = 0;
+            m.target = { x: g.x + 0.5, z: g.z + 0.5 };
+            m.path = null; m.pathKey = null;
+            if (m.mesh) m.mesh.rotation.y = Math.atan2(dx, dz);
+            if (g.timer == null) g.timer = SOIL_TIMER;
+            setVillagerNeck(m, true);
+          } else {
+            m.target = { x: g.x + 0.5, z: g.z + 0.5 };
+            if (dXZ < 2.2 && sameY) {
+              m._plantMile = true;
+              m.speed = WALK / 2;
+              m.path = null; m.pathKey = null; m.steerCooldown = 0;
+              m._headonSteerT = 0; m._headonTX = null; m._headonTZ = null;
+            } else {
+              m._plantMile = false;
+              m.speed = WALK * 2;
+            }
+          }
+        }
+      } else if ((m.mode === "wander" || m.mode === "inside") && !plantFleeing) {
+        m._plantScanT = (m._plantScanT || 0) - dt;
+        if (m._plantScanT <= 0 && growableSoils.size) {
+          m._plantScanT = 0;
+          let best = null, bestD = Infinity;
+          for (const g of growableSoils.values()) {
+            if (g.timer != null) continue;
+            const d = Math.hypot(g.x + 0.5 - m.pos.x, (g.y + 1) - m.pos.y, g.z + 0.5 - m.pos.z);
+            if (d < bestD) { bestD = d; best = g; }
+          }
+          if (best && Math.abs(m.pos.y - (best.y + 1)) <= GROWABLE_SAME_Y) {
+            const k = key(best.x, best.y, best.z);
+            // Nearest capable villager wins: a live holder walking to the soil
+            // loses the claim to a strictly closer rival (hysteresis avoids
+            // flip-flops); a bending holder always finishes.
+            let take = claimFree(k, m);
+            if (!take) {
+              const holder = plantClaims.get(k);
+              const hm = holder != null && typeof mobById !== "undefined" ? mobById.get(holder) : null;
+              if (hm && hm !== m && hm.mode === "goPlant" && hm.plantKey === k && hm.plantPhase !== "bend") {
+                const hd = Math.hypot(best.x + 0.5 - hm.pos.x, (best.y + 1) - hm.pos.y, best.z + 0.5 - hm.pos.z);
+                if (bestD < hd - PLANT_STEAL_D) {
+                  hm.mode = "wander"; hm.speed = WALK / 2; hm.wanderT = 2 + Math.random() * 2;
+                  hm.plantKey = null; hm.plantTarget = null; hm.plantPhase = null;
+                  setVillagerNeck(hm, false);
+                  hm.target = wanderGoalFor(hm);
+                  hm.path = null; hm.pathKey = null;
+                  plantClaims.delete(k);
+                  take = true;
+                }
+              }
+            }
+            if (take) {
+              const p = findPlantPath(m.pos.x, m.pos.z, best.x + 0.5, best.z + 0.5, m.hw, best.y + 1);
+              if (p) {
+                plantClaims.set(k, m.id);
+                if (soilOutsideClamp(best.x + 0.5, best.z + 0.5, m.hw)) m.villageBound = false;
+                m.mode = "goPlant";
+                m.plantKey = k;
+                m.plantTarget = { x: best.x, y: best.y, z: best.z };
+                m.plantPhase = "walk";
+                m.target = { x: best.x + 0.5, z: best.z + 0.5 };
+                m.speed = WALK * 2;
+                m.path = null; m.pathKey = null;
+              }
+            }
+          }
+        }
+      }
+    } else if (m.mode === "goPlant" || (m.plantKey != null && (isMobHeld(m) || isChained(m)))) {
+      if (m.plantKey != null && plantClaims.get(m.plantKey) === m.id) plantClaims.delete(m.plantKey);
+      m.plantKey = null; m.plantTarget = null; m.plantPhase = null;
+      setVillagerNeck(m, false);
+      if (m.mode === "goPlant") { m.mode = "wander"; m.speed = WALK / 2; m.path = null; m.pathKey = null; }
+    }
+
     // Roof mobs: stay and wander locally on the same roof, never walk off alone (panic in place at WALKx2)
     if (isMobOnRoof(m)) {
       const rh = houseAtRoof(m.pos.x, m.pos.z);
@@ -8781,7 +9253,7 @@ function updateMobs(dt) {
     const canStep = !!m.canStep;
     const probeFree = canStep ? wolfProbeFree : mobProbeFree;
     const hasGround = canStep ? wolfHasMobGround : hasMobGround;
-    const findPath = canStep ? wolfFindPath : findVillagePath;
+    const findPath = m.mode === "goPlant" ? findPlantPath : (canStep ? wolfFindPath : findVillagePath);
     const goalFor = canStep ? wanderGoalForWolf : wanderGoalFor;
     let poolEx = null;
     const pHead = mobHeadonHeading(m);
@@ -8811,9 +9283,10 @@ function updateMobs(dt) {
       else if (m._headonTX != null && m._headonTZ != null) { tx = m._headonTX; tz = m._headonTZ; }
     }
     let hasPath = false;
+    const plantMile = m.mode === "goPlant" && m.plantPhase === "walk" && m._plantMile;
     const toTarOverall = Math.hypot(tx - m.pos.x, tz - m.pos.z);
     const insideNow = (()=>{ if (m.kind === "pig" || m.kind === "cow") return isInsidePen(m.pos.x, m.pos.z); if (canStep) return false; const h=villageHouses[m.homeId]; return h && m.pos.x>h.minX&&m.pos.x<h.maxX&&m.pos.z>h.minZ&&m.pos.z<h.maxZ; })();
-    const needPath = poolEx ? false : (!insideNow && m.mode !== "inside" && (toTarOverall > 1.8 || probeFree(m.pos.x, m.pos.z, (tx - m.pos.x)/(toTarOverall||1), (tz - m.pos.z)/(toTarOverall||1), Math.min(1.2, toTarOverall), m.hw, m.pos.y) < 0.55));
+    const needPath = (poolEx || plantMile) ? false : (!insideNow && m.mode !== "inside" && (toTarOverall > 1.8 || probeFree(m.pos.x, m.pos.z, (tx - m.pos.x)/(toTarOverall||1), (tz - m.pos.z)/(toTarOverall||1), Math.min(1.2, toTarOverall), m.hw, m.pos.y) < 0.55));
     if (needPath) {
       const pk = Math.round(tx) + "," + Math.round(tz);
       if (!m.path || m.pathKey !== pk) {
@@ -8871,6 +9344,8 @@ function updateMobs(dt) {
       wantZ = (toTz / dist) * m.speed;
       if (poolEx) {
         m.steerX = wantX; m.steerZ = wantZ; m.steerCooldown = 0.2;
+      } else if (plantMile) {
+        m.steerX = wantX; m.steerZ = wantZ; m.steerCooldown = 0.15;
       } else if (!hasPath) {
         const hwh = mobHeadonHeading(m);
         const tdx0 = (tx - m.pos.x) / (dist || 1), tdz0 = (tz - m.pos.z) / (dist || 1);
@@ -9000,6 +9475,7 @@ function updateMobs(dt) {
       }
     }
     // lerp vel towards want (like player)
+    if (m.mode === "goPlant" && m.plantPhase === "bend") { wantX = 0; wantZ = 0; }
     m.vel.x += (wantX - m.vel.x) * Math.min(1, dt * 6);
     m.vel.z += (wantZ - m.vel.z) * Math.min(1, dt * 6);
     if (dist < 0.1 && !poolEx) { m.vel.x *= 0.85; m.vel.z *= 0.85; }
@@ -9104,13 +9580,17 @@ function updateMobs(dt) {
       let dd = yawWant - m.mesh.rotation.y; while (dd > Math.PI) dd -= Math.PI*2; while (dd < -Math.PI) dd += Math.PI*2;
       m.mesh.rotation.y += dd * Math.min(1, dt * 7);
     }
-    // leg anim
-    const moving = Math.hypot(m.vel.x, m.vel.z) > 0.15 && m.onGround;
+    // leg anim (frozen while bowed over a growable soil)
+    const bending = m.mode === "goPlant" && m.plantPhase === "bend";
+    const moving = !bending && Math.hypot(m.vel.x, m.vel.z) > 0.15 && m.onGround;
     if (moving) m.legPhase += dt * 9;
-    else m.legPhase += dt * 2;
-    if (m.mesh.userData.legL) {
+    else if (!bending) m.legPhase += dt * 2;
+    if (m.mesh.userData.legL && !bending) {
       m.mesh.userData.legL.rotation.x = Math.sin(m.legPhase) * 0.55;
       m.mesh.userData.legR.rotation.x = Math.sin(m.legPhase + Math.PI) * 0.55;
+    } else if (bending && m.mesh.userData.legL) {
+      m.mesh.userData.legL.rotation.x = 0;
+      m.mesh.userData.legR.rotation.x = 0;
     }
     if (m.mesh.userData.legBL) {
       m.mesh.userData.legBL.rotation.x = Math.sin(m.legPhase) * 0.65;
@@ -12977,6 +13457,7 @@ function tryPlace(id, px, py, pz) {
   if (id === FLOWER) placedFlowers.set(key(px, py, pz), { v: randomFlowerVariant(), a: Math.random() * Math.PI * 2 });
   if (id === GLOWSTONE) worldGlowVariants.get(world).set(key(px, py, pz), glowVariantNear(px, py, pz));
   setBlock(px, py, pz, id);
+  if (id === DIRT) refreshGrowableAt(px, py, pz);
   if (placeBatch) placeBatch.push([px, py, pz]);
   else { refreshBlocks([[px, py, pz]]); queueSave(); }
   return true;
@@ -16665,11 +17146,13 @@ function serialize() {
   const liveFx = snapshotLiveFx();
   const fxBytes = 4 + liveFx.length * 17;
   const villagePanicRemain = villagePanicUntil > 0 ? Math.min(Math.max(0, villagePanicUntil - performance.now() / 1000), VILLAGE_PANIC_TIME) : 0;
-  const buf = new ArrayBuffer(117 + 18 + (on + en + nn) * 5 + m * 6 + (gov + gev + gnv) * 5 + winLen + 16 + 4 + (mobN + endMobN + netherMobN) * MOB_SAVE_BYTES + 24 + 4 + (chainPairs.length + chainPairsEnd.length + chainPairsNether.length) * 4 + 4 + 1 + 1 + 4 + exitBytes + tntBytes + fxBytes);
+  const growN = growableSoils.size;
+  const growthN = pineGrowths.length;
+  const buf = new ArrayBuffer(117 + 18 + (on + en + nn) * 5 + m * 6 + (gov + gev + gnv) * 5 + 4 + growN * 8 + 4 + growthN * 15 + winLen + 16 + 4 + (mobN + endMobN + netherMobN) * MOB_SAVE_BYTES + 24 + 4 + (chainPairs.length + chainPairsEnd.length + chainPairsNether.length) * 4 + 4 + 1 + 1 + 4 + exitBytes + tntBytes + fxBytes);
   const dv = new DataView(buf);
   let o = 0;
   new Uint8Array(buf, o, 9).set(SAVE_MAGIC); o += 9;
-  dv.setUint8(o++, 21); // format version
+  dv.setUint8(o++, 26); // format version
   dv.setUint8(o++, dim === "end" ? 1 : dim === "nether" ? 2 : 0);
   dv.setInt32(o, seed, true); o += 4;
   dv.setInt32(o, endSeed, true); o += 4;
@@ -16734,6 +17217,23 @@ function serialize() {
   writeVariants(glowVariants.over, gov);
   writeVariants(glowVariants.end, gev);
   writeVariants(glowVariants.nether, gnv);
+  dv.setUint32(o, growN, true); o += 4;
+  growableSoils.forEach((g) => {
+    dv.setUint8(o++, g.x + 128);
+    dv.setUint16(o, g.y, true); o += 2;
+    dv.setUint8(o++, g.z + 128);
+    dv.setFloat32(o, g.timer != null ? g.timer : -1, true); o += 4;
+  });
+  dv.setUint32(o, growthN, true); o += 4;
+  for (const pg of pineGrowths) {
+    dv.setUint8(o++, pg.sx + 128);
+    dv.setUint16(o, pg.sy, true); o += 2;
+    dv.setUint8(o++, pg.sz + 128);
+    dv.setUint8(o++, pg.dims.m);
+    dv.setUint16(o, pg.dims.e, true); o += 2;
+    dv.setUint32(o, pg.idx, true); o += 4;
+    dv.setFloat32(o, pg.acc, true); o += 4;
+  }
   const writeMob = (em) => {
     dv.setUint8(o++, em.kind & 255);
     let mfl = em.isBaby ? 1 : 0;
@@ -16885,10 +17385,14 @@ function deserialize(buf) {
   for (let i = 0; i < 9; i++) if (new Uint8Array(buf, o, 9)[i] !== SAVE_MAGIC[i]) throw new Error("Not a MiniCraft save");
   o += 9;
   const ver = dv.getUint8(o++);
-  if (ver !== 1 && ver !== 2 && ver !== 3 && ver !== 4 && ver !== 5 && ver !== 6 && ver !== 7 && ver !== 8 && ver !== 9 && ver !== 10 && ver !== 11 && ver !== 12 && ver !== 13 && ver !== 14 && ver !== 15 && ver !== 16 && ver !== 17 && ver !== 18 && ver !== 19 && ver !== 20 && ver !== 21) throw new Error("Unsupported save version");
+  if (ver !== 1 && ver !== 2 && ver !== 3 && ver !== 4 && ver !== 5 && ver !== 6 && ver !== 7 && ver !== 8 && ver !== 9 && ver !== 10 && ver !== 11 && ver !== 12 && ver !== 13 && ver !== 14 && ver !== 15 && ver !== 16 && ver !== 17 && ver !== 18 && ver !== 19 && ver !== 20 && ver !== 21 && ver !== 22 && ver !== 23 && ver !== 24 && ver !== 25 && ver !== 26) throw new Error("Unsupported save version");
   const yWidth = ver >= 8 ? 2 : 1;
   const readY = () => { const y = yWidth === 2 ? dv.getUint16(o, true) : dv.getUint8(o); o += yWidth; return y; };
   placedFlowers.clear();
+  growableSoils.clear();
+  plantClaims.clear();
+  pineGrowths.length = 0;
+  clearAllSoilTimerSprites();
   glowVariants.over.clear();
   glowVariants.end.clear();
   glowVariants.nether.clear();
@@ -17037,6 +17541,42 @@ function deserialize(buf) {
         if (v < 0) v = Math.floor(Math.random() * GLOW_VARIANT_COUNT);
         gv.set(k, v);
         assigned.set(k, v);
+      }
+    }
+  }
+  if (ver >= 22) {
+    const gn = dv.getUint32(o, true); o += 4;
+    for (let i = 0; i < gn; i++) {
+      const x = dv.getUint8(o++) - 128;
+      const y = readY();
+      const z = dv.getUint8(o++) - 128;
+      let timer = null;
+      if (ver >= 23) {
+        const tr = dv.getFloat32(o, true); o += 4;
+        if (isFinite(tr) && tr > 0) timer = tr;
+      }
+      growableSoils.set(key(x, y, z), { x, y, z, timer });
+    }
+  }
+  if (ver >= 23) {
+    const pgn = dv.getUint32(o, true); o += 4;
+    for (let i = 0; i < pgn; i++) {
+      const x = dv.getUint8(o++) - 128;
+      const y = readY();
+      const z = dv.getUint8(o++) - 128;
+      if (ver >= 26) {
+        const mm = dv.getUint8(o++);
+        const ee = dv.getUint16(o, true); o += 2;
+        const idx = dv.getUint32(o, true); o += 4;
+        const acc = dv.getFloat32(o, true); o += 4;
+        if (mm < PINE_MIN_M || mm > PINE_MAX_M || ee < 1 || ee > pineTrunkE0(mm) + PINE_LIFT_MAX + 2) continue;
+        const cells = pineCellsFor(x, y, z, mm, ee);
+        if (!cells.length || idx > cells.length) continue;
+        pineGrowths.push({ cells, idx, acc: isFinite(acc) ? Math.max(0, acc) : 0, dims: { m: mm, e: ee }, sx: x, sy: y, sz: z, phaseCounts: pinePhaseCounts(cells) });
+      } else if (ver >= 24) {
+        o += 1 + 2 + 4 + 4;
+      } else {
+        o += 2 + 1 + 4 + 4;
       }
     }
   }
@@ -17867,6 +18407,10 @@ async function buildWorld() {
     endSeed = Math.floor(Math.random() * 100000);
     netherSeed = Math.floor(Math.random() * 100000);
     placedFlowers.clear();
+    growableSoils.clear();
+    plantClaims.clear();
+    pineGrowths.length = 0;
+    clearAllSoilTimerSprites();
     generateWorld();
     flying = false;
     freeCam = false;
@@ -18534,6 +19078,7 @@ function loop(now) {
     if (simActive) checkPortal();
     if (dim === "end" && simActive) updateDragon(dt);
     if (locked && started && !helpOpen) updateMobs(dt);
+    if (simActive) { tickSoilTimers(dt); tickPineGrowths(dt); }
     if (locked && started && !helpOpen) updateChains(dt);
     if (toastTimer > 0) { toastTimer -= dt; if (toastTimer <= 0) toastEl.style.opacity = "0"; }
 
@@ -18696,8 +19241,14 @@ if (location.search.includes('test')) {
     goToDimension, removeVillagers,
     get DEV_START_DIM(){ return DEV_START_DIM; },
     get dragon(){ return dragon; }, spawnDragon, removeDragon, updateDragon, paintDragon, damageDragon, dragonShotsCap, aimedDragon, get DRAGON_FULL_DMG(){ return DRAGON_FULL_DMG; }, get DRAGON_SPEED(){ return DRAGON_SPEED; }, get DRAGON_FOLLOW_DIST(){ return DRAGON_FOLLOW_DIST; },
-    get endermen(){ return endermen; }, get mobPortalTx(){ return mobPortalTx; }, startMobPortalTx, tickMobPortalTx, finishMobPortalTx, abortMobPortalTx,     get PORTAL_ARRIVAL_FREEZE(){ return PORTAL_ARRIVAL_FREEZE; }, isArrivalFrozen, get FILL_SLIDE_TRIGGER_T(){ return FILL_SLIDE_TRIGGER_T; }, get FILL_SLIDE_SPEED(){ return FILL_SLIDE_SPEED; }, mobBodyFillCells, startFillSlide, get ENDERMEN_COUNT(){ return ENDERMEN_COUNT; }, get END_PLATFORM_R(){ return END_PLATFORM_R; }, get END_MOB_R(){ return END_MOB_R; }, get END_RETURN_Z(){ return END_RETURN_Z; }, get END_RETURN_BASE_Y(){ return END_RETURN_BASE_Y; }, get DRAGON_MIN_Y(){ return DRAGON_MIN_Y; }, get DRAGON_MAX_Y(){ return DRAGON_MAX_Y; }, endMobInEnd, endClampXZPos, endClampYFlying, pigeonEndPortalTopAt, get ENDERMAN_STARE_TIME(){ return ENDERMAN_STARE_TIME; }, get ENDERMAN_ANGRY_TIME(){ return ENDERMAN_ANGRY_TIME; }, spawnEndermen, removeEndermen, updateEnderman, updateEndermen, endermanTeleport, endermanPickSpot, endermanSpotFor, ensureEndermanAssets, makeEndermanMesh, syncEndermanHalo, syncEndermanHalos, endermanChainHaloVisible, endermanHaloMode,
+    get endermen(){ return endermen; }, get mobPortalTx(){ return mobPortalTx; }, startMobPortalTx, tickMobPortalTx, finishMobPortalTx, abortMobPortalTx,     get PORTAL_ARRIVAL_FREEZE(){ return PORTAL_ARRIVAL_FREEZE; }, isArrivalFrozen, get FILL_SLIDE_TRIGGER_T(){ return FILL_SLIDE_TRIGGER_T; }, get FILL_SLIDE_SPEED(){ return FILL_SLIDE_SPEED; }, mobBodyFillCells, startFillSlide, get ENDERMEN_COUNT(){ return ENDERMEN_COUNT; }, get END_PLATFORM_R(){ return END_PLATFORM_R; }, get END_MOB_R(){ return END_MOB_R; }, get END_RETURN_Z(){ return END_RETURN_Z; }, get END_RETURN_BASE_Y(){ return END_RETURN_BASE_Y; }, get DRAGON_MIN_Y(){ return DRAGON_MIN_Y; }, get DRAGON_MAX_Y(){ return DRAGON_MAX_Y; }, endMobInEnd, endClampXZPos, endClampYFlying, pigeonEndPortalTopAt, get ENDERMAN_STARE_TIME(){ return ENDERMAN_STARE_TIME; }, get ENDERMAN_ANGRY_TIME(){ return ENDERMAN_ANGRY_TIME; }, spawnEndermen, removeEndermen, updateEnderman, updateEndermen, endermanTeleport, endermanPickSpot, endermanSpotFor, ensureEndermanAssets, makeEndermanMesh, syncEndermanHalo, syncEndermanHalos,     endermanChainHaloVisible, endermanHaloMode,
   };
+  Object.assign(window._test, {
+    get growableSoils(){ return growableSoils; }, get plantClaims(){ return plantClaims; }, get pineGrowths(){ return pineGrowths; }, get soilTimerSprites(){ return soilTimerSprites; },
+    get DIRT(){ return DIRT; }, get LEAVES(){ return LEAVES; },
+    get GROWABLE_DIST(){ return GROWABLE_DIST; }, get PLANT_NECK(){ return PLANT_NECK; }, get PINE_RATE(){ return PINE_RATE; }, get PINE_PHASE_TIME(){ return PINE_PHASE_TIME; }, get SOIL_TIMER(){ return SOIL_TIMER; }, get PLANT_BEND_TIME(){ return PLANT_BEND_TIME; }, get PLANT_LEAVE_DIST(){ return PLANT_LEAVE_DIST; }, get PINE_MIN_M(){ return PINE_MIN_M; }, get PINE_MAX_M(){ return PINE_MAX_M; }, get PINE_LIFT_MAX(){ return PINE_LIFT_MAX; }, get PLANT_STEAL_D(){ return PLANT_STEAL_D; },
+    isSoilHole, refreshGrowableAt, releaseGrowable, pickPineDims, pineCellsFor, pineFits, pineLayerWidths, pineSpiralOrder, pineSummit, pineTrunkE0, startPineGrowth, tickPineGrowths, tickSoilTimers, setVillagerNeck, findPlantPath, soilClaimant, plantLeaveTarget,
+  });
 }
 
 function buildPortalArt() {
