@@ -15037,6 +15037,7 @@ function tickEffects(dt) {
   updateNetherEmbers(dt, performance.now() / 1000);
   updateVolcanoEmbers(dt, performance.now() / 1000);
   updateLavaMotes(dt, performance.now() / 1000);
+  updateMoonSnow(dt, performance.now() / 1000);
   for (let i = bursts.length - 1; i >= 0; i--) {
     const b = bursts[i];
     b.life -= dt;
@@ -15322,6 +15323,128 @@ function updateVolcanoEmbers(dt, time) {
       volcanoVel[i * 3 + 1] -= 30 * dt;
       if (attr.array[i * 3 + 1] < volcanoBase[i] - 3) volcanoLife[i] = 0;
     }
+  }
+  attr.needsUpdate = true;
+}
+
+// Moon snow: white flakes falling from the sky anywhere in the Overworld above
+// moon-surface altitude. Camera-following Points field like the ember systems:
+// flakes fill the whole column from above the camera down to the ground, wrap
+// around the camera in XZ so flight never leaves them behind, and vanish on
+// landing before respawning at the top. Cheap by design: integration runs at
+// 30 Hz (invisible at these fall speeds), sway reads a precomputed sine table,
+// and landing heights are cached per flake (one typed-array read, refreshed
+// staggered plus on wrap) with a single getBlock confirm only near the ground,
+// instead of trig plus a Map lookup per flake per frame.
+const MOON_SNOW_COUNT = 700;
+const MOON_SNOW_RANGE = 36;
+const MOON_SNOW_SIZE = 0.18;
+const MOON_SNOW_STEP = 1 / 30;
+let moonSnowPts = null;
+let moonSnowVel = null;
+let moonSnowGround = null;
+let moonSnowAcc = 0;
+let moonSnowTick = 0;
+const MOON_SNOW_SIN = new Float32Array(256);
+for (let i = 0; i < 256; i++) MOON_SNOW_SIN[i] = Math.sin(i / 256 * Math.PI * 2);
+
+function moonSnowLandY(bx, bz) {
+  if (bx < -KEY_OFF || bx >= KEY_OFF || bz < -KEY_OFF || bz >= KEY_OFF) return MOON_Y;
+  const ct = colTops.over[colTopIdx(bx, bz)];
+  return ct > MOON_Y ? ct : MOON_Y;
+}
+
+function isMoonSnowActive() {
+  if (dim !== "over") return false;
+  return camera.position.y >= MOON_Y - 8;
+}
+
+function ensureMoonSnow() {
+  if (moonSnowPts) return;
+  const posA = new Float32Array(MOON_SNOW_COUNT * 3);
+  for (let i = 0; i < MOON_SNOW_COUNT; i++) {
+    posA[i * 3] = 0; posA[i * 3 + 1] = -100; posA[i * 3 + 2] = 0;
+  }
+  moonSnowVel = new Float32Array(MOON_SNOW_COUNT * 3);
+  moonSnowGround = new Float32Array(MOON_SNOW_COUNT);
+  moonSnowAcc = 0;
+  moonSnowTick = 0;
+  const geo = new THREE.BufferGeometry();
+  const posAttr = new THREE.BufferAttribute(posA, 3);
+  posAttr.setUsage(THREE.DynamicDrawUsage);
+  geo.setAttribute("position", posAttr);
+  const mat = new THREE.PointsMaterial({
+    color: 0xffffff, size: MOON_SNOW_SIZE, transparent: true, opacity: 0.9,
+    depthWrite: false, fog: false,
+  });
+  moonSnowPts = new THREE.Points(geo, mat);
+  moonSnowPts.frustumCulled = false;
+  scene.add(moonSnowPts);
+  for (let i = 0; i < MOON_SNOW_COUNT; i++) spawnMoonSnow(i, true);
+}
+
+function removeMoonSnow() {
+  if (moonSnowPts) {
+    scene.remove(moonSnowPts);
+    moonSnowPts.geometry.dispose();
+    moonSnowPts.material.dispose();
+    moonSnowPts = null;
+    moonSnowVel = null;
+    moonSnowGround = null;
+    moonSnowAcc = 0;
+  }
+}
+
+function spawnMoonSnow(i, initial = false) {
+  const e = camera.position;
+  const attr = moonSnowPts.geometry.attributes.position;
+  const top = Math.min(MAX_Y - 1, e.y + 8 + Math.random() * 14);
+  attr.array[i * 3] = e.x + (Math.random() * 2 - 1) * MOON_SNOW_RANGE;
+  attr.array[i * 3 + 1] = initial
+    ? Math.min(top, MOON_Y + 1 + Math.random() * Math.max(1, top - MOON_Y - 1))
+    : top;
+  attr.array[i * 3 + 2] = e.z + (Math.random() * 2 - 1) * MOON_SNOW_RANGE;
+  moonSnowVel[i * 3] = (Math.random() * 2 - 1) * 0.5;
+  moonSnowVel[i * 3 + 1] = 2.5 + Math.random() * 3;
+  moonSnowVel[i * 3 + 2] = (Math.random() * 2 - 1) * 0.5;
+  moonSnowGround[i] = moonSnowLandY(Math.floor(attr.array[i * 3]), Math.floor(attr.array[i * 3 + 2]));
+}
+
+function updateMoonSnow(dt, time) {
+  if (!isMoonSnowActive()) { removeMoonSnow(); return; }
+  ensureMoonSnow();
+  moonSnowAcc += dt;
+  if (moonSnowAcc < MOON_SNOW_STEP) return;
+  const step = moonSnowAcc;
+  moonSnowAcc = 0;
+  const tick = ++moonSnowTick;
+  const phase = (time * 19) | 0;
+  const e = camera.position;
+  const attr = moonSnowPts.geometry.attributes.position;
+  for (let i = 0; i < MOON_SNOW_COUNT; i++) {
+    const swayX = MOON_SNOW_SIN[(phase + i * 7) & 255] * 0.5;
+    const swayZ = MOON_SNOW_SIN[(phase + i * 13 + 64) & 255] * 0.5;
+    let x = attr.array[i * 3] + (moonSnowVel[i * 3] + swayX) * step;
+    let y = attr.array[i * 3 + 1] - moonSnowVel[i * 3 + 1] * step;
+    let z = attr.array[i * 3 + 2] + (moonSnowVel[i * 3 + 2] + swayZ) * step;
+    let wrapped = false;
+    if (x - e.x > MOON_SNOW_RANGE) { x -= 2 * MOON_SNOW_RANGE; wrapped = true; }
+    else if (x - e.x < -MOON_SNOW_RANGE) { x += 2 * MOON_SNOW_RANGE; wrapped = true; }
+    if (z - e.z > MOON_SNOW_RANGE) { z -= 2 * MOON_SNOW_RANGE; wrapped = true; }
+    else if (z - e.z < -MOON_SNOW_RANGE) { z += 2 * MOON_SNOW_RANGE; wrapped = true; }
+    if (y > e.y + 24) { spawnMoonSnow(i); continue; }
+    let landY = moonSnowGround[i];
+    if (wrapped || (i & 3) === (tick & 3)) {
+      landY = moonSnowLandY(Math.floor(x), Math.floor(z));
+      moonSnowGround[i] = landY;
+    }
+    if (y <= landY + 2 && (y <= MOON_Y || getBlock(Math.floor(x), Math.floor(y), Math.floor(z)) !== AIR)) {
+      spawnMoonSnow(i);
+      continue;
+    }
+    attr.array[i * 3] = x;
+    attr.array[i * 3 + 1] = y;
+    attr.array[i * 3 + 2] = z;
   }
   attr.needsUpdate = true;
 }

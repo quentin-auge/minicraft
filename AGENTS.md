@@ -116,6 +116,18 @@ small Python server for saving/loading worlds.
   height 550→700), then relax to their depth buckets — no black sky shafts
   visible from far below, only a subtle see-through up close. It is `placeable:
   false`, skipped by `spawnPlayer`/`resolveSpawn` so respawns stay on ground.
+  White snow falls anywhere in the Overworld above moon-surface altitude
+  (`updateMoonSnow`, ~700 `THREE.Points` flakes, `fog: false` so they stay
+  bright against the black sky, driven from `tickEffects` like the ember
+  systems): active while the camera is at/above the surface (`isMoonSnowActive`,
+  `y >= MOON_Y - 8`, infinite in XZ, never down below); flakes fill the whole
+  column from above the camera down to the ground and wrap around the camera
+  in XZ (lava-mote style), so density stays constant even flying fast; landing
+  heights are cached per flake (`moonSnowGround`, refreshed staggered plus on
+  wrap, single `getBlock` confirm only near the ground, `MOON_Y` kill plane
+  where there is no ground) and the field integrates at 30 Hz with sway from a
+  precomputed sine table (invisible at these fall speeds), then flakes respawn
+  at the top — pure visual, no save data.
 - **Textures**: 16×16 pixel-art textures drawn procedurally on canvas
   (`TEX`, `makeTex`, `pxNoise`, `canvasTex`), NearestFilter magnification with
   mipmapped minification + anisotropy 4 and sRGB (pixel-crisp up close, no
