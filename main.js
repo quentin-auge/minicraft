@@ -584,7 +584,7 @@ function setVillagerNeck(m, on) {
 }
 const PINE_RATE = 40;
 const PINE_PHASE_TIME = 0.5;
-const PINE_MIN_M = 2;
+const PINE_MIN_M = 1;
 const PINE_MAX_M = 6;
 const PINE_LIFT_MAX = 24;
 function isSolidId(id) { return !!BLOCK_INFO[id] && BLOCK_INFO[id].solid; }
@@ -632,6 +632,7 @@ function clearAllSoilTimerSprites() {
 function releaseGrowable(k) {
   growableSoils.delete(k);
   wetSoilSet.delete(k);
+  releasePineCells(k);
   clearSoakMesh(k);
   clearSoilTimerSprite(k);
   const holder = plantClaims.get(k);
@@ -710,6 +711,28 @@ function armSoak(x, y, z, liq) {
   if (getBlock(x, y, z) !== DIRT) return false;
   if (liq !== MOON_WATER && liq !== WATER) liq = WATER;
   const k = key(x, y, z);
+  if (pineFailBlinks.has(k)) {
+    setBlock(x, y + 1, z, AIR);
+    refreshBlocks([[x, y + 1, z]]);
+    queueSave();
+    return false;
+  }
+  if (pineSpotBlocked(x, y, z)) {
+    setBlock(x, y + 1, z, AIR);
+    refreshBlocks([[x, y + 1, z]]);
+    startPineFailBlink(x, y, z);
+    queueSave();
+    return false;
+  }
+  const soakDims = pickPineDims(x, y, z, k);
+  if (!soakDims) {
+    setBlock(x, y + 1, z, AIR);
+    refreshBlocks([[x, y + 1, z]]);
+    startPineFailBlink(x, y, z);
+    queueSave();
+    return false;
+  }
+  reservePineCells(k, pineCellsFor(x, y, z, soakDims.m, soakDims.e));
   let g = growableSoils.get(k);
   if (!g) { g = { x, y, z, timer: null, wet: false, soak: null, liq }; growableSoils.set(k, g); }
   if (g.wet || g.soak != null) return false;
@@ -733,6 +756,53 @@ function absorbSoak(k, g) {
   refreshBlocks([[g.x, g.y, g.z], [g.x, g.y + 1, g.z]]);
   queueSave();
 }
+const PINE_FAIL_BLINKS = 3;
+const PINE_FAIL_BLINK_STEP = 0.2;
+const pineFailBlinks = new Map();
+let pineFailGeo = null, pineFailMat = null;
+function startPineFailBlink(x, y, z) {
+  const k = key(x, y, z);
+  if (pineFailBlinks.has(k)) return;
+  if (!pineFailGeo) pineFailGeo = new THREE.BoxGeometry(1.06, 1.06, 1.06);
+  if (!pineFailMat) pineFailMat = new THREE.MeshBasicMaterial({ color: 0xff2222, transparent: true, opacity: 0.55, depthWrite: false });
+  const mesh = new THREE.Mesh(pineFailGeo, pineFailMat);
+  mesh.position.set(x + 0.5, y + 0.5, z + 0.5);
+  scene.add(mesh);
+  pineFailBlinks.set(k, { x, y, z, t: 0, mesh });
+}
+function clearPineFailBlink(k) {
+  const b = pineFailBlinks.get(k);
+  if (b) { pineFailBlinks.delete(k); scene.remove(b.mesh); }
+}
+function clearAllPineFailBlinks() { for (const k of [...pineFailBlinks.keys()]) clearPineFailBlink(k); }
+const reservedPineCells = new Map();
+function reservePineCells(owner, cells) {
+  for (const c of cells) reservedPineCells.set(key(c.x, c.y, c.z), { o: owner, f: c.id !== LOG });
+}
+function releasePineCells(owner) {
+  for (const [ck, rec] of reservedPineCells) if (rec.o === owner) reservedPineCells.delete(ck);
+}
+function clearAllPineReservations() { reservedPineCells.clear(); }
+function pineCellReserved(x, y, z, owner) {
+  const rec = reservedPineCells.get(key(x, y, z));
+  return rec !== undefined && rec.o !== owner;
+}
+function pineFolReserved(x, y, z, owner) {
+  const rec = reservedPineCells.get(key(x, y, z));
+  return rec !== undefined && rec.o !== owner && rec.f;
+}
+function tickPineFailBlinks(dt) {
+  if (dim !== "over" || world !== worlds.over) return;
+  for (const [k, b] of pineFailBlinks) {
+    if (getBlock(b.x, b.y, b.z) !== DIRT) { clearPineFailBlink(k); continue; }
+    b.t += dt;
+    if (Math.floor(b.t / (PINE_FAIL_BLINK_STEP * 2)) >= PINE_FAIL_BLINKS) {
+      clearPineFailBlink(k);
+      continue;
+    }
+    b.mesh.visible = Math.floor(b.t / PINE_FAIL_BLINK_STEP) % 2 === 0;
+  }
+}
 function claimFree(k, m) {
   const holder = plantClaims.get(k);
   if (holder == null || holder === m.id) return true;
@@ -741,6 +811,7 @@ function claimFree(k, m) {
   return false;
 }
 function pineLayerWidths(m) {
+  if (m <= 1) return [1, 3, 3];
   const ws = [1];
   for (let k = 1; k <= m; k++) {
     const w = 2 * k + 1;
@@ -750,6 +821,7 @@ function pineLayerWidths(m) {
   return ws;
 }
 function pineTrunkE0(m) {
+  if (m <= 1) return 2;
   return Math.max(1, Math.round((pineLayerWidths(m).length - 1) / 4));
 }
 function pineSpiralOrder(h) {
@@ -775,14 +847,40 @@ function pineSpiralOrder(h) {
 function pineSummit(y, m, e) {
   return y + e + pineLayerWidths(m).length;
 }
-function pineFits(x, y, z, m, e) {
+const DIRS6 = [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]];
+function pineFits(x, y, z, m, e, owner) {
   const summit = pineSummit(y, m, e);
   if (summit > MAX_Y) return false;
-  for (const c of pineCellsFor(x, y, z, m, e)) {
-    if (c.id === LOG) continue;
+  const cells = pineCellsFor(x, y, z, m, e);
+  const own = new Set();
+  for (const c of cells) own.add(key(c.x, c.y, c.z));
+  for (const c of cells) {
+    if (c.id === LOG) {
+      if (getBlock(c.x, c.y, c.z) === LEAVES) return false;
+      if (pineFolReserved(c.x, c.y, c.z, owner)) return false;
+      continue;
+    }
     if (getBlock(c.x, c.y, c.z) !== AIR) return false;
+    if (pineCellReserved(c.x, c.y, c.z, owner)) return false;
+    for (const [dx, dy, dz] of DIRS6) {
+      const nx = c.x + dx, ny = c.y + dy, nz = c.z + dz;
+      const nk = key(nx, ny, nz);
+      if (own.has(nk)) continue;
+      if (getBlock(nx, ny, nz) !== AIR) return false;
+      if (pineCellReserved(nx, ny, nz, owner)) return false;
+    }
   }
   return true;
+}
+function pineSpotBlocked(x, y, z) {
+  for (const g of growableSoils.values()) {
+    if (g.x === x && g.y === y && g.z === z) continue;
+    if (Math.abs(g.x - x) <= 1 && Math.abs(g.z - z) <= 1 && Math.abs(g.y - y) <= 1) return true;
+  }
+  for (const g of pineGrowths) {
+    if (Math.abs(g.sx - x) <= 1 && Math.abs(g.sz - z) <= 1 && Math.abs(g.sy - y) <= 1) return true;
+  }
+  return false;
 }
 function pineCellsFor(x, y, z, m, e) {
   const cells = [];
@@ -818,26 +916,53 @@ function pinePhaseCounts(cells) {
   for (const c of cells) counts[c.s] = (counts[c.s] || 0) + 1;
   return counts;
 }
-function pickPineDims(x, y, z) {
+function fitTrunkRange(x, y, z, m, eFrom, eMax, owner) {
+  for (let e = eFrom; e <= eMax; e++) {
+    if (pineSummit(y, m, e) > MAX_Y) break;
+    if (pineFits(x, y, z, m, e, owner)) {
+      const eb = e + 2;
+      if (eb <= eMax && pineSummit(y, m, eb) <= MAX_Y && pineFits(x, y, z, m, eb, owner)) return { m, e: eb };
+      return { m, e };
+    }
+  }
+  return null;
+}
+function pickPineDims(x, y, z, owner) {
   const ms = [];
-  for (let m = PINE_MIN_M; m <= PINE_MAX_M; m++) ms.push(m);
+  for (let m = PINE_MIN_M + 1; m <= PINE_MAX_M; m++) ms.push(m);
   for (let i = ms.length - 1; i > 0; i--) {
     const j = Math.floor(Math.random() * (i + 1));
     const tmp = ms[i]; ms[i] = ms[j]; ms[j] = tmp;
   }
   for (const m of ms) {
     const e0 = pineTrunkE0(m);
-    if (pineFits(x, y, z, m, e0)) return { m, e: e0 };
-    for (let e = e0 + 1; e <= e0 + PINE_LIFT_MAX; e++) {
-      if (pineSummit(y, m, e) > MAX_Y) break;
-      if (pineFits(x, y, z, m, e)) {
-        const eb = e + 2;
-        if (pineSummit(y, m, eb) <= MAX_Y && pineFits(x, y, z, m, eb)) return { m, e: eb };
-        return { m, e };
-      }
-    }
+    if (pineFits(x, y, z, m, e0, owner)) return { m, e: e0 };
+  }
+  for (const m of ms) {
+    const e0 = pineTrunkE0(m);
     for (let e = e0 - 1; e >= 1; e--) {
-      if (pineFits(x, y, z, m, e)) return { m, e };
+      if (pineFits(x, y, z, m, e, owner)) return { m, e };
+    }
+  }
+  for (const m of ms) {
+    const e0 = pineTrunkE0(m);
+    const fit = fitTrunkRange(x, y, z, m, e0 + 1, e0 + PINE_LIFT_MAX, owner);
+    if (fit) return fit;
+  }
+  for (let m = PINE_MIN_M; m <= PINE_MAX_M; m++) {
+    const e0 = pineTrunkE0(m);
+    const eMax = MAX_Y - y - pineLayerWidths(m).length;
+    if (m === PINE_MIN_M) {
+      if (pineFits(x, y, z, m, e0, owner)) return { m, e: e0 };
+      for (let e = e0 - 1; e >= 1; e--) {
+        if (pineFits(x, y, z, m, e, owner)) return { m, e };
+      }
+      const fit = fitTrunkRange(x, y, z, m, e0 + 1, eMax, owner);
+      if (fit) return fit;
+    } else {
+      if (eMax <= e0 + PINE_LIFT_MAX) continue;
+      const fit = fitTrunkRange(x, y, z, m, e0 + PINE_LIFT_MAX + 1, eMax, owner);
+      if (fit) return fit;
     }
   }
   return null;
@@ -847,6 +972,7 @@ function startPineGrowth(x, y, z) {
   growableSoils.delete(key(x, y, z));
   wetSoilSet.delete(key(x, y, z));
   const k = key(x, y, z);
+  releasePineCells(k);
   const hm = soilClaimant(k);
   if (hm) {
     if (plantClaims.get(k) === hm.id) plantClaims.delete(k);
@@ -858,10 +984,12 @@ function startPineGrowth(x, y, z) {
     hm.path = null; hm.pathKey = null;
   }
   if (getBlock(x, y, z) !== DIRT) return false;
-  const dims = pickPineDims(x, y, z);
+  if (pineSpotBlocked(x, y, z)) return false;
+  const dims = pickPineDims(x, y, z, k);
   if (!dims) return false;
   const cells = pineCellsFor(x, y, z, dims.m, dims.e);
   if (!cells.length) return false;
+  reservePineCells(k, cells);
   setBlock(x, y, z, LOG);
   refreshBlocks([[x, y, z]]);
   pineGrowths.push({ cells, idx: 0, acc: 0, dims, sx: x, sy: y, sz: z, phaseCounts: pinePhaseCounts(cells) });
@@ -898,9 +1026,7 @@ function tickSoilTimers(dt) {
       growableSoils.delete(k);
       wetSoilSet.delete(k);
       if (!startPineGrowth(g.x, g.y, g.z)) {
-        setBlock(g.x, g.y, g.z, AIR);
-        refreshBlocks([[g.x, g.y, g.z]]);
-        queueSave();
+        startPineFailBlink(g.x, g.y, g.z);
       }
     } else {
       drawFuseSprite(soilTimerSprite(k, g), Math.max(0, g.timer));
@@ -922,11 +1048,17 @@ function tickPineGrowths(dt) {
       const c = g.cells[g.idx++];
       if (c.y < 0 || c.y > MAX_Y) continue;
       if (protectedBlocks.has(protKey(c.x, c.y, c.z))) continue;
-      if (c.id !== LOG && getBlock(c.x, c.y, c.z) !== AIR) continue;
+      if (c.id === LOG) {
+        if (getBlock(c.x, c.y, c.z) === LEAVES) continue;
+        if (pineFolReserved(c.x, c.y, c.z, key(g.sx, g.sy, g.sz))) continue;
+      } else if (getBlock(c.x, c.y, c.z) !== AIR) continue;
       setBlock(c.x, c.y, c.z, c.id);
       touched.push([c.x, c.y, c.z]);
     }
-    if (g.idx >= g.cells.length) pineGrowths.splice(gi, 1);
+    if (g.idx >= g.cells.length) {
+      releasePineCells(key(g.sx, g.sy, g.sz));
+      pineGrowths.splice(gi, 1);
+    }
   }
   if (touched.length) { refreshBlocks(touched); queueSave(); }
 }
@@ -17607,8 +17739,10 @@ function deserialize(buf) {
   growableSoils.clear();
   wetSoilSet.clear();
   clearAllSoakMeshes();
+  clearAllPineFailBlinks();
   plantClaims.clear();
   pineGrowths.length = 0;
+  clearAllPineReservations();
   clearAllSoilTimerSprites();
   glowVariants.over.clear();
   glowVariants.end.clear();
@@ -17796,7 +17930,7 @@ function deserialize(buf) {
         const ee = dv.getUint16(o, true); o += 2;
         const idx = dv.getUint32(o, true); o += 4;
         const acc = dv.getFloat32(o, true); o += 4;
-        if (mm < PINE_MIN_M || mm > PINE_MAX_M || ee < 1 || ee > pineTrunkE0(mm) + PINE_LIFT_MAX + 2) continue;
+        if (mm < PINE_MIN_M || mm > PINE_MAX_M || ee < 1 || y + ee + pineLayerWidths(mm).length > MAX_Y) continue;
         const cells = pineCellsFor(x, y, z, mm, ee);
         if (!cells.length || idx > cells.length) continue;
         pineGrowths.push({ cells, idx, acc: isFinite(acc) ? Math.max(0, acc) : 0, dims: { m: mm, e: ee }, sx: x, sy: y, sz: z, phaseCounts: pinePhaseCounts(cells) });
@@ -18037,6 +18171,17 @@ function deserialize(buf) {
   if (freeCam) camPos.copy(pos);
   worldDirty = true;
   rebuildColTops();
+  {
+    const liveDim = dim, liveWorld = world;
+    dim = "over"; world = worlds.over;
+    for (const g of pineGrowths) reservePineCells(key(g.sx, g.sy, g.sz), g.cells);
+    for (const [gk, g] of growableSoils) {
+      if (getBlock(g.x, g.y, g.z) !== DIRT) continue;
+      const dims = pickPineDims(g.x, g.y, g.z, gk);
+      if (dims) reservePineCells(gk, pineCellsFor(g.x, g.y, g.z, dims.m, dims.e));
+    }
+    dim = liveDim; world = liveWorld;
+  }
   rebuildPortalBlocks();
   rebuildHotbar();
   recomputeGlowClusters();
@@ -18637,8 +18782,10 @@ async function buildWorld() {
     growableSoils.clear();
     wetSoilSet.clear();
     clearAllSoakMeshes();
+    clearAllPineFailBlinks();
     plantClaims.clear();
     pineGrowths.length = 0;
+    clearAllPineReservations();
     clearAllSoilTimerSprites();
     generateWorld();
     flying = false;
@@ -19307,7 +19454,7 @@ function loop(now) {
     if (simActive) checkPortal();
     if (dim === "end" && simActive) updateDragon(dt);
     if (locked && started && !helpOpen) updateMobs(dt);
-    if (simActive) { tickSoilTimers(dt); tickPineGrowths(dt); }
+    if (simActive) { tickSoilTimers(dt); tickPineGrowths(dt); tickPineFailBlinks(dt); }
     if (locked && started && !helpOpen) updateChains(dt);
     if (toastTimer > 0) { toastTimer -= dt; if (toastTimer <= 0) toastEl.style.opacity = "0"; }
 
@@ -19473,10 +19620,10 @@ if (location.search.includes('test')) {
     get endermen(){ return endermen; }, get mobPortalTx(){ return mobPortalTx; }, startMobPortalTx, tickMobPortalTx, finishMobPortalTx, abortMobPortalTx,     get PORTAL_ARRIVAL_FREEZE(){ return PORTAL_ARRIVAL_FREEZE; }, isArrivalFrozen, get FILL_SLIDE_TRIGGER_T(){ return FILL_SLIDE_TRIGGER_T; }, get FILL_SLIDE_SPEED(){ return FILL_SLIDE_SPEED; }, mobBodyFillCells, startFillSlide, get ENDERMEN_COUNT(){ return ENDERMEN_COUNT; }, get END_PLATFORM_R(){ return END_PLATFORM_R; }, get END_MOB_R(){ return END_MOB_R; }, get END_RETURN_Z(){ return END_RETURN_Z; }, get END_RETURN_BASE_Y(){ return END_RETURN_BASE_Y; }, get DRAGON_MIN_Y(){ return DRAGON_MIN_Y; }, get DRAGON_MAX_Y(){ return DRAGON_MAX_Y; }, endMobInEnd, endClampXZPos, endClampYFlying, pigeonEndPortalTopAt, get ENDERMAN_STARE_TIME(){ return ENDERMAN_STARE_TIME; }, get ENDERMAN_ANGRY_TIME(){ return ENDERMAN_ANGRY_TIME; }, spawnEndermen, removeEndermen, updateEnderman, updateEndermen, endermanTeleport, endermanPickSpot, endermanSpotFor, ensureEndermanAssets, makeEndermanMesh, syncEndermanHalo, syncEndermanHalos,     endermanChainHaloVisible, endermanHaloMode,
   };
   Object.assign(window._test, {
-    get growableSoils(){ return growableSoils; }, get plantClaims(){ return plantClaims; }, get pineGrowths(){ return pineGrowths; }, get soilTimerSprites(){ return soilTimerSprites; }, get wetSoilSet(){ return wetSoilSet; }, get soakMeshes(){ return soakMeshes; },
+    get growableSoils(){ return growableSoils; }, get plantClaims(){ return plantClaims; }, get pineGrowths(){ return pineGrowths; }, get soilTimerSprites(){ return soilTimerSprites; }, get wetSoilSet(){ return wetSoilSet; }, get soakMeshes(){ return soakMeshes; }, get pineFailBlinks(){ return pineFailBlinks; }, get reservedPineCells(){ return reservedPineCells; },
     get DIRT(){ return DIRT; }, get LEAVES(){ return LEAVES; },
-    get GROWABLE_DIST(){ return GROWABLE_DIST; }, get PLANT_NECK(){ return PLANT_NECK; }, get PINE_RATE(){ return PINE_RATE; }, get PINE_PHASE_TIME(){ return PINE_PHASE_TIME; }, get SOIL_TIMER(){ return SOIL_TIMER; }, get SOIL_SOAK_TIME(){ return SOIL_SOAK_TIME; }, get PLANT_BEND_TIME(){ return PLANT_BEND_TIME; }, get PLANT_LEAVE_DIST(){ return PLANT_LEAVE_DIST; }, get PINE_MIN_M(){ return PINE_MIN_M; }, get PINE_MAX_M(){ return PINE_MAX_M; },     get PINE_LIFT_MAX(){ return PINE_LIFT_MAX; }, get PLANT_STEAL_D(){ return PLANT_STEAL_D; },
-    isSoilHole, isSoilFloor, releaseGrowable, armSoak, absorbSoak, spawnSoakDrips, plantWalkGoal, soilSameY, pickPineDims, pineCellsFor, pineFits, pineLayerWidths, pineSpiralOrder, pineSummit, pineTrunkE0, startPineGrowth, tickPineGrowths, tickSoilTimers, setVillagerNeck, findPlantPath, soilClaimant, plantLeaveTarget,
+    get GROWABLE_DIST(){ return GROWABLE_DIST; }, get PLANT_NECK(){ return PLANT_NECK; }, get PINE_RATE(){ return PINE_RATE; }, get PINE_PHASE_TIME(){ return PINE_PHASE_TIME; }, get SOIL_TIMER(){ return SOIL_TIMER; }, get SOIL_SOAK_TIME(){ return SOIL_SOAK_TIME; }, get PLANT_BEND_TIME(){ return PLANT_BEND_TIME; }, get PLANT_LEAVE_DIST(){ return PLANT_LEAVE_DIST; },     get PINE_MIN_M(){ return PINE_MIN_M; }, get PINE_MAX_M(){ return PINE_MAX_M; },     get PINE_LIFT_MAX(){ return PINE_LIFT_MAX; }, get PLANT_STEAL_D(){ return PLANT_STEAL_D; },
+    isSoilHole, isSoilFloor, releaseGrowable, armSoak, absorbSoak, spawnSoakDrips, plantWalkGoal, soilSameY, pickPineDims, fitTrunkRange, pineCellsFor, pineFits, pineSpotBlocked, pineLayerWidths, pineSpiralOrder, pineSummit, pineTrunkE0, pineFolReserved, reservePineCells, releasePineCells, clearAllPineReservations, startPineGrowth, tickPineGrowths, tickSoilTimers, startPineFailBlink, clearPineFailBlink, clearAllPineFailBlinks, tickPineFailBlinks, setVillagerNeck, findPlantPath, soilClaimant, plantLeaveTarget,
   });
 }
 
