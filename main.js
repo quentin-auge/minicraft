@@ -1156,7 +1156,7 @@ function pushOutOfGrowth(touched, dt) {
   }
   for (const m of mobs) {
     if (!m || m.pos == null) continue;
-    if (m.kind === "pigeon" || m.kind === "dragon") continue;
+    if (isFlyingKind(m.kind)) continue;
     if (isMobHeld(m) || isChained(m) || isMobFrozenByGrapple(m)) continue;
     if (isArrivalFrozen(m)) continue;
     if (mobDimOf(m) !== "over") continue;
@@ -1593,46 +1593,103 @@ const WOLF_COUNT = 20;
 const GOLEM_COUNT = 1;
 const GOLEM_HW = 0.6;
 const GOLEM_HH = 3.6;
-const PIGEON_COUNT = 50;
-const PIGEON_MIN_Y = 50;
-const PIGEON_SEP_DIST = 2.5;
-const PIGEON_PROBE_DIST = 3;
-const PIGEON_SPEED = 8.8;
-const PIGEON_PERCH_CHANCE = 0.65;
-const PIGEON_END_PERCH_CHANCE = 0.1;
-const PIGEON_END_PERCH_MIN_T = 2;
-const PIGEON_END_PERCH_MAX_T = 4;
-const PIGEON_PERCH_SNAP_D = 0.3;
-const PIGEON_PERCH_FINAL_D = 6;
-const PIGEON_NOPERCH_T = 10;
-const PIGEON_HOP_CHANCE = 0.9;
-const PIGEON_HOP_R = 30;
-const PIGEON_HOP_RETRY = 2;
-const PIGEON_PERCH_MIN_T = 2;
-const PIGEON_PERCH_MAX_T = 10;
-const PIGEON_PERCH_JOIN_R = 50;
-const PIGEON_PERCH_SEP = 1.3;
-const PIGEON_COL_HW = 0.18;
-const PIGEON_COL_H = 0.5;
-const PIGEON_BODY_Y = 0.28;
-const PIGEON_CARRY_SCALE = 0.7;
-const PIGEON_TUNNEL_SCALE = 0.7;
-const PIGEON_NARROW_SCALE = 0.7;
-const PIGEON_SKY_CLEAR = 20;
-function pigeonNarrow(m) {
+const BIRD_COUNT = 50;
+const BIRD_MIN_Y = 50;
+const BIRD_SEP_DIST = 2.5;
+const BIRD_PROBE_DIST = 3;
+const BIRD_SPEED = 8.8;
+const BIRD_PERCH_CHANCE = 0.65;
+const BIRD_END_PERCH_CHANCE = 0.1;
+const BIRD_END_PERCH_MIN_T = 2;
+const BIRD_END_PERCH_MAX_T = 4;
+const BIRD_PERCH_SNAP_D = 0.3;
+const BIRD_PERCH_FINAL_D = 6;
+const BIRD_NOPERCH_T = 10;
+const BIRD_HOP_CHANCE = 0.9;
+const BIRD_HOP_R = 30;
+const BIRD_HOP_RETRY = 2;
+const BIRD_PERCH_MIN_T = 2;
+const BIRD_PERCH_MAX_T = 10;
+const BIRD_PERCH_JOIN_R = 50;
+const BIRD_PERCH_SEP = 1.3;
+const BIRD_COL_HW = 0.18;
+const BIRD_COL_H = 0.5;
+const BIRD_BODY_Y = 0.28;
+const BIRD_CARRY_SCALE = 0.7;
+const BIRD_TUNNEL_SCALE = 0.7;
+const BIRD_NARROW_SCALE = 0.7;
+const BIRD_SKY_CLEAR = 20;
+const PARROT_FRACTION = 0.8;
+const PARROT_COLORS = [
+  { name: "red", hex: 0xc02020 },
+  { name: "green", hex: 0x2e9e44 },
+  { name: "blue", hex: 0x246bff },
+  { name: "yellow", hex: 0xd8a820 },
+];
+const PARROT_COMBOS = [];
+const PARROT_COMBO_INDEX = new Map();
+for (let b = 0; b < PARROT_COLORS.length; b++) {
+  for (let h = 0; h < PARROT_COLORS.length; h++) {
+    for (let wb = 0; wb < PARROT_COLORS.length; wb++) {
+      if (wb === b || wb === h) continue;
+      for (let wt = 0; wt < PARROT_COLORS.length; wt++) {
+        if (wt === b || wt === h || wt === wb) continue;
+        PARROT_COMBO_INDEX.set(b + "," + h + "," + wb + "," + wt, PARROT_COMBOS.length);
+        PARROT_COMBOS.push({ body: b, head: h, wing: wb, wingTip: wt });
+      }
+    }
+  }
+}
+const PARROT_VARIANT_COUNT = PARROT_COMBOS.length;
+const PARROT_SAME_HEAD = 0.8;
+const PARROT_BEAK_UPPER = 0x141414;
+const PARROT_BEAK_LOWER = 0xd8b89a;
+const PARROT_FEET = 0xd8b89a;
+function parrotPaletteFor(variant) {
+  const c = PARROT_COMBOS[variant] || PARROT_COMBOS[0];
+  return {
+    body: PARROT_COLORS[c.body].hex,
+    head: PARROT_COLORS[c.head].hex,
+    chest: PARROT_COLORS[c.wing].hex,
+    wing: PARROT_COLORS[c.wing].hex,
+    wingTip: PARROT_COLORS[c.wingTip].hex,
+    tail: PARROT_COLORS[c.wingTip].hex,
+    crest: PARROT_COLORS[c.body].hex,
+  };
+}
+function pickParrotVariant() {
+  const n = PARROT_COLORS.length;
+  const b = Math.floor(Math.random() * n);
+  let h;
+  if (Math.random() < PARROT_SAME_HEAD) {
+    h = b;
+  } else {
+    h = Math.floor(Math.random() * (n - 1));
+    if (h >= b) h++;
+  }
+  const wbPool = [];
+  for (let c = 0; c < n; c++) if (c !== b && c !== h) wbPool.push(c);
+  const wb = wbPool[Math.floor(Math.random() * wbPool.length)];
+  const wtPool = [];
+  for (let c = 0; c < n; c++) if (c !== b && c !== h && c !== wb) wtPool.push(c);
+  const wt = wtPool[Math.floor(Math.random() * wtPool.length)];
+  const idx = PARROT_COMBO_INDEX.get(b + "," + h + "," + wb + "," + wt);
+  return idx != null ? idx : 0;
+}
+function birdNarrow(m) {
   if (!m) return false;
   if (m._narrow) return true;
   if (m === carryMob && playerSqueezed()) return true;
   return false;
 }
-function pigeonColHW(m) {
-  return PIGEON_COL_HW * (pigeonNarrow(m) ? PIGEON_NARROW_SCALE : 1);
+function birdColHW(m) {
+  return BIRD_COL_HW * (birdNarrow(m) ? BIRD_NARROW_SCALE : 1);
 }
-function pigeonColH(m) {
-  return PIGEON_COL_H * (pigeonNarrow(m) ? PIGEON_NARROW_SCALE : 1);
+function birdColH(m) {
+  return BIRD_COL_H * (birdNarrow(m) ? BIRD_NARROW_SCALE : 1);
 }
-function pigeonSkyClear(x, y, z, h) {
-  const n = h == null ? PIGEON_SKY_CLEAR : h;
+function birdSkyClear(x, y, z, h) {
+  const n = h == null ? BIRD_SKY_CLEAR : h;
   const bx = Math.floor(x), bz = Math.floor(z);
   const y0 = Math.floor(y) + 1;
   const yTop = Math.min(MAX_Y - 1, y0 + n);
@@ -1641,9 +1698,9 @@ function pigeonSkyClear(x, y, z, h) {
   }
   return true;
 }
-function pigeonSidestep(m) {
+function birdSidestep(m) {
   const dirs = [[1, 0, 0], [-1, 0, 0], [0, 0, 1], [0, 0, -1], [0, 1, 0], [0, -1, 0]];
-  const hw = pigeonColHW(m), hh = pigeonColH(m);
+  const hw = birdColHW(m), hh = birdColH(m);
   let best = null, bestD = Infinity;
   for (const [dx, dy, dz] of dirs) {
     const nx = m.pos.x + dx * 1.2, ny = m.pos.y + dy * 1.2, nz = m.pos.z + dz * 1.2;
@@ -1658,7 +1715,7 @@ function pigeonSidestep(m) {
   }
   return best;
 }
-function pigeonUTurn(m) {
+function birdUTurn(m) {
   const now = performance.now() / 1000;
   const avoid = m._tAvoid || (m._tAvoid = new Map());
   const cx = Math.floor(m.pos.x), cy = Math.floor(m.pos.y + 0.25), cz = Math.floor(m.pos.z);
@@ -1682,30 +1739,30 @@ function playerSqueezed() {
   }
   return false;
 }
-const PIGEON_TUNNEL_REPLAN = 0.4;
-const PIGEON_TUNNEL_BFS_CELLS = 1000;
-const PIGEON_TUNNEL_PATH_CELLS = 50;
-const PIGEON_TUNNEL_EXIT_NEAR = 60;
-const PIGEON_TUNNEL_DIG_NEAR = 30;
-const PIGEON_VISIT_MEM = 1400;
-const PIGEON_TUNNEL_SEP_DIST = 1.2;
-const PIGEON_ALIGN_SPEED = 4.0;
-const PIGEON_ALIGN_GAIN = 8;
-const PIGEON_ALIGN_ENTER = 0.18;
-const PIGEON_ALIGN_EXIT = 0.10;
-const PIGEON_POP_R = 0.55;
-const PIGEON_TURN_BRAKE_DIST = 2.0;
-const PIGEON_HOLE_SPEED = 2.2;
+const BIRD_TUNNEL_REPLAN = 0.4;
+const BIRD_TUNNEL_BFS_CELLS = 1000;
+const BIRD_TUNNEL_PATH_CELLS = 50;
+const BIRD_TUNNEL_EXIT_NEAR = 60;
+const BIRD_TUNNEL_DIG_NEAR = 30;
+const BIRD_VISIT_MEM = 1400;
+const BIRD_TUNNEL_SEP_DIST = 1.2;
+const BIRD_ALIGN_SPEED = 4.0;
+const BIRD_ALIGN_GAIN = 8;
+const BIRD_ALIGN_ENTER = 0.18;
+const BIRD_ALIGN_EXIT = 0.10;
+const BIRD_POP_R = 0.55;
+const BIRD_TURN_BRAKE_DIST = 2.0;
+const BIRD_HOLE_SPEED = 2.2;
 const CHAIN_THREAD_MAX_T = 4;
-function pigeonHoleCell(cx, cy, cz, m) {
-  if (!pigeonProbeFree(cx + 0.5, cy + 0.5, cz + 0.5, m)) return false;
+function birdHoleCell(cx, cy, cz, m) {
+  if (!birdProbeFree(cx + 0.5, cy + 0.5, cz + 0.5, m)) return false;
   let n = 0;
-  if (pigeonProbeFree(cx + 1.5, cy + 0.5, cz + 0.5, m)) n++;
-  if (pigeonProbeFree(cx - 0.5, cy + 0.5, cz + 0.5, m)) n++;
-  if (pigeonProbeFree(cx + 0.5, cy + 1.5, cz + 0.5, m)) n++;
-  if (pigeonProbeFree(cx + 0.5, cy - 0.5, cz + 0.5, m)) n++;
-  if (pigeonProbeFree(cx + 0.5, cy + 0.5, cz + 1.5, m)) n++;
-  if (pigeonProbeFree(cx + 0.5, cy + 0.5, cz - 1.5, m)) n++;
+  if (birdProbeFree(cx + 1.5, cy + 0.5, cz + 0.5, m)) n++;
+  if (birdProbeFree(cx - 0.5, cy + 0.5, cz + 0.5, m)) n++;
+  if (birdProbeFree(cx + 0.5, cy + 1.5, cz + 0.5, m)) n++;
+  if (birdProbeFree(cx + 0.5, cy - 0.5, cz + 0.5, m)) n++;
+  if (birdProbeFree(cx + 0.5, cy + 0.5, cz + 1.5, m)) n++;
+  if (birdProbeFree(cx + 0.5, cy + 0.5, cz - 1.5, m)) n++;
   return n <= 2;
 }
 function chainSegmentFree(m, ax, ay, az, bx, by, bz) {
@@ -1747,20 +1804,20 @@ function chainThreadRide(link, carrier, child, dt) {
   chainSlideToward(child, tgt.x, tgt.y, tgt.z, Math.min(dl, spd * dt));
   return true;
 }
-function pigeonIsConfined(m) {
+function birdIsConfined(m) {
   const d = 1.2;
   let free = 0;
-  if (pigeonProbeFree(m.pos.x + d, m.pos.y, m.pos.z, m)) free++;
-  if (pigeonProbeFree(m.pos.x - d, m.pos.y, m.pos.z, m)) free++;
-  if (pigeonProbeFree(m.pos.x, m.pos.y, m.pos.z + d, m)) free++;
-  if (pigeonProbeFree(m.pos.x, m.pos.y, m.pos.z - d, m)) free++;
-  if (pigeonProbeFree(m.pos.x, m.pos.y + d, m.pos.z, m)) free++;
-  if (pigeonProbeFree(m.pos.x, m.pos.y - d, m.pos.z, m)) free++;
+  if (birdProbeFree(m.pos.x + d, m.pos.y, m.pos.z, m)) free++;
+  if (birdProbeFree(m.pos.x - d, m.pos.y, m.pos.z, m)) free++;
+  if (birdProbeFree(m.pos.x, m.pos.y, m.pos.z + d, m)) free++;
+  if (birdProbeFree(m.pos.x, m.pos.y, m.pos.z - d, m)) free++;
+  if (birdProbeFree(m.pos.x, m.pos.y + d, m.pos.z, m)) free++;
+  if (birdProbeFree(m.pos.x, m.pos.y - d, m.pos.z, m)) free++;
   if (free <= 4) return true;
   // a clear climb to the open sky means the bird is on the surface, not trapped —
   // brief contact with a cloud or a build must never lock it into tunnel mode
   const bx = Math.floor(m.pos.x), bz = Math.floor(m.pos.z);
-  const yTop = Math.min(MAX_Y - 1, Math.floor(m.pos.y) + PIGEON_SKY_CLEAR);
+  const yTop = Math.min(MAX_Y - 1, Math.floor(m.pos.y) + BIRD_SKY_CLEAR);
   let openAbove = true;
   for (let sy = Math.floor(m.pos.y) + 1; sy <= yTop; sy++) {
     if (isSolid(bx, sy, bz)) { openAbove = false; break; }
@@ -1769,20 +1826,20 @@ function pigeonIsConfined(m) {
   const vl = Math.hypot(m.vel.x, m.vel.y, m.vel.z);
   if (vl > 0.5) {
     const dx = m.vel.x / vl, dy = m.vel.y / vl, dz = m.vel.z / vl;
-    if (!pigeonSegmentFree(m.pos.x, m.pos.y, m.pos.z, m.pos.x + dx * 1.5, m.pos.y + dy * 1.5, m.pos.z + dz * 1.5, m)) return true;
+    if (!birdSegmentFree(m.pos.x, m.pos.y, m.pos.z, m.pos.x + dx * 1.5, m.pos.y + dy * 1.5, m.pos.z + dz * 1.5, m)) return true;
   }
   return false;
 }
-function pigeonTunnelLiveDigKeys(m) {
+function birdTunnelLiveDigKeys(m) {
   const now = performance.now() / 1000;
   const seen = m._seenBreaks || (m._seenBreaks = {});
   for (const k of Object.keys(seen)) {
     let live = false;
-    for (const n of pigeonNotices) if (n.id === +k) { live = true; break; }
+    for (const n of birdNotices) if (n.id === +k) { live = true; break; }
     if (!live) delete seen[k];
   }
   const set = new Set();
-  for (const n of pigeonNotices) {
+  for (const n of birdNotices) {
     if (now - n.t > 8) continue;
     if (seen[n.id]) continue;
     if (isSolid(n.bx, n.by, n.bz)) continue;
@@ -1790,7 +1847,7 @@ function pigeonTunnelLiveDigKeys(m) {
   }
   return set;
 }
-function pigeonTunnelPlan(m, now) {
+function birdTunnelPlan(m, now) {
   if (m._tPath && now < (m._tPlanT || 0)) return m._tPath;
   const avoid = m._tAvoid || (m._tAvoid = new Map());
   for (const [ak, exp] of avoid) if (exp <= now) avoid.delete(ak);
@@ -1800,7 +1857,7 @@ function pigeonTunnelPlan(m, now) {
     if (x < -WORLD_RADIUS + 1 || x > WORLD_RADIUS - 1 || z < -WORLD_RADIUS + 1 || z > WORLD_RADIUS - 1) return false;
     if (y < 1 || y > MAX_Y - 1) return false;
     if (avoid.has(key(x, y, z))) return false;
-    return pigeonProbeFree(x + 0.5, y + 0.5, z + 0.5, m);
+    return birdProbeFree(x + 0.5, y + 0.5, z + 0.5, m);
   };
   let start = null;
   if (freeCell(sx, sy, sz)) start = [sx, sy, sz];
@@ -1812,10 +1869,10 @@ function pigeonTunnelPlan(m, now) {
           for (let dz = -r; dz <= r && !found; dz++) {
             if (freeCell(sx + dx, sy + dy, sz + dz)) found = [sx + dx, sy + dy, sz + dz];
           }
-    if (!found) { m._tPath = null; m._tPlanT = now + PIGEON_TUNNEL_REPLAN; return null; }
+    if (!found) { m._tPath = null; m._tPlanT = now + BIRD_TUNNEL_REPLAN; return null; }
     start = found;
   }
-  const digKeys = pigeonTunnelLiveDigKeys(m);
+  const digKeys = birdTunnelLiveDigKeys(m);
   const visits = m._visits;
   const DIRS = [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]];
   const prev = new Map();
@@ -1833,7 +1890,7 @@ function pigeonTunnelPlan(m, now) {
     for (const [ax, ay, az] of DIRS) if (freeCell(x + ax, y + ay, z + az)) n++;
     return n;
   };
-  while (q.length && seen.size < PIGEON_TUNNEL_BFS_CELLS) {
+  while (q.length && seen.size < BIRD_TUNNEL_BFS_CELLS) {
     const [cx, cy, cz] = q.shift();
     const ck = key(cx, cy, cz);
     const cd = depth.get(ck) || 0;
@@ -1872,15 +1929,15 @@ function pigeonTunnelPlan(m, now) {
       prev.set(nk, [cx, cy, cz]);
       depth.set(nk, cd + 1);
       q.push([nx, ny, nz]);
-      if (seen.size >= PIGEON_TUNNEL_BFS_CELLS) break;
+      if (seen.size >= BIRD_TUNNEL_BFS_CELLS) break;
     }
   }
   let goal = null, goalKind = null;
   // never goal onto the bird's own cell: goal==start builds an empty path, which
   // used to loop the planner (empty path → mill → replan → same sticky goal)
   const isStartCell = (c) => c[0] === start[0] && c[1] === start[1] && c[2] === start[2];
-  if (digCell && Math.hypot(digCell[0] + 0.5 - m.pos.x, digCell[1] + 0.5 - m.pos.y, digCell[2] + 0.5 - m.pos.z) <= PIGEON_TUNNEL_DIG_NEAR) { goal = digCell; goalKind = "dig"; }
-  else if ((skyCell && skyDepth <= PIGEON_TUNNEL_EXIT_NEAR) || (exitCell && exitDepth <= PIGEON_TUNNEL_EXIT_NEAR)) {
+  if (digCell && Math.hypot(digCell[0] + 0.5 - m.pos.x, digCell[1] + 0.5 - m.pos.y, digCell[2] + 0.5 - m.pos.z) <= BIRD_TUNNEL_DIG_NEAR) { goal = digCell; goalKind = "dig"; }
+  else if ((skyCell && skyDepth <= BIRD_TUNNEL_EXIT_NEAR) || (exitCell && exitDepth <= BIRD_TUNNEL_EXIT_NEAR)) {
     // holes and sky outrank exploring the interior: leave immediately, and hold
     // the same exit across replans instead of oscillating between candidates
     const pg = m._tGoalCell;
@@ -1888,7 +1945,7 @@ function pigeonTunnelPlan(m, now) {
         seen.has(key(pg[0], pg[1], pg[2])) && freeCell(pg[0], pg[1], pg[2])) {
       goal = [pg[0], pg[1], pg[2]];
       goalKind = "exit";
-    } else if (skyCell && skyDepth <= PIGEON_TUNNEL_EXIT_NEAR) {
+    } else if (skyCell && skyDepth <= BIRD_TUNNEL_EXIT_NEAR) {
       goal = skyCell; goalKind = "exit";
       m._tGoalCell = [goal[0], goal[1], goal[2]];
       m._tGoalT = now + 6;
@@ -1937,7 +1994,7 @@ function pigeonTunnelPlan(m, now) {
       m._tGoalKind = "explore";
     }
   }
-  if (!goal) { m._tPath = null; m._tGoal = null; m._tPlanT = now + PIGEON_TUNNEL_REPLAN; return null; }
+  if (!goal) { m._tPath = null; m._tGoal = null; m._tPlanT = now + BIRD_TUNNEL_REPLAN; return null; }
   const cells = [goal];
   let cur = goal, ck = key(goal[0], goal[1], goal[2]);
   const sk = key(start[0], start[1], start[2]);
@@ -1956,96 +2013,96 @@ function pigeonTunnelPlan(m, now) {
     m._tGoalCell = null;
     m._tGoalKind = null;
     m._tPath = null; m._tGoal = null;
-    m._tPlanT = now + PIGEON_TUNNEL_REPLAN;
+    m._tPlanT = now + BIRD_TUNNEL_REPLAN;
     return null;
   }
-  const path = cells.slice(0, PIGEON_TUNNEL_PATH_CELLS).map(([bx, by, bz]) => new THREE.Vector3(bx + 0.5, by + (1 - pigeonColH(m)) / 2, bz + 0.5));
+  const path = cells.slice(0, BIRD_TUNNEL_PATH_CELLS).map(([bx, by, bz]) => new THREE.Vector3(bx + 0.5, by + (1 - birdColH(m)) / 2, bz + 0.5));
   m._tPath = path;
   m._tGoal = goalKind;
-  m._tPlanT = now + PIGEON_TUNNEL_REPLAN;
+  m._tPlanT = now + BIRD_TUNNEL_REPLAN;
   if (goalKind === "dig") {
-    for (const n of pigeonNotices) {
+    for (const n of birdNotices) {
       if (n.bx === goal[0] && n.by === goal[1] && n.bz === goal[2]) { m._digGoal = n.id; m._digT0 = now; break; }
     }
   }
   return path;
 }
-function pigeonUnblock(m) {
+function birdUnblock(m) {
   const dirs = [[1, 0, 0], [-1, 0, 0], [0, 0, 1], [0, 0, -1], [0, -1, 0], [0, 1, 0]];
   let best = null, bestD = Infinity;
   for (let d = 0.3; d <= 2.1; d += 0.3) {
     for (const [dx, dy, dz] of dirs) {
       const nx = m.pos.x + dx * d, ny = m.pos.y + dy * d, nz = m.pos.z + dz * d;
       if (ny < 1 || ny > MAX_Y - 1) continue;
-      if (aabbCollidesWorld(nx, ny, nz, PIGEON_COL_HW, PIGEON_COL_H)) continue;
+      if (aabbCollidesWorld(nx, ny, nz, BIRD_COL_HW, BIRD_COL_H)) continue;
       const dist = Math.hypot(nx - m.pos.x, ny - m.pos.y, nz - m.pos.z);
       if (dist < bestD) { bestD = dist; best = { x: nx, y: ny, z: nz }; }
     }
   }
   if (best) { m.pos.set(best.x, best.y, best.z); m.vel.set(0, 0, 0); }
 }
-function updateTunnelPigeon(m, dt, now) {
+function updateTunnelBird(m, dt, now) {
   dt = Math.min(0.05, dt);
   if (!m._tEnterT) { m._tEnterT = now; m._tSteps = 0; }
   m._narrow = true;
-  pigeonTouchVisit(m, now);
+  birdTouchVisit(m, now);
   // Rule 1 — sky first: +20 air above means fly straight up, never blocked.
   // Centered on the column so 1-block shafts are climbed dead-centre.
-  if (pigeonSkyClear(m.pos.x, m.pos.y, m.pos.z)) {
+  if (birdSkyClear(m.pos.x, m.pos.y, m.pos.z)) {
     const sp = WALK;
     const tx = Math.floor(m.pos.x) + 0.5, tz = Math.floor(m.pos.z) + 0.5;
-    let vx = (tx - m.pos.x) * PIGEON_ALIGN_GAIN;
-    let vz = (tz - m.pos.z) * PIGEON_ALIGN_GAIN;
-    vx = Math.max(-PIGEON_ALIGN_SPEED, Math.min(PIGEON_ALIGN_SPEED, vx));
-    vz = Math.max(-PIGEON_ALIGN_SPEED, Math.min(PIGEON_ALIGN_SPEED, vz));
+    let vx = (tx - m.pos.x) * BIRD_ALIGN_GAIN;
+    let vz = (tz - m.pos.z) * BIRD_ALIGN_GAIN;
+    vx = Math.max(-BIRD_ALIGN_SPEED, Math.min(BIRD_ALIGN_SPEED, vx));
+    vz = Math.max(-BIRD_ALIGN_SPEED, Math.min(BIRD_ALIGN_SPEED, vz));
     let vy = sp;
     const k = Math.min(1, dt * 6);
     vx = m.vel.x + (vx - m.vel.x) * k;
     vz = m.vel.z + (vz - m.vel.z) * k;
     vy = m.vel.y + (vy - m.vel.y) * k;
     const vel = { x: vx, y: vy, z: vz };
-    pigeonTunnelSeparate(m, dt, vel);
-    const slid = pigeonMoveSlide(m, vel.x, vel.y, vel.z, dt);
+    birdTunnelSeparate(m, dt, vel);
+    const slid = birdMoveSlide(m, vel.x, vel.y, vel.z, dt);
     if (slid.blocked > 0) {
-      const side = pigeonSidestep(m);
+      const side = birdSidestep(m);
       if (side) {
         m.pos.x = side.x; m.pos.y = side.y; m.pos.z = side.z;
         m.vel.set(side.dx * 1.5, side.dy * 1.5, side.dz * 1.5);
       } else {
-        pigeonUTurn(m);
+        birdUTurn(m);
       }
     } else {
       m.vel.set(slid.vx, slid.vy, slid.vz);
     }
     m._tPath = null; m._tGoal = null; m._tPlanT = 0;
-    pigeonAnimate(m, dt, m.vel.x, m.vel.y, m.vel.z, sp);
+    birdAnimate(m, dt, m.vel.x, m.vel.y, m.vel.z, sp);
     return;
   }
   // Rule 6 — blocked-only dig chase: any fresh player break (BFS-reachable,
   // no line-of-sight needed) forces a replan. Free birds never reach this
   // function, so they ignore digs. One visit each via _seenBreaks; the popped
   // cells join _visits so the new hole becomes regular wandering ground.
-  if (m._tGoal !== "dig" && pigeonNotices.length) {
-    const keys = pigeonTunnelLiveDigKeys(m);
+  if (m._tGoal !== "dig" && birdNotices.length) {
+    const keys = birdTunnelLiveDigKeys(m);
     if (keys.size) m._tPlanT = 0;
   }
-  let path = pigeonTunnelPlan(m, now);
+  let path = birdTunnelPlan(m, now);
   const visits = m._visits || (m._visits = new Map());
-  while (path && path.length && Math.hypot(path[0].x - m.pos.x, path[0].y - m.pos.y, path[0].z - m.pos.z) < PIGEON_POP_R
+  while (path && path.length && Math.hypot(path[0].x - m.pos.x, path[0].y - m.pos.y, path[0].z - m.pos.z) < BIRD_POP_R
        && Math.floor(m.pos.x) === Math.floor(path[0].x)
        && Math.floor(m.pos.y + 0.25) === Math.floor(path[0].y + 0.25)
        && Math.floor(m.pos.z) === Math.floor(path[0].z)) {
     const done = path.shift();
-    const vk = pigeonCellKey(done.x, done.y, done.z);
+    const vk = birdCellKey(done.x, done.y, done.z);
     // commit the cell to _visits only once the bird's centre is actually inside it,
     // so the popped cell is never marked ahead of the bird (that used to open a
     // "hole" behind it that the BFS would pick as the next frontier, reversing it)
     if (visits.has(vk)) visits.delete(vk);
     visits.set(vk, now);
-    if (visits.size > PIGEON_VISIT_MEM) visits.delete(visits.keys().next().value);
+    if (visits.size > BIRD_VISIT_MEM) visits.delete(visits.keys().next().value);
     m._tSteps = (m._tSteps || 0) + 1;
-    const dg = pigeonDigLive(m, now);
-    if (dg && Math.hypot(dg.x - m.pos.x, dg.y - m.pos.y, dg.z - m.pos.z) < 1.2) pigeonDigGiveUp(m);
+    const dg = birdDigLive(m, now);
+    if (dg && Math.hypot(dg.x - m.pos.x, dg.y - m.pos.y, dg.z - m.pos.z) < 1.2) birdDigGiveUp(m);
   }
   // line-of-sight smoothing: when the waypoint after the next is directly
   // reachable, drop the intermediate cell — straight full-speed legs down
@@ -2054,42 +2111,42 @@ function updateTunnelPigeon(m, dt, now) {
   const wpCellOf = (w) => [Math.floor(w.x), Math.floor(w.y + 0.25), Math.floor(w.z)];
   if (path && path.length > 1) {
     const c1 = wpCellOf(path[1]);
-    if (!pigeonHoleCell(c1[0], c1[1], c1[2], m) &&
-        pigeonSegmentFree(m.pos.x, m.pos.y, m.pos.z, path[1].x, path[1].y, path[1].z, m)) path.shift();
+    if (!birdHoleCell(c1[0], c1[1], c1[2], m) &&
+        birdSegmentFree(m.pos.x, m.pos.y, m.pos.z, path[1].x, path[1].y, path[1].z, m)) path.shift();
   }
   // popping the goal empties the path — extend it in the same frame so the
   // bird cruises on instead of milling randomly for a frame at every tip
-  if (path && !path.length) { m._tPlanT = 0; path = pigeonTunnelPlan(m, now); }
+  if (path && !path.length) { m._tPlanT = 0; path = birdTunnelPlan(m, now); }
   if (m._tGoal === "dig") {
-    const dg = pigeonDigLive(m, now);
+    const dg = birdDigLive(m, now);
     if (!dg) { m._tGoal = null; }
-    else if (now - (m._digT0 || 0) > 8) { pigeonDigGiveUp(m); m._tGoal = null; }
+    else if (now - (m._digT0 || 0) > 8) { birdDigGiveUp(m); m._tGoal = null; }
   }
   // if the next waypoint's cell just got filled in, avoid it and reroute (go around)
   if (path && path.length && isSolid(Math.floor(path[0].x), Math.floor(path[0].y + 0.25), Math.floor(path[0].z))) {
     const avoid = m._tAvoid || (m._tAvoid = new Map());
     avoid.set(Math.floor(path[0].x) + "," + Math.floor(path[0].y + 0.25) + "," + Math.floor(path[0].z), now + 6);
     m._tPath = null; m._tPlanT = 0;
-    path = pigeonTunnelPlan(m, now);
+    path = birdTunnelPlan(m, now);
   }
   const wp = path && path.length ? path[0] : null;
   let threading = false;
   if (wp) {
     const c0 = wpCellOf(wp);
-    threading = pigeonHoleCell(c0[0], c0[1], c0[2], m);
+    threading = birdHoleCell(c0[0], c0[1], c0[2], m);
   }
   m._threading = threading;
   const sp = WALK;
   let vx = m.vel.x, vy = m.vel.y, vz = m.vel.z;
   if (!wp) {
-    const keys = pigeonTunnelLiveDigKeys(m);
+    const keys = birdTunnelLiveDigKeys(m);
     if (keys.size) {
       m._tPlanT = 0;
       m._tGoal = null;
     }
     m._millT = (m._millT || 0) - dt;
     if (!m._millTarget || m._millT <= 0 || Math.hypot(m._millTarget.x - m.pos.x, m._millTarget.y - m.pos.y, m._millTarget.z - m.pos.z) < 0.6) {
-      m._millTarget = m._inHouse ? pigeonCoopTarget(m._inHouse) : pigeonMillHop(m);
+      m._millTarget = m._inHouse ? birdCoopTarget(m._inHouse) : birdMillHop(m);
       m._millT = 2;
     }
     const k0 = Math.min(1, dt * 4);
@@ -2104,20 +2161,20 @@ function updateTunnelPigeon(m, dt, now) {
       vx += (0 - vx) * k0; vy += (0.4 - vy) * k0; vz += (0 - vz) * k0;
     }
     const vel0 = { x: vx, y: vy, z: vz };
-    pigeonTunnelSeparate(m, dt, vel0);
+    birdTunnelSeparate(m, dt, vel0);
     const px0 = m.pos.x, py0 = m.pos.y, pz0 = m.pos.z;
-    const slid = pigeonMoveSlide(m, vel0.x, vel0.y, vel0.z, dt);
+    const slid = birdMoveSlide(m, vel0.x, vel0.y, vel0.z, dt);
     const moved = Math.hypot(m.pos.x - px0, m.pos.y - py0, m.pos.z - pz0);
     if (moved < 0.05 * dt) {
       m._tStallT = (m._tStallT || 0) + dt;
       if (m._tStallT > 0.3) {
         m._tStallT = 0;
-        pigeonUTurn(m);
+        birdUTurn(m);
         m._millTarget = null; m._millT = 0;
       }
     } else m._tStallT = 0;
     m.vel.set(slid.vx, slid.vy, slid.vz);
-    pigeonAnimate(m, dt, slid.vx, slid.vy, slid.vz, sp);
+    birdAnimate(m, dt, slid.vx, slid.vy, slid.vz, sp);
     return;
   }
   const nwp = path.length > 1 ? path[1] : null;
@@ -2136,12 +2193,12 @@ function updateTunnelPigeon(m, dt, now) {
   const kCruise = Math.min(1, dt * 6);
   // hysteresis on the align/cruise split so the phase never flaps at a boundary
   let aligning = m._tAlign;
-  if (aligning) { if (perpOff < PIGEON_ALIGN_EXIT) aligning = false; }
-  else if (perpOff > PIGEON_ALIGN_ENTER) aligning = true;
+  if (aligning) { if (perpOff < BIRD_ALIGN_EXIT) aligning = false; }
+  else if (perpOff > BIRD_ALIGN_ENTER) aligning = true;
   m._tAlign = aligning;
   // dead-centre on the leg line: perp velocity is a pure proportional (set, not
   // lerped) so the offset converges exponentially with zero overshoot/oscillation
-  const centerVel = (a) => Math.max(-PIGEON_ALIGN_SPEED, Math.min(PIGEON_ALIGN_SPEED, dOf(a) * PIGEON_ALIGN_GAIN));
+  const centerVel = (a) => Math.max(-BIRD_ALIGN_SPEED, Math.min(BIRD_ALIGN_SPEED, dOf(a) * BIRD_ALIGN_GAIN));
   if (aligning) {
     // ALIGN phase: brake the travel axis, snap perpendicular onto the leg line
     // (always heads into the free corridor centre, so it never cuts a corner).
@@ -2150,12 +2207,12 @@ function updateTunnelPigeon(m, dt, now) {
   } else {
     // CRUISE phase: spring forward along the leg, perps hold the corridor centre.
     // Through a hole cell the pace drops to a careful funnel speed instead.
-    let effSp = threading ? Math.min(sp, PIGEON_HOLE_SPEED) : sp;
+    let effSp = threading ? Math.min(sp, BIRD_HOLE_SPEED) : sp;
     if (nwp) {
       const lx = nwp.x - wp.x, ly = nwp.y - wp.y, lz = nwp.z - wp.z;
       const ll = Math.hypot(lx, ly, lz) || 1;
       const turnCos = Math.abs((fwd === "x" ? lx : (fwd === "z" ? lz : ly)) / ll);
-      const prox = Math.max(0, Math.min(1, (dist - PIGEON_POP_R) / PIGEON_TURN_BRAKE_DIST));
+      const prox = Math.max(0, Math.min(1, (dist - BIRD_POP_R) / BIRD_TURN_BRAKE_DIST));
       effSp *= (1 - prox) + prox * (0.5 + 0.5 * turnCos);
     }
     const curSpd = Math.hypot(vx, vy, vz);
@@ -2175,9 +2232,9 @@ function updateTunnelPigeon(m, dt, now) {
     vx *= s; vy *= s; vz *= s;
   }
   const vel = { x: vx, y: vy, z: vz };
-  pigeonTunnelSeparate(m, dt, vel);
+  birdTunnelSeparate(m, dt, vel);
   const px0 = m.pos.x, py0 = m.pos.y, pz0 = m.pos.z;
-  const slid = pigeonMoveSlide(m, vel.x, vel.y, vel.z, dt);
+  const slid = birdMoveSlide(m, vel.x, vel.y, vel.z, dt);
   const moved = Math.hypot(m.pos.x - px0, m.pos.y - py0, m.pos.z - pz0);
   // NEVER stay blocked: stall means go around via avoid+replan, dead-end means
   // U-turn via the same path (BFS routes back out). No teleport anywhere here:
@@ -2189,12 +2246,12 @@ function updateTunnelPigeon(m, dt, now) {
     if (m._tStallT > 0.3) {
       m._tStallT = 0;
       if (!threading && m._tGoal !== "exit") {
-        const side = pigeonSidestep(m);
+        const side = birdSidestep(m);
         if (side) {
           m.pos.x = side.x; m.pos.y = side.y; m.pos.z = side.z;
           m.vel.set(side.dx * 1.5, side.dy * 1.5, side.dz * 1.5);
         } else {
-          pigeonUTurn(m);
+          birdUTurn(m);
         }
       } else {
         m._tPath = null; m._tPlanT = 0;
@@ -2213,26 +2270,26 @@ function updateTunnelPigeon(m, dt, now) {
     m._tCrawlT = 0;
   }
   m.vel.set(slid.vx, slid.vy, slid.vz);
-  pigeonAnimate(m, dt, slid.vx, slid.vy, slid.vz, sp, wp);
+  birdAnimate(m, dt, slid.vx, slid.vy, slid.vz, sp, wp);
 }
-function pigeonTunnelSeparate(m, dt, vel) {
+function birdTunnelSeparate(m, dt, vel) {
   const nearby = nearbyMobsFor(m.pos.x, m.pos.z, 1);
   for (const o of nearby) {
-    if (o === m || o.kind !== "pigeon") continue;
+    if (o === m || !isBirdKind(o.kind)) continue;
     if (o.dim !== undefined && o.dim !== dim) continue;
-    if (pigeonSameChain(m, o)) continue;
+    if (birdSameChain(m, o)) continue;
     const ox = m.pos.x - o.pos.x, oy = m.pos.y - o.pos.y, oz = m.pos.z - o.pos.z;
     const d2 = ox * ox + oy * oy + oz * oz;
-    if (d2 < PIGEON_TUNNEL_SEP_DIST * PIGEON_TUNNEL_SEP_DIST && d2 > 0.0001) {
+    if (d2 < BIRD_TUNNEL_SEP_DIST * BIRD_TUNNEL_SEP_DIST && d2 > 0.0001) {
       const d = Math.sqrt(d2);
-      const push = (PIGEON_TUNNEL_SEP_DIST - d) * 2 * dt;
+      const push = (BIRD_TUNNEL_SEP_DIST - d) * 2 * dt;
       vel.x += (ox / d) * push;
       vel.y += (oy / d) * push;
       vel.z += (oz / d) * push;
     }
   }
 }
-let pigeonPerchGroup = 1;
+let birdPerchGroup = 1;
 const WOLF_FUR = 0xc8cdd2;
 const WOLF_COLLAR_COLORS = [0xe53935, 0x2ecc40, 0x246bff, 0xffd600, 0x00bfa5];
 const WOLF_SHOW_COLLAR = false;
@@ -2406,8 +2463,8 @@ function houseMouths(h) {
   h._mouthsT = now;
   return list;
 }
-function pigeonLavaAt(x, y, z, m) {
-  const hw = pigeonColHW(m), hh = pigeonColH(m);
+function birdLavaAt(x, y, z, m) {
+  const hw = birdColHW(m), hh = birdColH(m);
   const x0 = Math.floor(x - hw), x1 = Math.floor(x + hw);
   const y0 = Math.floor(y), y1 = Math.floor(y + hh);
   const z0 = Math.floor(z - hw), z1 = Math.floor(z + hw);
@@ -2415,16 +2472,16 @@ function pigeonLavaAt(x, y, z, m) {
     if (getBlock(bx, by, bz) === LAVA) return true;
   return false;
 }
-function pigeonSegmentFree(ax, ay, az, bx, by, bz, m) {
+function birdSegmentFree(ax, ay, az, bx, by, bz, m) {
   const d = Math.hypot(bx - ax, by - ay, bz - az);
   const n = Math.max(2, Math.ceil(d * 2));
-  const hw = pigeonColHW(m), hh = pigeonColH(m);
+  const hw = birdColHW(m), hh = birdColH(m);
   const lava = dim === "nether";
   for (let i = 1; i <= n; i++) {
     const t = i / n;
     const px = ax + (bx - ax) * t, py = ay + (by - ay) * t, pz = az + (bz - az) * t;
     if (aabbCollidesWorld(px, py, pz, hw, hh)) return false;
-    if (lava && pigeonLavaAt(px, py, pz, m)) return false;
+    if (lava && birdLavaAt(px, py, pz, m)) return false;
   }
   return true;
 }
@@ -2434,21 +2491,21 @@ function bandReturnTarget(pos, m) {
     const y = Math.max(DRAGON_MIN_Y, Math.min(DRAGON_MAX_Y, pos.y < DRAGON_MIN_Y ? DRAGON_MIN_Y + 2 : DRAGON_MAX_Y - 2));
     return new THREE.Vector3(x, y, z);
   }
-  const loB = pigeonBandMin(m), hiB = pigeonBandMax(m);
+  const loB = birdBandMin(m), hiB = birdBandMax(m);
   const y = pos.y < loB ? loB + 10 : hiB - 10;
   return new THREE.Vector3(
     Math.max(-WORLD_RADIUS + 2, Math.min(WORLD_RADIUS - 2, pos.x)),
     y,
     Math.max(-WORLD_RADIUS + 2, Math.min(WORLD_RADIUS - 2, pos.z)));
 }
-function pigeonCellKey(x, y, z) { return Math.floor(x) + "," + Math.floor(y) + "," + Math.floor(z); }
-function pigeonTouchVisit(m, now) {
-  const k = pigeonCellKey(m.pos.x, m.pos.y + 0.25, m.pos.z);
+function birdCellKey(x, y, z) { return Math.floor(x) + "," + Math.floor(y) + "," + Math.floor(z); }
+function birdTouchVisit(m, now) {
+  const k = birdCellKey(m.pos.x, m.pos.y + 0.25, m.pos.z);
   let visits = m._visits;
   if (!visits) visits = m._visits = new Map();
   if (visits.has(k)) visits.delete(k);
   visits.set(k, now);
-  if (visits.size > PIGEON_VISIT_MEM) visits.delete(visits.keys().next().value);
+  if (visits.size > BIRD_VISIT_MEM) visits.delete(visits.keys().next().value);
   if (m._visitKey !== k) {
     m._visitKey = k;
     const trail = m._trail || (m._trail = []);
@@ -2456,8 +2513,8 @@ function pigeonTouchVisit(m, now) {
     if (trail.length > 300) trail.splice(0, trail.length - 300);
   }
 }
-function pigeonDetourTarget(m) {
-  const best = pigeonBestSteer(m, m.yaw, 0);
+function birdDetourTarget(m) {
+  const best = birdBestSteer(m, m.yaw, 0);
   if (!best || best.clear <= 0) return null;
   const d = Math.min(best.clear, 6);
   let x = Math.max(-WORLD_RADIUS + 2, Math.min(WORLD_RADIUS - 2, m.pos.x + best.x * d));
@@ -2467,25 +2524,25 @@ function pigeonDetourTarget(m) {
     x = endSquareCoord(x); z = endSquareCoord(z);
     y = Math.max(DRAGON_MIN_Y, Math.min(DRAGON_MAX_Y, y));
   }
-  if (!pigeonProbeFree(x, y, z)) return null;
+  if (!birdProbeFree(x, y, z)) return null;
   return new THREE.Vector3(x, y, z);
 }
-let pigeonNotices = [];
-let pigeonNoticeSeq = 0;
-function pigeonNoticeBreak(bx, by, bz) {
+let birdNotices = [];
+let birdNoticeSeq = 0;
+function birdNoticeBreak(bx, by, bz) {
   const now = performance.now() / 1000;
-  pigeonNotices = pigeonNotices.filter((n) => now - n.t < 15);
-  pigeonNotices.push({ x: bx + 0.5, y: by + 0.5, z: bz + 0.5, bx, by, bz, t: now, id: ++pigeonNoticeSeq });
-  if (pigeonNotices.length > 6) pigeonNotices.splice(0, pigeonNotices.length - 6);
+  birdNotices = birdNotices.filter((n) => now - n.t < 15);
+  birdNotices.push({ x: bx + 0.5, y: by + 0.5, z: bz + 0.5, bx, by, bz, t: now, id: ++birdNoticeSeq });
+  if (birdNotices.length > 6) birdNotices.splice(0, birdNotices.length - 6);
 }
-function pigeonDigReachable(m, n) {
-  if (pigeonSegmentFree(m.pos.x, m.pos.y, m.pos.z, n.x, n.y, n.z)) return true;
-  if (!pigeonSegmentFree(m.pos.x, m.pos.y, m.pos.z, m.pos.x, n.y, m.pos.z)) return false;
-  return pigeonSegmentFree(m.pos.x, n.y, m.pos.z, n.x, n.y, n.z);
+function birdDigReachable(m, n) {
+  if (birdSegmentFree(m.pos.x, m.pos.y, m.pos.z, n.x, n.y, n.z)) return true;
+  if (!birdSegmentFree(m.pos.x, m.pos.y, m.pos.z, m.pos.x, n.y, m.pos.z)) return false;
+  return birdSegmentFree(m.pos.x, n.y, m.pos.z, n.x, n.y, n.z);
 }
-function pigeonDigLive(m, now) {
+function birdDigLive(m, now) {
   if (m._digGoal == null) return null;
-  for (const n of pigeonNotices) {
+  for (const n of birdNotices) {
     if (n.id !== m._digGoal) continue;
     if (now - n.t > 8 || isSolid(n.bx, n.by, n.bz)) { m._digGoal = null; return null; }
     return n;
@@ -2493,46 +2550,46 @@ function pigeonDigLive(m, now) {
   m._digGoal = null;
   return null;
 }
-function pigeonDigGiveUp(m) {
+function birdDigGiveUp(m) {
   if (m._digGoal != null) {
     (m._seenBreaks || (m._seenBreaks = {}))[m._digGoal] = true;
     m._digGoal = null;
   }
 }
-function pigeonFreshDigFor(m, now, range) {
+function birdFreshDigFor(m, now, range) {
   const seen = m._seenBreaks || (m._seenBreaks = {});
   for (const k of Object.keys(seen)) {
     let live = false;
-    for (const n of pigeonNotices) if (n.id === +k) { live = true; break; }
+    for (const n of birdNotices) if (n.id === +k) { live = true; break; }
     if (!live) delete seen[k];
   }
   let best = null, bestD2 = Infinity;
-  for (const n of pigeonNotices) {
+  for (const n of birdNotices) {
     if (now - n.t > 8 || seen[n.id]) continue;
     if (isSolid(n.bx, n.by, n.bz)) continue;
     const dx = n.x - m.pos.x, dy = n.y - m.pos.y, dz = n.z - m.pos.z;
     const d2 = dx * dx + dy * dy + dz * dz;
     if (d2 > range * range) continue;
-    if (!pigeonDigReachable(m, n)) continue;
+    if (!birdDigReachable(m, n)) continue;
     if (d2 < bestD2) { bestD2 = d2; best = n; }
   }
   return best;
 }
-function pigeonCloudTopAt(cx, cz, loY, hiY) {
+function birdCloudTopAt(cx, cz, loY, hiY) {
   const bx = Math.floor(cx), bz = Math.floor(cz);
   if (bx < -WORLD_RADIUS + 1 || bx > WORLD_RADIUS - 1 || bz < -WORLD_RADIUS + 1 || bz > WORLD_RADIUS - 1) return null;
-  const lo = loY == null ? PIGEON_MIN_Y : loY, hi = hiY == null ? PIGEON_MAX_Y : hiY;
+  const lo = loY == null ? BIRD_MIN_Y : loY, hi = hiY == null ? BIRD_MAX_Y : hiY;
   let top = colTops.over[colTopIdx(bx, bz)];
   if (top > hi) top = Math.floor(hi);
   if (top < lo) return null;
   for (let y = top; y >= lo; y--) {
     if (getBlock(bx, y, bz) !== CLOUD) continue;
     const spot = new THREE.Vector3(bx + 0.5, y + 1, bz + 0.5);
-    if (!aabbCollidesWorld(spot.x, spot.y, spot.z, PIGEON_COL_HW, PIGEON_COL_H)) return spot;
+    if (!aabbCollidesWorld(spot.x, spot.y, spot.z, BIRD_COL_HW, BIRD_COL_H)) return spot;
   }
   return null;
 }
-function pigeonTreeTopAt(cx, cz) {
+function birdTreeTopAt(cx, cz) {
   const bx = Math.floor(cx), bz = Math.floor(cz);
   if (bx < -WORLD_RADIUS + 1 || bx > WORLD_RADIUS - 1 || bz < -WORLD_RADIUS + 1 || bz > WORLD_RADIUS - 1) return null;
   let top = colTops.over[colTopIdx(bx, bz)];
@@ -2541,7 +2598,7 @@ function pigeonTreeTopAt(cx, cz) {
     const id = getBlock(bx, y, bz);
     if (id !== LOG && id !== LEAVES) continue;
     const spot = new THREE.Vector3(bx + 0.5, y + 1, bz + 0.5);
-    if (!aabbCollidesWorld(spot.x, spot.y, spot.z, PIGEON_COL_HW, PIGEON_COL_H)) return spot;
+    if (!aabbCollidesWorld(spot.x, spot.y, spot.z, BIRD_COL_HW, BIRD_COL_H)) return spot;
   }
   return null;
 }
@@ -2553,7 +2610,7 @@ function houseRoofCell(h, bx, by, bz) {
   const inset = houseRoofInset(h, by);
   return bx >= h.minX + inset && bx <= h.maxX - inset && bz >= h.minZ + inset && bz <= h.maxZ - inset;
 }
-function pigeonPerchSupports(x, y, z) {
+function birdPerchSupports(x, y, z) {
   const bx = Math.floor(x), by = Math.floor(y) - 1, bz = Math.floor(z);
   const id = getBlock(bx, by, bz);
   if (dim === "end") {
@@ -2568,7 +2625,7 @@ function pigeonPerchSupports(x, y, z) {
   }
   return false;
 }
-function pigeonRoofTopAt(cx, cz) {
+function birdRoofTopAt(cx, cz) {
   if (!villageHouses.length) return null;
   const h = houseAtRoof(cx, cz);
   if (!h) return null;
@@ -2578,18 +2635,18 @@ function pigeonRoofTopAt(cx, cz) {
     const id = getBlock(bx, y, bz);
     if (id !== STONE && id !== PLANKS && id !== LOG && id !== PORTAL && id !== OBSIDIAN) continue;
     const spot = new THREE.Vector3(bx + 0.5, y + 1, bz + 0.5);
-    if (aabbCollidesWorld(spot.x, spot.y, spot.z, PIGEON_COL_HW, PIGEON_COL_H)) return null;
+    if (aabbCollidesWorld(spot.x, spot.y, spot.z, BIRD_COL_HW, BIRD_COL_H)) return null;
     return spot;
   }
   return null;
 }
-function pigeonEndPortalTopAt(cx, cz) {
+function birdEndPortalTopAt(cx, cz) {
   let best = null, bestD = Infinity;
   for (let bx = -2; bx <= 2; bx++) {
     for (let y = END_RETURN_BASE_Y + 4; y >= END_RETURN_BASE_Y; y--) {
       if (getBlock(bx, y, END_RETURN_Z) !== PORTAL) continue;
       const spot = new THREE.Vector3(bx + 0.5, y + 1, END_RETURN_Z + 0.5);
-      if (aabbCollidesWorld(spot.x, spot.y, spot.z, PIGEON_COL_HW, PIGEON_COL_H)) break;
+      if (aabbCollidesWorld(spot.x, spot.y, spot.z, BIRD_COL_HW, BIRD_COL_H)) break;
       const d = Math.hypot(spot.x - cx, spot.z - cz);
       if (d < bestD) { bestD = d; best = spot; }
       break;
@@ -2597,18 +2654,18 @@ function pigeonEndPortalTopAt(cx, cz) {
   }
   return best;
 }
-function pigeonPerchBand(y) {
+function birdPerchBand(y) {
   if (y < CLOUD_BASE) return 0;
-  if (y < CLOUD_BASE + (PIGEON_MAX_Y - CLOUD_BASE) / 2) return 1;
+  if (y < CLOUD_BASE + (BIRD_MAX_Y - CLOUD_BASE) / 2) return 1;
   return 2;
 }
-function pigeonJoinSlotAt(x, z, refY) {
+function birdJoinSlotAt(x, z, refY) {
   if (dim === "end") {
-    const s = pigeonEndPortalTopAt(x, z);
+    const s = birdEndPortalTopAt(x, z);
     if (s && Math.abs(s.y - refY) <= 2) return s;
     return null;
   }
-  const t = pigeonTreeTopAt(x, z), c = pigeonCloudTopAt(x, z), r = pigeonRoofTopAt(x, z);
+  const t = birdTreeTopAt(x, z), c = birdCloudTopAt(x, z), r = birdRoofTopAt(x, z);
   const ok = (s) => s && Math.abs(s.y - refY) <= 2;
   let best = null, bestD = Infinity;
   for (const s of [t, c, r]) {
@@ -2618,25 +2675,25 @@ function pigeonJoinSlotAt(x, z, refY) {
   }
   return best;
 }
-function pigeonPerchSpotTaken(x, y, z, self) {
+function birdPerchSpotTaken(x, y, z, self) {
   const md = self && self.dim !== undefined ? self.dim : dim;
   for (const o of mobs) {
-    if (o === self || o.kind !== "pigeon") continue;
+    if (o === self || !isBirdKind(o.kind)) continue;
     const od = o.dim !== undefined ? o.dim : dim;
     if (od !== md) continue;
     const t = (o.mode === "toPerch" && o.perchSpot) ? o.perchSpot : (o.mode === "perch" ? o.pos : null);
     if (!t) continue;
-    if (Math.hypot(t.x - x, t.y - y, t.z - z) < PIGEON_PERCH_SEP) return true;
+    if (Math.hypot(t.x - x, t.y - y, t.z - z) < BIRD_PERCH_SEP) return true;
   }
   return false;
 }
-function pigeonFindPerchSpot(m, nearMax = 0) {
+function birdFindPerchSpot(m, nearMax = 0) {
   const md = m.dim !== undefined ? m.dim : dim;
   if (md === "nether") return null;
   if (md === "end") {
     const groupCounts = new Map();
     for (const o of mobs) {
-      if (o === m || o.kind !== "pigeon" || o.perchGroup == null) continue;
+      if (o === m || !isBirdKind(o.kind) || o.perchGroup == null) continue;
       const od = o.dim !== undefined ? o.dim : dim;
       if (od !== "end") continue;
       if (o.mode !== "perch" && o.mode !== "toPerch") continue;
@@ -2645,13 +2702,13 @@ function pigeonFindPerchSpot(m, nearMax = 0) {
     }
     let join = null, joinD = Infinity;
     for (const o of mobs) {
-      if (o === m || o.kind !== "pigeon" || o.perchGroup == null || !o.perchSpot) continue;
+      if (o === m || !isBirdKind(o.kind) || o.perchGroup == null || !o.perchSpot) continue;
       const od = o.dim !== undefined ? o.dim : dim;
       if (od !== "end") continue;
       if (o.mode !== "perch" && o.mode !== "toPerch") continue;
       if ((groupCounts.get(o.perchGroup) || 0) >= 3) continue;
       const d = Math.hypot(o.perchSpot.x - m.pos.x, o.perchSpot.y - m.pos.y, o.perchSpot.z - m.pos.z);
-      if (d > PIGEON_PERCH_JOIN_R || d >= joinD) continue;
+      if (d > BIRD_PERCH_JOIN_R || d >= joinD) continue;
       joinD = d; join = o;
     }
     if (join) {
@@ -2659,31 +2716,31 @@ function pigeonFindPerchSpot(m, nearMax = 0) {
       const s0 = Math.floor(Math.random() * offs.length);
       for (let k = 0; k < offs.length; k++) {
         const off = offs[(s0 + k) % offs.length];
-        const spot = pigeonEndPortalTopAt(join.perchSpot.x + off[0], join.perchSpot.z + off[1]);
+        const spot = birdEndPortalTopAt(join.perchSpot.x + off[0], join.perchSpot.z + off[1]);
         if (!spot || Math.abs(spot.y - join.perchSpot.y) > 2) continue;
-        if (pigeonPerchSpotTaken(spot.x, spot.y, spot.z, m)) continue;
-        if (!pigeonSegmentFree(m.pos.x, m.pos.y, m.pos.z, spot.x, spot.y, spot.z)) continue;
+        if (birdPerchSpotTaken(spot.x, spot.y, spot.z, m)) continue;
+        if (!birdSegmentFree(m.pos.x, m.pos.y, m.pos.z, spot.x, spot.y, spot.z)) continue;
         return { spot, group: join.perchGroup };
       }
     }
     for (let t = 0; t < 8; t++) {
-      const spot = pigeonEndPortalTopAt(m.pos.x + (Math.random() - 0.5) * 12, m.pos.z + (Math.random() - 0.5) * 12);
+      const spot = birdEndPortalTopAt(m.pos.x + (Math.random() - 0.5) * 12, m.pos.z + (Math.random() - 0.5) * 12);
       if (!spot) continue;
-      if (pigeonPerchSpotTaken(spot.x, spot.y, spot.z, m)) continue;
-      if (!pigeonSegmentFree(m.pos.x, m.pos.y, m.pos.z, spot.x, spot.y, spot.z)) continue;
-      return { spot, group: pigeonPerchGroup++ };
+      if (birdPerchSpotTaken(spot.x, spot.y, spot.z, m)) continue;
+      if (!birdSegmentFree(m.pos.x, m.pos.y, m.pos.z, spot.x, spot.y, spot.z)) continue;
+      return { spot, group: birdPerchGroup++ };
     }
     return null;
   }
   const counts = [0, 0, 0];
   const groupCounts = new Map();
   for (const o of mobs) {
-    if (o === m || o.kind !== "pigeon" || o.perchGroup == null) continue;
+    if (o === m || !isBirdKind(o.kind) || o.perchGroup == null) continue;
     const od = o.dim !== undefined ? o.dim : dim;
     if (od !== md) continue;
     if (o.mode !== "perch" && o.mode !== "toPerch") continue;
     if (!o.perchSpot) continue;
-    counts[pigeonPerchBand(o.perchSpot.y)]++;
+    counts[birdPerchBand(o.perchSpot.y)]++;
     groupCounts.set(o.perchGroup, (groupCounts.get(o.perchGroup) || 0) + 1);
   }
   let band;
@@ -2693,17 +2750,17 @@ function pigeonFindPerchSpot(m, nearMax = 0) {
     for (let b = 1; b < 3; b++)
       if (counts[b] < counts[band] || (counts[b] === counts[band] && Math.random() < 0.5)) band = b;
   }
-  const inBand = (s) => s && pigeonPerchBand(s.y) === band;
+  const inBand = (s) => s && birdPerchBand(s.y) === band;
   let join = null, joinD = Infinity;
   for (const o of mobs) {
-    if (o === m || o.kind !== "pigeon" || o.perchGroup == null || !o.perchSpot) continue;
+    if (o === m || !isBirdKind(o.kind) || o.perchGroup == null || !o.perchSpot) continue;
     const od = o.dim !== undefined ? o.dim : dim;
     if (od !== md) continue;
     if (o.mode !== "perch" && o.mode !== "toPerch") continue;
     if (!inBand(o.perchSpot)) continue;
     if ((groupCounts.get(o.perchGroup) || 0) >= 3) continue;
     const d = Math.hypot(o.perchSpot.x - m.pos.x, o.perchSpot.y - m.pos.y, o.perchSpot.z - m.pos.z);
-    if (d > PIGEON_PERCH_JOIN_R || d >= joinD) continue;
+    if (d > BIRD_PERCH_JOIN_R || d >= joinD) continue;
     joinD = d; join = o;
   }
   if (join) {
@@ -2711,19 +2768,19 @@ function pigeonFindPerchSpot(m, nearMax = 0) {
     const s0 = Math.floor(Math.random() * offs.length);
     for (let k = 0; k < offs.length; k++) {
       const off = offs[(s0 + k) % offs.length];
-      const spot = pigeonJoinSlotAt(join.perchSpot.x + off[0], join.perchSpot.z + off[1], join.perchSpot.y);
+      const spot = birdJoinSlotAt(join.perchSpot.x + off[0], join.perchSpot.z + off[1], join.perchSpot.y);
       if (!spot) continue;
-      if (pigeonPerchSpotTaken(spot.x, spot.y, spot.z, m)) continue;
-      if (!pigeonSegmentFree(m.pos.x, m.pos.y, m.pos.z, spot.x, spot.y, spot.z)) continue;
+      if (birdPerchSpotTaken(spot.x, spot.y, spot.z, m)) continue;
+      if (!birdSegmentFree(m.pos.x, m.pos.y, m.pos.z, spot.x, spot.y, spot.z)) continue;
       return { spot, group: join.perchGroup };
     }
   }
   const rMax = nearMax || 90;
   const trySpot = (spot) => {
     if (!inBand(spot)) return null;
-    if (pigeonPerchSpotTaken(spot.x, spot.y, spot.z, m)) return null;
-    if (!pigeonSegmentFree(m.pos.x, m.pos.y, m.pos.z, spot.x, spot.y, spot.z)) return null;
-    return { spot, group: pigeonPerchGroup++ };
+    if (birdPerchSpotTaken(spot.x, spot.y, spot.z, m)) return null;
+    if (!birdSegmentFree(m.pos.x, m.pos.y, m.pos.z, spot.x, spot.y, spot.z)) return null;
+    return { spot, group: birdPerchGroup++ };
   };
   if (band === 0) {
     const wantRoofFirst = Math.random() < 0.5;
@@ -2734,38 +2791,38 @@ function pigeonFindPerchSpot(m, nearMax = 0) {
         const h = villageHouses[Math.floor(Math.random() * villageHouses.length)];
         const bx = h.minX + Math.floor(Math.random() * (h.maxX - h.minX + 1));
         const bz = h.minZ + Math.floor(Math.random() * (h.maxZ - h.minZ + 1));
-        spot = pigeonRoofTopAt(bx + 0.5, bz + 0.5);
+        spot = birdRoofTopAt(bx + 0.5, bz + 0.5);
       } else {
         const a = Math.random() * Math.PI * 2, d = 8 + Math.random() * Math.max(8, rMax - 8);
-        spot = pigeonRoofTopAt(m.pos.x + Math.cos(a) * d, m.pos.z + Math.sin(a) * d);
+        spot = birdRoofTopAt(m.pos.x + Math.cos(a) * d, m.pos.z + Math.sin(a) * d);
       }
       const got = spot && trySpot(spot);
       if (got) return got;
     }
     for (let t = 0; t < treeTries; t++) {
       const a = Math.random() * Math.PI * 2, d = 8 + Math.random() * Math.max(8, rMax - 8);
-      const spot = pigeonTreeTopAt(m.pos.x + Math.cos(a) * d, m.pos.z + Math.sin(a) * d);
+      const spot = birdTreeTopAt(m.pos.x + Math.cos(a) * d, m.pos.z + Math.sin(a) * d);
       if (!spot) continue;
       const got = trySpot(spot);
       if (got) return got;
     }
     return null;
   }
-  const mid = CLOUD_BASE + (PIGEON_MAX_Y - CLOUD_BASE) / 2;
-  const lo = band === 1 ? CLOUD_BASE : mid, hi = band === 1 ? mid : PIGEON_MAX_Y;
+  const mid = CLOUD_BASE + (BIRD_MAX_Y - CLOUD_BASE) / 2;
+  const lo = band === 1 ? CLOUD_BASE : mid, hi = band === 1 ? mid : BIRD_MAX_Y;
   for (let t = 0; t < 24; t++) {
     const a = Math.random() * Math.PI * 2, d = 8 + Math.random() * Math.max(8, rMax - 8);
-    const spot = pigeonCloudTopAt(m.pos.x + Math.cos(a) * d, m.pos.z + Math.sin(a) * d, lo, hi);
+    const spot = birdCloudTopAt(m.pos.x + Math.cos(a) * d, m.pos.z + Math.sin(a) * d, lo, hi);
     if (!spot) continue;
     const got = trySpot(spot);
     if (got) return got;
   }
   return null;
 }
-function pigeonNextLeg(m) {
+function birdNextLeg(m) {
   m._decideT = 1.2;
-  if ((m._noPerchT || 0) <= 0 && pigeonDimOf(m) !== "nether" && !pigeonOnMoon(m) && !(m._panicUntil && performance.now() / 1000 < m._panicUntil) && Math.random() < (pigeonDimOf(m) === "end" ? PIGEON_END_PERCH_CHANCE : PIGEON_PERCH_CHANCE) && !chainChild.has(m.id)) {
-    const found = pigeonFindPerchSpot(m);
+  if ((m._noPerchT || 0) <= 0 && birdDimOf(m) !== "nether" && !birdOnMoon(m) && !(m._panicUntil && performance.now() / 1000 < m._panicUntil) && Math.random() < (birdDimOf(m) === "end" ? BIRD_END_PERCH_CHANCE : BIRD_PERCH_CHANCE) && !chainChild.has(m.id)) {
+    const found = birdFindPerchSpot(m);
     if (found && !(performance.now() / 1000 < villagePanicUntil && villageSqContains(found.spot.x, found.spot.z))) {
       m.mode = "toPerch";
       m.arc = null;
@@ -2777,7 +2834,7 @@ function pigeonNextLeg(m) {
       return;
     }
   }
-  const confined = pigeonIsConfined(m);
+  const confined = birdIsConfined(m);
   if (confined) {
     m.mode = "straight"; m.arc = null;
     m.target = null; m.targetMode = null;
@@ -2785,16 +2842,16 @@ function pigeonNextLeg(m) {
     m._tPlanT = 0;
     return;
   }
-  if (Math.random() < (pigeonDimOf(m) === "nether" ? 0.7 : 0.45)) {
+  if (Math.random() < (birdDimOf(m) === "nether" ? 0.7 : 0.45)) {
     let arcOk = !chainLiveFollower(m);
     if (!arcOk) {
       const vl = Math.hypot(m.vel.x, m.vel.z);
       arcOk = vl >= 0.5 && !chainLeadConeDeflect(m, m.vel.x / vl, m.vel.z / vl);
     }
-    if (arcOk) { pigeonNewArc(m); return; }
+    if (arcOk) { birdNewArc(m); return; }
   }
   m.mode = "straight"; m.arc = null;
-  m.target = pigeonDimOf(m) === "nether" ? pigeonReachableTarget(m, 12, 30) : pigeonReachableTarget(m, 40, 90);
+  m.target = birdDimOf(m) === "nether" ? birdReachableTarget(m, 12, 30) : birdReachableTarget(m, 40, 90);
   const leadFol = chainLiveFollower(m);
   if (leadFol && m.target) {
     const tx = m.target.x - m.pos.x, tz = m.target.z - m.pos.z;
@@ -2813,7 +2870,7 @@ function pigeonNextLeg(m) {
       for (const s of [side, -side]) {
         const ex = Math.sin(fang + s * CHAIN_LEAD_CONE), ez = Math.cos(fang + s * CHAIN_LEAD_CONE);
         const px = m.pos.x + ex * tl, pz = m.pos.z + ez * tl;
-        if (pigeonProbeFree(px, m.target.y, pz) && pigeonSegmentFree(m.pos.x, m.pos.y, m.pos.z, px, m.target.y, pz)) {
+        if (birdProbeFree(px, m.target.y, pz) && birdSegmentFree(m.pos.x, m.pos.y, m.pos.z, px, m.target.y, pz)) {
           m.target.set(px, m.target.y, pz);
           break;
         }
@@ -2822,9 +2879,9 @@ function pigeonNextLeg(m) {
   }
   m.targetMode = null;
 }
-function pigeonTakeoff(m) {
+function birdTakeoff(m) {
   const yaw2 = m.yaw + (Math.random() - 0.5) * 1.2;
-  m.vel.set(Math.cos(yaw2) * PIGEON_SPEED, 1.5, Math.sin(yaw2) * PIGEON_SPEED);
+  m.vel.set(Math.cos(yaw2) * BIRD_SPEED, 1.5, Math.sin(yaw2) * BIRD_SPEED);
   m.perchSpot = null;
   m.perchGroup = null;
   m.perchT = 0;
@@ -2833,9 +2890,9 @@ function pigeonTakeoff(m) {
   m.perchTimeout = 0;
   m.perchRetry = 0;
   m._decideT = 1.2;
-  m._noPerchT = PIGEON_NOPERCH_T;
-  if (pigeonDimOf(m) !== "nether" && pigeonDimOf(m) !== "end" && !pigeonOnMoon(m) && !(m._panicUntil && performance.now() / 1000 < m._panicUntil) && Math.random() < PIGEON_HOP_CHANCE && !chainChild.has(m.id)) {
-    const found = pigeonFindPerchSpot(m, PIGEON_HOP_R);
+  m._noPerchT = BIRD_NOPERCH_T;
+  if (birdDimOf(m) !== "nether" && birdDimOf(m) !== "end" && !birdOnMoon(m) && !(m._panicUntil && performance.now() / 1000 < m._panicUntil) && Math.random() < BIRD_HOP_CHANCE && !chainChild.has(m.id)) {
+    const found = birdFindPerchSpot(m, BIRD_HOP_R);
     if (found && Math.hypot(found.spot.x - m.pos.x, found.spot.y - m.pos.y, found.spot.z - m.pos.z) >= 1.5) {
       m.mode = "toPerch";
       m.arc = null;
@@ -2846,17 +2903,17 @@ function pigeonTakeoff(m) {
       m.targetMode = "perch";
       return;
     }
-    m.perchRetry = PIGEON_HOP_RETRY;
+    m.perchRetry = BIRD_HOP_RETRY;
     m.mode = "straight";
     m.arc = null;
-    m.target = pigeonRandomTarget(m.pos, 10, 25);
+    m.target = birdRandomTarget(m.pos, 10, 25);
     m.targetMode = null;
     return;
   }
   m.mode = "straight";
   m.arc = null;
-  if (pigeonDimOf(m) === "end") m.target = pigeonReachableTarget(m) || pigeonRandomTarget(m.pos);
-  else m.target = pigeonDimOf(m) === "nether" ? pigeonRandomTarget(m.pos, 12, 30) : pigeonRandomTarget(m.pos);
+  if (birdDimOf(m) === "end") m.target = birdReachableTarget(m) || birdRandomTarget(m.pos);
+  else m.target = birdDimOf(m) === "nether" ? birdRandomTarget(m.pos, 12, 30) : birdRandomTarget(m.pos);
   m.targetMode = null;
 }
 function isInsidePen(x, z) {
@@ -3543,53 +3600,136 @@ function makeWolfMesh(furHex, collarHex) {
   g.userData = { sc, legBL, legBR, legFL, legFR, body, head, tail, furHex: fur, collarHex: collar, kind: "wolf" };
   return g;
 }
-const pigeonBodyMat = new THREE.MeshStandardMaterial({ color: 0x9aa0a6, roughness: 0.9 });
-const pigeonDarkMat = new THREE.MeshStandardMaterial({ color: 0x6b7076, roughness: 0.9 });
-const pigeonHeadMat = new THREE.MeshStandardMaterial({ color: 0xb9bec4, roughness: 0.9 });
-const pigeonBeakMat = new THREE.MeshStandardMaterial({ color: 0xe8930c, roughness: 0.9 });
-const pigeonEyeMat = new THREE.MeshStandardMaterial({ color: 0x111111 });
-function makePigeonMesh() {
+const birdBodyMat = new THREE.MeshStandardMaterial({ color: 0x9aa0a6, roughness: 0.9 });
+const birdDarkMat = new THREE.MeshStandardMaterial({ color: 0x6b7076, roughness: 0.9 });
+const birdHeadMat = new THREE.MeshStandardMaterial({ color: 0xb9bec4, roughness: 0.9 });
+const birdBeakMat = new THREE.MeshStandardMaterial({ color: 0xe8930c, roughness: 0.9 });
+const birdEyeMat = new THREE.MeshStandardMaterial({ color: 0x111111 });
+function makeBirdMesh() {
   const g = new THREE.Group();
   g.rotation.order = "YXZ";
   if (!villagerGeo) villagerGeo = new THREE.BoxGeometry(1, 1, 1);
   const geo = villagerGeo;
-  const body = new THREE.Mesh(geo, pigeonBodyMat);
+  const body = new THREE.Mesh(geo, birdBodyMat);
   body.scale.set(0.34, 0.30, 0.52);
   body.position.set(0, 0.28, 0);
   g.add(body);
-  const head = new THREE.Mesh(geo, pigeonHeadMat);
+  const head = new THREE.Mesh(geo, birdHeadMat);
   head.scale.set(0.24, 0.24, 0.24);
   head.position.set(0, 0.48, 0.30);
   g.add(head);
-  const beak = new THREE.Mesh(geo, pigeonBeakMat);
+  const beak = new THREE.Mesh(geo, birdBeakMat);
   beak.scale.set(0.10, 0.08, 0.12);
   beak.position.set(0, 0.46, 0.46);
   g.add(beak);
   for (const sx of [1, -1]) {
-    const eye = new THREE.Mesh(geo, pigeonEyeMat);
+    const eye = new THREE.Mesh(geo, birdEyeMat);
     eye.scale.set(0.05, 0.05, 0.02);
     eye.position.set(sx * 0.10, 0.52, 0.42);
     g.add(eye);
   }
-  const tail = new THREE.Mesh(geo, pigeonDarkMat);
+  const tail = new THREE.Mesh(geo, birdDarkMat);
   tail.scale.set(0.22, 0.08, 0.30);
   tail.position.set(0, 0.28, -0.38);
   g.add(tail);
   const wingL = new THREE.Group();
   wingL.position.set(-0.18, 0.34, 0);
   g.add(wingL);
-  const wingLM = new THREE.Mesh(geo, pigeonDarkMat);
+  const wingLM = new THREE.Mesh(geo, birdDarkMat);
   wingLM.scale.set(0.44, 0.06, 0.30);
   wingLM.position.set(-0.22, 0, 0);
   wingL.add(wingLM);
   const wingR = new THREE.Group();
   wingR.position.set(0.18, 0.34, 0);
   g.add(wingR);
-  const wingRM = new THREE.Mesh(geo, pigeonDarkMat);
+  const wingRM = new THREE.Mesh(geo, birdDarkMat);
   wingRM.scale.set(0.44, 0.06, 0.30);
   wingRM.position.set(0.22, 0, 0);
   wingR.add(wingRM);
   g.userData = { wingL, wingR, body, head, kind: "pigeon" };
+  return g;
+}
+const parrotMatCache = new Map();
+function parrotMat(hex) {
+  let m = parrotMatCache.get(hex);
+  if (!m) {
+    m = new THREE.MeshStandardMaterial({ color: hex, roughness: 0.9 });
+    parrotMatCache.set(hex, m);
+  }
+  return m;
+}
+function makeParrotMesh(variant = 0) {
+  if (variant == null || variant < 0 || variant >= PARROT_VARIANT_COUNT) variant = 0;
+  const pal = parrotPaletteFor(variant);
+  const g = new THREE.Group();
+  g.rotation.order = "YXZ";
+  if (!villagerGeo) villagerGeo = new THREE.BoxGeometry(1, 1, 1);
+  const geo = villagerGeo;
+  const body = new THREE.Mesh(geo, parrotMat(pal.body));
+  body.scale.set(0.34, 0.30, 0.52);
+  body.position.set(0, 0.28, 0);
+  g.add(body);
+  const chest = new THREE.Mesh(geo, parrotMat(pal.chest));
+  chest.scale.set(0.26, 0.20, 0.06);
+  chest.position.set(0, 0.24, 0.26);
+  g.add(chest);
+  const head = new THREE.Mesh(geo, parrotMat(pal.head));
+  head.scale.set(0.24, 0.24, 0.24);
+  head.position.set(0, 0.48, 0.30);
+  g.add(head);
+  const crest1 = new THREE.Mesh(geo, parrotMat(pal.crest));
+  crest1.scale.set(0.10, 0.16, 0.08);
+  crest1.position.set(0, 0.66, 0.22);
+  g.add(crest1);
+  const crest2 = new THREE.Mesh(geo, parrotMat(pal.crest));
+  crest2.scale.set(0.08, 0.14, 0.06);
+  crest2.position.set(0, 0.76, 0.14);
+  g.add(crest2);
+  const beakUp = new THREE.Mesh(geo, parrotMat(PARROT_BEAK_UPPER));
+  beakUp.scale.set(0.12, 0.08, 0.12);
+  beakUp.position.set(0, 0.48, 0.46);
+  g.add(beakUp);
+  const beakLo = new THREE.Mesh(geo, parrotMat(PARROT_BEAK_LOWER));
+  beakLo.scale.set(0.08, 0.05, 0.08);
+  beakLo.position.set(0, 0.42, 0.44);
+  g.add(beakLo);
+  for (const sx of [1, -1]) {
+    const eye = new THREE.Mesh(geo, birdEyeMat);
+    eye.scale.set(0.05, 0.05, 0.02);
+    eye.position.set(sx * 0.10, 0.52, 0.42);
+    g.add(eye);
+    const foot = new THREE.Mesh(geo, parrotMat(PARROT_FEET));
+    foot.scale.set(0.08, 0.06, 0.14);
+    foot.position.set(sx * 0.08, 0.03, 0.05);
+    g.add(foot);
+  }
+  const tail = new THREE.Mesh(geo, parrotMat(pal.tail));
+  tail.scale.set(0.22, 0.08, 0.42);
+  tail.position.set(0, 0.26, -0.44);
+  g.add(tail);
+  const wingL = new THREE.Group();
+  wingL.position.set(-0.18, 0.34, 0);
+  g.add(wingL);
+  const wingLM = new THREE.Mesh(geo, parrotMat(pal.wing));
+  wingLM.scale.set(0.26, 0.06, 0.30);
+  wingLM.position.set(-0.13, 0, 0);
+  wingL.add(wingLM);
+  const wingLT = new THREE.Mesh(geo, parrotMat(pal.wingTip));
+  wingLT.scale.set(0.20, 0.06, 0.28);
+  wingLT.position.set(-0.36, 0, 0);
+  wingL.add(wingLT);
+  const wingR = new THREE.Group();
+  wingR.position.set(0.18, 0.34, 0);
+  g.add(wingR);
+  const wingRM = new THREE.Mesh(geo, parrotMat(pal.wing));
+  wingRM.scale.set(0.26, 0.06, 0.30);
+  wingRM.position.set(0.13, 0, 0);
+  wingR.add(wingRM);
+  const wingRT = new THREE.Mesh(geo, parrotMat(pal.wingTip));
+  wingRT.scale.set(0.20, 0.06, 0.28);
+  wingRT.position.set(0.36, 0, 0);
+  wingR.add(wingRT);
+  g.userData = { wingL, wingR, body, head, kind: "parrot", parrotVar: variant };
   return g;
 }
 function inMoonZone(x, y, z) {
@@ -3602,31 +3742,31 @@ function inMoonZone(x, y, z) {
 function flyingMobOnMoon(m) {
   return !!m && isFlyingKind(m.kind) && inMoonZone(m.pos.x, m.pos.y, m.pos.z);
 }
-function pigeonOnMoon(m) {
+function birdOnMoon(m) {
   return flyingMobOnMoon(m);
 }
-function pigeonMoonY(from) {
+function birdMoonY(from) {
   return Math.max(MOON_BOTTOM, Math.min(MAX_Y - 1, from.y + (Math.random() - 0.5) * 12));
 }
-function pigeonMoonTarget(from, minDist = 10, maxDist = 40) {
+function birdMoonTarget(from, minDist = 10, maxDist = 40) {
   for (let t = 0; t < 12; t++) {
     const a = Math.random() * Math.PI * 2;
     const d = minDist + Math.random() * (maxDist - minDist);
     const x = Math.max(-WORLD_RADIUS + 2, Math.min(WORLD_RADIUS - 2, from.x + Math.cos(a) * d));
     const z = Math.max(-WORLD_RADIUS + 2, Math.min(WORLD_RADIUS - 2, from.z + Math.cos(a + 1.7) * d));
-    const y = pigeonMoonY(from);
+    const y = birdMoonY(from);
     if (Math.hypot(x - from.x, z - from.z) < 8) continue;
     if (!inMoonZone(x, y, z)) continue;
-    if (!pigeonProbeFree(x, y, z)) continue;
-    if (!pigeonSegmentFree(from.x, from.y, from.z, x, y, z)) continue;
+    if (!birdProbeFree(x, y, z)) continue;
+    if (!birdSegmentFree(from.x, from.y, from.z, x, y, z)) continue;
     return new THREE.Vector3(x, y, z);
   }
   return null;
 }
-function pigeonRandomTarget(from, minDist = 40, maxDist = 90) {
+function birdRandomTarget(from, minDist = 40, maxDist = 90) {
   const moon = dim === "over" && inMoonZone(from.x, from.y, from.z);
   if (moon) {
-    const t = pigeonMoonTarget(from, Math.min(minDist, 10), Math.min(Math.max(maxDist, 20), 40));
+    const t = birdMoonTarget(from, Math.min(minDist, 10), Math.min(Math.max(maxDist, 20), 40));
     if (t) return t;
     return new THREE.Vector3(from.x, from.y, from.z);
   }
@@ -3646,22 +3786,22 @@ function pigeonRandomTarget(from, minDist = 40, maxDist = 90) {
     const d = minDist + Math.random() * (maxDist - minDist);
     const x = Math.max(-WORLD_RADIUS + 2, Math.min(WORLD_RADIUS - 2, from.x + Math.cos(a) * d));
     const z = Math.max(-WORLD_RADIUS + 2, Math.min(WORLD_RADIUS - 2, from.z + Math.cos(a + 1.7) * d));
-    const y = pigeonDimOf() === "nether"
-      ? pigeonNetherLegY(from.y, maxDist > 30)
-      : pigeonBandMin() + 5 + Math.random() * (pigeonBandMax() - pigeonBandMin() - 10);
+    const y = birdDimOf() === "nether"
+      ? birdNetherLegY(from.y, maxDist > 30)
+      : birdBandMin() + 5 + Math.random() * (birdBandMax() - birdBandMin() - 10);
     if (Math.hypot(x - from.x, z - from.z) < 12) continue;
     return new THREE.Vector3(x, y, z);
   }
   return new THREE.Vector3(
     Math.max(-WORLD_RADIUS + 2, Math.min(WORLD_RADIUS - 2, from.x + (Math.random() - 0.5) * 80)),
-    pigeonDimOf() === "nether"
-      ? pigeonNetherLegY(from.y, maxDist > 30)
-      : pigeonBandMin() + 5 + Math.random() * (pigeonBandMax() - pigeonBandMin() - 10),
+    birdDimOf() === "nether"
+      ? birdNetherLegY(from.y, maxDist > 30)
+      : birdBandMin() + 5 + Math.random() * (birdBandMax() - birdBandMin() - 10),
     Math.max(-WORLD_RADIUS + 2, Math.min(WORLD_RADIUS - 2, from.z + (Math.random() - 0.5) * 80)));
 }
-function pigeonReachableTarget(m, minDist = 40, maxDist = 90) {
+function birdReachableTarget(m, minDist = 40, maxDist = 90) {
   let best = null, bestScore = -Infinity;
-  const moon = pigeonOnMoon(m);
+  const moon = birdOnMoon(m);
   const inEnd = endMobInEnd(m);
   for (let t = 0; t < 12; t++) {
     const a = Math.random() * Math.PI * 2;
@@ -3679,15 +3819,15 @@ function pigeonReachableTarget(m, minDist = 40, maxDist = 90) {
       ? Math.max(MOON_BOTTOM, Math.min(MAX_Y - 1, m.pos.y + (Math.random() - 0.5) * 12))
       : inEnd
       ? DRAGON_MIN_Y + Math.random() * (DRAGON_MAX_Y - DRAGON_MIN_Y)
-      : pigeonDimOf(m) === "nether"
-      ? pigeonNetherLegY(m.pos.y, maxDist > 30)
-      : Math.max(1.5, Math.min(MAX_Y - 1, pigeonBandMin(m) + 5 + Math.random() * (pigeonBandMax(m) - pigeonBandMin(m) - 10)));
+      : birdDimOf(m) === "nether"
+      ? birdNetherLegY(m.pos.y, maxDist > 30)
+      : Math.max(1.5, Math.min(MAX_Y - 1, birdBandMin(m) + 5 + Math.random() * (birdBandMax(m) - birdBandMin(m) - 10)));
     if (moon && !inMoonZone(x, y, z)) continue;
-    if (!pigeonProbeFree(x, y, z)) continue;
-    if (!pigeonSegmentFree(m.pos.x, m.pos.y, m.pos.z, x, y, z)) continue;
+    if (!birdProbeFree(x, y, z)) continue;
+    if (!birdSegmentFree(m.pos.x, m.pos.y, m.pos.z, x, y, z)) continue;
     const dx = x - m.pos.x, dy = y - m.pos.y, dz = z - m.pos.z;
     const dl = Math.hypot(dx, dy, dz) || 1;
-    const clear = pigeonClearance(m.pos.x, m.pos.y, m.pos.z, dx / dl, dy / dl, dz / dl);
+    const clear = birdClearance(m.pos.x, m.pos.y, m.pos.z, dx / dl, dy / dl, dz / dl);
     const score = dl + clear * 8;
     if (score > bestScore) { bestScore = score; best = new THREE.Vector3(x, y, z); }
   }
@@ -3709,10 +3849,10 @@ function pigeonReachableTarget(m, minDist = 40, maxDist = 90) {
         ? Math.max(DRAGON_MIN_Y, Math.min(DRAGON_MAX_Y, m.pos.y + (Math.random() - 0.5) * 6))
         : Math.max(1.5, Math.min(MAX_Y - 1, m.pos.y + (Math.random() - 0.5) * 6));
       if (moon && !inMoonZone(x, y, z)) continue;
-      if (!pigeonProbeFree(x, y, z)) continue;
-      if (!pigeonSegmentFree(m.pos.x, m.pos.y, m.pos.z, x, y, z)) continue;
+      if (!birdProbeFree(x, y, z)) continue;
+      if (!birdSegmentFree(m.pos.x, m.pos.y, m.pos.z, x, y, z)) continue;
       const dl = Math.hypot(x - m.pos.x, y - m.pos.y, z - m.pos.z) || 1;
-      const clear = pigeonClearance(m.pos.x, m.pos.y, m.pos.z, (x - m.pos.x) / dl, (y - m.pos.y) / dl, (z - m.pos.z) / dl);
+      const clear = birdClearance(m.pos.x, m.pos.y, m.pos.z, (x - m.pos.x) / dl, (y - m.pos.y) / dl, (z - m.pos.z) / dl);
       const score = dl + clear * 8;
       if (score > bestScore) { bestScore = score; best = new THREE.Vector3(x, y, z); }
     }
@@ -3720,12 +3860,12 @@ function pigeonReachableTarget(m, minDist = 40, maxDist = 90) {
   if (!best && moon) return new THREE.Vector3(m.pos.x, m.pos.y, m.pos.z);
   return best;
 }
-function pigeonNewArc(m) {
-  const moonCy = pigeonOnMoon(m);
+function birdNewArc(m) {
+  const moonCy = birdOnMoon(m);
   const inEnd = endMobInEnd(m);
   const side = Math.random() < 0.5 ? 1 : -1;
   const r = moonCy ? 4 + Math.random() * 6 : inEnd ? 4 + Math.random() * 8 : 6 + Math.random() * 14;
-  const v = m.vel.length() || PIGEON_SPEED;
+  const v = m.vel.length() || BIRD_SPEED;
   const fwd = v > 0.01 ? m.vel.clone().normalize() : new THREE.Vector3(Math.cos(m.yaw), 0, Math.sin(m.yaw));
   let cx = m.pos.x - fwd.z * side * r + (Math.random() - 0.5) * 8;
   let cz = m.pos.z + fwd.x * side * r + (Math.random() - 0.5) * 8;
@@ -3733,9 +3873,9 @@ function pigeonNewArc(m) {
     ? Math.max(MOON_BOTTOM, Math.min(MAX_Y - 1, m.pos.y + (Math.random() - 0.5) * 12))
     : inEnd
     ? Math.max(DRAGON_MIN_Y, Math.min(DRAGON_MAX_Y, m.pos.y + (Math.random() - 0.5) * 12))
-    : pigeonDimOf(m) === "nether"
-    ? Math.max(pigeonBandMin(m) + 3, Math.min(pigeonBandMax(m) - 3, m.pos.y + (Math.random() - 0.5) * 60))
-    : Math.max(pigeonBandMin(m) + 3, Math.min(pigeonBandMax(m) - 3, m.pos.y + (Math.random() - 0.5) * 12));
+    : birdDimOf(m) === "nether"
+    ? Math.max(birdBandMin(m) + 3, Math.min(birdBandMax(m) - 3, m.pos.y + (Math.random() - 0.5) * 60))
+    : Math.max(birdBandMin(m) + 3, Math.min(birdBandMax(m) - 3, m.pos.y + (Math.random() - 0.5) * 12));
   if (inEnd) {
     cx = endSquareCoord(cx); cz = endSquareCoord(cz);
   } else {
@@ -3751,27 +3891,36 @@ function pigeonNewArc(m) {
   };
   m.mode = "arc";
 }
-function spawnSinglePigeon(outOfView = false, sx = null, sy = null, sz = null) {
+function rollBirdKind() {
+  return Math.random() < PARROT_FRACTION ? "parrot" : "pigeon";
+}
+function makeBirdMeshFor(kind, parrotVar = 0) {
+  if (kind === "parrot") return makeParrotMesh(parrotVar);
+  return makeBirdMesh();
+}
+function spawnSingleBird(outOfView = false, sx = null, sy = null, sz = null, kind = null, parrotVar = null) {
+  if (!isBirdKind(kind)) kind = rollBirdKind();
+  if (kind === "parrot" && (parrotVar == null || parrotVar < 0 || parrotVar >= PARROT_VARIANT_COUNT)) parrotVar = pickParrotVariant();
   let gid = mobs.length ? Math.max(...mobs.map((m) => m.id)) + 1 : 0;
   let px, py, pz;
   if (sx != null && sy != null && sz != null) {
     px = sx; py = sy; pz = sz;
   } else if (outOfView) {
-    const spot = pigeonSpotOutOfView();
+    const spot = birdSpotOutOfView();
     px = spot.x; py = spot.y; pz = spot.z;
   } else {
     px = (Math.random() * 2 - 1) * (WORLD_RADIUS - 4);
     pz = (Math.random() * 2 - 1) * (WORLD_RADIUS - 4);
-    py = pigeonBandMin() + 5 + Math.random() * (pigeonBandMax() - pigeonBandMin() - 10);
+    py = birdBandMin() + 5 + Math.random() * (birdBandMax() - birdBandMin() - 10);
   }
   py = dim === "end"
     ? Math.max(DRAGON_MIN_Y, Math.min(DRAGON_MAX_Y, py))
-    : Math.max(pigeonBandMin() + 1, Math.min(pigeonBandMax() - 1, py));
+    : Math.max(birdBandMin() + 1, Math.min(birdBandMax() - 1, py));
   if (dim === "end") {
     px = endSquareCoord(px); pz = endSquareCoord(pz);
   }
-  if (aabbCollidesWorld(px, py, pz, PIGEON_COL_HW, PIGEON_COL_H)) {
-    for (let t = 0; t < 10 && aabbCollidesWorld(px, py, pz, PIGEON_COL_HW, PIGEON_COL_H); t++) {
+  if (aabbCollidesWorld(px, py, pz, BIRD_COL_HW, BIRD_COL_H)) {
+    for (let t = 0; t < 10 && aabbCollidesWorld(px, py, pz, BIRD_COL_HW, BIRD_COL_H); t++) {
       if (dim === "end") {
         px = (Math.random() * 2 - 1) * (END_PLATFORM_R - 2);
         pz = (Math.random() * 2 - 1) * (END_PLATFORM_R - 2);
@@ -3779,60 +3928,61 @@ function spawnSinglePigeon(outOfView = false, sx = null, sy = null, sz = null) {
       } else {
         px = (Math.random() * 2 - 1) * (WORLD_RADIUS - 4);
         pz = (Math.random() * 2 - 1) * (WORLD_RADIUS - 4);
-        py = pigeonBandMin() + 5 + Math.random() * (pigeonBandMax() - pigeonBandMin() - 10);
+        py = birdBandMin() + 5 + Math.random() * (birdBandMax() - birdBandMin() - 10);
       }
     }
-    if (aabbCollidesWorld(px, py, pz, PIGEON_COL_HW, PIGEON_COL_H)) return null;
+    if (aabbCollidesWorld(px, py, pz, BIRD_COL_HW, BIRD_COL_H)) return null;
   }
   if (dim === "nether") {
-    for (let t = 0; t < 12 && pigeonLavaAt(px, py, pz, null); t++) {
+    for (let t = 0; t < 12 && birdLavaAt(px, py, pz, null); t++) {
       px = (Math.random() * 2 - 1) * (WORLD_RADIUS - 4);
       pz = (Math.random() * 2 - 1) * (WORLD_RADIUS - 4);
-      py = pigeonBandMin() + 1 + Math.random() * (pigeonBandMax() - pigeonBandMin() - 2);
+      py = birdBandMin() + 1 + Math.random() * (birdBandMax() - birdBandMin() - 2);
     }
-    if (pigeonLavaAt(px, py, pz, null)) return null;
+    if (birdLavaAt(px, py, pz, null)) return null;
   }
-  const mesh = makePigeonMesh();
+  const mesh = makeBirdMeshFor(kind, parrotVar);
   mesh.position.set(px, py, pz);
   const yaw = Math.random() * Math.PI * 2;
   mesh.rotation.y = yaw;
   scene.add(mesh);
   const m = {
-    id: gid++, kind: "pigeon", canStep: false, homeId: -1, isBaby: false, parentId: -1, dim,
+    id: gid++, kind, canStep: false, homeId: -1, isBaby: false, parentId: -1, dim,
     pos: new THREE.Vector3(px, py, pz),
-    vel: new THREE.Vector3(Math.cos(yaw) * PIGEON_SPEED, 0, Math.sin(yaw) * PIGEON_SPEED),
+    vel: new THREE.Vector3(Math.cos(yaw) * BIRD_SPEED, 0, Math.sin(yaw) * BIRD_SPEED),
     hw: 0.25, h: 0.5, mesh, onGround: false,
     target: null, arc: null, mode: "straight", wanderT: 0,
     perchSpot: null, perchGroup: null, perchT: 0, perchWander: null, perchWanderT: 0, perchTimeout: 0, perchRetry: 0,
-    legPhase: Math.random() * Math.PI * 2, speed: PIGEON_SPEED,
+    legPhase: Math.random() * Math.PI * 2, speed: BIRD_SPEED,
     blockedT: 0, yaw, yawTarget: yaw, villageBound: false,
     _stuckT: 0, _prevX: px, _prevZ: pz,
     path: null, pathIdx: 0, pathKey: null, sc: 1, steerX: 0, steerZ: 0, steerCooldown: 0, lastTarget: null, _wasInWater: false, wolfInWater: false,
   };
-  m.target = pigeonRandomTarget(m.pos);
+  if (kind === "parrot") m.parrotVar = parrotVar;
+  m.target = birdRandomTarget(m.pos);
   stampSpawn(m);
   mobs.push(m);
   mobById.set(m.id, m);
   return m;
 }
-function spawnPigeons() {
-  const cur = mobs.filter((m) => (m.dim === "over" || m.dim === undefined) && m.kind === "pigeon").length;
-  for (let i = cur; i < PIGEON_COUNT; i++) spawnSinglePigeon(false);
+function spawnBirds() {
+  const cur = mobs.filter((m) => (m.dim === "over" || m.dim === undefined) && isBirdKind(m.kind)).length;
+  for (let i = cur; i < BIRD_COUNT; i++) spawnSingleBird(false);
 }
-function removePigeons() {
+function removeBirds() {
   const keepCarry = carryMob && mobs.includes(carryMob) ? carryMob : null;
   const survivors = [];
   for (const m of mobs) {
-    if (m.kind !== "pigeon") { survivors.push(m); continue; }
+    if (!isBirdKind(m.kind)) { survivors.push(m); continue; }
     if (m === keepCarry) { survivors.push(m); continue; }
     if (m.mesh) scene.remove(m.mesh);
     mobById.delete(m.id);
   }
   mobs.length = 0;
   for (const s of survivors) mobs.push(s);
-  pigeonLock = null;
-  pigeonLockT = 0;
-  pigeonLockShots = 0;
+  birdLock = null;
+  birdLockT = 0;
+  birdLockShots = 0;
   pruneChains();
 }
 const CHAIN_SPAWN_KINDS = ["villager", "pig", "cow", "wolf"];
@@ -3845,12 +3995,13 @@ function spawnChainMob(kind, sx, sy, sz) {
     hw = 0.30; hh = 0.90; canStep = true;
     extra = { fur: WOLF_FUR, collar: mesh.userData.collarHex, wolfStepUp: false, wolfStepUpClearY: 0, wolfInWater: false, wasOnGroundWolf: false };
   }
-  else if (kind === "pigeon") {
-    mesh = makePigeonMesh(); hw = 0.25; hh = 0.5; speed = PIGEON_SPEED;
+  else if (isBirdKind(kind)) {
+    mesh = makeBirdMeshFor(kind, pickParrotVariant()); hw = 0.25; hh = 0.5; speed = BIRD_SPEED;
     extra = {
       arc: null, targetMode: null, perchSpot: null, perchGroup: null, perchT: 0,
       perchWander: null, perchWanderT: 0, perchTimeout: 0, perchRetry: 0,
     };
+    if (kind === "parrot") extra.parrotVar = mesh.userData.parrotVar;
   }
   else { mesh = makeVillagerMesh(false); hw = 0.27; hh = 1.82; }
   let gid = mobs.length ? Math.max(...mobs.map((m) => m.id)) + 1 : 0;
@@ -3876,12 +4027,12 @@ function spawnChainMob(kind, sx, sy, sz) {
   mobById.set(m.id, m);
   return m;
 }
-function spawnPigeonChain() {
-  if (dim !== "over" && dim !== "end" && dim !== "nether") { showMsg("Pigeon chains can't take off here"); return false; }
+function spawnBirdChain() {
+  if (dim !== "over" && dim !== "end" && dim !== "nether") { showMsg("Bird chains can't take off here"); return false; }
   const total = 3 + Math.floor(Math.random() * 6);
   const kinds = [];
   for (let i = 1; i < total; i++) kinds.push(CHAIN_SPAWN_KINDS[Math.floor(Math.random() * CHAIN_SPAWN_KINDS.length)]);
-  const sizes = { villager: [0.27, 1.82], pig: [0.32, 0.92], cow: [0.32, 1.30], wolf: [0.30, 0.90], pigeon: [0.25, 0.5] };
+  const sizes = { villager: [0.27, 1.82], pig: [0.32, 0.92], cow: [0.32, 1.30], wolf: [0.30, 0.90], pigeon: [0.25, 0.5], parrot: [0.25, 0.5] };
   const aimDir = new THREE.Vector3();
   camera.getWorldDirection(aimDir);
   const aimHit = pickBlock(camera.position, aimDir, true);
@@ -3905,7 +4056,8 @@ function spawnPigeonChain() {
     }
     const spots = [];
     let clear = true;
-    const allKinds = ["pigeon", ...kinds];
+    const leadKind = rollBirdKind();
+    const allKinds = [leadKind, ...kinds];
     for (let i = 0; i < total; i++) {
       const px = ax - dx * 2.6 * i, pz = az - dz * 2.6 * i;
       if (Math.abs(px) > WORLD_RADIUS - 2 || Math.abs(pz) > WORLD_RADIUS - 2) { clear = false; break; }
@@ -3918,7 +4070,7 @@ function spawnPigeonChain() {
       spots.push([px, gy, pz]);
     }
     if (!clear) continue;
-    const lead = spawnChainMob("pigeon", spots[0][0], spots[0][1], spots[0][2]);
+    const lead = spawnChainMob(leadKind, spots[0][0], spots[0][1], spots[0][2]);
     lead.vel.set(0, 0, 0);
     lead.mode = "sit";
     lead.target = null;
@@ -3940,27 +4092,27 @@ function spawnPigeonChain() {
         const ix = mobs.indexOf(m);
         if (ix >= 0) mobs.splice(ix, 1);
       }
-      showMsg("No room for a pigeon chain here");
+      showMsg("No room for a bird chain here");
       return false;
     }
-    showMsg("Pigeon chain assembled — takeoff!");
+    showMsg("Bird chain assembled — takeoff!");
     setTimeout(() => {
-      if (mobs.includes(lead) && chainChild.has(lead.id)) pigeonTakeoff(lead);
+      if (mobs.includes(lead) && chainChild.has(lead.id)) birdTakeoff(lead);
     }, 2000);
     queueSave();
     return true;
   }
-  showMsg("No room for a pigeon chain here");
+  showMsg("No room for a bird chain here");
   return false;
 }
-function pigeonSpotOutOfView() {
+function birdSpotOutOfView() {
   if (dim === "nether") {
-    const lo = NETHER_PIGEON_MIN_Y, hi = netherPigeonCeiling();
+    const lo = NETHER_BIRD_MIN_Y, hi = netherBirdCeiling();
     for (let t = 0; t < 24; t++) {
       const x = (Math.random() * 2 - 1) * (WORLD_RADIUS - 4);
       const z = (Math.random() * 2 - 1) * (WORLD_RADIUS - 4);
       const y = lo + 5 + Math.random() * (hi - lo - 10);
-      if (aabbCollidesWorld(x, y, z, PIGEON_COL_HW, PIGEON_COL_H)) continue;
+      if (aabbCollidesWorld(x, y, z, BIRD_COL_HW, BIRD_COL_H)) continue;
       return { x, y, z };
     }
     return { x: 0, y: (lo + hi) / 2, z: 0 };
@@ -3969,7 +4121,7 @@ function pigeonSpotOutOfView() {
     for (let t = 0; t < 24; t++) {
       const x = (Math.random() * 2 - 1) * (END_PLATFORM_R - 2), z = (Math.random() * 2 - 1) * (END_PLATFORM_R - 2);
       const y = DRAGON_MIN_Y + Math.random() * (DRAGON_MAX_Y - DRAGON_MIN_Y);
-      if (aabbCollidesWorld(x, y, z, PIGEON_COL_HW, PIGEON_COL_H)) continue;
+      if (aabbCollidesWorld(x, y, z, BIRD_COL_HW, BIRD_COL_H)) continue;
       return { x, y, z };
     }
     return { x: 0, y: (DRAGON_MIN_Y + DRAGON_MAX_Y) / 2, z: 0 };
@@ -3980,8 +4132,8 @@ function pigeonSpotOutOfView() {
   for (let t = 0; t < 24; t++) {
     const x = (Math.random() * 2 - 1) * (WORLD_RADIUS - 4);
     const z = (Math.random() * 2 - 1) * (WORLD_RADIUS - 4);
-    const y = PIGEON_MIN_Y + 5 + Math.random() * (PIGEON_MAX_Y - PIGEON_MIN_Y - 10);
-    if (aabbCollidesWorld(x, y, z, PIGEON_COL_HW, PIGEON_COL_H)) continue;
+    const y = BIRD_MIN_Y + 5 + Math.random() * (BIRD_MAX_Y - BIRD_MIN_Y - 10);
+    if (aabbCollidesWorld(x, y, z, BIRD_COL_HW, BIRD_COL_H)) continue;
     const dx = x - camera.position.x, dy = y - camera.position.y, dz = z - camera.position.z;
     const d = Math.hypot(dx, dy, dz) || 1;
     const dot = (dx / d) * fwd.x + (dy / d) * fwd.y + (dz / d) * fwd.z;
@@ -3992,19 +4144,19 @@ function pigeonSpotOutOfView() {
   const a = Math.random() * Math.PI * 2;
   return {
     x: Math.max(-WORLD_RADIUS + 4, Math.min(WORLD_RADIUS - 4, camera.position.x - fwd.x * 150 + Math.cos(a) * 30)),
-    y: PIGEON_MIN_Y + 10 + Math.random() * (PIGEON_MAX_Y - PIGEON_MIN_Y - 20),
+    y: BIRD_MIN_Y + 10 + Math.random() * (BIRD_MAX_Y - BIRD_MIN_Y - 20),
     z: Math.max(-WORLD_RADIUS + 4, Math.min(WORLD_RADIUS - 4, camera.position.z - fwd.z * 150 + Math.sin(a) * 30)),
   };
 }
-function killPigeon(m) {
+function killBird(m) {
   const i = mobs.indexOf(m);
   if (i < 0) return;
   if (m === carryMob) return;
-  if (pigeonLock === m) pigeonLock = null;
+  if (birdLock === m) birdLock = null;
   if (m.mesh) scene.remove(m.mesh);
   mobById.delete(m.id);
   mobs.splice(i, 1);
-  spawnSinglePigeon(true);
+  spawnSingleBird(true, null, null, null, m.kind, m.parrotVar);
 }
 function chainRespawnFree(x, y, z, hw, h, selfId) {
   if (aabbCollidesWorld(x, y, z, hw, h)) return false;
@@ -4028,6 +4180,8 @@ function killChainMob(m) {
     oy: m.spawnY !== undefined ? m.spawnY : m.pos.y,
     oz: m.spawnZ !== undefined ? m.spawnZ : m.pos.z,
     dim: m.dim,
+    kind: m.kind,
+    parrotVar: m.parrotVar,
   };
   const carrierId = chainParent.get(m.id);
   const childId = chainChild.get(m.id);
@@ -4062,7 +4216,7 @@ function killChainMob(m) {
       freeChainRoot(back);
     }
   }
-  if (pigeonLock === m) pigeonLock = null;
+  if (birdLock === m) birdLock = null;
   if (grappleMob === m) detachDisplacementGrapple();
   if (m.mesh) scene.remove(m.mesh);
   if (m.fallMesh) scene.remove(m.fallMesh);
@@ -4080,13 +4234,13 @@ function unchainMob(m, fizzleKey) {
   resumeChainedMob(m);
   if (m.isBaby) rebindBabyBounds(m); else m.villageBound = false;
   m.penBound = false;
-  if (pigeonLock === m) pigeonLock = null;
+  if (birdLock === m) birdLock = null;
   if (grappleMob === m) detachDisplacementGrapple();
   for (const [k, t] of [...tntLit]) {
-    if (k === fizzleKey || t.pigeon !== m || !t.mesh) continue;
+    if (k === fizzleKey || t.bird !== m || !t.mesh) continue;
     clearTNTVisual(t);
     tntLit.delete(k);
-    explodePigeon(t.px, t.py, t.pz, false);
+    explodeBird(t.px, t.py, t.pz, false);
   }
   tntSyncClear(m);
 }
@@ -4098,13 +4252,13 @@ function severGroundedChainVictim(m, fizzleKey) {
   resumeChainedMob(m);
   if (m.isBaby) rebindBabyBounds(m); else m.villageBound = false;
   m.penBound = false;
-  if (pigeonLock === m) pigeonLock = null;
+  if (birdLock === m) birdLock = null;
   if (grappleMob === m) detachDisplacementGrapple();
   for (const [k, t] of [...tntLit]) {
-    if (k === fizzleKey || t.pigeon !== m || !t.mesh) continue;
+    if (k === fizzleKey || t.bird !== m || !t.mesh) continue;
     clearTNTVisual(t);
     tntLit.delete(k);
-    explodePigeon(t.px, t.py, t.pz, false);
+    explodeBird(t.px, t.py, t.pz, false);
   }
   tntSyncClear(m);
 }
@@ -4114,16 +4268,16 @@ function respawnChainMob(snap) {
   let px = snap.ox, py = snap.oy, pz = snap.oz;
   let placed = false;
   {
-    py = Math.max(pigeonBandMinFor(rdim) + 1, Math.min(pigeonBandMaxFor(rdim) - 1, py));
-    if (pigeonProbeFree(px, py, pz)) placed = true;
+    py = Math.max(birdBandMinFor(rdim) + 1, Math.min(birdBandMaxFor(rdim) - 1, py));
+    if (birdProbeFree(px, py, pz)) placed = true;
     if (!placed) {
       for (let r = 1; r <= 4 && !placed; r++) {
         for (let dx = -r; dx <= r && !placed; dx++) for (let dz = -r; dz <= r && !placed; dz++) {
           if (Math.abs(dx) !== r && Math.abs(dz) !== r) continue;
           for (const dy of [0, 3, -3, 6, -6]) {
             const tx = px + dx * 2, ty = py + dy, tz = pz + dz * 2;
-            if (ty < pigeonBandMinFor(rdim) + 1 || ty > pigeonBandMaxFor(rdim) - 1) continue;
-            if (pigeonProbeFree(tx, ty, tz) && chainRespawnFree(tx, ty, tz, hw, h, -1)) {
+            if (ty < birdBandMinFor(rdim) + 1 || ty > birdBandMaxFor(rdim) - 1) continue;
+            if (birdProbeFree(tx, ty, tz) && chainRespawnFree(tx, ty, tz, hw, h, -1)) {
               px = tx; py = ty; pz = tz; placed = true; break;
             }
           }
@@ -4131,7 +4285,7 @@ function respawnChainMob(snap) {
       }
     }
     if (!placed) {
-      const spot = pigeonSpotOutOfView();
+      const spot = birdSpotOutOfView();
       px = spot.x; py = spot.y; pz = spot.z;
     }
   }
@@ -4139,23 +4293,26 @@ function respawnChainMob(snap) {
   const yaw = Math.random() * Math.PI * 2;
   let mesh, m;
   {
-    mesh = makePigeonMesh();
+    const rkind = isBirdKind(snap.kind) ? snap.kind : "pigeon";
+    const rvar = rkind === "parrot" ? snap.parrotVar : null;
+    mesh = makeBirdMeshFor(rkind, rvar);
     mesh.position.set(px, py, pz);
     mesh.rotation.y = yaw;
     scene.add(mesh);
     m = {
-      id: gid++, kind: "pigeon", canStep: false, homeId: -1, isBaby: false, parentId: -1, dim: rdim,
+      id: gid++, kind: rkind, canStep: false, homeId: -1, isBaby: false, parentId: -1, dim: rdim,
       pos: new THREE.Vector3(px, py, pz),
-      vel: new THREE.Vector3(Math.cos(yaw) * PIGEON_SPEED, 0, Math.sin(yaw) * PIGEON_SPEED),
+      vel: new THREE.Vector3(Math.cos(yaw) * BIRD_SPEED, 0, Math.sin(yaw) * BIRD_SPEED),
       hw, h, mesh, onGround: false,
       target: null, arc: null, mode: "straight", wanderT: 0,
       perchSpot: null, perchGroup: null, perchT: 0, perchWander: null, perchWanderT: 0, perchTimeout: 0, perchRetry: 0,
-      legPhase: Math.random() * Math.PI * 2, speed: PIGEON_SPEED,
+      legPhase: Math.random() * Math.PI * 2, speed: BIRD_SPEED,
       blockedT: 0, yaw, yawTarget: yaw, villageBound: false,
       _stuckT: 0, _prevX: px, _prevZ: pz,
       path: null, pathIdx: 0, pathKey: null, sc: 1, steerX: 0, steerZ: 0, steerCooldown: 0, lastTarget: null, _wasInWater: false, wolfInWater: false,
     };
-    m.target = pigeonRandomTarget(m.pos);
+    if (rkind === "parrot") m.parrotVar = mesh.userData.parrotVar;
+    m.target = birdRandomTarget(m.pos);
   }
   m.spawnX = snap.ox;
   m.spawnY = snap.oy;
@@ -4164,19 +4321,19 @@ function respawnChainMob(snap) {
   mobById.set(m.id, m);
   return m;
 }
-function pigeonProbeFree(x, y, z, m) {
+function birdProbeFree(x, y, z, m) {
   if (x < -WORLD_RADIUS + 1 || x > WORLD_RADIUS - 1 || z < -WORLD_RADIUS + 1 || z > WORLD_RADIUS - 1) return false;
   if (y < 1 || y > MAX_Y - 1) return false;
-  if (aabbCollidesWorld(x, y, z, pigeonColHW(m), pigeonColH(m))) return false;
-  if (dim === "nether" && pigeonLavaAt(x, y, z, m)) return false;
+  if (aabbCollidesWorld(x, y, z, birdColHW(m), birdColH(m))) return false;
+  if (dim === "nether" && birdLavaAt(x, y, z, m)) return false;
   return true;
 }
-function pigeonClearance(px, py, pz, dx, dy, dz) {
-  if (pigeonSegmentFree(px, py, pz, px + dx * 6, py + dy * 6, pz + dz * 6)) return 6;
-  if (pigeonSegmentFree(px, py, pz, px + dx * 3, py + dy * 3, pz + dz * 3)) return 3;
+function birdClearance(px, py, pz, dx, dy, dz) {
+  if (birdSegmentFree(px, py, pz, px + dx * 6, py + dy * 6, pz + dz * 6)) return 6;
+  if (birdSegmentFree(px, py, pz, px + dx * 3, py + dy * 3, pz + dz * 3)) return 3;
   return 0;
 }
-function pigeonBestSteer(m, baseYaw, dyHint) {
+function birdBestSteer(m, baseYaw, dyHint) {
   const yaws = [0, 0.5, -0.5, 1.0, -1.0, 1.6, -1.6, Math.PI];
   const verts = [dyHint * 0.5, 0.25, -0.25, 0];
   let best = null;
@@ -4185,7 +4342,7 @@ function pigeonBestSteer(m, baseYaw, dyHint) {
       const nx = Math.sin(baseYaw + off), nz = Math.cos(baseYaw + off);
       const nl = Math.hypot(nx, vy2, nz) || 1;
       const sx = nx / nl, sy = vy2 / nl, sz = nz / nl;
-      const clear = pigeonClearance(m.pos.x, m.pos.y, m.pos.z, sx, sy, sz);
+      const clear = birdClearance(m.pos.x, m.pos.y, m.pos.z, sx, sy, sz);
       const turn = Math.abs(off) + Math.abs(vy2 - dyHint) * 0.5;
       if (!best || clear > best.clear || (clear === best.clear && turn < best.turn)) {
         best = { x: sx, y: sy, z: sz, clear, turn };
@@ -4195,7 +4352,7 @@ function pigeonBestSteer(m, baseYaw, dyHint) {
   }
   return best;
 }
-function pigeonMillHop(m) {
+function birdMillHop(m) {
   const axes = [[0, -1, 0], [0, 1, 0], [1, 0, 0], [-1, 0, 0], [0, 0, 1], [0, 0, -1]];
   for (let i = axes.length - 1; i > 0; i--) {
     const j = Math.floor(Math.random() * (i + 1));
@@ -4206,8 +4363,8 @@ function pigeonMillHop(m) {
       const x = Math.max(-WORLD_RADIUS + 2, Math.min(WORLD_RADIUS - 2, m.pos.x + ax * d));
       const y = Math.max(1.5, Math.min(MAX_Y - 1, m.pos.y + ay * d));
       const z = Math.max(-WORLD_RADIUS + 2, Math.min(WORLD_RADIUS - 2, m.pos.z + az * d));
-      if (!pigeonProbeFree(x, y, z, m)) continue;
-      if (!pigeonSegmentFree(m.pos.x, m.pos.y, m.pos.z, x, y, z, m)) continue;
+      if (!birdProbeFree(x, y, z, m)) continue;
+      if (!birdSegmentFree(m.pos.x, m.pos.y, m.pos.z, x, y, z, m)) continue;
       return new THREE.Vector3(x, y, z);
     }
   }
@@ -4220,45 +4377,45 @@ function pigeonMillHop(m) {
     const x = Math.max(-WORLD_RADIUS + 2, Math.min(WORLD_RADIUS - 2, m.pos.x + dx / raw * d));
     const y = Math.max(1.5, Math.min(MAX_Y - 1, m.pos.y + dy / raw * d));
     const z = Math.max(-WORLD_RADIUS + 2, Math.min(WORLD_RADIUS - 2, m.pos.z + dz / raw * d));
-    if (!pigeonProbeFree(x, y, z, m)) continue;
-    if (!pigeonSegmentFree(m.pos.x, m.pos.y, m.pos.z, x, y, z, m)) continue;
+    if (!birdProbeFree(x, y, z, m)) continue;
+    if (!birdSegmentFree(m.pos.x, m.pos.y, m.pos.z, x, y, z, m)) continue;
     return new THREE.Vector3(x, y, z);
   }
   return null;
 }
-function pigeonDigSteer(m, dig) {
+function birdDigSteer(m, dig) {
   const dx = dig.x - m.pos.x, dy = dig.y - m.pos.y, dz = dig.z - m.pos.z;
   const levelStep = () => {
     const hx = dig.x - m.pos.x, hz = dig.z - m.pos.z;
     const hl = Math.hypot(hx, hz);
     if (hl < 0.01) return null;
     const ux = hx / hl, uz = hz / hl;
-    if (pigeonProbeFree(m.pos.x + ux * 1.2, m.pos.y, m.pos.z + uz * 1.2)) return [ux, 0, uz];
-    if (pigeonProbeFree(m.pos.x + ux * 1.2, m.pos.y, m.pos.z)) return [ux, 0, 0];
-    if (pigeonProbeFree(m.pos.x, m.pos.y, m.pos.z + uz * 1.2)) return [0, 0, uz];
+    if (birdProbeFree(m.pos.x + ux * 1.2, m.pos.y, m.pos.z + uz * 1.2)) return [ux, 0, uz];
+    if (birdProbeFree(m.pos.x + ux * 1.2, m.pos.y, m.pos.z)) return [ux, 0, 0];
+    if (birdProbeFree(m.pos.x, m.pos.y, m.pos.z + uz * 1.2)) return [0, 0, uz];
     return null;
   };
   if (Math.abs(dy) > 0.6
-    && pigeonSegmentFree(m.pos.x, m.pos.y, m.pos.z, m.pos.x, dig.y, m.pos.z)
-    && pigeonSegmentFree(m.pos.x, dig.y, m.pos.z, dig.x, dig.y, dig.z)) {
-    if (pigeonProbeFree(m.pos.x, m.pos.y + Math.sign(dy) * 1.2, m.pos.z)) return [0, Math.sign(dy), 0];
+    && birdSegmentFree(m.pos.x, m.pos.y, m.pos.z, m.pos.x, dig.y, m.pos.z)
+    && birdSegmentFree(m.pos.x, dig.y, m.pos.z, dig.x, dig.y, dig.z)) {
+    if (birdProbeFree(m.pos.x, m.pos.y + Math.sign(dy) * 1.2, m.pos.z)) return [0, Math.sign(dy), 0];
     return levelStep() || [0, 0, 0];
   }
-  if (pigeonSegmentFree(m.pos.x, m.pos.y, m.pos.z, dig.x, dig.y, dig.z)) {
+  if (birdSegmentFree(m.pos.x, m.pos.y, m.pos.z, dig.x, dig.y, dig.z)) {
     const l = Math.hypot(dx, dy, dz) || 1;
     return [dx / l, dy / l, dz / l];
   }
-  if (Math.abs(dy) > 0.6 && pigeonSegmentFree(m.pos.x, m.pos.y, m.pos.z, m.pos.x, dig.y, m.pos.z)) {
-    if (pigeonProbeFree(m.pos.x, m.pos.y + Math.sign(dy) * 1.2, m.pos.z)) return [0, Math.sign(dy), 0];
+  if (Math.abs(dy) > 0.6 && birdSegmentFree(m.pos.x, m.pos.y, m.pos.z, m.pos.x, dig.y, m.pos.z)) {
+    if (birdProbeFree(m.pos.x, m.pos.y + Math.sign(dy) * 1.2, m.pos.z)) return [0, Math.sign(dy), 0];
   }
   return levelStep() || [0, 0, 0];
 }
-function pigeonConfinedSteer(m, dt) {
+function birdConfinedSteer(m, dt) {
   m._confinedT = (m._confinedT || 0) + dt;
   const now = performance.now() / 1000;
-  let dg = pigeonDigLive(m, now);
+  let dg = birdDigLive(m, now);
   if (!dg) {
-    dg = pigeonFreshDigFor(m, now, 12);
+    dg = birdFreshDigFor(m, now, 12);
     if (dg) {
       m._digGoal = dg.id;
       m._digT0 = now;
@@ -4268,11 +4425,11 @@ function pigeonConfinedSteer(m, dt) {
   }
   if (dg) {
     if (now - (m._digT0 || 0) > 6 || Math.hypot(dg.x - m.pos.x, dg.y - m.pos.y, dg.z - m.pos.z) < 0.6) {
-      pigeonDigGiveUp(m);
+      birdDigGiveUp(m);
       m._millTarget = null;
       dg = null;
     } else {
-      const ds = pigeonDigSteer(m, dg);
+      const ds = birdDigSteer(m, dg);
       if (Math.hypot(ds[0], ds[1], ds[2]) > 0.01) {
         m._millTarget = new THREE.Vector3(dg.x, dg.y, dg.z);
         m._millT = 2;
@@ -4284,7 +4441,7 @@ function pigeonConfinedSteer(m, dt) {
   if (!dg) {
     m._millT = (m._millT || 0) - dt;
     if (!m._millTarget || m._millT <= 0 || Math.hypot(m._millTarget.x - m.pos.x, m._millTarget.y - m.pos.y, m._millTarget.z - m.pos.z) < 0.6) {
-      m._millTarget = pigeonMillHop(m);
+      m._millTarget = birdMillHop(m);
       m._millT = 2;
     }
   }
@@ -4293,9 +4450,9 @@ function pigeonConfinedSteer(m, dt) {
   const ml = Math.hypot(mx, my, mz) || 1;
   return [mx / ml, my / ml, mz / ml];
 }
-function pigeonMoveSlide(m, vx, vy, vz, dt) {
+function birdMoveSlide(m, vx, vy, vz, dt) {
   let blocked = 0;
-  const hw = pigeonColHW(m), hh = pigeonColH(m);
+  const hw = birdColHW(m), hh = birdColH(m);
   const ox = m.pos.x, oy = m.pos.y, oz = m.pos.z;
   m.pos.x += vx * dt;
   m.pos.x = Math.max(-WORLD_RADIUS + 1, Math.min(WORLD_RADIUS - 1, m.pos.x));
@@ -4308,8 +4465,8 @@ function pigeonMoveSlide(m, vx, vy, vz, dt) {
   if (aabbCollidesWorld(m.pos.x, m.pos.y, m.pos.z, hw, hh)) { m.pos.y = oy; vy = 0; blocked++; }
   return { vx, vy, vz, blocked };
 }
-function pigeonResolvePenetration(m) {
-  const hw = pigeonColHW(m), hh = pigeonColH(m);
+function birdResolvePenetration(m) {
+  const hw = birdColHW(m), hh = birdColH(m);
   if (!aabbCollidesWorld(m.pos.x, m.pos.y, m.pos.z, hw, hh)) return;
   const dirs = [[1, 0, 0], [-1, 0, 0], [0, 0, 1], [0, 0, -1], [0, -1, 0], [0, 1, 0]];
   for (let d = 0.15; d <= 2.0; d += 0.15) {
@@ -4323,32 +4480,32 @@ function pigeonResolvePenetration(m) {
     if (!aabbCollidesWorld(m.pos.x, y, m.pos.z, hw, hh)) { m.pos.y = y; return; }
   }
 }
-function pigeonSameChain(a, b) {
+function birdSameChain(a, b) {
   if (!a || !b || a === b) return false;
-  if (a.kind !== "pigeon" || b.kind !== "pigeon") return false;
+  if (!isBirdKind(a.kind) || !isBirdKind(b.kind)) return false;
   if (!isChained(a) && !isChainCarrier(a)) return false;
   if (!isChained(b) && !isChainCarrier(b)) return false;
   const ra = chainRootOf(a), rb = chainRootOf(b);
   return !!ra && ra === rb;
 }
-function pigeonSeparate(m, dt, vel, sp) {
+function birdSeparate(m, dt, vel, sp) {
   const nearby = nearbyMobsFor(m.pos.x, m.pos.z, 1);
   for (const o of nearby) {
-    if (o === m || o.kind !== "pigeon") continue;
+    if (o === m || !isBirdKind(o.kind)) continue;
     if (o.dim !== undefined && o.dim !== dim) continue;
-    if (pigeonSameChain(m, o)) continue;
+    if (birdSameChain(m, o)) continue;
     const ox = m.pos.x - o.pos.x, oy = m.pos.y - o.pos.y, oz = m.pos.z - o.pos.z;
     const d2 = ox * ox + oy * oy + oz * oz;
-    if (d2 < PIGEON_SEP_DIST * PIGEON_SEP_DIST && d2 > 0.0001) {
+    if (d2 < BIRD_SEP_DIST * BIRD_SEP_DIST && d2 > 0.0001) {
       const d = Math.sqrt(d2);
-      const push = (PIGEON_SEP_DIST - d) * 6 * dt;
+      const push = (BIRD_SEP_DIST - d) * 6 * dt;
       vel.x += (ox / d) * push * sp * 0.12;
       vel.y += (oy / d) * push * sp * 0.12;
       vel.z += (oz / d) * push * sp * 0.12;
     }
   }
 }
-function pigeonAnimate(m, dt, vx, vy, vz, sp, wp) {
+function birdAnimate(m, dt, vx, vy, vz, sp, wp) {
   let targetYaw = Math.atan2(vx, vz);
   let targetPitch = Math.max(-0.45, Math.min(0.45, -vy / sp * 0.9));
   if (wp && m._tunnel) {
@@ -4372,7 +4529,7 @@ function pigeonAnimate(m, dt, vx, vy, vz, sp, wp) {
   // stays dead-centre (and at its normal height) while climbing/diving.
   if (m._tunnel) {
     const s = m.mesh.scale.x || 1;
-    const bodyY = PIGEON_BODY_Y * s;
+    const bodyY = BIRD_BODY_Y * s;
     const sp = Math.sin(m._pitch), cp = Math.cos(m._pitch);
     const sy = Math.sin(m.yaw), cy = Math.cos(m.yaw);
     m.mesh.position.set(
@@ -4387,7 +4544,7 @@ function pigeonAnimate(m, dt, vx, vy, vz, sp, wp) {
   if (m.mesh.userData.wingL) m.mesh.userData.wingL.rotation.z = f;
   if (m.mesh.userData.wingR) m.mesh.userData.wingR.rotation.z = -f;
 }
-function pigeonCoopTarget(h) {
+function birdCoopTarget(h) {
   const y = h.vy + 1.5 + Math.random() * 2;
   if (Math.random() < 0.6) {
     const side = Math.floor(Math.random() * 4);
@@ -4402,23 +4559,23 @@ function pigeonCoopTarget(h) {
     y,
     h.minZ + 1.5 + Math.random() * (h.maxZ - h.minZ - 3));
 }
-function updatePerchedPigeon(m, dt) {
+function updatePerchedBird(m, dt) {
   dt = Math.min(0.05, dt);
-  if (grappleMob === m) { pigeonTakeoff(m); return; }
+  if (grappleMob === m) { birdTakeoff(m); return; }
   if (m.perchSpot && villageSqContains(m.perchSpot.x, m.perchSpot.z) && performance.now() / 1000 < villagePanicUntil) {
     m._panicUntil = Math.max(m._panicUntil || 0, villagePanicUntil);
-    pigeonTakeoff(m); return;
+    birdTakeoff(m); return;
   }
-  if (!m.perchSpot || !pigeonPerchSupports(m.perchSpot.x, m.perchSpot.y, m.perchSpot.z)) { pigeonTakeoff(m); return; }
+  if (!m.perchSpot || !birdPerchSupports(m.perchSpot.x, m.perchSpot.y, m.perchSpot.z)) { birdTakeoff(m); return; }
   m.perchT -= dt;
-  if (m.perchT <= 0) { pigeonTakeoff(m); return; }
+  if (m.perchT <= 0) { birdTakeoff(m); return; }
   m.perchWanderT -= dt;
   if (!m.perchWander || m.perchWanderT <= 0) {
     const a = Math.random() * Math.PI * 2, d = 0.3 + Math.random() * 0.4;
     const nx = m.perchSpot.x + Math.cos(a) * d, nz = m.perchSpot.z + Math.sin(a) * d;
-    if (pigeonPerchSupports(nx, m.perchSpot.y, nz) &&
-        !pigeonPerchSpotTaken(nx, m.pos.y, nz, m) &&
-        !aabbCollidesWorld(nx, m.pos.y, nz, PIGEON_COL_HW, PIGEON_COL_H)) {
+    if (birdPerchSupports(nx, m.perchSpot.y, nz) &&
+        !birdPerchSpotTaken(nx, m.pos.y, nz, m) &&
+        !aabbCollidesWorld(nx, m.pos.y, nz, BIRD_COL_HW, BIRD_COL_H)) {
       m.perchWander = { x: nx, z: nz };
     } else {
       m.perchWander = { x: m.perchSpot.x, z: m.perchSpot.z };
@@ -4430,13 +4587,13 @@ function updatePerchedPigeon(m, dt) {
   const dl = Math.hypot(dx, dz);
   if (dl > 0.05) { const s = Math.min(1.2, dl * 4); vx = dx / dl * s; vz = dz / dl * s; }
   const vel = { x: vx, y: 0, z: vz };
-  pigeonSeparate(m, dt, vel, 1.2);
+  birdSeparate(m, dt, vel, 1.2);
   vx = vel.x; vz = vel.z;
   const ox = m.pos.x, oz = m.pos.z;
   m.pos.x += vx * dt;
   m.pos.z += vz * dt;
   m.pos.y += (m.perchSpot.y - m.pos.y) * Math.min(1, dt * 8);
-  if (aabbCollidesWorld(m.pos.x, m.pos.y, m.pos.z, PIGEON_COL_HW, PIGEON_COL_H)) { m.pos.x = ox; m.pos.z = oz; vx = 0; vz = 0; }
+  if (aabbCollidesWorld(m.pos.x, m.pos.y, m.pos.z, BIRD_COL_HW, BIRD_COL_H)) { m.pos.x = ox; m.pos.z = oz; vx = 0; vz = 0; }
   m.pos.x = Math.max(-WORLD_RADIUS + 1, Math.min(WORLD_RADIUS - 1, m.pos.x));
   m.pos.z = Math.max(-WORLD_RADIUS + 1, Math.min(WORLD_RADIUS - 1, m.pos.z));
   m.vel.set(vx, 0, vz);
@@ -4454,43 +4611,43 @@ function updatePerchedPigeon(m, dt) {
   if (m.mesh.userData.wingL) m.mesh.userData.wingL.rotation.z = 0.12;
   if (m.mesh.userData.wingR) m.mesh.userData.wingR.rotation.z = -0.12;
 }
-function updateToPerchPigeon(m, dt) {
+function updateToPerchBird(m, dt) {
   dt = Math.min(0.05, dt);
   const s = m.perchSpot;
-  if (grappleMob === m) { pigeonTakeoff(m); return; }
+  if (grappleMob === m) { birdTakeoff(m); return; }
   if (s && villageSqContains(s.x, s.z) && performance.now() / 1000 < villagePanicUntil) {
     m._panicUntil = Math.max(m._panicUntil || 0, villagePanicUntil);
-    pigeonTakeoff(m); return;
+    birdTakeoff(m); return;
   }
-  if (!s || !pigeonPerchSupports(s.x, s.y, s.z)) { pigeonTakeoff(m); return; }
-  if (pigeonPerchSpotTaken(s.x, s.y, s.z, m)) { pigeonTakeoff(m); return; }
+  if (!s || !birdPerchSupports(s.x, s.y, s.z)) { birdTakeoff(m); return; }
+  if (birdPerchSpotTaken(s.x, s.y, s.z, m)) { birdTakeoff(m); return; }
   m.perchTimeout -= dt;
-  if (m.perchTimeout <= 0) { pigeonTakeoff(m); return; }
+  if (m.perchTimeout <= 0) { birdTakeoff(m); return; }
   const dx = s.x - m.pos.x, dy = s.y - m.pos.y, dz = s.z - m.pos.z;
   const dist = Math.hypot(dx, dy, dz);
-  if (dist < PIGEON_PERCH_SNAP_D) {
+  if (dist < BIRD_PERCH_SNAP_D) {
     m.pos.set(s.x, s.y, s.z);
     m.vel.set(0, 0, 0);
     m.mode = "perch";
     m.target = null; m.targetMode = null; m.arc = null;
-    m.perchT = pigeonDimOf(m) === "end"
-      ? PIGEON_END_PERCH_MIN_T + Math.random() * (PIGEON_END_PERCH_MAX_T - PIGEON_END_PERCH_MIN_T)
-      : PIGEON_PERCH_MIN_T + Math.random() * (PIGEON_PERCH_MAX_T - PIGEON_PERCH_MIN_T);
+    m.perchT = birdDimOf(m) === "end"
+      ? BIRD_END_PERCH_MIN_T + Math.random() * (BIRD_END_PERCH_MAX_T - BIRD_END_PERCH_MIN_T)
+      : BIRD_PERCH_MIN_T + Math.random() * (BIRD_PERCH_MAX_T - BIRD_PERCH_MIN_T);
     m.perchWander = null; m.perchWanderT = 0;
     m.mesh.position.copy(m.pos);
     if (m.mesh.userData.wingL) m.mesh.userData.wingL.rotation.z = 0.12;
     if (m.mesh.userData.wingR) m.mesh.userData.wingR.rotation.z = -0.12;
     return;
   }
-  const sp = PIGEON_SPEED;
+  const sp = BIRD_SPEED;
   const spd = dist < 6 ? sp * Math.max(0.06, dist / 6) : sp;
   let sx = dx / dist, sy = dy / dist, sz = dz / dist;
-  let pClear = pigeonClearance(m.pos.x, m.pos.y, m.pos.z, sx, sy, sz);
-  const final = dist < PIGEON_PERCH_FINAL_D;
+  let pClear = birdClearance(m.pos.x, m.pos.y, m.pos.z, sx, sy, sz);
+  const final = dist < BIRD_PERCH_FINAL_D;
   if (!final && pClear === 0) {
-    const best = pigeonBestSteer(m, Math.atan2(sx, sz), sy);
+    const best = birdBestSteer(m, Math.atan2(sx, sz), sy);
     if (best && best.clear > 0) { sx = best.x; sy = best.y; sz = best.z; pClear = best.clear; }
-    else if (dist > 4) { pigeonTakeoff(m); return; }
+    else if (dist > 4) { birdTakeoff(m); return; }
   }
   const k = Math.min(1, dt * (dist < 12 ? 3.5 : 2.5));
   const effSpd = pClear === 0 ? spd * 0.5 : spd * (0.5 + 0.5 * Math.min(1, pClear / 6));
@@ -4498,13 +4655,13 @@ function updateToPerchPigeon(m, dt) {
   let vy = m.vel.y + (sy * effSpd - m.vel.y) * k;
   let vz = m.vel.z + (sz * effSpd - m.vel.z) * k;
   const vel = { x: vx, y: vy, z: vz };
-  if (!final) pigeonSeparate(m, dt, vel, sp);
+  if (!final) birdSeparate(m, dt, vel, sp);
   vx = vel.x; vy = vel.y; vz = vel.z;
-  const slid = pigeonMoveSlide(m, vx, vy, vz, dt);
+  const slid = birdMoveSlide(m, vx, vy, vz, dt);
   vx = slid.vx; vy = slid.vy; vz = slid.vz;
   if (slid.blocked > 0) {
     m._perchBlockT = (m._perchBlockT || 0) + dt;
-    if (m._perchBlockT > (dist > 4 ? 1.2 : 2.5)) { m._perchBlockT = 0; pigeonTakeoff(m); return; }
+    if (m._perchBlockT > (dist > 4 ? 1.2 : 2.5)) { m._perchBlockT = 0; birdTakeoff(m); return; }
   } else {
     m._perchBlockT = 0;
   }
@@ -4513,18 +4670,18 @@ function updateToPerchPigeon(m, dt) {
     endClampXZPos(m.pos);
     m.pos.y = Math.max(1, Math.min(MAX_Y - 1, m.pos.y));
   }
-  pigeonAnimate(m, dt, vx, vy, vz, sp);
+  birdAnimate(m, dt, vx, vy, vz, sp);
 }
-function updatePigeon(m, dt) {
+function updateBird(m, dt) {
   dt = Math.min(0.05, dt);
   const nowP = performance.now() / 1000;
-  pigeonTouchVisit(m, nowP);
+  birdTouchVisit(m, nowP);
   const inHouse = dim === "over" && houseInteriorFor(m.pos.x, m.pos.y, m.pos.z);
   m._inHouse = inHouse;
-  const confined = inHouse || pigeonIsConfined(m);
+  const confined = inHouse || birdIsConfined(m);
   m._narrow = !!confined;
-  pigeonResolvePenetration(m);
-  const targetScale = confined ? PIGEON_NARROW_SCALE : 1;
+  birdResolvePenetration(m);
+  const targetScale = confined ? BIRD_NARROW_SCALE : 1;
   if (Math.abs(m.mesh.scale.x - targetScale) > 0.001) {
     m.mesh.scale.setScalar(m.mesh.scale.x + (targetScale - m.mesh.scale.x) * Math.min(1, dt / 0.15));
   }
@@ -4537,7 +4694,7 @@ function updatePigeon(m, dt) {
       let pt = m.target;
       let pd = Math.hypot(pt.x - m.pos.x, pt.y - m.pos.y, pt.z - m.pos.z);
       if (pd < 2 && m._panicT > 0.5) {
-        m.target = panicPigeonTarget(m, m._panicSrcX != null ? m._panicSrcX : m.pos.x, m._panicSrcZ != null ? m._panicSrcZ : m.pos.z);
+        m.target = panicBirdTarget(m, m._panicSrcX != null ? m._panicSrcX : m.pos.x, m._panicSrcZ != null ? m._panicSrcZ : m.pos.z);
         m.targetMode = "panic";
         pt = m.target;
         pd = Math.hypot(pt.x - m.pos.x, pt.y - m.pos.y, pt.z - m.pos.z);
@@ -4546,9 +4703,9 @@ function updatePigeon(m, dt) {
         m._panicT = 0;
         m.target = null; m.targetMode = null;
       } else {
-      const sp2 = PIGEON_SPEED * 2;
+      const sp2 = BIRD_SPEED * 2;
       const tl = pd || 1;
-      const slid = pigeonMoveSlide(m, (pt.x - m.pos.x) / tl * sp2, (pt.y - m.pos.y) / tl * sp2, (pt.z - m.pos.z) / tl * sp2, dt);
+      const slid = birdMoveSlide(m, (pt.x - m.pos.x) / tl * sp2, (pt.y - m.pos.y) / tl * sp2, (pt.z - m.pos.z) / tl * sp2, dt);
       m.vel.set(slid.vx, slid.vy, slid.vz);
       if (endMobInEnd(m)) {
         endClampXZPos(m.pos);
@@ -4557,13 +4714,13 @@ function updatePigeon(m, dt) {
       m.mesh.position.copy(m.pos);
       const hv = Math.hypot(slid.vx, slid.vz);
       if (hv > 0.5) { m.yaw = Math.atan2(slid.vx, slid.vz); m.yawTarget = m.yaw; m.mesh.rotation.y = m.yaw; }
-      pigeonAnimate(m, dt, slid.vx, slid.vy, slid.vz, sp2);
+      birdAnimate(m, dt, slid.vx, slid.vy, slid.vz, sp2);
       return;
       }
     }
   }
   if (m.mode === "sit") {
-    pigeonResolvePenetration(m);
+    birdResolvePenetration(m);
     m.vel.set(0, 0, 0);
     m.mesh.position.copy(m.pos);
     m.mesh.rotation.y = m.yaw;
@@ -4574,20 +4731,20 @@ function updatePigeon(m, dt) {
     return;
   }
   if (m.mode === "perch" || m.mode === "toPerch") {
-    if (pigeonDimOf(m) === "nether") { pigeonTakeoff(m); return; }
-    if (pigeonOnMoon(m)) { pigeonTakeoff(m); }
-    else if (m.mode === "perch") { updatePerchedPigeon(m, dt); return; }
-    else { updateToPerchPigeon(m, dt); return; }
+    if (birdDimOf(m) === "nether") { birdTakeoff(m); return; }
+    if (birdOnMoon(m)) { birdTakeoff(m); }
+    else if (m.mode === "perch") { updatePerchedBird(m, dt); return; }
+    else { updateToPerchBird(m, dt); return; }
   }
   if (m.mode !== "straight" && m.mode !== "arc") { m.mode = "straight"; m.target = null; m.targetMode = null; m.perchRetry = 0; }
   if (confined) {
     m._tunnel = true; m._tFree = 0;
-    updateTunnelPigeon(m, dt, nowP);
+    updateTunnelBird(m, dt, nowP);
     return;
   }
   if (m._tunnel) {
     m._tFree = (m._tFree || 0) + 1;
-    if (m._tFree < 5) { m._narrow = true; updateTunnelPigeon(m, dt, nowP); return; }
+    if (m._tFree < 5) { m._narrow = true; updateTunnelBird(m, dt, nowP); return; }
     m._tunnel = false; m._tFree = 0;
     m._narrow = false;
     m._tPath = null; m._tGoal = null; m._tEnterT = 0; m._tSteps = 0; m._tPlanT = 0; m._tStallT = 0; m._tCrawlT = 0;
@@ -4595,13 +4752,13 @@ function updatePigeon(m, dt) {
   }
   m._decideT = Math.max(0, (m._decideT || 0) - dt);
   m._noPerchT = Math.max(0, (m._noPerchT || 0) - dt);
-  const moon = pigeonOnMoon(m);
+  const moon = birdOnMoon(m);
   const inEnd = endMobInEnd(m);
-  const loB = pigeonBandMin(m), hiB = pigeonBandMax(m);
+  const loB = birdBandMin(m), hiB = birdBandMax(m);
   const outBand = inEnd
     ? (m.pos.y < DRAGON_MIN_Y || m.pos.y > DRAGON_MAX_Y || endBlockOutsidePlatform(Math.floor(m.pos.x), Math.floor(m.pos.z)))
     : !moon && (m.pos.y < loB || m.pos.y > hiB);
-  const sp = PIGEON_SPEED;
+  const sp = BIRD_SPEED;
   let vx = m.vel.x, vy = m.vel.y, vz = m.vel.z;
   const vl = Math.hypot(vx, vy, vz) || 1;
   let dx = vx / vl, dy = vy / vl, dz = vz / vl;
@@ -4630,19 +4787,19 @@ function updatePigeon(m, dt) {
   dx /= dl; dy /= dl; dz /= dl;
   let steerX = dx, steerY = dy, steerZ = dz;
   let boxed = false;
-  let steerClear = pigeonClearance(m.pos.x, m.pos.y, m.pos.z, dx, dy, dz);
+  let steerClear = birdClearance(m.pos.x, m.pos.y, m.pos.z, dx, dy, dz);
   if (steerClear === 0) {
-    const best = pigeonBestSteer(m, Math.atan2(dx, dz), dy);
+    const best = birdBestSteer(m, Math.atan2(dx, dz), dy);
     if (best && best.clear > 0) {
       steerX = best.x; steerY = best.y; steerZ = best.z; steerClear = best.clear;
     } else {
       boxed = true;
-      [steerX, steerY, steerZ] = pigeonConfinedSteer(m, dt);
+      [steerX, steerY, steerZ] = birdConfinedSteer(m, dt);
       steerClear = 0;
     }
   } else if (m.mode === "straight") {
     if (outBand && m.targetMode !== "detour" && (m._decideT || 0) <= 0) {
-      if (!m.target || !pigeonSegmentFree(m.pos.x, m.pos.y, m.pos.z, m.target.x, m.target.y, m.target.z)) {
+      if (!m.target || !birdSegmentFree(m.pos.x, m.pos.y, m.pos.z, m.target.x, m.target.y, m.target.z)) {
         m.target = bandReturnTarget(m.pos, m);
         m.targetMode = "return";
       }
@@ -4655,13 +4812,13 @@ function updatePigeon(m, dt) {
         m.targetMode = null;
       }
     }
-    if (m.targetMode === "explore" && m.target && !pigeonSegmentFree(m.pos.x, m.pos.y, m.pos.z, m.target.x, m.target.y, m.target.z)) {
-      pigeonNextLeg(m);
+    if (m.targetMode === "explore" && m.target && !birdSegmentFree(m.pos.x, m.pos.y, m.pos.z, m.target.x, m.target.y, m.target.z)) {
+      birdNextLeg(m);
     }
     if (m.targetMode === "explore" && m.target && (m._exploreFuse || 0) > 0 && performance.now() / 1000 >= m._exploreFuse) {
       const nowF = performance.now() / 1000;
       const vs = m._visits || (m._visits = new Map());
-      const k = pigeonCellKey(m.target.x, m.target.y, m.target.z);
+      const k = birdCellKey(m.target.x, m.target.y, m.target.z);
       if (vs.has(k)) vs.delete(k);
       vs.set(k, nowF);
       m.target = null; m.targetMode = null; m._exploreFuse = 0;
@@ -4670,7 +4827,7 @@ function updatePigeon(m, dt) {
       if (outBand) { m.target = bandReturnTarget(m.pos, m); m.targetMode = "return"; m.perchRetry = 0; }
       else if (m.perchRetry > 0 && (m._noPerchT || 0) <= 0) {
         m.perchRetry--;
-        const found = pigeonFindPerchSpot(m, PIGEON_HOP_R);
+        const found = birdFindPerchSpot(m, BIRD_HOP_R);
         if (found) {
           m.mode = "toPerch";
           m.arc = null;
@@ -4680,43 +4837,43 @@ function updatePigeon(m, dt) {
           m.target = found.spot;
           m.targetMode = "perch";
         }
-        else if (m.perchRetry > 0) m.target = pigeonRandomTarget(m.pos, 10, 25);
-        else pigeonNextLeg(m);
+        else if (m.perchRetry > 0) m.target = birdRandomTarget(m.pos, 10, 25);
+        else birdNextLeg(m);
       }
-      else pigeonNextLeg(m);
+      else birdNextLeg(m);
     }
     if (m.mode === "straight" && m.target) {
       const tx = m.target.x - m.pos.x, ty = m.target.y - m.pos.y, tz = m.target.z - m.pos.z;
       const tl = Math.hypot(tx, ty, tz) || 1;
       const gx = tx / tl, gy = ty / tl, gz = tz / tl;
-      if (tl < 3 && pigeonSegmentFree(m.pos.x, m.pos.y, m.pos.z, m.target.x, m.target.y, m.target.z)) {
+      if (tl < 3 && birdSegmentFree(m.pos.x, m.pos.y, m.pos.z, m.target.x, m.target.y, m.target.z)) {
         steerX = gx; steerY = gy; steerZ = gz; steerClear = 1;
       } else {
-        const gClear = pigeonClearance(m.pos.x, m.pos.y, m.pos.z, gx, gy, gz);
+        const gClear = birdClearance(m.pos.x, m.pos.y, m.pos.z, gx, gy, gz);
         if (gClear > 0) {
           steerX = gx; steerY = gy; steerZ = gz; steerClear = gClear;
         } else {
-          const best = pigeonBestSteer(m, Math.atan2(gx, gz), gy);
+          const best = birdBestSteer(m, Math.atan2(gx, gz), gy);
           if (best && best.clear > 0) {
             steerX = best.x; steerY = best.y; steerZ = best.z; steerClear = best.clear;
           } else {
             boxed = true;
-            [steerX, steerY, steerZ] = pigeonConfinedSteer(m, dt);
+            [steerX, steerY, steerZ] = birdConfinedSteer(m, dt);
             steerClear = 0;
           }
           if ((m._decideT || 0) <= 0) {
-            if (m.target && pigeonSegmentFree(m.pos.x, m.pos.y, m.pos.z, m.target.x, m.target.y, m.target.z)) m._decideT = 1.2;
-            else pigeonNextLeg(m);
+            if (m.target && birdSegmentFree(m.pos.x, m.pos.y, m.pos.z, m.target.x, m.target.y, m.target.z)) m._decideT = 1.2;
+            else birdNextLeg(m);
           }
-          else if (m.targetMode !== "detour" && pigeonSegmentFree(m.pos.x, m.pos.y, m.pos.z, m.pos.x + gx * 10, m.pos.y + gy * 10, m.pos.z + gz * 10)) {
+          else if (m.targetMode !== "detour" && birdSegmentFree(m.pos.x, m.pos.y, m.pos.z, m.pos.x + gx * 10, m.pos.y + gy * 10, m.pos.z + gz * 10)) {
             const nowR2 = performance.now() / 1000;
             if (nowR2 >= (m._reachT || 0)) {
               m._reachT = nowR2 + 0.5;
-              const r = pigeonReachableTarget(m, 10, 40);
+              const r = birdReachableTarget(m, 10, 40);
               if (r) { m.target = r; m.targetMode = null; }
             }
           }
-          else { const det = pigeonDetourTarget(m); if (det) { m.target = det; m.targetMode = "detour"; m.detourT = 2.5; } }
+          else { const det = birdDetourTarget(m); if (det) { m.target = det; m.targetMode = "detour"; m.detourT = 2.5; } }
         }
       }
     }
@@ -4728,24 +4885,24 @@ function updatePigeon(m, dt) {
     const ty = Math.max(-0.3, Math.min(0.3, (a.cy - m.pos.y) * 0.05));
     const tl = Math.hypot(tx, ty, tz) || 1;
     const ax = tx / tl, ay = ty / tl, az = tz / tl;
-    if (pigeonClearance(m.pos.x, m.pos.y, m.pos.z, ax, ay, az) === 0) {
-      const best = pigeonBestSteer(m, Math.atan2(ax, az), ay);
+    if (birdClearance(m.pos.x, m.pos.y, m.pos.z, ax, ay, az) === 0) {
+      const best = birdBestSteer(m, Math.atan2(ax, az), ay);
       if (best && best.clear > 0) { steerX = best.x; steerY = best.y; steerZ = best.z; steerClear = best.clear; }
       else {
         boxed = true;
-        [steerX, steerY, steerZ] = pigeonConfinedSteer(m, dt);
+        [steerX, steerY, steerZ] = birdConfinedSteer(m, dt);
         steerClear = 0;
       }
       m.arc = null; m.mode = "straight";
     } else {
       steerX = ax; steerY = ay; steerZ = az; steerClear = 3;
       a.swept += (sp / Math.max(4, a.r)) * dt;
-      if (a.swept >= a.total) { m.arc = null; m.mode = "straight"; pigeonNextLeg(m); }
+      if (a.swept >= a.total) { m.arc = null; m.mode = "straight"; birdNextLeg(m); }
     }
   }
   if (!boxed && (m._stillT || 0) > 1.5) {
     boxed = true;
-    [steerX, steerY, steerZ] = pigeonConfinedSteer(m, dt);
+    [steerX, steerY, steerZ] = birdConfinedSteer(m, dt);
     steerClear = 0;
   }
   if (!boxed) { m._confinedT = 0; m._millTarget = null; m._millT = 0; }
@@ -4760,12 +4917,12 @@ function updatePigeon(m, dt) {
   vy += (steerY * effSp - vy) * k;
   vz += (steerZ * effSp - vz) * k;
   const vel = { x: vx, y: vy, z: vz };
-  pigeonSeparate(m, dt, vel, sp);
+  birdSeparate(m, dt, vel, sp);
   vx = vel.x; vy = vel.y; vz = vel.z;
   const raw = Math.hypot(vx, vy, vz);
   const nvl = raw || 1;
   let minSp = effSp * 0.6;
-  if (raw > 0.001 && pigeonClearance(m.pos.x, m.pos.y, m.pos.z, vx / nvl, vy / nvl, vz / nvl) === 0) minSp = 0;
+  if (raw > 0.001 && birdClearance(m.pos.x, m.pos.y, m.pos.z, vx / nvl, vy / nvl, vz / nvl) === 0) minSp = 0;
   if (nvl < minSp) {
     const sl = Math.hypot(steerX, steerY, steerZ) || 1;
     vx = (steerX / sl) * minSp; vy = (steerY / sl) * minSp; vz = (steerZ / sl) * minSp;
@@ -4774,7 +4931,7 @@ function updatePigeon(m, dt) {
     vx = (vx / nvl) * cl; vy = (vy / nvl) * cl; vz = (vz / nvl) * cl;
   }
   const px0 = m.pos.x, py0 = m.pos.y, pz0 = m.pos.z;
-  const slid = pigeonMoveSlide(m, vx, vy, vz, dt);
+  const slid = birdMoveSlide(m, vx, vy, vz, dt);
   vx = slid.vx; vy = slid.vy; vz = slid.vz;
   const movedNow = Math.hypot(m.pos.x - px0, m.pos.y - py0, m.pos.z - pz0);
   m._stillT = movedNow < 0.6 * dt ? (m._stillT || 0) + dt : 0;
@@ -4784,10 +4941,10 @@ function updatePigeon(m, dt) {
     m._freeStallT = (m._freeStallT || 0) + dt;
     if (m._freeStallT > 0.5) {
       m._freeStallT = 0;
-      pigeonUnblock(m);
+      birdUnblock(m);
       m._blockT = 0; m._millTarget = null; m._millT = 0;
       m._digGoal = null;
-      pigeonNextLeg(m);
+      birdNextLeg(m);
     }
   } else {
     m._freeStallT = 0;
@@ -4799,9 +4956,9 @@ function updatePigeon(m, dt) {
       m._blockT = (m._blockT || 0) + dt;
       if (m._blockT > 0.6) {
         m._blockT = 0;
-        const det = pigeonDetourTarget(m);
+        const det = birdDetourTarget(m);
         if (det) { m.target = det; m.targetMode = "detour"; m.detourT = 2.5; }
-        else pigeonNextLeg(m);
+        else birdNextLeg(m);
         m.arc = null; if (m.mode === "arc") m.mode = "straight";
       }
     }
@@ -4817,12 +4974,12 @@ function updatePigeon(m, dt) {
       m.target.y = Math.max(1, Math.min(MAX_Y - 1, m.target.y));
     }
   }
-  pigeonAnimate(m, dt, vx, vy, vz, sp);
+  birdAnimate(m, dt, vx, vy, vz, sp);
 }
 function villagerHW(m) {
   if (m.kind === "dragon") return 1.5;
   if (m.kind === "enderman") return 0.31;
-  if (m.kind === "pigeon") return 0.25;
+  if (isBirdKind(m.kind)) return 0.25;
   if (m.kind === "wolf") return 0.30;
   if (m.kind === "pig" || m.kind === "cow") return 0.32;
   if (m.kind === "iron_golem") return GOLEM_HW;
@@ -4831,7 +4988,7 @@ function villagerHW(m) {
 function villagerH(m) {
   if (m.kind === "dragon") return 3;
   if (m.kind === "enderman") return 2.7;
-  if (m.kind === "pigeon") return 0.5;
+  if (isBirdKind(m.kind)) return 0.5;
   if (m.kind === "wolf") return 0.90;
   if (m.kind === "pig") return 0.92;
   if (m.kind === "cow") return 1.30;
@@ -5040,8 +5197,8 @@ function isMobFrozenByGrapple(m) {
   return carryGrapplePulling;
 }
 
-// Mob chains: pigeon-rooted linked lists. A carried mob can be attached onto
-// a pigeon (or onto the tail of an existing chain) with ENTER. Each persistent
+// Mob chains: bird-rooted linked lists. A carried mob can be attached onto
+// a bird (or onto the tail of an existing chain) with ENTER. Each persistent
 // link is a regular displacement hook (brown rope, tow-behind spring).
 // Session-only: cleared on world rebuild / dimension trips.
 const chainChild = new Map();
@@ -5126,14 +5283,17 @@ const playerChainAvatar = {
   get dim() { return dim; },
   get h() { return PLAYER_H; },
   get hw() { return PLAYER_HW; },
-  get speed() { return (grappleMob && grappleMob.speed) || PIGEON_SPEED; },
+  get speed() { return (grappleMob && grappleMob.speed) || BIRD_SPEED; },
   get onGround() { return onGround; },
 };
 function playerInChain() {
   return grappleActive && !grappleRetracting && grappleHooked && !!grappleMob;
 }
 function isFlyingKind(kind) {
-  return kind === "pigeon" || kind === "dragon";
+  return kind === "pigeon" || kind === "parrot" || kind === "dragon";
+}
+function isBirdKind(kind) {
+  return kind === "pigeon" || kind === "parrot";
 }
 function isJumpingKind(kind) {
   return kind === "wolf";
@@ -5150,9 +5310,9 @@ function chainMobById(id) {
 }
 function chainFollowDist(carrier) {
   if (carrier === playerChainAvatar) {
-    return grappleMob && grappleMob.kind === "dragon" ? DRAGON_FOLLOW_DIST : PIGEON_FOLLOW_DIST;
+    return grappleMob && grappleMob.kind === "dragon" ? DRAGON_FOLLOW_DIST : BIRD_FOLLOW_DIST;
   }
-  return carrier.kind === "dragon" ? DRAGON_FOLLOW_DIST : PIGEON_FOLLOW_DIST;
+  return carrier.kind === "dragon" ? DRAGON_FOLLOW_DIST : BIRD_FOLLOW_DIST;
 }
 function chainMidY(m) {
   return m.pos.y + m.h * 0.5;
@@ -5202,7 +5362,7 @@ function chainLeadConeDeflect(m, dx, dz) {
 function isGroundedChainVictim(m) {
   if (!m || (!isChained(m) && !isChainCarrier(m))) return false;
   if (!isFlyingKind(m.kind)) return true;
-  if (m.kind !== "pigeon") return false;
+  if (!isBirdKind(m.kind)) return false;
   return m.onGround === true || m.mode === "perch" || m.mode === "toPerch" || m.mode === "sit" || m.mode === "cooped";
 }
 function chainRootOf(m) {
@@ -5540,7 +5700,7 @@ function prependChainLead(root, mob) {
   if (aabbCollidesWorld(root.pos.x, root.pos.y, root.pos.z, root.hw, root.h)) return false;
   if (!seatNewLeadNear(root, mob)) return false;
   if (!linkChain(mob, root)) return false;
-  if (mob.kind === "pigeon") pigeonTakeoff(mob);
+  if (isBirdKind(mob.kind)) birdTakeoff(mob);
   return true;
 }
 function insertChainBefore(aimed, mob) {
@@ -5586,7 +5746,7 @@ function insertChainBefore(aimed, mob) {
     resumeChainedMob(aimed);
     return true;
   }
-  if (F !== playerChainAvatar && F.kind === "pigeon" && (F.mode === "perch" || F.mode === "toPerch")) pigeonTakeoff(F);
+  if (F !== playerChainAvatar && isBirdKind(F.kind) && (F.mode === "perch" || F.mode === "toPerch")) birdTakeoff(F);
   return true;
 }
 function insertChainBehind(aimed, mob) {
@@ -5620,7 +5780,7 @@ function insertChainBehind(aimed, mob) {
       resumeChainedMob(B);
     }
   }
-  if (aimed.kind === "pigeon" && (aimed.mode === "perch" || aimed.mode === "toPerch")) pigeonTakeoff(aimed);
+  if (isBirdKind(aimed.kind) && (aimed.mode === "perch" || aimed.mode === "toPerch")) birdTakeoff(aimed);
   return true;
 }
 function insertBehindRide(bird, mob) {
@@ -5699,8 +5859,8 @@ function resumeChainedMob(m) {
   if (m.vel) {
     if (isFlyingKind(m.kind)) {
       const yaw2 = Math.random() * Math.PI * 2;
-      m.vel.set(Math.cos(yaw2) * PIGEON_SPEED, 0, Math.sin(yaw2) * PIGEON_SPEED);
-      m.target = pigeonRandomTarget(m.pos);
+      m.vel.set(Math.cos(yaw2) * BIRD_SPEED, 0, Math.sin(yaw2) * BIRD_SPEED);
+      m.target = birdRandomTarget(m.pos);
       m.yaw = yaw2;
       m.yawTarget = yaw2;
     } else m.vel.set(0, 0, 0);
@@ -5797,7 +5957,7 @@ function groundChainFrom(back) {
     resumeChainedMob(d);
     d.villageBound = false;
     d.penBound = false;
-    if (d.kind === "pigeon") {
+    if (isBirdKind(d.kind)) {
       if (d.vel) d.vel.set(0, -1, 0);
       d._chainFall = true;
     }
@@ -6138,7 +6298,7 @@ function updateChains(dt) {
         if (isFlyingKind(child.kind)) sy2 = Math.max(1, Math.min(MAX_Y - 1, sy2));
       }
       if (!aabbCollidesWorld(sx2, sy2, sz2, child.hw, child.h) &&
-          pigeonSegmentFree(child.pos.x, child.pos.y, child.pos.z, sx2, sy2, sz2)) {
+          birdSegmentFree(child.pos.x, child.pos.y, child.pos.z, sx2, sy2, sz2)) {
         chainSlideToward(child, sx2, sy2, sz2, 1.5);
         child.vel.set(svx, svy, svz);
       }
@@ -6287,7 +6447,7 @@ function updateChainGroundLink(link, carrier, child, followDist, dt) {
         child.vel.y += ((ey / exl * ecl) * stiff - (child.vel.y - cvy) * damp) * dt;
         child.vel.z += ((ez / exl * ecl) * stiff - (child.vel.z - cvz) * damp) * dt;
         const airFollowCap = (link.carrierAirT || 0) > 0.2;
-        const maxSp = (airFollowCap ? PIGEON_SPEED : (carrier.speed || PIGEON_SPEED)) * 2.2 * (taut ? 1.5 : 1);
+        const maxSp = (airFollowCap ? BIRD_SPEED : (carrier.speed || BIRD_SPEED)) * 2.2 * (taut ? 1.5 : 1);
         const spdNow = Math.hypot(child.vel.x, child.vel.y, child.vel.z);
         if (spdNow > maxSp) { child.vel.x *= maxSp / spdNow; child.vel.y *= maxSp / spdNow; child.vel.z *= maxSp / spdNow; }
         link.hopT = Math.max(0, (link.hopT || 0) - dt);
@@ -6400,7 +6560,7 @@ function updateChainGroundLink(link, carrier, child, followDist, dt) {
       const s = followDist / hd;
       const px = carrier.pos.x + sep.dx * s, pz = carrier.pos.z + sep.dz * s;
       if (!aabbCollidesWorld(px, child.pos.y, pz, child.hw, child.h) &&
-          pigeonSegmentFree(child.pos.x, child.pos.y, child.pos.z, px, child.pos.y, pz)) {
+          birdSegmentFree(child.pos.x, child.pos.y, child.pos.z, px, child.pos.y, pz)) {
         chainSlideToward(child, px, child.pos.y, pz, 1.5);
         sep = chainLinkDelta(carrier, child);
       }
@@ -6452,7 +6612,7 @@ function releaseCarriedMobAt(px, py, pz) {
   if (dim === "end" && endBlockOutsidePlatform(px, pz)) return;
   const m = carryMob;
   const hw = m.hw;
-  if (m.kind === "pigeon" || (isFlyingKind(m.kind) && inMoonZone(px + 0.5, py, pz + 0.5))) {
+  if (isBirdKind(m.kind) || (isFlyingKind(m.kind) && inMoonZone(px + 0.5, py, pz + 0.5))) {
     let nx = Math.max(-WORLD_RADIUS + 1, Math.min(WORLD_RADIUS - 1, px + 0.5));
     let nz = Math.max(-WORLD_RADIUS + 1, Math.min(WORLD_RADIUS - 1, pz + 0.5));
     let ny = Math.max(1, Math.min(MAX_Y - 2, Math.round(py)));
@@ -6460,7 +6620,7 @@ function releaseCarriedMobAt(px, py, pz) {
       nx = endSquareCoord(nx); nz = endSquareCoord(nz);
     }
     for (let t = 0; t < 8 && aabbCollidesWorld(nx, ny, nz, hw, m.h); t++) ny++;
-    if (dim === "nether") { for (let t = 0; t < 12 && pigeonLavaAt(nx, ny, nz, m); t++) ny++; }
+    if (dim === "nether") { for (let t = 0; t < 12 && birdLavaAt(nx, ny, nz, m); t++) ny++; }
     if (aabbCollidesWorld(nx, ny, nz, hw, m.h)) { nx = m.pos.x; ny = m.pos.y; nz = m.pos.z; }
     m.pos.set(nx, ny, nz);
     m.mesh.position.copy(m.pos);
@@ -6468,13 +6628,13 @@ function releaseCarriedMobAt(px, py, pz) {
     m.mesh.rotation.x = 0;
     if (m.dim !== undefined) m.dim = dim;
     const yaw2 = Math.random() * Math.PI * 2;
-    m.vel.set(Math.cos(yaw2) * PIGEON_SPEED, 0, Math.sin(yaw2) * PIGEON_SPEED);
+    m.vel.set(Math.cos(yaw2) * BIRD_SPEED, 0, Math.sin(yaw2) * BIRD_SPEED);
     m.onGround = false;
     m.villageBound = false;
-    m.speed = PIGEON_SPEED;
+    m.speed = BIRD_SPEED;
     m.mode = "straight";
     m.arc = null;
-    m.target = pigeonRandomTarget(m.pos);
+    m.target = birdRandomTarget(m.pos);
     m.perchSpot = null;
     m.perchGroup = null;
     m.perchT = 0;
@@ -6551,7 +6711,7 @@ function releaseCarriedMobAt(px, py, pz) {
   }
   m.wanderT = 3 + Math.random() * 3;
   m.path = null; m.pathKey = null; m.blockedT = 0; m._stuckT = 0;
-  if (dim === "end" && m.kind !== "pigeon") {
+  if (dim === "end" && !isBirdKind(m.kind)) {
     endClampXZPos(m.pos); m.mesh.position.copy(m.pos);
     if (m.target) {
       m.target.x = endSquareCoord(m.target.x); m.target.z = endSquareCoord(m.target.z);
@@ -6603,10 +6763,10 @@ function updateCarry(dt) {
     carryMob.mesh.rotation.y = yaw + Math.PI;
     carryMob.mesh.rotation.z = 0;
     carryMob.mesh.rotation.x = 0;
-    if (carryMob.kind === "pigeon") {
+    if (isBirdKind(carryMob.kind)) {
       const squeezed = playerSqueezed();
       carryMob._narrow = squeezed;
-      const target = squeezed ? PIGEON_NARROW_SCALE : 1;
+      const target = squeezed ? BIRD_NARROW_SCALE : 1;
       const cur = carryMob.mesh.scale.x;
       carryMob.mesh.scale.setScalar(cur + (target - cur) * Math.min(1, dt / 0.05));
     }
@@ -6758,8 +6918,8 @@ function mobPortalArrival(mob, spot, targetDim) {
   };
   const win = mobPortalAnchorWin(spot, targetDim);
   const box = win ? portalFrameBBox(win) : null;
-  if (mob.kind === "pigeon") {
-    const lo = pigeonBandMinFor(targetDim) + 1, hi = pigeonBandMaxFor(targetDim) - 1;
+  if (isBirdKind(mob.kind)) {
+    const lo = birdBandMinFor(targetDim) + 1, hi = birdBandMaxFor(targetDim) - 1;
     let nx = Math.max(-WORLD_RADIUS + 1, Math.min(WORLD_RADIUS - 1, spot.x));
     let nz = Math.max(-WORLD_RADIUS + 1, Math.min(WORLD_RADIUS - 1, spot.z));
     if (box) {
@@ -6770,7 +6930,7 @@ function mobPortalArrival(mob, spot, targetDim) {
     }
     let ny = Math.max(lo, Math.min(hi, Math.round(spot.y) + 2));
     if (targetDim === "end") { nx = endSquareCoord(nx); nz = endSquareCoord(nz); }
-    for (let t = 0; t < 12 && (aabbCollidesWorld(nx, ny, nz, hw, h) || inFill(Math.floor(nx), ny, Math.floor(nz)) || (targetDim === "nether" && pigeonLavaAt(nx, ny, nz, null))); t++) ny++;
+    for (let t = 0; t < 12 && (aabbCollidesWorld(nx, ny, nz, hw, h) || inFill(Math.floor(nx), ny, Math.floor(nz)) || (targetDim === "nether" && birdLavaAt(nx, ny, nz, null))); t++) ny++;
     ny = Math.max(lo, Math.min(hi, ny));
     return { x: nx, y: ny, z: nz };
   }
@@ -6911,7 +7071,7 @@ function finishMobPortalTx() {
   if (mi >= 0) mobs.splice(mi, 1);
   const ei = endermen.indexOf(mob);
   if (ei >= 0) endermen.splice(ei, 1);
-  if (pigeonLock === mob) { pigeonLock = null; pigeonLockT = 0; pigeonLockShots = 0; }
+  if (birdLock === mob) { birdLock = null; birdLockT = 0; birdLockShots = 0; }
   if (carryGrappleMob === mob) carryGrappleMob = null;
   let cache = mobPortalCacheFor(tx.targetDim);
   if (tx.targetDim === "over" && !cache.length && !mobs.some((m) => mobDimOf(m) === "over")) {
@@ -6920,7 +7080,7 @@ function finishMobPortalTx() {
     try {
       const before = mobs.length;
       spawnVillagers();
-      spawnPigeons();
+      spawnBirds();
       for (let i = before; i < mobs.length; i++) mobs[i].mesh.visible = false;
       overworldMobCache = snapshotMobsForDim("over", false);
       cache = overworldMobCache;
@@ -8471,6 +8631,7 @@ function mobKindCode(m) {
   if (m.kind === "pigeon") return 4;
   if (m.kind === "enderman") return 5;
   if (m.kind === "iron_golem") return 6;
+  if (m.kind === "parrot") return 7;
   return 0;
 }
 function mobKindFromCode(c) {
@@ -8480,6 +8641,7 @@ function mobKindFromCode(c) {
   if (c === 4) return "pigeon";
   if (c === 5) return "enderman";
   if (c === 6) return "iron_golem";
+  if (c === 7) return "parrot";
   return "villager";
 }
 function mobLookIndex(m) {
@@ -8493,6 +8655,12 @@ function mobLookIndex(m) {
     const hex = m.collar != null ? m.collar : (m.mesh && m.mesh.userData ? m.mesh.userData.collarHex : null);
     const i = WOLF_COLLAR_COLORS.indexOf(hex);
     return i >= 0 ? i : 0;
+  }
+  if (m.kind === "parrot") {
+    if (m.parrotVar != null && m.parrotVar >= 0 && m.parrotVar < PARROT_VARIANT_COUNT) return m.parrotVar;
+    const uv = m.mesh && m.mesh.userData ? m.mesh.userData.parrotVar : null;
+    if (uv != null && uv >= 0 && uv < PARROT_VARIANT_COUNT) return uv;
+    return 0;
   }
   return 0;
 }
@@ -8665,8 +8833,8 @@ function restoreOverworldMobs(list, opts) {
     const e = list[i];
     const kind = mobKindFromCode(e.kind);
     const isBaby = !!e.isBaby && kind === "villager";
-    const hw = kind === "pigeon" ? 0.25 : kind === "wolf" ? 0.30 : (kind === "pig" || kind === "cow") ? 0.32 : kind === "enderman" ? ENDERMAN_HW : kind === "iron_golem" ? GOLEM_HW : (isBaby ? 0.16 : 0.27);
-    const hh = kind === "pigeon" ? 0.5 : kind === "wolf" ? 0.90 : kind === "pig" ? 0.92 : kind === "cow" ? 1.30 : kind === "enderman" ? ENDERMAN_H : kind === "iron_golem" ? GOLEM_HH : (isBaby ? 0.98 : 1.82);
+    const hw = isBirdKind(kind) ? 0.25 : kind === "wolf" ? 0.30 : (kind === "pig" || kind === "cow") ? 0.32 : kind === "enderman" ? ENDERMAN_HW : kind === "iron_golem" ? GOLEM_HW : (isBaby ? 0.16 : 0.27);
+    const hh = isBirdKind(kind) ? 0.5 : kind === "wolf" ? 0.90 : kind === "pig" ? 0.92 : kind === "cow" ? 1.30 : kind === "enderman" ? ENDERMAN_H : kind === "iron_golem" ? GOLEM_HH : (isBaby ? 0.98 : 1.82);
     const isWolf = isJumpingKind(kind);
     let sx = e.x, sy = e.y, sz = e.z;
     if (!isFinite(sx) || !isFinite(sy) || !isFinite(sz)) continue;
@@ -8680,12 +8848,12 @@ function restoreOverworldMobs(list, opts) {
     } else if (isFlyingKind(kind)) {
       sx = Math.max(-WORLD_RADIUS + 1, Math.min(WORLD_RADIUS - 1, sx));
       sz = Math.max(-WORLD_RADIUS + 1, Math.min(WORLD_RADIUS - 1, sz));
-      sy = Math.max(1, Math.min(MAX_Y - 2, isFinite(sy) ? sy : PIGEON_MIN_Y + 20));
+      sy = Math.max(1, Math.min(MAX_Y - 2, isFinite(sy) ? sy : BIRD_MIN_Y + 20));
       spot = placeMobExact(sx, sy, sz, hw, hh, created, isWolf, true);
     } else if (chainedIdx.has(i)) {
       sx = Math.max(-WORLD_RADIUS + 1, Math.min(WORLD_RADIUS - 1, sx));
       sz = Math.max(-WORLD_RADIUS + 1, Math.min(WORLD_RADIUS - 1, sz));
-      sy = Math.max(1, Math.min(MAX_Y - 2, isFinite(sy) ? sy : PIGEON_MIN_Y + 20));
+      sy = Math.max(1, Math.min(MAX_Y - 2, isFinite(sy) ? sy : BIRD_MIN_Y + 20));
       spot = placeMobExact(sx, sy, sz, hw, hh, created, isWolf, false);
       for (let n = 0; spot && n < 3 && isInsidePenPool(spot.x, spot.z); n++) {
         const moved = placeMobExact(spot.x + 2.5, spot.y, spot.z + 2.5, hw, hh, created, isWolf, false);
@@ -8713,7 +8881,8 @@ function restoreOverworldMobs(list, opts) {
       mesh = makeVillagerMesh(isBaby, palIdx);
     } else if (kind === "pig") mesh = makePigMesh();
     else if (kind === "cow") mesh = makeCowMesh();
-    else if (kind === "pigeon") mesh = makePigeonMesh();
+    else if (kind === "pigeon") mesh = makeBirdMesh();
+    else if (kind === "parrot") mesh = makeParrotMesh((e.look >= 0 && e.look < PARROT_VARIANT_COUNT) ? e.look : 0);
     else if (kind === "enderman") {
       ensureEndermanAssets();
       endermanVis = makeEndermanMesh();
@@ -8754,11 +8923,12 @@ function restoreOverworldMobs(list, opts) {
       base.canStep = false;
       base.speed = WALK / 2;
       base.sc = 1;
-    } else if (kind === "pigeon") {
+    } else if (isBirdKind(kind)) {
       base.canStep = false;
-      base.speed = PIGEON_SPEED;
+      base.speed = BIRD_SPEED;
       base.villageBound = false;
       base.sc = 1;
+      if (kind === "parrot") base.parrotVar = mesh.userData.parrotVar;
       base.arc = null;
       base.mode = "straight";
       base.perchSpot = null;
@@ -8771,7 +8941,7 @@ function restoreOverworldMobs(list, opts) {
       const yaw2 = isFinite(e.yaw) ? e.yaw : Math.random() * Math.PI * 2;
       base.yaw = yaw2;
       base.yawTarget = yaw2;
-      base.vel.set(Math.cos(yaw2) * PIGEON_SPEED, 0, Math.sin(yaw2) * PIGEON_SPEED);
+      base.vel.set(Math.cos(yaw2) * BIRD_SPEED, 0, Math.sin(yaw2) * BIRD_SPEED);
     } else if (kind === "enderman") {
       base.canStep = false;
       base.speed = WALK / 2;
@@ -8850,7 +9020,7 @@ function restoreOverworldMobs(list, opts) {
       continue;
     }
     if (isFlyingKind(m.kind)) {
-      if (!m.target) m.target = pigeonRandomTarget(m.pos);
+      if (!m.target) m.target = birdRandomTarget(m.pos);
       m.wanderT = 2 + Math.random() * 4;
     } else {
       m.target = restoreInitialTarget(m);
@@ -8890,7 +9060,7 @@ function restoreOverworldMobs(list, opts) {
   buildMobGrid();
   if (topUp) {
     spawnVillagers();
-    spawnPigeons();
+    spawnBirds();
   }
   return created.length;
 }
@@ -8939,8 +9109,8 @@ function restoreDimMobs(list, dimName, opts) {
     const kind = mobKindFromCode(e.kind);
     if (kind === "dragon") continue;
     const isBaby = !!e.isBaby && kind === "villager";
-    const hw = kind === "pigeon" ? 0.25 : kind === "wolf" ? 0.30 : (kind === "pig" || kind === "cow") ? 0.32 : kind === "enderman" ? ENDERMAN_HW : kind === "iron_golem" ? GOLEM_HW : (isBaby ? 0.16 : 0.27);
-    const hh = kind === "pigeon" ? 0.5 : kind === "wolf" ? 0.90 : kind === "pig" ? 0.92 : kind === "cow" ? 1.30 : kind === "enderman" ? ENDERMAN_H : kind === "iron_golem" ? GOLEM_HH : (isBaby ? 0.98 : 1.82);
+    const hw = isBirdKind(kind) ? 0.25 : kind === "wolf" ? 0.30 : (kind === "pig" || kind === "cow") ? 0.32 : kind === "enderman" ? ENDERMAN_HW : kind === "iron_golem" ? GOLEM_HW : (isBaby ? 0.16 : 0.27);
+    const hh = isBirdKind(kind) ? 0.5 : kind === "wolf" ? 0.90 : kind === "pig" ? 0.92 : kind === "cow" ? 1.30 : kind === "enderman" ? ENDERMAN_H : kind === "iron_golem" ? GOLEM_HH : (isBaby ? 0.98 : 1.82);
     let sx = e.x, sy = e.y, sz = e.z;
     if (!isFinite(sx) || !isFinite(sy) || !isFinite(sz)) continue;
     sx = Math.max(-WORLD_RADIUS + 1, Math.min(WORLD_RADIUS - 1, sx));
@@ -8961,7 +9131,8 @@ function restoreDimMobs(list, dimName, opts) {
       mesh = makeVillagerMesh(isBaby, palIdx);
     } else if (kind === "pig") mesh = makePigMesh();
     else if (kind === "cow") mesh = makeCowMesh();
-    else if (kind === "pigeon") mesh = makePigeonMesh();
+    else if (kind === "pigeon") mesh = makeBirdMesh();
+    else if (kind === "parrot") mesh = makeParrotMesh((e.look >= 0 && e.look < PARROT_VARIANT_COUNT) ? e.look : 0);
     else if (kind === "enderman") {
       ensureEndermanAssets();
       endermanVis = makeEndermanMesh();
@@ -8991,11 +9162,12 @@ function restoreDimMobs(list, dimName, opts) {
     if (kind === "villager") { base.canStep = false; base.speed = WALK / 2; base.sc = isBaby ? 0.52 : 1; base.palIdx = palIdx; }
     else if (kind === "pig" || kind === "cow") { base.canStep = false; base.speed = WALK / 2.2; if (e.penBound == null) base.penBound = false; base.sc = 1; }
     else if (kind === "iron_golem") { base.canStep = false; base.speed = WALK / 2; base.sc = 1; }
-    else if (kind === "pigeon") {
-      base.canStep = false; base.speed = PIGEON_SPEED; base.sc = 1; base.arc = null; base.mode = "straight";
+    else if (isBirdKind(kind)) {
+      base.canStep = false; base.speed = BIRD_SPEED; base.sc = 1; base.arc = null; base.mode = "straight";
+      if (kind === "parrot") base.parrotVar = mesh.userData.parrotVar;
       base.perchSpot = null; base.perchGroup = null; base.perchT = 0; base.perchWander = null; base.perchWanderT = 0;
       base.perchTimeout = 0; base.perchRetry = 0;
-      base.vel.set(Math.cos(ryaw) * PIGEON_SPEED, 0, Math.sin(ryaw) * PIGEON_SPEED);
+      base.vel.set(Math.cos(ryaw) * BIRD_SPEED, 0, Math.sin(ryaw) * BIRD_SPEED);
     } else if (kind === "enderman") {
       base.canStep = false; base.speed = WALK / 2; base.sc = 1;
       base.g = endermanVis.g; base.eyeMat = endermanVis.eyeMat; base.eyes = endermanVis.eyes;
@@ -9038,7 +9210,7 @@ function restoreDimMobs(list, dimName, opts) {
       if (!isFlyingKind(m.kind)) m._settleUntil = performance.now() / 1000 + 12 + Math.random() * 8;
       continue;
     }
-    if (isFlyingKind(m.kind)) { if (!m.target) m.target = pigeonRandomTarget(m.pos); m.wanderT = 2 + Math.random() * 4; }
+    if (isFlyingKind(m.kind)) { if (!m.target) m.target = birdRandomTarget(m.pos); m.wanderT = 2 + Math.random() * 4; }
     else {
       m.target = restoreInitialTarget(m);
       m.path = null;
@@ -9060,10 +9232,10 @@ function restoreDimMobs(list, dimName, opts) {
   buildMobGrid();
   return { n: created.length, ids: idByListIdx };
 }
-function intersectsMob(bx, by, bz, ignorePigeons) {
+function intersectsMob(bx, by, bz, ignoreBirds) {
   const nearby = nearbyMobsFor(bx + 0.5, bz + 0.5, 1);
   for (const m of nearby) {
-    if (isFlyingKind(m.kind) && m.kind !== "dragon" && ignorePigeons) continue;
+    if (isFlyingKind(m.kind) && m.kind !== "dragon" && ignoreBirds) continue;
     if (isMobHeld(m)) continue;
     if (isChained(m)) continue;
     if (m.dim !== undefined && m.dim !== dim) continue;
@@ -9073,10 +9245,10 @@ function intersectsMob(bx, by, bz, ignorePigeons) {
   }
   return false;
 }
-function isMobStandingOn(bx, by, bz, ignorePigeons) {
+function isMobStandingOn(bx, by, bz, ignoreBirds) {
   const nearby = nearbyMobsFor(bx + 0.5, bz + 0.5, 1);
   for (const m of nearby) {
-    if (isFlyingKind(m.kind) && m.kind !== "dragon" && ignorePigeons) continue;
+    if (isFlyingKind(m.kind) && m.kind !== "dragon" && ignoreBirds) continue;
     if (isMobHeld(m)) continue;
     if (isChained(m)) continue;
     if (m.dim !== undefined && m.dim !== dim) continue;
@@ -9442,7 +9614,7 @@ function startFillSlide(m) {
     if (downOk) pts.push([sx, down, sz]);
   }
   m._fillSlide = { pts, i: 0 };
-  if (m.kind === "pigeon") { m.perchSpot = null; m.perchGroup = null; }
+  if (isBirdKind(m.kind)) { m.perchSpot = null; m.perchGroup = null; }
 }
 function updateMobs(dt) {
   if (!mobs.length) return;
@@ -9528,7 +9700,7 @@ function updateMobs(dt) {
     const now = performance.now() / 1000;
     if (m.kind === "dragon") continue;
     if (m.kind === "enderman") { updateEnderman(m, dt); continue; }
-    if (m.kind === "pigeon") {
+    if (isBirdKind(m.kind)) {
       if (dim !== "over" && dim !== "end" && dim !== "nether") { m.mesh.position.copy(m.pos); continue; }
       if (m._chainFall) {
         if (m.vel == null) m.vel = new THREE.Vector3(0, 0, 0);
@@ -9552,7 +9724,7 @@ function updateMobs(dt) {
         m.mesh.position.copy(m.pos);
         continue;
       }
-      updatePigeon(m, dt);
+      updateBird(m, dt);
       continue;
     }
     if (m.pos.y < -15) {
@@ -10402,12 +10574,12 @@ function resumeMobPanic(m, e) {
   const sx = isFinite(e.panicSrcX) ? e.panicSrcX : m.pos.x;
   const sz = isFinite(e.panicSrcZ) ? e.panicSrcZ : m.pos.z;
   const flags = (e.panicFlags & 255) || 0;
-  if (m.kind === "pigeon") {
+  if (isBirdKind(m.kind)) {
     if (pT <= 0.05 && pUntil <= 0.05) return false;
     m.perchSpot = null; m.perchGroup = null; m.perchT = 0; m.perchWander = null; m.perchWanderT = 0; m.perchTimeout = 0; m.perchRetry = 0;
     m.mode = "straight"; m.arc = null;
     m._tunnel = false; m._tFree = 0; m._tPath = null; m._tGoal = null;
-    m.target = (flags & 2) ? panicPigeonLeaveTarget(m, sx, sz) : panicPigeonTarget(m, sx, sz);
+    m.target = (flags & 2) ? panicBirdLeaveTarget(m, sx, sz) : panicBirdTarget(m, sx, sz);
     m.targetMode = "panic";
     m._panicSrcX = sx; m._panicSrcZ = sz;
     m._panicVillage = !!(flags & 2);
@@ -10635,14 +10807,14 @@ function wolfLeaveTarget(m, cx, cz) {
   }
   return fleePointAway(m, cx, cz);
 }
-function panicPigeonTarget(m, cx, cz) {
+function panicBirdTarget(m, cx, cz) {
   let dx = m.pos.x - cx, dz = m.pos.z - cz;
   let len = Math.hypot(dx, dz);
   if (len < 0.15) { const a = Math.random() * Math.PI * 2; dx = Math.cos(a); dz = Math.sin(a); len = 1; }
   else { dx /= len; dz /= len; }
   const inEnd = endMobInEnd(m);
-  const loB = inEnd ? DRAGON_MIN_Y : pigeonBandMin(m);
-  const hiB = inEnd ? DRAGON_MAX_Y : pigeonBandMax(m);
+  const loB = inEnd ? DRAGON_MIN_Y : birdBandMin(m);
+  const hiB = inEnd ? DRAGON_MAX_Y : birdBandMax(m);
   for (let t = 0; t < 8; t++) {
     const ang = Math.atan2(dz, dx) + (Math.random() - 0.5) * 1.2;
     const dist = 15 + Math.random() * 10;
@@ -10651,19 +10823,19 @@ function panicPigeonTarget(m, cx, cz) {
     let ty = Math.max(loB, Math.min(hiB, m.pos.y + (Math.random() - 0.5) * 6));
     if (inEnd) { tx = endSquareCoord(tx); tz = endSquareCoord(tz); }
     else { tx = Math.max(-WORLD_RADIUS + 2, Math.min(WORLD_RADIUS - 2, tx)); tz = Math.max(-WORLD_RADIUS + 2, Math.min(WORLD_RADIUS - 2, tz)); ty = Math.max(1.5, Math.min(MAX_Y - 1, ty)); }
-    if (pigeonSegmentFree(m.pos.x, m.pos.y, m.pos.z, tx, ty, tz, m)) return new THREE.Vector3(tx, ty, tz);
+    if (birdSegmentFree(m.pos.x, m.pos.y, m.pos.z, tx, ty, tz, m)) return new THREE.Vector3(tx, ty, tz);
   }
   return new THREE.Vector3(
     Math.max(-WORLD_RADIUS + 2, Math.min(WORLD_RADIUS - 2, m.pos.x + dx * 10)),
     Math.max(loB, Math.min(hiB, m.pos.y)),
     Math.max(-WORLD_RADIUS + 2, Math.min(WORLD_RADIUS - 2, m.pos.z + dz * 10)));
 }
-function panicPigeonLeaveTarget(m, cx, cz) {
+function panicBirdLeaveTarget(m, cx, cz) {
   const [bdx, bdz] = panicLeaveDir(m.pos.x, m.pos.z, cx, cz);
   const baseAng = Math.atan2(bdz, bdx);
   const inEnd = endMobInEnd(m);
-  const loB = inEnd ? DRAGON_MIN_Y : pigeonBandMin(m);
-  const hiB = inEnd ? DRAGON_MAX_Y : pigeonBandMax(m);
+  const loB = inEnd ? DRAGON_MIN_Y : birdBandMin(m);
+  const hiB = inEnd ? DRAGON_MAX_Y : birdBandMax(m);
   for (let t = 0; t < 10; t++) {
     const ang = baseAng + (Math.random() - 0.5) * 0.9;
     const dist = 20 + Math.random() * 15;
@@ -10677,11 +10849,11 @@ function panicPigeonLeaveTarget(m, cx, cz) {
       ty = Math.max(1.5, Math.min(MAX_Y - 1, ty));
       if (tx >= villageMinX - 10 && tx <= villageMaxX + 10 && tz >= villageMinZ - 10 && tz <= villageMaxZ + 10) continue;
     }
-    if (pigeonSegmentFree(m.pos.x, m.pos.y, m.pos.z, tx, ty, tz, m)) return new THREE.Vector3(tx, ty, tz);
+    if (birdSegmentFree(m.pos.x, m.pos.y, m.pos.z, tx, ty, tz, m)) return new THREE.Vector3(tx, ty, tz);
   }
-  return panicPigeonTarget(m, cx, cz);
+  return panicBirdTarget(m, cx, cz);
 }
-function panicPigeon(m, cx, cy, cz, villageBlast, force) {
+function panicBird(m, cx, cy, cz, villageBlast, force) {
   if (!force) {
     if (villageBlast) {
       if (dim !== "over" || !mobInVillageSq(m) || Math.abs(m.pos.y - villageCenter.y) > 20) return;
@@ -10693,7 +10865,7 @@ function panicPigeon(m, cx, cy, cz, villageBlast, force) {
   m.perchSpot = null; m.perchGroup = null; m.perchT = 0; m.perchWander = null; m.perchWanderT = 0; m.perchTimeout = 0; m.perchRetry = 0;
   m.mode = "straight"; m.arc = null;
   m._tunnel = false; m._tFree = 0; m._tPath = null; m._tGoal = null;
-  m.target = villageBlast ? panicPigeonLeaveTarget(m, cx, cz) : panicPigeonTarget(m, cx, cz);
+  m.target = villageBlast ? panicBirdLeaveTarget(m, cx, cz) : panicBirdTarget(m, cx, cz);
   m.targetMode = "panic";
   m._panicSrcX = cx; m._panicSrcZ = cz;
   m._panicVillage = !!villageBlast;
@@ -10730,7 +10902,7 @@ function panicGeneric(cx, cy, cz) {
     if (isMobHeld(m)) continue;
     if (isChained(m)) continue;
     if (m.dim !== undefined && m.dim !== dim) continue;
-    if (m.kind === "pigeon") { panicPigeon(m, cx, cy, cz, villageBlast); continue; }
+    if (isBirdKind(m.kind)) { panicBird(m, cx, cy, cz, villageBlast); continue; }
     if (m.kind === "enderman") { panicEnderman(m, cx, cy, cz, villageBlast); continue; }
     if (villageBlast) {
       if (!mobInVillageSq(m)) continue;
@@ -10763,7 +10935,7 @@ function panicSingleMob(m, cx, cy, cz, force) {
   if (isChained(m)) return;
   if (m.dim !== undefined && m.dim !== dim) return;
   const vb = blastInVillageSq(cx, cy, cz);
-  if (m.kind === "pigeon") { panicPigeon(m, cx, cy, cz, vb, force); return; }
+  if (isBirdKind(m.kind)) { panicBird(m, cx, cy, cz, vb, force); return; }
   if (m.kind === "enderman") { panicEnderman(m, cx, cy, cz, vb, force); return; }
   const now = performance.now() / 1000;
   if (!force && m.fleeUntil != null && m.fleeUntil > now + PANIC_TIME) return;
@@ -11014,20 +11186,20 @@ function generateEnd() {
 // cliffs that drop into the sea.
 // ---------------------------------------------------------------------------
 const NETHER_FIRE_LEVEL = 12;
-const NETHER_PIGEON_MIN_Y = NETHER_FIRE_LEVEL + 5;
-const NETHER_PIGEON_MAX_Y = 300;
-function pigeonDimOf(m) { return (m && m.dim !== undefined ? m.dim : dim); }
-function pigeonBandMinFor(d) { return d === "nether" ? NETHER_PIGEON_MIN_Y : PIGEON_MIN_Y; }
-function pigeonBandMaxFor(d) { return d === "nether" ? netherPigeonCeiling() : PIGEON_MAX_Y; }
-function netherPigeonCeiling() {
+const NETHER_BIRD_MIN_Y = NETHER_FIRE_LEVEL + 5;
+const NETHER_BIRD_MAX_Y = 300;
+function birdDimOf(m) { return (m && m.dim !== undefined ? m.dim : dim); }
+function birdBandMinFor(d) { return d === "nether" ? NETHER_BIRD_MIN_Y : BIRD_MIN_Y; }
+function birdBandMaxFor(d) { return d === "nether" ? netherBirdCeiling() : BIRD_MAX_Y; }
+function netherBirdCeiling() {
   let top = 0;
   for (const v of volcanoes) if (v && v.rim > top) top = v.rim;
-  return top > 0 ? top + 8 : NETHER_PIGEON_MAX_Y;
+  return top > 0 ? top + 8 : NETHER_BIRD_MAX_Y;
 }
-function pigeonBandMin(m) { return pigeonBandMinFor(pigeonDimOf(m)); }
-function pigeonBandMax(m) { return pigeonBandMaxFor(pigeonDimOf(m)); }
-function pigeonNetherLegY(aroundY, wide) {
-  const lo = pigeonBandMinFor("nether") + 1, hi = pigeonBandMaxFor("nether") - 1;
+function birdBandMin(m) { return birdBandMinFor(birdDimOf(m)); }
+function birdBandMax(m) { return birdBandMaxFor(birdDimOf(m)); }
+function birdNetherLegY(aroundY, wide) {
+  const lo = birdBandMinFor("nether") + 1, hi = birdBandMaxFor("nether") - 1;
   if (Math.random() < 0.25) {
     const span = wide ? Math.max(1, hi - lo) : 150;
     const c = wide ? (lo + hi) / 2 : aroundY;
@@ -11612,7 +11784,7 @@ const SPACE_SKY = new THREE.Color(0x05070f);
 const SKY_SPACE_START = CLOUD_BASE + CLOUD_SPAN * 3 / 8;
 const SKY_SPACE_END = CLOUD_BASE + CLOUD_SPAN * 5 / 8;
 const SKY_STAR_START = SKY_SPACE_START, SKY_STAR_FULL = SKY_SPACE_END;
-const PIGEON_MAX_Y = SKY_SPACE_START;
+const BIRD_MAX_Y = SKY_SPACE_START;
 
 const boxGeo = new THREE.BoxGeometry(1, 1, 1);
 const dummy = new THREE.Object3D();
@@ -12424,7 +12596,7 @@ const GRAPPLE_SPEED = 26;
 const GRAPPLE_THROW = 70;
 const GRAPPLE_RETRACT = 275;
 const GRAPPLE_FLING = 34;
-const PIGEON_FOLLOW_DIST = 2.5;
+const BIRD_FOLLOW_DIST = 2.5;
 const DRAGON_FOLLOW_DIST = 8;
 const MOB_GRAPPLE_THROW = GRAPPLE_THROW * 1.25;
 const MOB_GRAPPLE_RETRACT = MOB_GRAPPLE_THROW * 1.25;
@@ -13300,7 +13472,7 @@ function grabRideForCarry(mob) {
     grappleTowInit = false;
     grappleTowPos.set(0, 0, 0);
     syncGrappleColor();
-    if (front.kind === "pigeon" && (front.mode === "perch" || front.mode === "toPerch")) pigeonTakeoff(front);
+    if (isBirdKind(front.kind) && (front.mode === "perch" || front.mode === "toPerch")) birdTakeoff(front);
     const backId = chainChild.get(PLAYER_CHAIN_ID);
     const pl = backId !== undefined ? chainLinks.get(backId) : null;
     if (pl) pl.playerFrontId = front.id;
@@ -13400,7 +13572,7 @@ function insertChainAheadOfPlayer(mob) {
   if (chainChild.has(ride.id)) {
     if (!insertChainBehind(ride, mob)) return false;
   } else if (!linkChain(ride, mob)) return false;
-  if (ride.kind === "pigeon" && (ride.mode === "perch" || ride.mode === "toPerch")) pigeonTakeoff(ride);
+  if (isBirdKind(ride.kind) && (ride.mode === "perch" || ride.mode === "toPerch")) birdTakeoff(ride);
   grappleMob = mob;
   if (mob.kind === "dragon") grappleMobOffset.set(0, DRAGON_ANCHOR_DY, 0);
   else grappleMobOffset.set(0, mob.h + 0.001, 0);
@@ -13587,7 +13759,7 @@ function updateGrapple(dt) {
   const grappleChainTail = grappleMob && grappleHooked && !chainChild.has(grappleMob.id) && (isChained(grappleMob) || isChainCarrier(grappleMob));
   if (grappleMob && grappleHooked) {
     const pm = grappleMob;
-    const followDist = pm.kind === "dragon" ? DRAGON_FOLLOW_DIST : PIGEON_FOLLOW_DIST;
+    const followDist = pm.kind === "dragon" ? DRAGON_FOLLOW_DIST : BIRD_FOLLOW_DIST;
     const pdx = grappleTarget.x - pos.x, pdy = grappleTarget.y - pos.y, pdz = grappleTarget.z - pos.z;
     const pvl = pm.vel.length();
     const followR = (grappleTowInit ? followDist + 2 : followDist) + pvl * 0.25;
@@ -13636,7 +13808,7 @@ function updateGrapple(dt) {
       vel.z += ((ez / exl * ecl) * stiff - (vel.z - svz) * damp) * dt;
       const spd = Math.hypot(vel.x, vel.y, vel.z);
       const rideSpd = chainLeadSpeedOf(pm, dt);
-      const maxSp = Math.max((pm.speed || PIGEON_SPEED) * 2.2, pvl * 1.5, rideSpd + 8 + grappleRideAxV.length() * followDist);
+      const maxSp = Math.max((pm.speed || BIRD_SPEED) * 2.2, pvl * 1.5, rideSpd + 8 + grappleRideAxV.length() * followDist);
       if (spd > maxSp) { vel.x *= maxSp / spd; vel.y *= maxSp / spd; vel.z *= maxSp / spd; }
       let remaining = Math.min(Math.hypot(vel.x, vel.y, vel.z) * dt, 1.2);
       let blockedX = false, blockedY = false, blockedZ = false;
@@ -14243,7 +14415,7 @@ function breakBlock() {
   const bid = getBlock(x, y, z);
   if (bid === WATER || bid === LAVA || bid === MOON_WATER) return;
   setBlock(x, y, z, AIR);
-  pigeonNoticeBreak(x, y, z);
+  birdNoticeBreak(x, y, z);
   if (placeBatch) placeBatch.push([x, y, z]);
   else { refreshBlocks([[x, y, z]]); queueSave(); }
 }
@@ -14489,11 +14661,11 @@ function tntSyncOnFire(mob, sx, sy, sz) {
   const cur = tntEta.get(mob);
   const eta = cur === undefined ? need : Math.max(cur, need);
   tntEta.set(mob, eta);
-  for (const t of tntLit.values()) if (t.pigeon === mob && t.mesh && !t.stuck) t.life = Math.max(t.life, eta + 0.5);
+  for (const t of tntLit.values()) if (t.bird === mob && t.mesh && !t.stuck) t.life = Math.max(t.life, eta + 0.5);
   return eta;
 }
 function tntSyncClear(mob) {
-  for (const t of tntLit.values()) if (t.pigeon === mob && t.mesh && !t.stuck) return;
+  for (const t of tntLit.values()) if (t.bird === mob && t.mesh && !t.stuck) return;
   tntEta.delete(mob);
 }
 const bursts = [];
@@ -14553,7 +14725,7 @@ function replayLiveFx(list) {
   for (const e of list) {
     if (![e.x, e.y, e.z].every(isFinite)) continue;
     if (e.tag === 0) spawnExplosion(e.x, e.y, e.z);
-    else if (e.tag === 1) spawnPigeonBurst(e.x, e.y, e.z);
+    else if (e.tag === 1) spawnBirdBurst(e.x, e.y, e.z);
     else if (e.tag === 2) spawnDragonBurst(e.x, e.y, e.z, e.hex || 0xd06bff);
     else if (e.tag === 3) spawnDragonDeath(e.x, e.y, e.z);
   }
@@ -14568,12 +14740,12 @@ function snapshotLiveTNT() {
   for (const t of tntLit.values()) {
     let targetKind = 0;
     let tx = 0, ty = 0, tz = 0, tkind = 0;
-    if (t.pigeon) {
-      if (t.pigeon.kind === "dragon") targetKind = 1;
-      else if (mobs.includes(t.pigeon)) {
+    if (t.bird) {
+      if (t.bird.kind === "dragon") targetKind = 1;
+      else if (mobs.includes(t.bird)) {
         targetKind = 2;
-        tx = t.pigeon.pos.x; ty = t.pigeon.pos.y; tz = t.pigeon.pos.z;
-        tkind = mobKindCode(t.pigeon);
+        tx = t.bird.pos.x; ty = t.bird.pos.y; tz = t.bird.pos.z;
+        tkind = mobKindCode(t.bird);
       } else continue;
     }
     bombs.push({ t, targetKind, tx, ty, tz, tkind });
@@ -14582,13 +14754,13 @@ function snapshotLiveTNT() {
   for (const q of explosionQueue) {
     let qKind = 0;
     let qx = 0, qy = 0, qz = 0, qk = 0;
-    if (q.pigeon) {
-      if (q.pigeon === true) qKind = 3;
-      else if (q.pigeon.kind === "dragon") qKind = 1;
-      else if (mobs.includes(q.pigeon)) {
+    if (q.bird) {
+      if (q.bird === true) qKind = 3;
+      else if (q.bird.kind === "dragon") qKind = 1;
+      else if (mobs.includes(q.bird)) {
         qKind = 2;
-        qx = q.pigeon.pos.x; qy = q.pigeon.pos.y; qz = q.pigeon.pos.z;
-        qk = mobKindCode(q.pigeon);
+        qx = q.bird.pos.x; qy = q.bird.pos.y; qz = q.bird.pos.z;
+        qk = mobKindCode(q.bird);
       } else continue;
     }
     queue.push({ q, qKind, qx, qy, qz, qk });
@@ -14598,7 +14770,7 @@ function snapshotLiveTNT() {
     if (!(eta > 0)) continue;
     let hasBomb = false;
     for (const t of tntLit.values()) {
-      if (t.pigeon === mob && t.mesh && !t.stuck) { hasBomb = true; break; }
+      if (t.bird === mob && t.mesh && !t.stuck) { hasBomb = true; break; }
     }
     if (!hasBomb) continue;
     if (mob.kind === "dragon") {
@@ -14635,38 +14807,38 @@ function restoreLiveTNT(savedBombs, savedQueue, savedEtas) {
   const now = performance.now();
   if (savedQueue) {
     for (const e of savedQueue) {
-      let pigeon = null;
+      let bird = null;
       if (e.qKind === 1) {
-        if (dragon.mob && mobs.includes(dragon.mob)) pigeon = dragon.mob;
+        if (dragon.mob && mobs.includes(dragon.mob)) bird = dragon.mob;
         else continue;
       } else if (e.qKind === 3) {
-        pigeon = true;
+        bird = true;
       } else if (e.qKind === 2) {
-        pigeon = findSavedTargetMob(dim, e.qk, e.qx, e.qy, e.qz);
-        if (!pigeon) continue;
+        bird = findSavedTargetMob(dim, e.qk, e.qx, e.qy, e.qz);
+        if (!bird) continue;
       }
       explosionQueue.push({
         x: e.x, y: e.y, z: e.z,
         pointBlank: !!e.pointBlank, homing: !!e.homing,
         due: e.remain > 0.01 ? now + e.remain * 1000 : 0,
-        ...(pigeon ? { pigeon } : {}),
+        ...(bird ? { bird } : {}),
       });
     }
   }
   if (savedBombs) {
     for (const e of savedBombs) {
-      let pigeon = null;
+      let bird = null;
       if (e.targetKind === 1) {
-        if (dragon.mob && mobs.includes(dragon.mob)) pigeon = dragon.mob;
+        if (dragon.mob && mobs.includes(dragon.mob)) bird = dragon.mob;
         else continue;
       } else if (e.targetKind === 2) {
-        pigeon = findSavedTargetMob(dim, e.tkind, e.tx, e.ty, e.tz);
-        if (!pigeon) continue;
+        bird = findSavedTargetMob(dim, e.tkind, e.tx, e.ty, e.tz);
+        if (!bird) continue;
       }
       const spr = makeFuseSprite();
       spr.position.set(e.px, e.py + 0.85, e.pz);
       scene.add(spr);
-      drawFuseSprite(spr, Math.max(0, pigeon ? e.life : e.fuse));
+      drawFuseSprite(spr, Math.max(0, bird ? e.life : e.fuse));
       let mesh = null;
       if (e.hasMesh) {
         mesh = makeTNTBomb();
@@ -14679,7 +14851,7 @@ function restoreLiveTNT(savedBombs, savedQueue, savedEtas) {
         fuse: e.fuse, life: e.life,
         spr, mesh, stuck: !!e.stuck,
         ax: e.ax, ay: e.ay, az: e.az,
-        pigeon,
+        bird,
       };
       tntLit.set(e.fly ? ("fly" + (tntFlySeq++)) : key(e.bx, e.by, e.bz), t);
     }
@@ -14696,7 +14868,7 @@ function restoreLiveTNT(savedBombs, savedQueue, savedEtas) {
       } else continue;
       let hasBomb = false;
       for (const t of tntLit.values()) {
-        if (t.pigeon === mob && t.mesh && !t.stuck) { hasBomb = true; break; }
+        if (t.bird === mob && t.mesh && !t.stuck) { hasBomb = true; break; }
       }
       if (!hasBomb) continue;
       tntEta.set(mob, e.eta);
@@ -14710,7 +14882,7 @@ function tntFizzleAim(bx, by, bz) {
   const dir = new THREE.Vector3();
   camera.getWorldDirection(dir);
   const eye = camera.position;
-  const mob = pickMob(dir, PIGEON_AIM_DIST);
+  const mob = pickMob(dir, BIRD_AIM_DIST);
   if (!mob) return null;
   if (mob.kind === "dragon") {
     if (dim !== "end" || !dragon.mesh || !dragon.mob) return null;
@@ -14726,7 +14898,7 @@ function fizzleTNT(bx, by, bz) {
   setBlock(bx, by, bz, AIR);
   refreshBlocks([[bx, by, bz]]);
   queueSave();
-  spawnPigeonBurst(bx + 0.5, by + 0.5, bz + 0.5);
+  spawnBirdBurst(bx + 0.5, by + 0.5, bz + 0.5);
 }
 function igniteTNT(bx, by, bz, fuse = FUSE_TIME) {
   const k = key(bx, by, bz);
@@ -14744,13 +14916,13 @@ function igniteTNT(bx, by, bz, fuse = FUSE_TIME) {
   const spr = makeFuseSprite();
   spr.position.set(bx + 0.5, by + 1.35, bz + 0.5);
   scene.add(spr);
-  const t = { bx, by, bz, px: bx + 0.5, py: by + 1.1, pz: bz + 0.5, fuse, life: fuse + 2, spr, mesh: null, stuck: false, ax: 0, ay: 0, az: 0, pigeon: null };
+  const t = { bx, by, bz, px: bx + 0.5, py: by + 1.1, pz: bz + 0.5, fuse, life: fuse + 2, spr, mesh: null, stuck: false, ax: 0, ay: 0, az: 0, bird: null };
   let aimed = null;
   if ((dim === "over" || dim === "end" || dim === "nether") && !chainBreaking) {
     const dir = new THREE.Vector3();
     camera.getWorldDirection(dir);
     const eye = camera.position;
-    const mob = pickMob(dir, PIGEON_AIM_DIST);
+    const mob = pickMob(dir, BIRD_AIM_DIST);
     if (mob && (isFlyingKind(mob.kind) || isChained(mob) || isChainCarrier(mob)) && (dim === "over" || mob.kind !== "dragon")) {
       const off = getMobHitOffset(eye, dir, mob);
       const hx = off ? mob.pos.x + off.x : mob.pos.x, hy = off ? mob.pos.y + off.y : mob.pos.y + mob.h * 0.5, hz = off ? mob.pos.z + off.z : mob.pos.z;
@@ -14758,22 +14930,22 @@ function igniteTNT(bx, by, bz, fuse = FUSE_TIME) {
       const blockT = Math.hypot(bx + 0.5 - eye.x, by + 0.5 - eye.y, bz + 0.5 - eye.z);
       if (mobT <= blockT + 0.5) {
         const nowI = performance.now() / 1000;
-        const freshI = pigeonLock === mob && nowI - pigeonLockT < PIGEON_LOCK_TIME;
-        if (freshI ? pigeonLockShots < 3 : !tntTargeted(mob)) {
-          t.pigeon = mob;
-          pigeonLock = mob;
-          pigeonLockT = nowI;
-          if (!freshI) pigeonLockShots = 0;
-          pigeonLockShots++;
+        const freshI = birdLock === mob && nowI - birdLockT < BIRD_LOCK_TIME;
+        if (freshI ? birdLockShots < 3 : !tntTargeted(mob)) {
+          t.bird = mob;
+          birdLock = mob;
+          birdLockT = nowI;
+          if (!freshI) birdLockShots = 0;
+          birdLockShots++;
         } else aimed = mob;
       }
     }
   }
-  if (dim === "end" && dragon.mesh && dragon.mob && !chainBreaking && !t.pigeon) {
+  if (dim === "end" && dragon.mesh && dragon.mob && !chainBreaking && !t.bird) {
     const dir = new THREE.Vector3();
     camera.getWorldDirection(dir);
     const eye = camera.position;
-    const mob = pickMob(dir, PIGEON_AIM_DIST);
+    const mob = pickMob(dir, BIRD_AIM_DIST);
     if (mob && mob.kind === "dragon") {
       const off = getMobHitOffset(eye, dir, mob);
       const hx = off ? mob.pos.x + off.x : mob.pos.x, hy = off ? mob.pos.y + off.y : mob.pos.y + mob.h * 0.5, hz = off ? mob.pos.z + off.z : mob.pos.z;
@@ -14782,19 +14954,19 @@ function igniteTNT(bx, by, bz, fuse = FUSE_TIME) {
       if (mobT <= blockT + 0.5) {
         const cap = dragonShotsCap();
         const nowI = performance.now() / 1000;
-        const freshI = pigeonLock === mob && nowI - pigeonLockT < PIGEON_LOCK_TIME;
-        if (cap > 0 && (freshI ? pigeonLockShots < cap : !tntTargeted(mob))) {
-          t.pigeon = mob;
-          pigeonLock = mob;
-          pigeonLockT = nowI;
-          if (!freshI) pigeonLockShots = 0;
-          pigeonLockShots++;
+        const freshI = birdLock === mob && nowI - birdLockT < BIRD_LOCK_TIME;
+        if (cap > 0 && (freshI ? birdLockShots < cap : !tntTargeted(mob))) {
+          t.bird = mob;
+          birdLock = mob;
+          birdLockT = nowI;
+          if (!freshI) birdLockShots = 0;
+          birdLockShots++;
         } else aimed = mob;
       }
     }
   }
-  if (t.pigeon) {
-    const syncEta = tntSyncOnFire(t.pigeon, bx + 0.5, by + 1.1, bz + 0.5);
+  if (t.bird) {
+    const syncEta = tntSyncOnFire(t.bird, bx + 0.5, by + 1.1, bz + 0.5);
     t.life = Math.max(t.life, syncEta + 0.5);
     setBlock(bx, by, bz, AIR);
     refreshBlocks([[bx, by, bz]]);
@@ -14812,18 +14984,18 @@ function igniteTNT(bx, by, bz, fuse = FUSE_TIME) {
 }
 
 let tntFlySeq = 0;
-const PIGEON_AIM_DIST = 200;
-const PIGEON_LOCK_TIME = 0.5;
-const PIGEON_LOCK_BURST_DIST = 30;
-let pigeonLock = null;
-let pigeonLockT = 0;
-let pigeonLockShots = 0;
-function aimedPigeon() {
+const BIRD_AIM_DIST = 200;
+const BIRD_LOCK_TIME = 0.5;
+const BIRD_LOCK_BURST_DIST = 30;
+let birdLock = null;
+let birdLockT = 0;
+let birdLockShots = 0;
+function aimedBird() {
   if (dim !== "over" && dim !== "end" && dim !== "nether") return null;
   const dir = new THREE.Vector3();
   camera.getWorldDirection(dir);
   const eye = camera.position;
-  const mob = pickMob(dir, PIGEON_AIM_DIST);
+  const mob = pickMob(dir, BIRD_AIM_DIST);
   if (!mob) return null;
   if (dim === "end") {
     if (mob.kind === "dragon" || (!isFlyingKind(mob.kind) && !isChained(mob) && !isChainCarrier(mob))) return null;
@@ -14837,19 +15009,19 @@ function aimedPigeon() {
   }
   return mob;
 }
-function livePigeonLock() {
-  if (pigeonLock && mobs.includes(pigeonLock)) return pigeonLock;
-  pigeonLock = null;
+function liveBirdLock() {
+  if (birdLock && mobs.includes(birdLock)) return birdLock;
+  birdLock = null;
   return null;
 }
 function tntChainAimMob() {
   if (dim !== "over" && dim !== "end" && dim !== "nether") return null;
   const dir = new THREE.Vector3();
   camera.getWorldDirection(dir);
-  const mob = pickMob(dir, PIGEON_AIM_DIST);
+  const mob = pickMob(dir, BIRD_AIM_DIST);
   if (!mob || !mobs.includes(mob) || mob.kind === "dragon") return null;
   if (isGroundedChainVictim(mob)) return mob;
-  if (livePigeonLock() === mob) return mob;
+  if (liveBirdLock() === mob) return mob;
   if (!isFlyingKind(mob.kind) && tntTargeted(mob)) return mob;
   return null;
 }
@@ -14858,7 +15030,7 @@ function aimOnMob() {
   const dir = new THREE.Vector3();
   camera.getWorldDirection(dir);
   const eye = camera.position;
-  const mob = pickMob(dir, PIGEON_AIM_DIST);
+  const mob = pickMob(dir, BIRD_AIM_DIST);
   if (!mob || !mobs.includes(mob)) return null;
   const off = getMobHitOffset(eye, dir, mob);
   const hx = off ? mob.pos.x + off.x : mob.pos.x, hy = off ? mob.pos.y + off.y : mob.pos.y + mob.h * 0.5, hz = off ? mob.pos.z + off.z : mob.pos.z;
@@ -14868,7 +15040,7 @@ function aimOnMob() {
   return mob;
 }
 function tntTargeted(mob) {
-  for (const t of tntLit.values()) if (t.pigeon === mob) return true;
+  for (const t of tntLit.values()) if (t.bird === mob) return true;
   return false;
 }
 function dragonShotsCap() {
@@ -14880,7 +15052,7 @@ function aimedDragon() {
   const dir = new THREE.Vector3();
   camera.getWorldDirection(dir);
   const eye = camera.position;
-  const mob = pickMob(dir, PIGEON_AIM_DIST);
+  const mob = pickMob(dir, BIRD_AIM_DIST);
   if (!mob || mob.kind !== "dragon") return null;
   const off = getMobHitOffset(eye, dir, mob);
   const hx = off ? mob.pos.x + off.x : mob.pos.x, hy = off ? mob.pos.y + off.y : mob.pos.y + mob.h * 0.5, hz = off ? mob.pos.z + off.z : mob.pos.z;
@@ -14893,59 +15065,59 @@ function aimedDragon() {
 }
 function tryFireLockedTNT() {
   const now = performance.now() / 1000;
-  const mob = aimedPigeon();
+  const mob = aimedBird();
   if (mob) {
-    const fresh = pigeonLock === mob && now - pigeonLockT < PIGEON_LOCK_TIME;
+    const fresh = birdLock === mob && now - birdLockT < BIRD_LOCK_TIME;
     if (!fresh) {
       if (tntTargeted(mob)) return false;
-      pigeonLock = mob;
-      pigeonLockShots = 0;
+      birdLock = mob;
+      birdLockShots = 0;
     }
-    if (pigeonLockShots >= 3) return false;
-    fireTNTAtPigeon(mob);
-    pigeonLock = mob;
-    pigeonLockT = now;
-    pigeonLockShots++;
+    if (birdLockShots >= 3) return false;
+    fireTNTAtBird(mob);
+    birdLock = mob;
+    birdLockT = now;
+    birdLockShots++;
     return true;
   }
   const dr = aimedDragon();
   if (dr) {
     const cap = dragonShotsCap();
     if (cap <= 0) return false;
-    const fresh = pigeonLock === dr && now - pigeonLockT < PIGEON_LOCK_TIME;
+    const fresh = birdLock === dr && now - birdLockT < BIRD_LOCK_TIME;
     if (!fresh) {
       if (tntTargeted(dr)) return false;
-      pigeonLock = dr;
-      pigeonLockShots = 0;
+      birdLock = dr;
+      birdLockShots = 0;
     }
-    if (pigeonLockShots >= cap) return false;
-    fireTNTAtPigeon(dr);
-    pigeonLock = dr;
-    pigeonLockT = now;
-    pigeonLockShots++;
+    if (birdLockShots >= cap) return false;
+    fireTNTAtBird(dr);
+    birdLock = dr;
+    birdLockT = now;
+    birdLockShots++;
     return true;
   }
-  const lock = livePigeonLock();
-  if (lock && lock.dim !== undefined && lock.dim !== dim) { pigeonLock = null; return false; }
-  if (lock && now - pigeonLockT < PIGEON_LOCK_TIME) {
+  const lock = liveBirdLock();
+  if (lock && lock.dim !== undefined && lock.dim !== dim) { birdLock = null; return false; }
+  if (lock && now - birdLockT < BIRD_LOCK_TIME) {
     const cap = lock.kind === "dragon" ? dragonShotsCap() : 3;
-    if (cap <= 0 || pigeonLockShots >= cap) return false;
+    if (cap <= 0 || birdLockShots >= cap) return false;
     if (lock.kind === "dragon" && !aimedDragon()) return false;
     let blockT = Infinity;
     if (currentBlock) {
       const eye = camera.position;
       blockT = Math.hypot(currentBlock.x + 0.5 - eye.x, currentBlock.y + 0.5 - eye.y, currentBlock.z + 0.5 - eye.z);
     }
-    if (blockT > PIGEON_LOCK_BURST_DIST) {
-      fireTNTAtPigeon(lock);
-      pigeonLockT = now;
-      pigeonLockShots++;
+    if (blockT > BIRD_LOCK_BURST_DIST) {
+      fireTNTAtBird(lock);
+      birdLockT = now;
+      birdLockShots++;
       return true;
     }
   }
   return false;
 }
-function fireTNTAtPigeon(mob) {
+function fireTNTAtBird(mob) {
   const dir = new THREE.Vector3();
   camera.getWorldDirection(dir);
   const eye = camera.position;
@@ -14956,7 +15128,7 @@ function fireTNTAtPigeon(mob) {
   const m = makeTNTBomb();
   m.position.set(sx, sy, sz);
   scene.add(m);
-  const t = { bx: 0, by: -1, bz: 0, px: sx, py: sy, pz: sz, fuse: FUSE_TIME, life: FUSE_TIME + 2, spr, mesh: m, stuck: false, ax: 0, ay: 0, az: 0, pigeon: mob };
+  const t = { bx: 0, by: -1, bz: 0, px: sx, py: sy, pz: sz, fuse: FUSE_TIME, life: FUSE_TIME + 2, spr, mesh: m, stuck: false, ax: 0, ay: 0, az: 0, bird: mob };
   t.life = Math.max(t.life, tntSyncOnFire(mob, sx, sy, sz) + 0.5);
   tntLit.set("fly" + (tntFlySeq++), t);
 }
@@ -14986,8 +15158,8 @@ function drawFuseSprite(spr, v) {
 }
 
 function updateTNTTarget(t, dt) {
-  if (t.pigeon) {
-    const m = t.pigeon;
+  if (t.bird) {
+    const m = t.bird;
     if (!mobs.includes(m)) return;
     if (t.stuck) {
       t.px = m.pos.x + t.ax; t.py = m.pos.y + t.ay; t.pz = m.pos.z + t.az;
@@ -15014,7 +15186,7 @@ function updateTNTTarget(t, dt) {
 function tickTNT(dt) {
   for (const [mob, v] of [...tntEta]) {
     let live = false;
-    for (const t of tntLit.values()) if (t.pigeon === mob && t.mesh && !t.stuck) { live = true; break; }
+    for (const t of tntLit.values()) if (t.bird === mob && t.mesh && !t.stuck) { live = true; break; }
     if (!live) tntEta.delete(mob);
     else tntEta.set(mob, v - dt);
   }
@@ -15026,31 +15198,31 @@ function tickTNT(dt) {
       if (t.stuck) {
         clearTNTVisual(t);
         tntLit.delete(k);
-        tntSyncClear(t.pigeon);
-        const v = t.pigeon;
+        tntSyncClear(t.bird);
+        const v = t.bird;
         const victimChained = v && v.kind !== "dragon" && (!isFlyingKind(v.kind) || isChained(v) || isChainCarrier(v));
         const downstream = victimChained && mobs.includes(v) ? chainDownstreamOf(v) : null;
         const frontId = victimChained && mobs.includes(v) ? chainParent.get(v.id) : undefined;
         const front = frontId !== undefined && frontId !== PLAYER_CHAIN_ID ? mobById.get(frontId) : null;
         if (victimChained && mobs.includes(v) && isGroundedChainVictim(v)) {
           severGroundedChainVictim(v, k);
-          explodePigeon(t.px, t.py, t.pz, true);
+          explodeBird(t.px, t.py, t.pz, true);
         } else {
           if (victimChained && mobs.includes(v)) {
             if (isFlyingKind(v.kind)) killChainMob(v);
             else unchainMob(v, k);
           }
           else {
-            const isPigeonBomb = t.pigeon && isFlyingKind(t.pigeon.kind) && t.pigeon.kind !== "dragon";
-            if (isPigeonBomb && mobs.includes(t.pigeon)) killPigeon(t.pigeon);
+            const isBirdBomb = t.bird && isFlyingKind(t.bird.kind) && t.bird.kind !== "dragon";
+            if (isBirdBomb && mobs.includes(t.bird)) killBird(t.bird);
           }
-          if (t.pigeon && t.pigeon.kind !== "dragon") explodePigeon(t.px, t.py, t.pz, true);
+          if (t.bird && t.bird.kind !== "dragon") explodeBird(t.px, t.py, t.pz, true);
           else enqueueExplosion(t.px, t.py, t.pz, true, true);
         }
         if (downstream) for (const d of downstream) panicSingleMob(d, t.px, t.py, t.pz);
         if (front) panicSingleMob(front, t.px, t.py, t.pz);
-      } else if (t.pigeon) {
-        const v = t.pigeon;
+      } else if (t.bird) {
+        const v = t.bird;
         const victimChained = v.kind !== "dragon" && (!isFlyingKind(v.kind) || isChained(v) || isChainCarrier(v));
         const downstream = victimChained && mobs.includes(v) ? chainDownstreamOf(v) : null;
         const frontId = victimChained && mobs.includes(v) ? chainParent.get(v.id) : undefined;
@@ -15061,14 +15233,14 @@ function tickTNT(dt) {
           tntSyncClear(v);
           if (victimChained && mobs.includes(v) && isGroundedChainVictim(v)) {
             severGroundedChainVictim(v, k);
-            explodePigeon(t.px, t.py, t.pz, false);
+            explodeBird(t.px, t.py, t.pz, false);
           } else {
             if (victimChained && mobs.includes(v)) {
               if (isFlyingKind(v.kind)) killChainMob(v);
               else unchainMob(v, k);
             }
             if (v.kind === "dragon") enqueueExplosion(t.px, t.py, t.pz, false, true);
-            else explodePigeon(t.px, t.py, t.pz, false);
+            else explodeBird(t.px, t.py, t.pz, false);
           }
           if (downstream) for (const d of downstream) panicSingleMob(d, t.px, t.py, t.pz);
           if (front) panicSingleMob(front, t.px, t.py, t.pz);
@@ -15104,8 +15276,8 @@ function enqueueExplosion(x, y, z, pointBlank, homing = false, delay = 0) {
 function explodeTNT(x, y, z, pointBlank, homing = false) {
   enqueueExplosion(x, y, z, pointBlank, homing);
 }
-function explodePigeon(x, y, z, pointBlank) {
-  explosionQueue.push({ x, y, z, pointBlank, homing: true, due: 0, pigeon: true });
+function explodeBird(x, y, z, pointBlank) {
+  explosionQueue.push({ x, y, z, pointBlank, homing: true, due: 0, bird: true });
 }
 function processExplosionQueue() {
   if (!explosionQueue.length) return;
@@ -15117,13 +15289,13 @@ function processExplosionQueue() {
   while (explosionQueue.length && processed < explosionsPerFrame && (performance.now() - t0) < explosionBudgetMs) {
     const peek = explosionQueue[0];
     if (peek.due && peek.due > performance.now()) break;
-    const { x, y, z, pointBlank, homing, pigeon } = explosionQueue.shift();
+    const { x, y, z, pointBlank, homing, bird } = explosionQueue.shift();
     const kShift = key(Math.floor(x), Math.floor(y), Math.floor(z));
     if (chainPending.has(kShift)) chainPending.delete(kShift);
     const cx = x + 0.5, cy = y + 0.5, cz = z + 0.5;
-    const dragonHit = dim === "end" && dragon.mesh && homing && pointBlank && !pigeon;
+    const dragonHit = dim === "end" && dragon.mesh && homing && pointBlank && !bird;
     if (dragonHit) damageDragon(DRAGON_FULL_DMG);
-    if (pigeon) spawnPigeonBurst(cx, cy, cz);
+    if (bird) spawnBirdBurst(cx, cy, cz);
     else if (pointBlank && dragonHit) spawnDragonBurst(cx, cy, cz, dragonBurstColor());
     else if (pointBlank) spawnDragonBurst(cx, cy, cz);
     else spawnExplosion(cx, cy, cz);
@@ -15287,7 +15459,7 @@ function spawnDragonBurst(cx, cy, cz, hex = 0xd06bff) {
   bursts.push({ pts, geo, mat, vel, life: 1.1, max: 1.1, tag: 2, fx: cx, fy: cy, fz: cz, hex });
 }
 
-function spawnPigeonBurst(cx, cy, cz) {
+function spawnBirdBurst(cx, cy, cz) {
   const N = 96;
   const posA = new Float32Array(N * 3);
   const colA = new Float32Array(N * 3);
@@ -15977,7 +16149,7 @@ function suspendLiveDim() {
 function goToDimension(name, sx, sy, sz) {
   suspendLiveDim();
   purgeLiveTNT();
-  pigeonLock = null; pigeonLockT = 0; pigeonLockShots = 0;
+  birdLock = null; birdLockT = 0; birdLockShots = 0;
   clearChains();
   if (playerInChain()) detachDisplacementGrapple();
   if (grappleFill) {
@@ -17134,7 +17306,7 @@ function removeDragon() {
     const backLive = !!(back && mobs.includes(back) && back !== dragon.mob && !isMobHeld(back));
     chainChild.delete(dragon.mob.id);
     if (grappleMob === dragon.mob) detachDisplacementGrapple();
-    if (pigeonLock === dragon.mob) { pigeonLock = null; pigeonLockT = 0; pigeonLockShots = 0; }
+    if (birdLock === dragon.mob) { birdLock = null; birdLockT = 0; birdLockShots = 0; }
     mobById.delete(dragon.mob.id);
     const mi = mobs.indexOf(dragon.mob);
     if (mi >= 0) mobs.splice(mi, 1);
@@ -18087,7 +18259,7 @@ function serialize() {
   const dv = new DataView(buf);
   let o = 0;
   new Uint8Array(buf, o, 9).set(SAVE_MAGIC); o += 9;
-  dv.setUint8(o++, 30); // format version
+  dv.setUint8(o++, 31); // format version
   dv.setUint8(o++, dim === "end" ? 1 : dim === "nether" ? 2 : 0);
   dv.setInt32(o, seed, true); o += 4;
   dv.setInt32(o, endSeed, true); o += 4;
@@ -18323,7 +18495,7 @@ function deserialize(buf) {
   for (let i = 0; i < 9; i++) if (new Uint8Array(buf, o, 9)[i] !== SAVE_MAGIC[i]) throw new Error("Not a MiniCraft save");
   o += 9;
   const ver = dv.getUint8(o++);
-  if (ver !== 1 && ver !== 2 && ver !== 3 && ver !== 4 && ver !== 5 && ver !== 6 && ver !== 7 && ver !== 8 && ver !== 9 && ver !== 10 && ver !== 11 && ver !== 12 && ver !== 13 && ver !== 14 && ver !== 15 && ver !== 16 && ver !== 17 && ver !== 18 && ver !== 19 && ver !== 20 && ver !== 21 && ver !== 22 && ver !== 23 && ver !== 24 && ver !== 25 && ver !== 26 && ver !== 27 && ver !== 28 && ver !== 29 && ver !== 30) throw new Error("Unsupported save version");
+  if (ver !== 1 && ver !== 2 && ver !== 3 && ver !== 4 && ver !== 5 && ver !== 6 && ver !== 7 && ver !== 8 && ver !== 9 && ver !== 10 && ver !== 11 && ver !== 12 && ver !== 13 && ver !== 14 && ver !== 15 && ver !== 16 && ver !== 17 && ver !== 18 && ver !== 19 && ver !== 20 && ver !== 21 && ver !== 22 && ver !== 23 && ver !== 24 && ver !== 25 && ver !== 26 && ver !== 27 && ver !== 28 && ver !== 29 && ver !== 30 && ver !== 31) throw new Error("Unsupported save version");
   const yWidth = ver >= 8 ? 2 : 1;
   const readY = () => { const y = yWidth === 2 ? dv.getUint16(o, true) : dv.getUint8(o); o += yWidth; return y; };
   placedFlowers.clear();
@@ -19142,13 +19314,13 @@ async function restoreSave(buf) {
       const saved = pendingOverworldMobs;
       pendingOverworldMobs = null;
       overworldMobCache = null;
-      if (!restoreOverworldMobs(saved, { keepCarried: false, applyPanic: true })) { spawnVillagers(); spawnPigeons(); }
+      if (!restoreOverworldMobs(saved, { keepCarried: false, applyPanic: true })) { spawnVillagers(); spawnBirds(); }
       overworldMobCache = snapshotOverworldMobs(true);
     } else {
       pendingOverworldMobs = null;
       removeVillagers();
       spawnVillagers();
-      spawnPigeons();
+      spawnBirds();
       overworldMobCache = snapshotOverworldMobs(true);
     }
     pendingChainLinks = null;
@@ -19365,7 +19537,7 @@ async function buildWorld() {
         mobById.delete(gm.id);
         const gi = mobs.indexOf(gm);
         if (gi >= 0) mobs.splice(gi, 1);
-        if (pigeonLock === gm) { pigeonLock = null; pigeonLockT = 0; pigeonLockShots = 0; }
+        if (birdLock === gm) { birdLock = null; birdLockT = 0; birdLockShots = 0; }
       }
     }
     carryMob = null;
@@ -19420,7 +19592,7 @@ async function buildWorld() {
       overworldMobCache = snapshotOverworldMobs(false);
       removeVillagers();
     } else {
-      removeVillagers(); spawnVillagers(); spawnPigeons();
+      removeVillagers(); spawnVillagers(); spawnBirds();
     }
     select(0);
     updateCamera();
@@ -19618,7 +19790,7 @@ document.addEventListener("mouseup", (e) => {
   if (grapplePulling) {
     const fdx = grappleTarget.x - pos.x, fdy = grappleTarget.y - pos.y, fdz = grappleTarget.z - pos.z;
     const mob = grappleMob;
-    const followDist = !mob ? 0 : mob.kind === "dragon" ? DRAGON_FOLLOW_DIST : PIGEON_FOLLOW_DIST;
+    const followDist = !mob ? 0 : mob.kind === "dragon" ? DRAGON_FOLLOW_DIST : BIRD_FOLLOW_DIST;
     const mobFollow = mob && grappleHooked &&
       (grappleTowInit || Math.hypot(fdx, fdy, fdz) <= followDist + 0.5);
     if (mobFollow) {
@@ -19745,7 +19917,7 @@ document.addEventListener("keydown", (e) => {
   if (e.code === "KeyK" && !loading) select(selected - 1);
   if (e.code === "KeyL" && !loading) select(selected + 1);
   if (e.code === "KeyF") { freeCam = !freeCam; if (freeCam) camPos.copy(camera.position); else exitFreeCam(); }
-  if (e.code === "KeyV" && !loading) { spawnPigeonChain(); }
+  if (e.code === "KeyV" && !loading) { spawnBirdChain(); }
   if (e.code === "Escape") {
     if (started) {
       saveToFile();
@@ -20204,7 +20376,7 @@ if (location.search.includes('test')) {
     get pos(){ return pos; }, get vel(){ return vel; }, get camera(){ return camera; }, get scene(){ return scene; }, get freeCam(){ return freeCam; }, set freeCam(v){ freeCam = v; }, get camPos(){ return camPos; }, get yaw(){ return yaw; }, set yaw(v){ yaw=v; }, get pitch(){ return pitch; }, set pitch(v){ pitch=v; },
     get carryMob(){ return carryMob; }, set carryMob(v){ carryMob = v; }, handleCarryEnterDown, handleCarryEnterUp, pickMob, get carryGrappleActive(){ return carryGrappleActive; }, get carryGrapplePulling(){ return carryGrapplePulling; }, get carryGrappleMob(){ return carryGrappleMob; }, get carryGrappleBlock(){ return carryGrappleBlock; }, get carryGrappleHookPos(){ return carryGrappleHookPos; }, get carryGrappleOffset(){ return carryGrappleOffset; }, get carryGrappleMode(){ return carryGrappleMode; }, get isMobFrozenByGrapple(){ return isMobFrozenByGrapple; }, isChained, isChainCarrier, chainRootOf, chainTailOf, linkChain, dropChainFrom, chainTakeForCarry, severChainMob, groundChainFrom, insertChainBefore, insertChainBehind, insertBehindRide, prependChainLead, clearChains, pruneChains, updateChains, syncChainLinkColor, syncChainLinkColors, syncGrappleColor, stampSpawn, get mobById(){ return mobById; }, chainAttachTarget, startCarryAttachGrapple, killChainMob, respawnChainMob, unchainMob, severGroundedChainVictim, isGroundedChainVictim, get chainLinks(){ return chainLinks; }, get chainParent(){ return chainParent; }, get chainChild(){ return chainChild; }, playerChainAvatar, playerInChain, PLAYER_CHAIN_ID, spliceChainLink, chainHasJumping, chainPushCrumb, chainTrailTarget, latchPlayerTo, latchPlayerInMiddle, playerInsertCutAndLink, insertChainAheadOfPlayer, insertChainBehindPlayer, playerLeadLink, dropPlayerLeadEntry, readyLeadForLatch, leadAwareLatchInsert, appendCutFollowerBehindLeadTail, grabRideForCarry, fireGrapple, detachDisplacementGrapple, get grappleActive(){ return grappleActive; }, get grappleHooked(){ return grappleHooked; }, get grappleRetracting(){ return grappleRetracting; }, get grappleMob(){ return grappleMob; }, get grappleMobOffset(){ return grappleMobOffset; }, get grappleHookPos(){ return grappleHookPos; }, get grappleTarget(){ return grappleTarget; }, updateCarryGrapple, updateCarry, get currentBlock(){ return currentBlock; }, updateTarget, hotbarList, placeBlock, breakBlock, get selected(){ return selected; }, set selected(v){ selected=v; }, toggleCarry: handleCarryEnterDown, findNearestMobForGrab: (...a)=>{ const d=new THREE.Vector3(); camera.getWorldDirection(d); return pickMob(d); }, get playerArms(){ return playerArms; }, get started(){ return started; }, set started(v){ started=v; }, get loading(){ return loading; }, get freeCam(){ return freeCam; }, set freeCam(v){ freeCam=v; }, get helpOpen(){ return helpOpen; },
     get WOLF_COUNT(){ return WOLF_COUNT; }, get GOLEM_COUNT(){ return GOLEM_COUNT; }, get GOLEM_HW(){ return GOLEM_HW; }, get GOLEM_HH(){ return GOLEM_HH; }, makeWolfMesh, makeIronGolemMesh, villagerHW, villagerH, wolfHasMobGround, wolfBlockedAt, wolfProbeFree, wanderGoalForWolf, wolfFindPath, wolfFlatSpot, wolfLeaveTarget, panicLeaveDir, panicWolves, wolfInWater, mobInWater, waterSurfaceForMob, mobPhysicsStep, wolfPhysicsStep, updateMobs, obstacleTurnDir, buildMobGrid,     get isPigCow(){ return isPigCow; }, get pigOverlapsFence(){ return pigOverlapsFence; }, pigFenceSlideOut, get MOB_FLOAT_FRAC(){ return MOB_FLOAT_FRAC; }, mobFloatTargetY, mobWaterExitJump, poolExitTarget, penPoolExitTarget, isInsidePenPool, moonLakeExitTarget, isMobInPoolWater, isMobInMoonLake, get BATH_MIN_T(){ return BATH_MIN_T; }, get BATH_MAX_T(){ return BATH_MAX_T; },
-    get PIGEON_COUNT(){ return PIGEON_COUNT; }, get PIGEON_MIN_Y(){ return PIGEON_MIN_Y; }, get PIGEON_MAX_Y(){ return PIGEON_MAX_Y; }, get PIGEON_SPEED(){ return PIGEON_SPEED; }, get TNT_HOME_SPEED(){ return TNT_HOME_SPEED; }, get PIGEON_AIM_DIST(){ return PIGEON_AIM_DIST; }, get PIGEON_LOCK_TIME(){ return PIGEON_LOCK_TIME; }, get pigeonLock(){ return pigeonLock; }, get pigeonLockT(){ return pigeonLockT; }, set pigeonLockT(v){ pigeonLockT = v; }, get pigeonLockShots(){ return pigeonLockShots; }, livePigeonLock, tntTargeted, tryFireLockedTNT, tntChainAimMob, aimOnMob, get chainBreaking(){ return chainBreaking; }, set chainBreaking(v){ chainBreaking = v; },     makePigeonMesh, spawnPigeons, spawnSinglePigeon, removePigeons, spawnPigeonChain, updatePigeon, updatePerchedPigeon, updateToPerchPigeon, pigeonTakeoff, pigeonNextLeg, pigeonFindPerchSpot, pigeonCloudTopAt, pigeonTreeTopAt, pigeonRoofTopAt, pigeonPerchBand, pigeonPerchSupports, killPigeon, pigeonSpotOutOfView, pigeonProbeFree, pigeonRandomTarget, pigeonSeparate,     houseInteriorFor, houseMouths, pigeonCoopTarget,     pigeonSegmentFree, pigeonClearance, pigeonBestSteer, pigeonMillHop, pigeonConfinedSteer, pigeonMoveSlide, bandReturnTarget, pigeonNoticeBreak, setMobTransparent, pigeonIsConfined, pigeonHoleCell, chainSegmentFree, chainThreadRide, pigeonTunnelPlan, updateTunnelPigeon, pigeonTunnelSeparate, pigeonSkyClear, pigeonSidestep, pigeonUTurn, pigeonNarrow, pigeonColHW, pigeonColH,     get PIGEON_NARROW_SCALE(){ return PIGEON_NARROW_SCALE; }, get PIGEON_SKY_CLEAR(){ return PIGEON_SKY_CLEAR; }, get NETHER_PIGEON_MIN_Y(){ return NETHER_PIGEON_MIN_Y; }, get NETHER_PIGEON_MAX_Y(){ return NETHER_PIGEON_MAX_Y; }, pigeonDimOf, pigeonBandMinFor, pigeonBandMaxFor, pigeonBandMin, pigeonBandMax, pigeonNetherLegY, netherPigeonCeiling, pigeonLavaAt, get PIGEON_TUNNEL_SCALE(){ return PIGEON_TUNNEL_SCALE; }, get PIGEON_COL_HW(){ return PIGEON_COL_HW; }, get PIGEON_COL_H(){ return PIGEON_COL_H; },     get tntLit(){ return tntLit; }, get explosionQueue(){ return explosionQueue; }, get tntEta(){ return tntEta; }, get pendingTNTBombs(){ return pendingTNTBombs; }, get pendingTNTEta(){ return pendingTNTEta; }, get bursts(){ return bursts; }, get flashes(){ return flashes; }, snapshotLiveFx, replayLiveFx, spawnExplosion, igniteTNT, fireTNTAtPigeon, purgeLiveTNT, tickTNT, snapshotLiveTNT, restoreLiveTNT, get pendingDragon(){ return pendingDragon; }, get tntEta(){ return tntEta; }, igniteTNT, aimedPigeon, fireTNTAtPigeon, explodePigeon, spawnPigeonBurst, get bursts(){ return bursts; }, get flashes(){ return flashes; }, updateTNTTarget, tickTNT, fireGrapple, updateGrapple, updatePlayer, get grappleActive(){ return grappleActive; }, get grapplePulling(){ return grapplePulling; }, get grappleHooked(){ return grappleHooked; },
+    get BIRD_COUNT(){ return BIRD_COUNT; }, get BIRD_MIN_Y(){ return BIRD_MIN_Y; }, get BIRD_MAX_Y(){ return BIRD_MAX_Y; }, get BIRD_SPEED(){ return BIRD_SPEED; }, get TNT_HOME_SPEED(){ return TNT_HOME_SPEED; }, get BIRD_AIM_DIST(){ return BIRD_AIM_DIST; }, get BIRD_LOCK_TIME(){ return BIRD_LOCK_TIME; }, get birdLock(){ return birdLock; }, get birdLockT(){ return birdLockT; }, set birdLockT(v){ birdLockT = v; }, get birdLockShots(){ return birdLockShots; }, liveBirdLock, tntTargeted, tryFireLockedTNT, tntChainAimMob, aimOnMob, get chainBreaking(){ return chainBreaking; }, set chainBreaking(v){ chainBreaking = v; },     makeBirdMesh, spawnBirds, spawnSingleBird, removeBirds, spawnBirdChain, updateBird, updatePerchedBird, updateToPerchBird, birdTakeoff, birdNextLeg, birdFindPerchSpot, birdCloudTopAt, birdTreeTopAt, birdRoofTopAt, birdPerchBand, birdPerchSupports, killBird, birdSpotOutOfView, birdProbeFree, birdRandomTarget, birdSeparate,     houseInteriorFor, houseMouths, birdCoopTarget,     birdSegmentFree, birdClearance, birdBestSteer, birdMillHop, birdConfinedSteer, birdMoveSlide, bandReturnTarget, birdNoticeBreak, setMobTransparent, birdIsConfined, birdHoleCell, chainSegmentFree, chainThreadRide, birdTunnelPlan, updateTunnelBird, birdTunnelSeparate, birdSkyClear, birdSidestep, birdUTurn, birdNarrow, birdColHW, birdColH,     get BIRD_NARROW_SCALE(){ return BIRD_NARROW_SCALE; }, get BIRD_SKY_CLEAR(){ return BIRD_SKY_CLEAR; }, get NETHER_BIRD_MIN_Y(){ return NETHER_BIRD_MIN_Y; }, get NETHER_BIRD_MAX_Y(){ return NETHER_BIRD_MAX_Y; }, birdDimOf, birdBandMinFor, birdBandMaxFor, birdBandMin, birdBandMax, birdNetherLegY, netherBirdCeiling, birdLavaAt, get BIRD_TUNNEL_SCALE(){ return BIRD_TUNNEL_SCALE; }, get BIRD_COL_HW(){ return BIRD_COL_HW; }, get BIRD_COL_H(){ return BIRD_COL_H; },     get tntLit(){ return tntLit; }, get explosionQueue(){ return explosionQueue; }, get tntEta(){ return tntEta; }, get pendingTNTBombs(){ return pendingTNTBombs; }, get pendingTNTEta(){ return pendingTNTEta; }, get bursts(){ return bursts; }, get flashes(){ return flashes; }, snapshotLiveFx, replayLiveFx, spawnExplosion, igniteTNT, fireTNTAtBird, purgeLiveTNT, tickTNT, snapshotLiveTNT, restoreLiveTNT, get pendingDragon(){ return pendingDragon; }, get tntEta(){ return tntEta; }, igniteTNT, aimedBird, fireTNTAtBird, explodeBird, spawnBirdBurst, get bursts(){ return bursts; }, get flashes(){ return flashes; }, updateTNTTarget, tickTNT, fireGrapple, updateGrapple, updatePlayer, get grappleActive(){ return grappleActive; }, get grapplePulling(){ return grapplePulling; }, get grappleHooked(){ return grappleHooked; },
     get overPortalWin(){ return overPortalWin; }, get overPortalDir(){ return overPortalDir; }, get overPortalSpawn(){ return overPortalSpawn; }, get overPortalFace(){ return overPortalFace; },
     portalWinValid, portalFrameBBox, findReturnSpot, frameTopSpot, facePortalFrom, faceAwayFromPortal, recordOverPortal, recordDimExit, resolveDimArrival, nearestReturnWin, resolveOverworldReturn, nearPortalSpawn, resolveSpawn, collectEndWins, collectNetherWins, collectReturnWins, insideEndInterior, insideNetherInterior, winCenter, windowDist, isSolid,
     get PORTAL(){ return PORTAL; }, get OBSIDIAN(){ return OBSIDIAN; }, get WORLD_RADIUS(){ return WORLD_RADIUS; }, get PLAYER_HW(){ return PLAYER_HW; }, get PLAYER_H(){ return PLAYER_H; },     get MOON(){ return MOON; }, get MOON_WATER(){ return MOON_WATER; }, get MOON_Y(){ return MOON_Y; }, get MOON_R(){ return MOON_R; }, inMoonZone, get CLOUD(){ return CLOUD; }, get GRASS(){ return GRASS; }, get STONE(){ return STONE; }, get ENDSTONE(){ return ENDSTONE; }, get NETHERRACK(){ return NETHERRACK; }, get dim(){ return dim; },
@@ -20214,13 +20386,47 @@ if (location.search.includes('test')) {
     goToDimension, removeVillagers,
     get DEV_START_DIM(){ return DEV_START_DIM; },
     get dragon(){ return dragon; }, spawnDragon, removeDragon, updateDragon, paintDragon, damageDragon, dragonShotsCap, aimedDragon, get DRAGON_FULL_DMG(){ return DRAGON_FULL_DMG; }, get DRAGON_SPEED(){ return DRAGON_SPEED; }, get DRAGON_FOLLOW_DIST(){ return DRAGON_FOLLOW_DIST; },
-    get endermen(){ return endermen; }, get mobPortalTx(){ return mobPortalTx; }, startMobPortalTx, tickMobPortalTx, finishMobPortalTx, abortMobPortalTx,     get PORTAL_ARRIVAL_FREEZE(){ return PORTAL_ARRIVAL_FREEZE; }, isArrivalFrozen, get FILL_SLIDE_TRIGGER_T(){ return FILL_SLIDE_TRIGGER_T; }, get FILL_SLIDE_SPEED(){ return FILL_SLIDE_SPEED; }, mobBodyFillCells, startFillSlide, get ENDERMEN_COUNT(){ return ENDERMEN_COUNT; }, get END_PLATFORM_R(){ return END_PLATFORM_R; }, get END_MOB_R(){ return END_MOB_R; }, get END_RETURN_Z(){ return END_RETURN_Z; }, get END_RETURN_BASE_Y(){ return END_RETURN_BASE_Y; }, get DRAGON_MIN_Y(){ return DRAGON_MIN_Y; }, get DRAGON_MAX_Y(){ return DRAGON_MAX_Y; }, endMobInEnd, endClampXZPos, endClampYFlying, pigeonEndPortalTopAt, get ENDERMAN_STARE_TIME(){ return ENDERMAN_STARE_TIME; }, get ENDERMAN_ANGRY_TIME(){ return ENDERMAN_ANGRY_TIME; }, spawnEndermen, removeEndermen, updateEnderman, updateEndermen, endermanTeleport, endermanPickSpot, endermanSpotFor, ensureEndermanAssets, makeEndermanMesh, syncEndermanHalo, syncEndermanHalos,     endermanChainHaloVisible, endermanHaloMode,
+    get endermen(){ return endermen; }, get mobPortalTx(){ return mobPortalTx; }, startMobPortalTx, tickMobPortalTx, finishMobPortalTx, abortMobPortalTx,     get PORTAL_ARRIVAL_FREEZE(){ return PORTAL_ARRIVAL_FREEZE; }, isArrivalFrozen, get FILL_SLIDE_TRIGGER_T(){ return FILL_SLIDE_TRIGGER_T; }, get FILL_SLIDE_SPEED(){ return FILL_SLIDE_SPEED; }, mobBodyFillCells, startFillSlide, get ENDERMEN_COUNT(){ return ENDERMEN_COUNT; }, get END_PLATFORM_R(){ return END_PLATFORM_R; }, get END_MOB_R(){ return END_MOB_R; }, get END_RETURN_Z(){ return END_RETURN_Z; }, get END_RETURN_BASE_Y(){ return END_RETURN_BASE_Y; }, get DRAGON_MIN_Y(){ return DRAGON_MIN_Y; }, get DRAGON_MAX_Y(){ return DRAGON_MAX_Y; }, endMobInEnd, endClampXZPos, endClampYFlying, birdEndPortalTopAt, get ENDERMAN_STARE_TIME(){ return ENDERMAN_STARE_TIME; }, get ENDERMAN_ANGRY_TIME(){ return ENDERMAN_ANGRY_TIME; }, spawnEndermen, removeEndermen, updateEnderman, updateEndermen, endermanTeleport, endermanPickSpot, endermanSpotFor, ensureEndermanAssets, makeEndermanMesh, syncEndermanHalo, syncEndermanHalos,     endermanChainHaloVisible, endermanHaloMode,
   };
   Object.assign(window._test, {
     get growableSoils(){ return growableSoils; }, get plantClaims(){ return plantClaims; }, get pineGrowths(){ return pineGrowths; }, get soilTimerSprites(){ return soilTimerSprites; }, get wetSoilSet(){ return wetSoilSet; }, get soakMeshes(){ return soakMeshes; }, get pineFailBlinks(){ return pineFailBlinks; }, get reservedPineCells(){ return reservedPineCells; },
     get DIRT(){ return DIRT; }, get LEAVES(){ return LEAVES; },
     get GROWABLE_DIST(){ return GROWABLE_DIST; }, get PLANT_NECK(){ return PLANT_NECK; }, get PINE_RATE(){ return PINE_RATE; }, get PINE_PHASE_TIME(){ return PINE_PHASE_TIME; }, get SOIL_TIMER(){ return SOIL_TIMER; }, get SOIL_SOAK_TIME(){ return SOIL_SOAK_TIME; }, get PLANT_BEND_TIME(){ return PLANT_BEND_TIME; }, get PLANT_LEAVE_DIST(){ return PLANT_LEAVE_DIST; },     get PINE_MIN_M(){ return PINE_MIN_M; }, get PINE_MAX_M(){ return PINE_MAX_M; },     get PINE_LIFT_MAX(){ return PINE_LIFT_MAX; }, get PLANT_STEAL_D(){ return PLANT_STEAL_D; }, get GROWTH_PUSH_SPEED(){ return GROWTH_PUSH_SPEED; }, get growthSettlePasses(){ return growthSettlePasses; },
     isSoilHole, isSoilFloor, releaseGrowable, armSoak, absorbSoak, spawnSoakDrips, plantWalkGoal, soilSameY, pickPineDims, fitTrunkRange, pineCellsFor, pineFits, pineSpotBlocked, pineLayerWidths, pineSpiralOrder, pineSummit, pineTrunkE0, pineFolReserved, reservePineCells, releasePineCells, clearAllPineReservations, pushOutOfGrowth, growthSolidOverlap, growthExitTarget, growthSlide, startPineGrowth, tickPineGrowths, tickSoilTimers, startPineFailBlink, clearPineFailBlink, clearAllPineFailBlinks, tickPineFailBlinks, setVillagerNeck, findPlantPath, soilClaimant, plantLeaveTarget,
+  });
+  Object.assign(window._test, {
+    get PIGEON_COUNT(){ return BIRD_COUNT; }, get PIGEON_MIN_Y(){ return BIRD_MIN_Y; }, get PIGEON_MAX_Y(){ return BIRD_MAX_Y; },
+    get PIGEON_SPEED(){ return BIRD_SPEED; }, get PIGEON_AIM_DIST(){ return BIRD_AIM_DIST; }, get PIGEON_LOCK_TIME(){ return BIRD_LOCK_TIME; },
+    get pigeonLock(){ return birdLock; }, get pigeonLockT(){ return birdLockT; }, set pigeonLockT(v){ birdLockT = v; },
+    get pigeonLockShots(){ return birdLockShots; }, get PIGEON_NARROW_SCALE(){ return BIRD_NARROW_SCALE; },
+    get PIGEON_SKY_CLEAR(){ return BIRD_SKY_CLEAR; }, get PIGEON_TUNNEL_SCALE(){ return BIRD_TUNNEL_SCALE; },
+    get PIGEON_COL_HW(){ return BIRD_COL_HW; }, get PIGEON_COL_H(){ return BIRD_COL_H; },
+    get NETHER_PIGEON_MIN_Y(){ return NETHER_BIRD_MIN_Y; }, get NETHER_PIGEON_MAX_Y(){ return NETHER_BIRD_MAX_Y; },
+    makePigeonMesh: makeBirdMesh, spawnPigeons: spawnBirds, spawnSinglePigeon: spawnSingleBird, removePigeons: removeBirds,
+    spawnPigeonChain: spawnBirdChain, updatePigeon: updateBird, updatePerchedPigeon: updatePerchedBird,
+    updateToPerchPigeon: updateToPerchBird, pigeonTakeoff: birdTakeoff, pigeonNextLeg: birdNextLeg,
+    pigeonFindPerchSpot: birdFindPerchSpot, pigeonCloudTopAt: birdCloudTopAt, pigeonTreeTopAt: birdTreeTopAt,
+    pigeonRoofTopAt: birdRoofTopAt, pigeonPerchBand: birdPerchBand, pigeonPerchSupports: birdPerchSupports,
+    killPigeon: killBird, pigeonSpotOutOfView: birdSpotOutOfView, pigeonProbeFree: birdProbeFree,
+    pigeonRandomTarget: birdRandomTarget, pigeonSeparate: birdSeparate, pigeonSegmentFree: birdSegmentFree,
+    pigeonClearance: birdClearance, pigeonBestSteer: birdBestSteer, pigeonMillHop: birdMillHop,
+    pigeonConfinedSteer: birdConfinedSteer, pigeonMoveSlide: birdMoveSlide,
+    pigeonNoticeBreak: birdNoticeBreak, pigeonIsConfined: birdIsConfined, pigeonHoleCell: birdHoleCell,
+    pigeonTunnelPlan: birdTunnelPlan, updateTunnelPigeon: updateTunnelBird, pigeonTunnelSeparate: birdTunnelSeparate,
+    pigeonSkyClear: birdSkyClear, pigeonSidestep: birdSidestep, pigeonUTurn: birdUTurn, pigeonNarrow: birdNarrow,
+    pigeonColHW: birdColHW, pigeonColH: birdColH, pigeonDimOf: birdDimOf, pigeonBandMinFor: birdBandMinFor,
+    pigeonBandMaxFor: birdBandMaxFor, pigeonBandMin: birdBandMin, pigeonBandMax: birdBandMax,
+    pigeonNetherLegY: birdNetherLegY, netherPigeonCeiling: netherBirdCeiling, pigeonLavaAt: birdLavaAt,
+    pigeonOnMoon: birdOnMoon, pigeonMoonY: birdMoonY, pigeonMoonTarget: birdMoonTarget,
+    pigeonReachableTarget: birdReachableTarget, pigeonNewArc: birdNewArc, pigeonDetourTarget: birdDetourTarget,
+    pigeonCoopTarget: birdCoopTarget, pigeonTouchVisit: birdTouchVisit, pigeonCellKey: birdCellKey,
+    pigeonDigSteer: birdDigSteer, pigeonDigReachable: birdDigReachable, pigeonDigLive: birdDigLive,
+    pigeonDigGiveUp: birdDigGiveUp, pigeonFreshDigFor: birdFreshDigFor, pigeonTunnelLiveDigKeys: birdTunnelLiveDigKeys,
+    pigeonUnblock: birdUnblock, pigeonJoinSlotAt: birdJoinSlotAt, pigeonPerchSpotTaken: birdPerchSpotTaken,
+    pigeonEndPortalTopAt: birdEndPortalTopAt, pigeonSameChain: birdSameChain,
+    livePigeonLock: liveBirdLock, aimedPigeon: aimedBird, fireTNTAtPigeon: fireTNTAtBird,
+    explodePigeon: explodeBird, spawnPigeonBurst: spawnBirdBurst,
+    makeParrotMesh, pickParrotVariant, rollBirdKind, isBirdKind, isFlyingKind,
   });
 }
 
