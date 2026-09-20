@@ -1598,6 +1598,11 @@ const CAT_HW = 0.16;
 const CAT_HH = 0.98;
 const CAT_ROBES = [0xdd8a3c, 0x1a1a1a, 0xf5f0e6];
 const CAT_ROBE_WEIGHTS = [2, 1, 1];
+const FOLLOW_TRAIL_D = 1.125;
+const FOLLOW_ENGAGE_D = 1.5;
+const FOLLOW_HOLD_D = 0.9;
+const FOLLOW_MILL_R = 0.75;
+const FOLLOW_LEASH_D = 12;
 const BIRD_COUNT = 50;
 const BIRD_MIN_Y = 50;
 const BIRD_SEP_DIST = 2.5;
@@ -5982,7 +5987,7 @@ function babyParentFor(m) {
 }
 function babyTrailSpot(m, p) {
   const yaw = (p.mesh ? p.mesh.rotation.y : 0) || 0;
-  const bx = p.pos.x - Math.sin(yaw) * 1.5, bz = p.pos.z - Math.cos(yaw) * 1.5;
+  const bx = p.pos.x - Math.sin(yaw) * FOLLOW_TRAIL_D, bz = p.pos.z - Math.cos(yaw) * FOLLOW_TRAIL_D;
   const inWater = dim === "over" && (isInsidePool(bx, bz) || isInsidePenPool(bx, bz));
   if (!inWater && !aabbCollidesWorld(bx, m.pos.y, bz, m.hw, m.h) && hasMobGround(bx, bz, m.hw, m.pos.y)) return { x: bx, z: bz };
   return { x: p.pos.x, z: p.pos.z };
@@ -5998,6 +6003,16 @@ function catTrailSpot(m, p) {
 function mobBondedPair(a, b) {
   if (!a || !b) return false;
   return ((a.isBaby || a.kind === "cat") && b.id === a.parentId) || ((b.isBaby || b.kind === "cat") && a.id === b.parentId);
+}
+function followParentOf(m) {
+  if (!m || m.mode !== "follow") return null;
+  if (m.fleeUntil != null && performance.now() / 1000 < m.fleeUntil) return null;
+  return m.isBaby ? babyParentFor(m) : (m.kind === "cat" ? catParentFor(m) : null);
+}
+function isStrictFollower(m) {
+  const p = followParentOf(m);
+  if (!p) return false;
+  return Math.hypot(p.pos.x - m.pos.x, p.pos.z - m.pos.z) <= FOLLOW_LEASH_D;
 }
 function chainTakeForCarry(mob) {
   if (!mob || !mobs.includes(mob)) return;
@@ -8941,7 +8956,7 @@ function restoreInitialTarget(m) {
   if (m.kind === "cat") {
     const p = catParentFor(m);
     if (p) {
-      if (Math.hypot(p.pos.x - m.pos.x, p.pos.z - m.pos.z) > 2) return catTrailSpot(m, p);
+      if (Math.hypot(p.pos.x - m.pos.x, p.pos.z - m.pos.z) > FOLLOW_ENGAGE_D) return catTrailSpot(m, p);
       return { x: p.pos.x + (Math.random() - 0.5) * 2, z: p.pos.z + (Math.random() - 0.5) * 2 };
     }
   }
@@ -8949,7 +8964,7 @@ function restoreInitialTarget(m) {
   if (m.kind === "villager" && m.isBaby) {
     const p = babyParentFor(m);
     if (p) {
-      if (Math.hypot(p.pos.x - m.pos.x, p.pos.z - m.pos.z) > 2) return babyTrailSpot(m, p);
+      if (Math.hypot(p.pos.x - m.pos.x, p.pos.z - m.pos.z) > FOLLOW_ENGAGE_D) return babyTrailSpot(m, p);
       return { x: p.pos.x + (Math.random() - 0.5) * 2, z: p.pos.z + (Math.random() - 0.5) * 2 };
     }
   }
@@ -9629,6 +9644,7 @@ function mobHeadonHeading(m) {
 }
 function isHeadonWalker(m) {
   if (!m || isMobHeld(m) || isChained(m) || isMobFrozenByGrapple(m)) return false;
+  if (isStrictFollower(m)) return false;
   if (m.dim !== undefined && m.dim !== dim) return false;
   if (isFlyingKind(m.kind) || m.kind === "dragon" || m.kind === "enderman") return false;
   return !m.kind || m.kind === "villager" || m.kind === "pig" || m.kind === "cow" || m.kind === "wolf" || m.kind === "cat";
@@ -10108,18 +10124,20 @@ function updateMobs(dt) {
             m.mode = pInside ? "goHome" : "goOut";
             m.speed = WALK / 2;
             m.target = pInside ? { x: house.padX, z: house.padZ } : { x: house.apronX, z: house.apronZ };
-          } else if (pd > 2.0 || (m.mode === "follow" && pd > 1.2)) {
+          } else if (pd > FOLLOW_ENGAGE_D || (m.mode === "follow" && pd > FOLLOW_HOLD_D)) {
             m.mode = "follow";
             m.speed = WALK / 2 * 1.3;
             m.target = m.isBaby ? babyTrailSpot(m, p) : catTrailSpot(m, p);
-          } else if (pd < 1.2 && m.target && Math.hypot(m.target.x - p.pos.x, m.target.z - p.pos.z) < 1) {
+            m.path = null; m.pathKey = null;
+            m._headonSteerT = 0; m._headonTX = null; m._headonTZ = null;
+          } else if (pd < FOLLOW_HOLD_D && m.target && Math.hypot(m.target.x - p.pos.x, m.target.z - p.pos.z) < FOLLOW_MILL_R) {
             // stay near parent
             if (m.mode === "follow") m.mode = "wander";
             m.speed = WALK / 2;
           } else if (m.wanderT <= 0) {
             if (m.mode === "follow") m.mode = "wander";
             m.speed = WALK / 2;
-            m.target = { x: p.pos.x + (Math.random()-0.5)*2, z: p.pos.z + (Math.random()-0.5)*2 };
+            m.target = { x: p.pos.x + (Math.random()-0.5)*2*FOLLOW_MILL_R, z: p.pos.z + (Math.random()-0.5)*2*FOLLOW_MILL_R };
           } else if (m.mode === "follow") {
             m.target = m.isBaby ? babyTrailSpot(m, p) : catTrailSpot(m, p);
           }
@@ -10391,6 +10409,9 @@ function updateMobs(dt) {
     }
     let tx = poolEx ? poolEx.x : (m.target ? m.target.x : m.pos.x);
     let tz = poolEx ? poolEx.z : (m.target ? m.target.z : m.pos.z);
+    const strictParent = !poolEx ? followParentOf(m) : null;
+    const strictFollow = !!strictParent && Math.hypot(strictParent.pos.x - m.pos.x, strictParent.pos.z - m.pos.z) <= FOLLOW_LEASH_D;
+    if (strictFollow) { m.path = null; m.pathKey = null; }
     if (dim === "end") {
       tx = endSquareCoord(tx); tz = endSquareCoord(tz);
     }
@@ -10403,7 +10424,7 @@ function updateMobs(dt) {
     const plantMile = m.mode === "goPlant" && m.plantPhase === "walk" && m._plantMile;
     const toTarOverall = Math.hypot(tx - m.pos.x, tz - m.pos.z);
     const insideNow = (()=>{ if (m.kind === "pig" || m.kind === "cow") return isInsidePen(m.pos.x, m.pos.z); if (canStep) return false; const h=villageHouses[m.homeId]; return h && m.pos.x>h.minX&&m.pos.x<h.maxX&&m.pos.z>h.minZ&&m.pos.z<h.maxZ; })();
-    const needPath = (poolEx || plantMile) ? false : (!insideNow && m.mode !== "inside" && (toTarOverall > 1.8 || probeFree(m.pos.x, m.pos.z, (tx - m.pos.x)/(toTarOverall||1), (tz - m.pos.z)/(toTarOverall||1), Math.min(1.2, toTarOverall), m.hw, m.pos.y) < 0.55));
+    const needPath = (poolEx || plantMile || strictFollow) ? false : (!insideNow && m.mode !== "inside" && (toTarOverall > 1.8 || probeFree(m.pos.x, m.pos.z, (tx - m.pos.x)/(toTarOverall||1), (tz - m.pos.z)/(toTarOverall||1), Math.min(1.2, toTarOverall), m.hw, m.pos.y) < 0.55));
     if (needPath) {
       const pk = Math.round(tx) + "," + Math.round(tz);
       if (!m.path || m.pathKey !== pk) {
@@ -10509,6 +10530,11 @@ function updateMobs(dt) {
         m.steerX = wantX; m.steerZ = wantZ; m.steerCooldown = 0.2;
       }
     }
+    if (strictFollow && !poolEx && dist > 0.05) {
+      wantX = (toTx / dist) * m.speed;
+      wantZ = (toTz / dist) * m.speed;
+      m.steerX = wantX; m.steerZ = wantZ; m.steerCooldown = 0;
+    }
     if (wantX === 0 && wantZ === 0 && dist > 0.6) {
       for (const [dx, dz] of [[1,0],[-1,0],[0,1],[0,-1],[1,1],[-1,-1],[1,-1],[-1,1]]) {
         const free = probeFree(m.pos.x, m.pos.z, dx, dz, 1.4, m.hw, m.pos.y);
@@ -10525,7 +10551,7 @@ function updateMobs(dt) {
       }
     }
     const wantDeflected = (m._headonSteerT || 0) > 0;
-    {
+    if (!strictFollow) {
       let repX = 0, repZ = 0, cnt = 0;
       const nearby = nearbyMobsFor(m.pos.x, m.pos.z, 2);
       for (const o of nearby) {
@@ -10628,7 +10654,8 @@ function updateMobs(dt) {
     const wantMove = Math.hypot(wantX, wantZ) * dt;
     if (wantMove > 0.05 && moved < wantMove * 0.20) m._stuckT += dt; else m._stuckT = Math.max(0, m._stuckT - dt * 2);
     if (m._stuckT > 0.55) {
-      if (m.mode === "inside") {
+      if (isStrictFollower(m)) { m._stuckT = 0; }
+      else if (m.mode === "inside") {
         m.target = randomInsidePoint(m.homeId);
       } else if ((m.kind === "pig" || m.kind === "cow") && isInsidePen(m.pos.x, m.pos.z)) {
         m.target = wanderGoalForPen(m);
