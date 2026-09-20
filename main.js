@@ -7756,6 +7756,30 @@ function pigOverlapsFence(x,z,hw){
   }
   return false;
 }
+function pigFenceSlideOut(mob) {
+  const pen = villagePen;
+  if (!pen) return false;
+  const dx = (pen.cx + 0.5) - mob.pos.x, dz = (pen.cz + 0.5) - mob.pos.z;
+  const d = Math.hypot(dx, dz) || 1;
+  const ux = dx / d, uz = dz / d;
+  for (let s = 0.1; s <= 2.0; s += 0.1) {
+    const nx = mob.pos.x + ux * s, nz = mob.pos.z + uz * s;
+    if (!pigOverlapsFence(nx, nz, mob.hw) && !aabbCollidesWorld(nx, mob.pos.y, nz, mob.hw, mob.h)) {
+      mob.pos.x = nx; mob.pos.z = nz;
+      mob.vel.x = 0; mob.vel.z = 0; mob.vel.y = 0;
+      mob.onGround = true;
+      if (mobStats) mobStats.worldCol++;
+      return true;
+    }
+  }
+  mob.pos.x = pen.cx + 0.5;
+  mob.pos.z = pen.cz + 0.5;
+  mob.pos.y = pen.vy + 1;
+  mob.vel.x = 0; mob.vel.z = 0; mob.vel.y = 0;
+  mob.onGround = true;
+  if (mobStats) mobStats.worldCol++;
+  return true;
+}
 function wolfFindPath(sx, sz, tx, tz, hw, pyHint) {
   if (hw == null) hw = 0.30;
   const py = pyHint != null ? pyHint : villageCenter.y + 1;
@@ -8389,7 +8413,7 @@ function resolveDimArrival(exit, fallback) {
   }
   return fallback;
 }
-const MOB_SAVE_BYTES = 40;
+const MOB_SAVE_BYTES = 43;
 function mobKindCode(m) {
   if (m.kind === "pig") return 1;
   if (m.kind === "cow") return 2;
@@ -8459,6 +8483,47 @@ function snapshotOverworldMobs(includeCarried) {
     portalSent: m._frozenUntil != null && m._frozenUntil > now,
   }, mobPanicSnapshot(m, now)));
 }
+function mobRestoreOverlapsPlaced(x, y, z, hw, hh, placed) {
+  if (!placed || !placed.length) return false;
+  for (const p of placed) {
+    if (isFlyingKind(p.kind)) continue;
+    if (Math.abs(y - p.pos.y) > 1.2) continue;
+    if (aabbOverlaps(x, y, z, hw, hh, p.pos.x, p.pos.y, p.pos.z, p.hw, p.h)) return true;
+  }
+  return false;
+}
+function placeMobExact(sx, sy, sz, hw, hh, placed, isWolf, isFlying) {
+  const cx = Math.max(-WORLD_RADIUS + 2, Math.min(WORLD_RADIUS - 2, sx));
+  const cz = Math.max(-WORLD_RADIUS + 2, Math.min(WORLD_RADIUS - 2, sz));
+  const cy = Math.max(1, Math.min(MAX_Y - 2, sy));
+  if (!aabbCollidesWorld(cx, cy, cz, hw, hh) && !mobRestoreOverlapsPlaced(cx, cy, cz, hw, hh, placed)) return { x: cx, y: cy, z: cz };
+  for (const lift of [0.02, 0.05]) {
+    const ly = Math.max(1, Math.min(MAX_Y - 2, cy + lift));
+    if (!aabbCollidesWorld(cx, ly, cz, hw, hh) && !mobRestoreOverlapsPlaced(cx, ly, cz, hw, hh, placed)) return { x: cx, y: ly, z: cz };
+  }
+  if (isFlying) {
+    for (let r = 0.3; r <= 2.1; r += 0.3) {
+      for (const [ox, oz] of [[r, 0], [-r, 0], [0, r], [0, -r], [r, r], [r, -r], [-r, r], [-r, -r]]) {
+        const nx = Math.max(-WORLD_RADIUS + 2, Math.min(WORLD_RADIUS - 2, cx + ox));
+        const nz = Math.max(-WORLD_RADIUS + 2, Math.min(WORLD_RADIUS - 2, cz + oz));
+        if (!aabbCollidesWorld(nx, cy, nz, hw, hh) && !mobRestoreOverlapsPlaced(nx, cy, nz, hw, hh, placed)) return { x: nx, y: cy, z: nz };
+      }
+    }
+    return { x: cx, y: cy, z: cz };
+  }
+  const settled = settleMobSpot(cx, cy, cz, hw, hh, isWolf);
+  if (!mobRestoreOverlapsPlaced(settled.x, settled.y, settled.z, hw, hh, placed)) return settled;
+  for (let r = 0.3; r <= 2.1; r += 0.3) {
+    for (const [ox, oz] of [[r, 0], [-r, 0], [0, r], [0, -r], [r, r], [r, -r], [-r, r], [-r, -r]]) {
+      const nx = Math.max(-WORLD_RADIUS + 2, Math.min(WORLD_RADIUS - 2, settled.x + ox));
+      const nz = Math.max(-WORLD_RADIUS + 2, Math.min(WORLD_RADIUS - 2, settled.z + oz));
+      if (aabbCollidesWorld(nx, settled.y, nz, hw, hh)) continue;
+      if (mobRestoreOverlapsPlaced(nx, settled.y, nz, hw, hh, placed)) continue;
+      return { x: nx, y: settled.y, z: nz };
+    }
+  }
+  return settled;
+}
 function settleMobSpot(sx, sy, sz, hw, h, isWolf) {
   const cx = Math.max(-WORLD_RADIUS + 2, Math.min(WORLD_RADIUS - 2, sx));
   const cz = Math.max(-WORLD_RADIUS + 2, Math.min(WORLD_RADIUS - 2, sz));
@@ -8480,6 +8545,20 @@ function settleMobSpot(sx, sy, sz, hw, h, isWolf) {
   }
   const gy = groundYForMob(cx, cz, cy, hw);
   return { x: cx, y: Math.max(1, Math.min(MAX_Y - 2, gy)), z: cz };
+}
+function restoreInitialTarget(m) {
+  if (dim === "over" && m.kind === "villager" && !m.isBaby && houseAtRoof(m.pos.x, m.pos.z)) return wanderGoalForRoof(m);
+  if (dim === "over" && (m.kind === "pig" || m.kind === "cow") && m.penBound !== false && villagePen && isInsidePen(m.pos.x, m.pos.z)) return wanderGoalForPen(m);
+  if (isJumpingKind(m.kind)) return wanderGoalForWolf(m);
+  if (m.kind === "villager" && m.isBaby) {
+    const p = babyParentFor(m);
+    if (p) {
+      if (Math.hypot(p.pos.x - m.pos.x, p.pos.z - m.pos.z) > 2) return babyTrailSpot(m, p);
+      return { x: p.pos.x + (Math.random() - 0.5) * 2, z: p.pos.z + (Math.random() - 0.5) * 2 };
+    }
+  }
+  if (dim === "over" && villageHouses.length && Math.abs(m.pos.y - (villageCenter.y + 1)) < 3.5) return wanderGoalFor(m);
+  return restoreFirstTarget(m.pos.x, m.pos.y, m.pos.z, m.hw, m.h, isJumpingKind(m.kind));
 }
 function restoreFirstTarget(x, y, z, hw, h, isWolf) {
   const self = { x, z };
@@ -8532,23 +8611,6 @@ function restoreOverworldMobs(list, opts) {
       chainedIdx.add(b);
     }
   }
-  const freeChainSpot = (sx, sy, sz, hw, hh) => {
-    const cx = Math.max(-WORLD_RADIUS + 1, Math.min(WORLD_RADIUS - 1, sx));
-    const cz = Math.max(-WORLD_RADIUS + 1, Math.min(WORLD_RADIUS - 1, sz));
-    const cy = Math.max(1, Math.min(MAX_Y - 2, sy));
-    if (!aabbCollidesWorld(cx, cy, cz, hw, hh)) return { x: cx, y: cy, z: cz };
-    for (const [ox, oz] of [[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [1, -1], [-1, 1], [-1, -1]]) {
-      for (const d of [1, 2]) {
-        for (const yOff of [0, 1, 2, -1, -2]) {
-          const nx = Math.max(-WORLD_RADIUS + 1, Math.min(WORLD_RADIUS - 1, cx + ox * d));
-          const nz = Math.max(-WORLD_RADIUS + 1, Math.min(WORLD_RADIUS - 1, cz + oz * d));
-          const ny = Math.max(1, Math.min(MAX_Y - 2, cy + yOff));
-          if (!aabbCollidesWorld(nx, ny, nz, hw, hh)) return { x: nx, y: ny, z: nz };
-        }
-      }
-    }
-    return null;
-  };
   for (let i = 0; i < list.length; i++) {
     const e = list[i];
     const kind = mobKindFromCode(e.kind);
@@ -8569,25 +8631,24 @@ function restoreOverworldMobs(list, opts) {
       sx = Math.max(-WORLD_RADIUS + 1, Math.min(WORLD_RADIUS - 1, sx));
       sz = Math.max(-WORLD_RADIUS + 1, Math.min(WORLD_RADIUS - 1, sz));
       sy = Math.max(1, Math.min(MAX_Y - 2, isFinite(sy) ? sy : PIGEON_MIN_Y + 20));
-      spot = freeChainSpot(sx, sy, sz, hw, hh) || { x: sx, y: sy, z: sz };
+      spot = placeMobExact(sx, sy, sz, hw, hh, created, isWolf, true);
     } else if (chainedIdx.has(i)) {
       sx = Math.max(-WORLD_RADIUS + 1, Math.min(WORLD_RADIUS - 1, sx));
       sz = Math.max(-WORLD_RADIUS + 1, Math.min(WORLD_RADIUS - 1, sz));
       sy = Math.max(1, Math.min(MAX_Y - 2, isFinite(sy) ? sy : PIGEON_MIN_Y + 20));
-      spot = freeChainSpot(sx, sy, sz, hw, hh) || settleMobSpot(sx, sy, sz, hw, hh, isWolf);
+      spot = placeMobExact(sx, sy, sz, hw, hh, created, isWolf, false);
       for (let n = 0; spot && n < 3 && isInsidePenPool(spot.x, spot.z); n++) {
-        const moved = freeChainSpot(spot.x + 2.5, spot.y, spot.z + 2.5, hw, hh) || settleMobSpot(spot.x + 2.5, spot.y, spot.z + 2.5, hw, hh, isWolf);
+        const moved = placeMobExact(spot.x + 2.5, spot.y, spot.z + 2.5, hw, hh, created, isWolf, false);
         if (!moved) break;
         spot = moved;
       }
     } else {
     if (isInsidePenPool(sx, sz)) {
-      const fixed = settleMobSpot(sx + 1.5, sy, sz + 1.5, hw, hh, isWolf);
-      sx = fixed.x; sy = fixed.y; sz = fixed.z;
+      sx += 1.5; sz += 1.5;
     }
-    spot = settleMobSpot(sx, sy, sz, hw, hh, isWolf);
+    spot = placeMobExact(sx, sy, sz, hw, hh, created, isWolf, false);
     for (let n = 0; n < 3 && isInsidePenPool(spot.x, spot.z); n++) {
-      spot = settleMobSpot(spot.x + 2.5, spot.y, spot.z + 2.5, hw, hh, isWolf);
+      spot = placeMobExact(spot.x + 2.5, spot.y, spot.z + 2.5, hw, hh, created, isWolf, false);
     }
     }
     let homeId = e.homeId;
@@ -8732,20 +8793,32 @@ function restoreOverworldMobs(list, opts) {
       if (resumeMobPanic(m, list[li])) panicResumed.add(m.id);
     }
   }
-  const settleStart = performance.now() / 1000;
   for (const m of created) {
     if (isChained(m)) continue;
     if (panicResumed.has(m.id)) {
-      if (!isFlyingKind(m.kind)) m._settleUntil = settleStart + 12 + Math.random() * 8;
+      if (!isFlyingKind(m.kind)) m._settleUntil = performance.now() / 1000 + 12 + Math.random() * 8;
       continue;
     }
     if (isFlyingKind(m.kind)) {
       if (!m.target) m.target = pigeonRandomTarget(m.pos);
+      m.wanderT = 2 + Math.random() * 4;
     } else {
-      m.target = restoreFirstTarget(m.pos.x, m.pos.y, m.pos.z, m.hw, m.h, isJumpingKind(m.kind));
-      m._settleUntil = settleStart + 12 + Math.random() * 8;
+      m.target = restoreInitialTarget(m);
+      m.path = null;
+      m.pathKey = null;
+      m.wanderT = 2 + Math.random() * 4;
+      delete m._settleUntil;
+      if (dim === "over" && m.kind === "villager" && !m.isBaby && m.homeId >= 0) {
+        const h = villageHouses[m.homeId];
+        if (h && m.pos.x > h.minX && m.pos.x < h.maxX && m.pos.z > h.minZ && m.pos.z < h.maxZ) {
+          m.mode = "inside";
+          m.insideT = 4 + Math.random() * 6;
+          m.target = randomInsidePoint(m.homeId);
+          m.path = null;
+          m.pathKey = null;
+        }
+      }
     }
-    m.wanderT = 0.5 + Math.random() * 1.5;
   }
   if (carriedIdx >= 0 && idByListIdx[carriedIdx] != null) {
     const held = mobById.get(idByListIdx[carriedIdx]);
@@ -8827,17 +8900,9 @@ function restoreDimMobs(list, dimName, opts) {
       sx = endSquareCoord(sx); sz = endSquareCoord(sz);
       if (!isFlyingKind(kind)) sy = Math.max(END_PLATFORM_TOP + 1, Math.min(DRAGON_MAX_Y, sy));
     }
-    if (aabbCollidesWorld(sx, sy, sz, hw, hh)) {
-      let placed = false;
-      for (const [ox, oz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
-        for (const yOff of [0, 1, 2, -1, -2]) {
-          const nx = Math.max(-WORLD_RADIUS + 1, Math.min(WORLD_RADIUS - 1, sx + ox * 2));
-          const nz = Math.max(-WORLD_RADIUS + 1, Math.min(WORLD_RADIUS - 1, sz + oz * 2));
-          const ny = Math.max(1, Math.min(MAX_Y - 2, sy + yOff));
-          if (!aabbCollidesWorld(nx, ny, nz, hw, hh)) { sx = nx; sy = ny; sz = nz; placed = true; break; }
-        }
-        if (placed) break;
-      }
+    if (aabbCollidesWorld(sx, sy, sz, hw, hh) || mobRestoreOverlapsPlaced(sx, sy, sz, hw, hh, created)) {
+      const fixed = placeMobExact(sx, sy, sz, hw, hh, created, isJumpingKind(kind), isFlyingKind(kind));
+      sx = fixed.x; sy = fixed.y; sz = fixed.z;
     }
     const ryaw = isFinite(e.yaw) ? e.yaw : 0;
     let mesh = null, palIdx = 0, collar = WOLF_COLLAR_COLORS[0], endermanVis = null;
@@ -8917,19 +8982,30 @@ function restoreDimMobs(list, dimName, opts) {
       if (resumeMobPanic(m, list[li])) panicResumedDim.add(m.id);
     }
   }
-  const settleStartDim = performance.now() / 1000;
   for (const m of created) {
     if (isChained(m)) continue;
     if (panicResumedDim.has(m.id)) {
-      if (!isFlyingKind(m.kind)) m._settleUntil = settleStartDim + 12 + Math.random() * 8;
+      if (!isFlyingKind(m.kind)) m._settleUntil = performance.now() / 1000 + 12 + Math.random() * 8;
       continue;
     }
-    if (isFlyingKind(m.kind)) { if (!m.target) m.target = pigeonRandomTarget(m.pos); }
+    if (isFlyingKind(m.kind)) { if (!m.target) m.target = pigeonRandomTarget(m.pos); m.wanderT = 2 + Math.random() * 4; }
     else {
-      m.target = restoreFirstTarget(m.pos.x, m.pos.y, m.pos.z, m.hw, m.h, isJumpingKind(m.kind));
-      m._settleUntil = settleStartDim + 12 + Math.random() * 8;
+      m.target = restoreInitialTarget(m);
+      m.path = null;
+      m.pathKey = null;
+      m.wanderT = 2 + Math.random() * 4;
+      delete m._settleUntil;
+      if (dim === "over" && m.kind === "villager" && !m.isBaby && m.homeId >= 0) {
+        const h = villageHouses[m.homeId];
+        if (h && m.pos.x > h.minX && m.pos.x < h.maxX && m.pos.z > h.minZ && m.pos.z < h.maxZ) {
+          m.mode = "inside";
+          m.insideT = 4 + Math.random() * 6;
+          m.target = randomInsidePoint(m.homeId);
+          m.path = null;
+          m.pathKey = null;
+        }
+      }
     }
-    m.wanderT = 0.5 + Math.random() * 1.5;
   }
   buildMobGrid();
   return { n: created.length, ids: idByListIdx };
@@ -10102,12 +10178,7 @@ function updateMobs(dt) {
       if (m.pos.y > DRAGON_MAX_Y) { m.pos.y = DRAGON_MAX_Y; m.vel.y = Math.min(m.vel.y, 0); }
     }
     if(isPigCow(m) && villagePen && pigOverlapsFence(m.pos.x, m.pos.z, m.hw)){
-      const pen=villagePen;
-      m.pos.x = pen.cx+0.5;
-      m.pos.z = pen.cz+0.5;
-      m.pos.y = pen.vy+1;
-      m.vel.x=0; m.vel.z=0; m.vel.y=0;
-      m.onGround=true;
+      pigFenceSlideOut(m);
     }
     // mob-mob / player already in separate/push, but also check immediate collision after move
     // stuck detection — 1-block corner: never stay stuck
@@ -12591,13 +12662,7 @@ function mobPhysicsStep(mob, dt, g) {
     if (mob.pos.z > maxZ) { mob.pos.z = maxZ; mob.vel.z = 0; }
   }
   if(isPigCow(mob) && villagePen && pigOverlapsFence(mob.pos.x, mob.pos.z, mob.hw)){
-    const pen=villagePen;
-    mob.pos.x = pen.cx+0.5;
-    mob.pos.z = pen.cz+0.5;
-    mob.pos.y = pen.vy+1;
-    mob.vel.x=0; mob.vel.z=0; mob.vel.y=0;
-    mob.onGround = true;
-    if(mobStats) mobStats.worldCol++;
+    pigFenceSlideOut(mob);
   }
 }
 function tryWolfStep(mob, bx, by, bz) {
@@ -17952,7 +18017,7 @@ function serialize() {
   const dv = new DataView(buf);
   let o = 0;
   new Uint8Array(buf, o, 9).set(SAVE_MAGIC); o += 9;
-  dv.setUint8(o++, 29); // format version
+  dv.setUint8(o++, 30); // format version
   dv.setUint8(o++, dim === "end" ? 1 : dim === "nether" ? 2 : 0);
   dv.setInt32(o, seed, true); o += 4;
   dv.setInt32(o, endSeed, true); o += 4;
@@ -18048,7 +18113,7 @@ function serialize() {
     dv.setFloat32(o, em.x, true); o += 4;
     dv.setFloat32(o, em.y, true); o += 4;
     dv.setFloat32(o, em.z, true); o += 4;
-    dv.setUint8(o++, encodeMobYaw(em.yaw || 0));
+    dv.setFloat32(o, isFinite(em.yaw) ? em.yaw : 0, true); o += 4;
     dv.setUint8(o++, em.look & 255);
     dv.setFloat32(o, isFinite(em.fleeRemain) ? Math.max(0, em.fleeRemain) : 0, true); o += 4;
     dv.setFloat32(o, isFinite(em.panicT) ? Math.max(0, em.panicT) : 0, true); o += 4;
@@ -18188,7 +18253,7 @@ function deserialize(buf) {
   for (let i = 0; i < 9; i++) if (new Uint8Array(buf, o, 9)[i] !== SAVE_MAGIC[i]) throw new Error("Not a MiniCraft save");
   o += 9;
   const ver = dv.getUint8(o++);
-  if (ver !== 1 && ver !== 2 && ver !== 3 && ver !== 4 && ver !== 5 && ver !== 6 && ver !== 7 && ver !== 8 && ver !== 9 && ver !== 10 && ver !== 11 && ver !== 12 && ver !== 13 && ver !== 14 && ver !== 15 && ver !== 16 && ver !== 17 && ver !== 18 && ver !== 19 && ver !== 20 && ver !== 21 && ver !== 22 && ver !== 23 && ver !== 24 && ver !== 25 && ver !== 26 && ver !== 27 && ver !== 28 && ver !== 29) throw new Error("Unsupported save version");
+  if (ver !== 1 && ver !== 2 && ver !== 3 && ver !== 4 && ver !== 5 && ver !== 6 && ver !== 7 && ver !== 8 && ver !== 9 && ver !== 10 && ver !== 11 && ver !== 12 && ver !== 13 && ver !== 14 && ver !== 15 && ver !== 16 && ver !== 17 && ver !== 18 && ver !== 19 && ver !== 20 && ver !== 21 && ver !== 22 && ver !== 23 && ver !== 24 && ver !== 25 && ver !== 26 && ver !== 27 && ver !== 28 && ver !== 29 && ver !== 30) throw new Error("Unsupported save version");
   const yWidth = ver >= 8 ? 2 : 1;
   const readY = () => { const y = yWidth === 2 ? dv.getUint16(o, true) : dv.getUint8(o); o += yWidth; return y; };
   placedFlowers.clear();
@@ -18410,7 +18475,9 @@ function deserialize(buf) {
       const x = dv.getFloat32(o, true); o += 4;
       const y = dv.getFloat32(o, true); o += 4;
       const z = dv.getFloat32(o, true); o += 4;
-      const yb = dv.getUint8(o++);
+      let yaw = 0;
+      if (ver >= 30) { yaw = dv.getFloat32(o, true); o += 4; }
+      else { yaw = decodeMobYaw(dv.getUint8(o++)); }
       const look = dv.getUint8(o++);
       let fleeRemain = 0, panicT = 0, panicUntilRemain = 0, panicSrcX = 0, panicSrcZ = 0, panicFlags = 0;
       if (ver >= 21) {
@@ -18422,7 +18489,7 @@ function deserialize(buf) {
         panicFlags = dv.getUint8(o++);
       }
       if (!isFinite(x) || !isFinite(y) || !isFinite(z)) continue;
-      const e10 = { kind, isBaby: (flags & 1) !== 0, homeId, parentIdx, x, y, z, yaw: decodeMobYaw(yb), look, fleeRemain: isFinite(fleeRemain) ? Math.max(0, fleeRemain) : 0, panicT: isFinite(panicT) ? Math.max(0, panicT) : 0, panicUntilRemain: isFinite(panicUntilRemain) ? Math.max(0, panicUntilRemain) : 0, panicSrcX: isFinite(panicSrcX) ? panicSrcX : 0, panicSrcZ: isFinite(panicSrcZ) ? panicSrcZ : 0, panicFlags: panicFlags & 255 };
+      const e10 = { kind, isBaby: (flags & 1) !== 0, homeId, parentIdx, x, y, z, yaw: isFinite(yaw) ? yaw : 0, look, fleeRemain: isFinite(fleeRemain) ? Math.max(0, fleeRemain) : 0, panicT: isFinite(panicT) ? Math.max(0, panicT) : 0, panicUntilRemain: isFinite(panicUntilRemain) ? Math.max(0, panicUntilRemain) : 0, panicSrcX: isFinite(panicSrcX) ? panicSrcX : 0, panicSrcZ: isFinite(panicSrcZ) ? panicSrcZ : 0, panicFlags: panicFlags & 255 };
       if (ver >= 11) { e10.villageBound = (flags & 2) !== 0; e10.penBound = (flags & 4) !== 0; }
       arr.push(e10);
     }
@@ -18455,7 +18522,9 @@ function deserialize(buf) {
         const x = dv.getFloat32(o, true); o += 4;
         const y = dv.getFloat32(o, true); o += 4;
         const z = dv.getFloat32(o, true); o += 4;
-        const yb = dv.getUint8(o++);
+        let yawR = 0;
+        if (ver >= 30) { yawR = dv.getFloat32(o, true); o += 4; }
+        else { yawR = decodeMobYaw(dv.getUint8(o++)); }
         const look = dv.getUint8(o++);
         let fleeRemain = 0, panicT = 0, panicUntilRemain = 0, panicSrcX = 0, panicSrcZ = 0, panicFlags = 0;
         if (ver >= 21) {
@@ -18467,7 +18536,7 @@ function deserialize(buf) {
           panicFlags = dv.getUint8(o++);
         }
         if (!isFinite(x) || !isFinite(y) || !isFinite(z)) continue;
-        arr.push({ kind, isBaby: (flags & 1) !== 0, homeId, parentIdx, x, y, z, yaw: decodeMobYaw(yb), look, villageBound: (flags & 2) !== 0, penBound: (flags & 4) !== 0, fleeRemain: isFinite(fleeRemain) ? Math.max(0, fleeRemain) : 0, panicT: isFinite(panicT) ? Math.max(0, panicT) : 0, panicUntilRemain: isFinite(panicUntilRemain) ? Math.max(0, panicUntilRemain) : 0, panicSrcX: isFinite(panicSrcX) ? panicSrcX : 0, panicSrcZ: isFinite(panicSrcZ) ? panicSrcZ : 0, panicFlags: panicFlags & 255 });
+        arr.push({ kind, isBaby: (flags & 1) !== 0, homeId, parentIdx, x, y, z, yaw: isFinite(yawR) ? yawR : 0, look, villageBound: (flags & 2) !== 0, penBound: (flags & 4) !== 0, fleeRemain: isFinite(fleeRemain) ? Math.max(0, fleeRemain) : 0, panicT: isFinite(panicT) ? Math.max(0, panicT) : 0, panicUntilRemain: isFinite(panicUntilRemain) ? Math.max(0, panicUntilRemain) : 0, panicSrcX: isFinite(panicSrcX) ? panicSrcX : 0, panicSrcZ: isFinite(panicSrcZ) ? panicSrcZ : 0, panicFlags: panicFlags & 255 });
       }
       return arr;
     };
@@ -18927,6 +18996,8 @@ async function restoreSave(buf) {
     mobs.length = 0;
     mobById.clear();
     endermen.length = 0;
+    mobGrid.clear();
+    visitGrid.clear();
     if (dragon.mesh) removeDragon();
     carryMob = null;
     carryGrappleMob = null;
@@ -20062,13 +20133,13 @@ if (location.search.includes('test')) {
     getTypeMats, get typeMats(){ return typeMats; }, buildWorld, generateWorld, computeVillageLayout, spawnVillagers, refreshBlocks, rebuildMeshes, get chunkMeshes(){ return chunkMeshes; }, get boxGeo(){ return boxGeo; }, THREE,
     get pos(){ return pos; }, get vel(){ return vel; }, get camera(){ return camera; }, get scene(){ return scene; }, get freeCam(){ return freeCam; }, set freeCam(v){ freeCam = v; }, get camPos(){ return camPos; }, get yaw(){ return yaw; }, set yaw(v){ yaw=v; }, get pitch(){ return pitch; }, set pitch(v){ pitch=v; },
     get carryMob(){ return carryMob; }, set carryMob(v){ carryMob = v; }, handleCarryEnterDown, handleCarryEnterUp, pickMob, get carryGrappleActive(){ return carryGrappleActive; }, get carryGrapplePulling(){ return carryGrapplePulling; }, get carryGrappleMob(){ return carryGrappleMob; }, get carryGrappleBlock(){ return carryGrappleBlock; }, get carryGrappleHookPos(){ return carryGrappleHookPos; }, get carryGrappleOffset(){ return carryGrappleOffset; }, get carryGrappleMode(){ return carryGrappleMode; }, get isMobFrozenByGrapple(){ return isMobFrozenByGrapple; }, isChained, isChainCarrier, chainRootOf, chainTailOf, linkChain, dropChainFrom, chainTakeForCarry, severChainMob, groundChainFrom, insertChainBefore, insertChainBehind, insertBehindRide, prependChainLead, clearChains, pruneChains, updateChains, syncChainLinkColor, syncChainLinkColors, syncGrappleColor, stampSpawn, get mobById(){ return mobById; }, chainAttachTarget, startCarryAttachGrapple, killChainMob, respawnChainMob, unchainMob, severGroundedChainVictim, isGroundedChainVictim, get chainLinks(){ return chainLinks; }, get chainParent(){ return chainParent; }, get chainChild(){ return chainChild; }, playerChainAvatar, playerInChain, PLAYER_CHAIN_ID, spliceChainLink, chainHasJumping, chainPushCrumb, chainTrailTarget, latchPlayerTo, latchPlayerInMiddle, playerInsertCutAndLink, insertChainAheadOfPlayer, insertChainBehindPlayer, playerLeadLink, dropPlayerLeadEntry, readyLeadForLatch, leadAwareLatchInsert, appendCutFollowerBehindLeadTail, grabRideForCarry, fireGrapple, detachDisplacementGrapple, get grappleActive(){ return grappleActive; }, get grappleHooked(){ return grappleHooked; }, get grappleRetracting(){ return grappleRetracting; }, get grappleMob(){ return grappleMob; }, get grappleMobOffset(){ return grappleMobOffset; }, get grappleHookPos(){ return grappleHookPos; }, get grappleTarget(){ return grappleTarget; }, updateCarryGrapple, updateCarry, get currentBlock(){ return currentBlock; }, updateTarget, hotbarList, placeBlock, breakBlock, get selected(){ return selected; }, set selected(v){ selected=v; }, toggleCarry: handleCarryEnterDown, findNearestMobForGrab: (...a)=>{ const d=new THREE.Vector3(); camera.getWorldDirection(d); return pickMob(d); }, get playerArms(){ return playerArms; }, get started(){ return started; }, set started(v){ started=v; }, get loading(){ return loading; }, get freeCam(){ return freeCam; }, set freeCam(v){ freeCam=v; }, get helpOpen(){ return helpOpen; },
-    get WOLF_COUNT(){ return WOLF_COUNT; }, get GOLEM_COUNT(){ return GOLEM_COUNT; }, get GOLEM_HW(){ return GOLEM_HW; }, get GOLEM_HH(){ return GOLEM_HH; }, makeWolfMesh, makeIronGolemMesh, villagerHW, villagerH, wolfHasMobGround, wolfBlockedAt, wolfProbeFree, wanderGoalForWolf, wolfFindPath, wolfFlatSpot, wolfLeaveTarget, panicLeaveDir, panicWolves, wolfInWater, mobInWater, waterSurfaceForMob, mobPhysicsStep, wolfPhysicsStep, updateMobs, obstacleTurnDir, buildMobGrid,     get isPigCow(){ return isPigCow; }, get pigOverlapsFence(){ return pigOverlapsFence; }, get MOB_FLOAT_FRAC(){ return MOB_FLOAT_FRAC; }, mobFloatTargetY, mobWaterExitJump, poolExitTarget, penPoolExitTarget, isInsidePenPool,
+    get WOLF_COUNT(){ return WOLF_COUNT; }, get GOLEM_COUNT(){ return GOLEM_COUNT; }, get GOLEM_HW(){ return GOLEM_HW; }, get GOLEM_HH(){ return GOLEM_HH; }, makeWolfMesh, makeIronGolemMesh, villagerHW, villagerH, wolfHasMobGround, wolfBlockedAt, wolfProbeFree, wanderGoalForWolf, wolfFindPath, wolfFlatSpot, wolfLeaveTarget, panicLeaveDir, panicWolves, wolfInWater, mobInWater, waterSurfaceForMob, mobPhysicsStep, wolfPhysicsStep, updateMobs, obstacleTurnDir, buildMobGrid,     get isPigCow(){ return isPigCow; }, get pigOverlapsFence(){ return pigOverlapsFence; }, pigFenceSlideOut, get MOB_FLOAT_FRAC(){ return MOB_FLOAT_FRAC; }, mobFloatTargetY, mobWaterExitJump, poolExitTarget, penPoolExitTarget, isInsidePenPool,
     get PIGEON_COUNT(){ return PIGEON_COUNT; }, get PIGEON_MIN_Y(){ return PIGEON_MIN_Y; }, get PIGEON_MAX_Y(){ return PIGEON_MAX_Y; }, get PIGEON_SPEED(){ return PIGEON_SPEED; }, get TNT_HOME_SPEED(){ return TNT_HOME_SPEED; }, get PIGEON_AIM_DIST(){ return PIGEON_AIM_DIST; }, get PIGEON_LOCK_TIME(){ return PIGEON_LOCK_TIME; }, get pigeonLock(){ return pigeonLock; }, get pigeonLockT(){ return pigeonLockT; }, set pigeonLockT(v){ pigeonLockT = v; }, get pigeonLockShots(){ return pigeonLockShots; }, livePigeonLock, tntTargeted, tryFireLockedTNT, tntChainAimMob, aimOnMob, get chainBreaking(){ return chainBreaking; }, set chainBreaking(v){ chainBreaking = v; },     makePigeonMesh, spawnPigeons, spawnSinglePigeon, removePigeons, spawnPigeonChain, updatePigeon, updatePerchedPigeon, updateToPerchPigeon, pigeonTakeoff, pigeonNextLeg, pigeonFindPerchSpot, pigeonCloudTopAt, pigeonTreeTopAt, pigeonRoofTopAt, pigeonPerchBand, pigeonPerchSupports, killPigeon, pigeonSpotOutOfView, pigeonProbeFree, pigeonRandomTarget, pigeonSeparate,     houseInteriorFor, houseMouths, pigeonCoopTarget,     pigeonSegmentFree, pigeonClearance, pigeonBestSteer, pigeonMillHop, pigeonConfinedSteer, pigeonMoveSlide, bandReturnTarget, pigeonNoticeBreak, setMobTransparent, pigeonIsConfined, pigeonHoleCell, chainSegmentFree, chainThreadRide, pigeonTunnelPlan, updateTunnelPigeon, pigeonTunnelSeparate, pigeonSkyClear, pigeonSidestep, pigeonUTurn, pigeonNarrow, pigeonColHW, pigeonColH,     get PIGEON_NARROW_SCALE(){ return PIGEON_NARROW_SCALE; }, get PIGEON_SKY_CLEAR(){ return PIGEON_SKY_CLEAR; }, get NETHER_PIGEON_MIN_Y(){ return NETHER_PIGEON_MIN_Y; }, get NETHER_PIGEON_MAX_Y(){ return NETHER_PIGEON_MAX_Y; }, pigeonDimOf, pigeonBandMinFor, pigeonBandMaxFor, pigeonBandMin, pigeonBandMax, pigeonNetherLegY, netherPigeonCeiling, pigeonLavaAt, get PIGEON_TUNNEL_SCALE(){ return PIGEON_TUNNEL_SCALE; }, get PIGEON_COL_HW(){ return PIGEON_COL_HW; }, get PIGEON_COL_H(){ return PIGEON_COL_H; },     get tntLit(){ return tntLit; }, get explosionQueue(){ return explosionQueue; }, get tntEta(){ return tntEta; }, get pendingTNTBombs(){ return pendingTNTBombs; }, get pendingTNTEta(){ return pendingTNTEta; }, get bursts(){ return bursts; }, get flashes(){ return flashes; }, snapshotLiveFx, replayLiveFx, spawnExplosion, igniteTNT, fireTNTAtPigeon, purgeLiveTNT, tickTNT, snapshotLiveTNT, restoreLiveTNT, get pendingDragon(){ return pendingDragon; }, get tntEta(){ return tntEta; }, igniteTNT, aimedPigeon, fireTNTAtPigeon, explodePigeon, spawnPigeonBurst, get bursts(){ return bursts; }, get flashes(){ return flashes; }, updateTNTTarget, tickTNT, fireGrapple, updateGrapple, updatePlayer, get grappleActive(){ return grappleActive; }, get grapplePulling(){ return grapplePulling; }, get grappleHooked(){ return grappleHooked; },
     get overPortalWin(){ return overPortalWin; }, get overPortalDir(){ return overPortalDir; }, get overPortalSpawn(){ return overPortalSpawn; }, get overPortalFace(){ return overPortalFace; },
     portalWinValid, portalFrameBBox, findReturnSpot, frameTopSpot, facePortalFrom, faceAwayFromPortal, recordOverPortal, recordDimExit, resolveDimArrival, nearestReturnWin, resolveOverworldReturn, nearPortalSpawn, resolveSpawn, collectEndWins, collectNetherWins, collectReturnWins, insideEndInterior, insideNetherInterior, winCenter, windowDist, isSolid,
     get PORTAL(){ return PORTAL; }, get OBSIDIAN(){ return OBSIDIAN; }, get WORLD_RADIUS(){ return WORLD_RADIUS; }, get PLAYER_HW(){ return PLAYER_HW; }, get PLAYER_H(){ return PLAYER_H; }, get MOON(){ return MOON; }, get CLOUD(){ return CLOUD; }, get GRASS(){ return GRASS; }, get STONE(){ return STONE; }, get ENDSTONE(){ return ENDSTONE; }, get NETHERRACK(){ return NETHERRACK; }, get dim(){ return dim; },
     serialize, deserialize, restoreSave, snapshotOverworldMobs, restoreOverworldMobs, get overworldMobCache(){ return overworldMobCache; }, get pendingOverworldMobs(){ return pendingOverworldMobs; }, get pendingChainLinks(){ return pendingChainLinks; }, get pendingCarriedIdx(){ return pendingCarriedIdx; },
-    snapshotMobsForDim, snapshotChainPairsForDim, DRAGON_CHAIN_CARRIER, restoreDimMobs, relinkDimChainsByIds, mobDimOf, suspendLiveDim,
+    snapshotMobsForDim, snapshotChainPairsForDim, DRAGON_CHAIN_CARRIER, restoreDimMobs, relinkDimChainsByIds, mobDimOf, suspendLiveDim, placeMobExact, mobRestoreOverlapsPlaced, settleMobSpot, restoreInitialTarget, aabbOverlaps,
     get endMobCache(){ return endMobCache; }, get netherMobCache(){ return netherMobCache; }, get pendingEndMobs(){ return pendingEndMobs; }, get pendingNetherMobs(){ return pendingNetherMobs; }, get netherExit(){ return netherExit; }, get endExit(){ return endExit; }, get endCleared(){ return endCleared; },
     goToDimension, removeVillagers,
     get DEV_START_DIM(){ return DEV_START_DIM; },
