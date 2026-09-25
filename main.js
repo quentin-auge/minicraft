@@ -497,8 +497,11 @@ function rebuildColTops(only) {
     const ct = colTops[name];
     ct.fill(0);
     worlds[name].forEach((id, k) => {
-      const [x, y, z] = keyXYZ(k);
-      const ci = colTopIdx(x, z);
+      const z = (k % KEY_MZ) - KEY_OFF;
+      const t = Math.floor(k / KEY_MZ);
+      const y = t % KEY_MZ;
+      const x = Math.floor(t / KEY_MZ) - KEY_OFF;
+      const ci = (x + KEY_OFF) * KEY_MZ + (z + KEY_OFF);
       if (y > ct[ci]) ct[ci] = y;
     });
   }
@@ -555,6 +558,8 @@ let worldDirty = true;
 let glowDefer = 0;
 let glowDirtyDeferred = false;
 let placeBatch = null;
+let bulkGen = false;
+const heightMemo = new Map();
 
 // Villager-planted pines (Overworld, anywhere including the Moon). Pouring
 // WATER or MOON_WATER directly on top of any DIRT block soaks in over 0.5s: the water is
@@ -1278,12 +1283,12 @@ function setBlock(x, y, z, id) {
   if (id !== FLOWER) placedFlowers.delete(k);
   if (dim === "over" && world === worlds.over && id !== DIRT && growableSoils.has(k)) releaseGrowable(k);
   if (wasG !== gs.has(k)) {
-    if (glowDefer > 0) glowDirtyDeferred = true;
+    if (bulkGen || glowDefer > 0) glowDirtyDeferred = true;
     else { recomputeGlowClusters(); syncGlowLights(); }
   }
   endMemo.dim = "";
   netherMemo.dim = "";
-  if (id === PORTAL || id === OBSIDIAN) {
+  if (!bulkGen && (id === PORTAL || id === OBSIDIAN)) {
     if (!(dim === "end" && !endCleared)) {
       for (const w of collectEndWins(x, y, z, 6)) ensurePortalFill(w, false);
       for (const w of collectNetherWins(x, y, z, 6)) ensurePortalFill(w, true);
@@ -1294,6 +1299,9 @@ function setBlock(x, y, z, id) {
 }
 
 function heightAt(x, z) {
+  const mk = x + "," + z;
+  const cached = heightMemo.get(mk);
+  if (cached !== undefined) return cached;
   const base = fbm(x * 0.02, z * 0.02, seed) * 2 - 1;
   const hills = fbm(x * 0.008 + 100, z * 0.008 + 100, seed + 7) * 2 - 1;
   const rough = fbm(x * 0.06, z * 0.06, seed + 13) * 1.4;
@@ -1314,7 +1322,9 @@ function heightAt(x, z) {
     const t = rv.d / rv.w;
     h = Math.min(h, RIVER_BED + Math.floor(t * 6));
   }
-  return Math.floor(h);
+  const out = Math.floor(h);
+  heightMemo.set(mk, out);
+  return out;
 }
 
 function growTree(x, y, z) {
@@ -1930,6 +1940,7 @@ function birdTunnelPlan(m, now) {
   const seen = new Set([sk0]);
   depth.set(sk0, 0);
   const q = [start];
+  let qi = 0;
   let digCell = null, exitCell = null, exitDepth = Infinity;
   let skyCell = null, skyDepth = Infinity;
   const reachable = [];
@@ -1939,8 +1950,8 @@ function birdTunnelPlan(m, now) {
     for (const [ax, ay, az] of DIRS) if (freeCell(x + ax, y + ay, z + az)) n++;
     return n;
   };
-  while (q.length && seen.size < BIRD_TUNNEL_BFS_CELLS) {
-    const [cx, cy, cz] = q.shift();
+  while (qi < q.length && seen.size < BIRD_TUNNEL_BFS_CELLS) {
+    const [cx, cy, cz] = q[qi++];
     const ck = key(cx, cy, cz);
     const cd = depth.get(ck) || 0;
     const isStart = cx === start[0] && cy === start[1] && cz === start[2];
@@ -4476,7 +4487,8 @@ function birdClearance(px, py, pz, dx, dy, dz) {
   return 0;
 }
 function birdBestSteer(m, baseYaw, dyHint) {
-  const yaws = [0, 0.5, -0.5, 1.0, -1.0, 1.6, -1.6, Math.PI];
+  const far = typeof pos !== "undefined" && Math.hypot(m.pos.x - pos.x, m.pos.y - pos.y, m.pos.z - pos.z) > 40;
+  const yaws = far ? [0, 0.7, -0.7, Math.PI] : [0, 0.5, -0.5, 1.0, -1.0, 1.6, -1.6, Math.PI];
   const verts = [dyHint * 0.5, 0.25, -0.25, 0];
   let best = null;
   for (const off of yaws) {
@@ -4493,6 +4505,18 @@ function birdBestSteer(m, baseYaw, dyHint) {
     }
   }
   return best;
+}
+function birdCachedClearance(m, dx, dy, dz) {
+  const now = performance.now() / 1000;
+  if (m._clrT !== undefined && now - m._clrT < 0.2 &&
+      Math.abs(m.pos.x - m._clrX) < 0.5 && Math.abs(m.pos.y - m._clrY) < 0.5 && Math.abs(m.pos.z - m._clrZ) < 0.5 &&
+      (m._clrDx * dx + m._clrDy * dy + m._clrDz * dz) > 0.95) {
+    return m._clrV;
+  }
+  const v = birdClearance(m.pos.x, m.pos.y, m.pos.z, dx, dy, dz);
+  m._clrT = now; m._clrX = m.pos.x; m._clrY = m.pos.y; m._clrZ = m.pos.z;
+  m._clrDx = dx; m._clrDy = dy; m._clrDz = dz; m._clrV = v;
+  return v;
 }
 function birdMillHop(m) {
   const axes = [[0, -1, 0], [0, 1, 0], [1, 0, 0], [-1, 0, 0], [0, 0, 1], [0, 0, -1]];
@@ -4784,7 +4808,7 @@ function updateToPerchBird(m, dt) {
   const sp = BIRD_SPEED;
   const spd = dist < 6 ? sp * Math.max(0.06, dist / 6) : sp;
   let sx = dx / dist, sy = dy / dist, sz = dz / dist;
-  let pClear = birdClearance(m.pos.x, m.pos.y, m.pos.z, sx, sy, sz);
+  let pClear = birdCachedClearance(m, sx, sy, sz);
   const final = dist < BIRD_PERCH_FINAL_D;
   if (!final && pClear === 0) {
     const best = birdBestSteer(m, Math.atan2(sx, sz), sy);
@@ -4929,7 +4953,7 @@ function updateBird(m, dt) {
   dx /= dl; dy /= dl; dz /= dl;
   let steerX = dx, steerY = dy, steerZ = dz;
   let boxed = false;
-  let steerClear = birdClearance(m.pos.x, m.pos.y, m.pos.z, dx, dy, dz);
+  let steerClear = birdCachedClearance(m, dx, dy, dz);
   if (steerClear === 0) {
     const best = birdBestSteer(m, Math.atan2(dx, dz), dy);
     if (best && best.clear > 0) {
@@ -4991,7 +5015,7 @@ function updateBird(m, dt) {
       if (tl < 3 && birdSegmentFree(m.pos.x, m.pos.y, m.pos.z, m.target.x, m.target.y, m.target.z)) {
         steerX = gx; steerY = gy; steerZ = gz; steerClear = 1;
       } else {
-        const gClear = birdClearance(m.pos.x, m.pos.y, m.pos.z, gx, gy, gz);
+        const gClear = birdCachedClearance(m, gx, gy, gz);
         if (gClear > 0) {
           steerX = gx; steerY = gy; steerZ = gz; steerClear = gClear;
         } else {
@@ -5027,7 +5051,7 @@ function updateBird(m, dt) {
     const ty = Math.max(-0.3, Math.min(0.3, (a.cy - m.pos.y) * 0.05));
     const tl = Math.hypot(tx, ty, tz) || 1;
     const ax = tx / tl, ay = ty / tl, az = tz / tl;
-    if (birdClearance(m.pos.x, m.pos.y, m.pos.z, ax, ay, az) === 0) {
+    if (birdCachedClearance(m, ax, ay, az) === 0) {
       const best = birdBestSteer(m, Math.atan2(ax, az), ay);
       if (best && best.clear > 0) { steerX = best.x; steerY = best.y; steerZ = best.z; steerClear = best.clear; }
       else {
@@ -5064,7 +5088,7 @@ function updateBird(m, dt) {
   const raw = Math.hypot(vx, vy, vz);
   const nvl = raw || 1;
   let minSp = effSp * 0.6;
-  if (raw > 0.001 && birdClearance(m.pos.x, m.pos.y, m.pos.z, vx / nvl, vy / nvl, vz / nvl) === 0) minSp = 0;
+  if (raw > 0.001 && birdCachedClearance(m, vx / nvl, vy / nvl, vz / nvl) === 0) minSp = 0;
   if (nvl < minSp) {
     const sl = Math.hypot(steerX, steerY, steerZ) || 1;
     vx = (steerX / sl) * minSp; vy = (steerY / sl) * minSp; vz = (steerZ / sl) * minSp;
@@ -5348,6 +5372,7 @@ function isMobFrozenByGrapple(m) {
 const chainChild = new Map();
 const chainParent = new Map();
 const chainLinks = new Map();
+let chainOrderCache = null, chainOrderT = 0;
 const CHAIN_LINK_CUBES = 128;
 const chainLinkGeo = new THREE.BoxGeometry(0.1, 0.1, 0.1);
 const chainLinkMat = new THREE.MeshBasicMaterial({ color: 0x8a6d3b });
@@ -6376,8 +6401,13 @@ function updateChains(dt) {
   pruneChains();
   if (dim !== "over" && dim !== "end" && dim !== "nether") return;
   dt = Math.min(0.05, dt);
-  const chainOrder = [...chainLinks];
-  chainOrder.sort((a, b) => chainDepthOfId(a[0]) - chainDepthOfId(b[0]));
+  const nowC = performance.now() / 1000;
+  if (!chainOrderCache || nowC - chainOrderT > 0.1 || chainOrderCache.length !== chainLinks.size) {
+    chainOrderCache = [...chainLinks];
+    chainOrderCache.sort((a, b) => chainDepthOfId(a[0]) - chainDepthOfId(b[0]));
+    chainOrderT = nowC;
+  }
+  const chainOrder = chainOrderCache;
   for (const [childId, link] of chainOrder) {
     const child = mobById.get(childId);
     const carrier = chainMobById(link.carrierId);
@@ -6986,9 +7016,14 @@ const chainLinkTmp = new THREE.Vector3();
 function renderChainLink(link, carrier, child) {
     const ax = carrier.pos.x, ay = chainAnchorY(carrier), az = carrier.pos.z;
     const bx = child.pos.x, by = chainAnchorY(child), bz = child.pos.z;
+    const moved = (ax - (link._ax || 0)) ** 2 + (ay - (link._ay || 0)) ** 2 + (az - (link._az || 0)) ** 2 +
+      (bx - (link._bx || 0)) ** 2 + (by - (link._by || 0)) ** 2 + (bz - (link._bz || 0)) ** 2;
+    if (link._drawn && moved < 1e-6) { link.head.position.set(bx, by, bz); return; }
+    link._ax = ax; link._ay = ay; link._az = az; link._bx = bx; link._by = by; link._bz = bz;
+    link._drawn = true;
     const dx = bx - ax, dy = by - ay, dz = bz - az;
     const dist = Math.hypot(dx, dy, dz) || 0.001;
-    const n = Math.max(4, Math.min(CHAIN_LINK_CUBES, Math.round(dist / 0.15)));
+    const n = Math.max(4, Math.min(CHAIN_LINK_CUBES, Math.round(dist / 0.30)));
     link.rope.count = n;
     const ux = dx / dist, uy = dy / dist, uz = dz / dist;
     let vx = Math.abs(uy) < 0.99 ? uz : 1, vy = Math.abs(uy) < 0.99 ? 0 : 0, vz = Math.abs(uy) < 0.99 ? -ux : 0;
@@ -7584,9 +7619,10 @@ function startCarryAttachGrapple(tail) {
   return true;
 }
 
+const carryGrappleEye = new THREE.Vector3();
 function updateCarryGrapple(dt) {
   if (carryGrappleRetracting) {
-    const eye = new THREE.Vector3(pos.x, pos.y + 0.3, pos.z);
+    const eye = carryGrappleEye.set(pos.x, pos.y + 0.3, pos.z);
     if (carryGrappleMode === "release" && carryGrappleMob) {
       const mob = carryGrappleMob;
       const dx = eye.x - carryGrappleHookPos.x, dy = eye.y - carryGrappleHookPos.y, dz = eye.z - carryGrappleHookPos.z;
@@ -7795,7 +7831,7 @@ function updateCarryGrapple(dt) {
         carryGrappleHookPos.copy(carryGrappleTarget);
         return;
       }
-      const eye = new THREE.Vector3(pos.x, pos.y + 0.3, pos.z);
+      const eye = carryGrappleEye.set(pos.x, pos.y + 0.3, pos.z);
       const dx = eye.x - mob.pos.x, dy = eye.y - mob.pos.y, dz = eye.z - mob.pos.z;
       const dist = Math.hypot(dx, dy, dz);
       const step = MOB_GRAPPLE_RETRACT * dt;
@@ -8405,8 +8441,9 @@ function wolfFindPath(sx, sz, tx, tz, hw, pyHint) {
   const q = [s], came = new Map([[toKey(s[0], s[1]), null]]);
   const dirs = [[1, 0], [-1, 0], [0, 1], [0, -1]];
   let found = false;
-  while (q.length) {
-    const [cx, cz] = q.shift();
+  let qi = 0;
+  while (qi < q.length) {
+    const [cx, cz] = q[qi++];
     if (cx === g[0] && cz === g[1]) { found = true; break; }
     for (const [dx, dz] of dirs) {
       const nx = cx + dx, nz = cz + dz;
@@ -8508,8 +8545,9 @@ function findVillagePath(sx, sz, tx, tz, hw, pyHint) {
   const q = [s], came = new Map([[toKey(s[0], s[1]), null]]);
   const dirs = [[1, 0], [-1, 0], [0, 1], [0, -1]];
   let found = false;
-  while (q.length) {
-    const [cx, cz] = q.shift();
+  let qi = 0;
+  while (qi < q.length) {
+    const [cx, cz] = q[qi++];
     if (cx === g[0] && cz === g[1]) { found = true; break; }
     for (const [dx, dz] of dirs) {
       const nx = cx + dx, nz = cz + dz;
@@ -8601,8 +8639,9 @@ function findPlantPath(sx, sz, tx, tz, hw, pyHint) {
   const q = [s], came = new Map([[toKey(s[0], s[1]), null]]);
   const dirs = [[1, 0], [-1, 0], [0, 1], [0, -1]];
   let found = false;
-  while (q.length) {
-    const [cx, cz] = q.shift();
+  let qi = 0;
+  while (qi < q.length) {
+    const [cx, cz] = q[qi++];
     if (cx === g[0] && cz === g[1]) { found = true; break; }
     for (const [dx, dz] of dirs) {
       const nx = cx + dx, nz = cz + dz;
@@ -9757,7 +9796,7 @@ function isMobStandingOn(bx, by, bz, ignoreBirds) {
   return false;
 }
 function separateMobs() {
-  for (let iter = 0; iter < 3; iter++) {
+  for (let iter = 0; iter < 2; iter++) {
     let anyMoved = false;
     for (const m of mobs) {
       if (isMobHeld(m)) continue;
@@ -9769,7 +9808,7 @@ function separateMobs() {
       if (m.dim !== undefined && m.dim !== dim) continue;
       let sx = 0, sz = 0, cnt = 0;
       const nearby = nearbyMobsFor(m.pos.x, m.pos.z, 1);
-      const fleeingSelf = m.fleeUntil && performance.now() / 1000 < m.fleeUntil;
+      const fleeingSelf = m.fleeUntil && mobNowS < m.fleeUntil;
       for (const o of nearby) {
         if (o === m || isMobHeld(o)) continue;
         if (isChained(o)) continue;
@@ -9778,7 +9817,7 @@ function separateMobs() {
         if (o.dim !== undefined && o.dim !== dim) continue;
         let need = villagerHW(m) + villagerHW(o) + 0.18;
         if (!fleeingSelf) {
-          const oflee = o.fleeUntil && performance.now() / 1000 < o.fleeUntil;
+          const oflee = o.fleeUntil && mobNowS < o.fleeUntil;
           if (!oflee && mobBondedPair(m, o)) {
             need = (villagerHW(m) + villagerHW(o)) * 0.62 + 0.10;
           }
@@ -9825,7 +9864,6 @@ function separateMobs() {
       }
     }
     if (!anyMoved) break;
-    if (iter < 2) buildMobGrid();
   }
 }
 function pushMobsFromPlayer() {
@@ -9842,7 +9880,7 @@ function pushMobsFromPlayer() {
     if (isArrivalFrozen(m)) continue;
     if (m._fillSlide) continue;
     if (m.dim !== undefined && m.dim !== dim) continue;
-    const fleeing = m.fleeUntil && performance.now() / 1000 < m.fleeUntil;
+    const fleeing = m.fleeUntil && mobNowS < m.fleeUntil;
     const dx = m.pos.x - pos.x, dz = m.pos.z - pos.z;
     const d2 = dx * dx + dz * dz;
     const need = (PLAYER_HW + villagerHW(m) + 0.08);
@@ -9867,15 +9905,15 @@ function mobWouldCollide(mob, nx, nz) {
   const hw = villagerHW(mob);
   const y = mob.pos.y;
   const nearby = nearbyMobsFor(nx, nz, 1);
-  const fleeingSelf = mob.fleeUntil && performance.now() / 1000 < mob.fleeUntil;
+  const fleeingSelf = mob.fleeUntil && mobNowS < mob.fleeUntil;
   for (const o of nearby) {
     if (o === mob || isMobHeld(o) || isMobFrozenByGrapple(o)) continue;
     if (isChained(o)) continue;
     if (o.kind === "dragon" || o.kind === "enderman") continue;
     if (o.dim !== undefined && o.dim !== dim) continue;
     let need = hw + villagerHW(o) + 0.04;
-    if (!fleeingSelf) {
-      const oflee = o.fleeUntil && performance.now() / 1000 < o.fleeUntil;
+        if (!fleeingSelf) {
+          const oflee = o.fleeUntil && mobNowS < o.fleeUntil;
       if (!oflee && mobBondedPair(mob, o)) {
         need = (hw + villagerHW(o)) * 0.62 + 0.06;
       }
@@ -10010,10 +10048,11 @@ function resolveHeadOn() {
 }
 let liveFillCells = null;
 let liveFillWin = null;
+let mobNowS = 0;
+let fillCacheT = -1, fillCacheDim = "", fillCacheSize = -1, fillCacheCleared = false;
 function rebuildLiveFillCells() {
   liveFillCells = new Set();
-  liveFillWin = new Map();
-  for (const f of portalFills.values()) {
+  liveFillWin = new Map();  for (const f of portalFills.values()) {
     if (f.dim !== dim) continue;
     if (f.dim === "end" && !endCleared) continue;
     if (!portalFillValid(f)) continue;
@@ -10114,7 +10153,11 @@ function startFillSlide(m) {
 }
 function updateMobs(dt) {
   if (!mobs.length) return;
-  rebuildLiveFillCells();
+  mobNowS = performance.now() / 1000;
+  if (fillCacheT < 0 || mobNowS - fillCacheT >= 0.5 || fillCacheDim !== dim || fillCacheSize !== portalFills.size || fillCacheCleared !== (!!endCleared)) {
+    rebuildLiveFillCells();
+    fillCacheT = mobNowS; fillCacheDim = dim; fillCacheSize = portalFills.size; fillCacheCleared = !!endCleared;
+  }
   const over = (dim === "over" && villageHouses.length) || dim === "nether";
   if (over) {
     mobTick++;
@@ -11504,6 +11547,9 @@ function handleMobExplosion(cx, cy, cz) {
 function generateWorld() {
   dim = "over"; // setBlock records column tops per dim, so pin it while generating
   world = worlds.over;
+  bulkGen = true;
+  heightMemo.clear();
+  try {
   worlds.over.clear();
   colTops.over.fill(0);
   portalBlockSets.over.clear();
@@ -11560,6 +11606,12 @@ function generateWorld() {
   placeVillagePool();
   generateClouds();
   generateMoon();
+  } finally {
+    bulkGen = false;
+    if (glowDirtyDeferred) { glowDirtyDeferred = false; recomputeGlowClusters(); syncGlowLights(); }
+    portalDirty = true;
+    worldDirty = true;
+  }
 }
 
 // Scatter solid white clouds you can climb on, made of a few overlapping 3D
@@ -12141,6 +12193,8 @@ function nearestNetherRiver(x, z) {
 
 function generateNether() {
   const w = worlds.nether;
+  bulkGen = true;
+  try {
   w.clear();
   portalBlockSets.nether.clear();
   glowstoneBlockSets.nether.clear();
@@ -12195,6 +12249,12 @@ function generateNether() {
   volcanoTunnels();
   hollowVolcanoes();
   rebuildColTops("nether");
+  } finally {
+    bulkGen = false;
+    if (glowDirtyDeferred) { glowDirtyDeferred = false; recomputeGlowClusters(); syncGlowLights(); }
+    portalDirty = true;
+    worldDirty = true;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -12352,6 +12412,34 @@ const liquidFaceGeos = {
   pz: new THREE.PlaneGeometry(1, 1).translate(0, 0,  0.5),
   nz: new THREE.PlaneGeometry(1, 1).rotateY( Math.PI).translate(0, 0, -0.5),
 };
+// Lava is fully opaque, so its 5 side faces can share one merged geometry:
+// hidden internal faces are removed by the depth test with no visual change
+// (this is NOT done for transparent water/moon-water, where internal faces
+// would double-draw through the surface).
+function mergePlaneGeos(geos) {
+  let vCount = 0, iCount = 0;
+  for (const g of geos) { vCount += g.attributes.position.count; iCount += g.index.count; }
+  const pos = new Float32Array(vCount * 3), nor = new Float32Array(vCount * 3), uv = new Float32Array(vCount * 2);
+  const idx = new (vCount > 65535 ? Uint32Array : Uint16Array)(iCount);
+  let vo = 0, io = 0;
+  for (const g of geos) {
+    const n = g.attributes.position.count;
+    pos.set(g.attributes.position.array, vo * 3);
+    nor.set(g.attributes.normal.array, vo * 3);
+    uv.set(g.attributes.uv.array, vo * 2);
+    const gi = g.index.array;
+    for (let i = 0; i < gi.length; i++) idx[io + i] = gi[i] + vo;
+    vo += n; io += gi.length;
+  }
+  const out = new THREE.BufferGeometry();
+  out.setAttribute("position", new THREE.BufferAttribute(pos, 3));
+  out.setAttribute("normal", new THREE.BufferAttribute(nor, 3));
+  out.setAttribute("uv", new THREE.BufferAttribute(uv, 2));
+  out.setIndex(new THREE.BufferAttribute(idx, 1));
+  return out;
+}
+const liquidSideGeoLava = mergePlaneGeos([liquidFaceGeos.px, liquidFaceGeos.nx, liquidFaceGeos.ny, liquidFaceGeos.pz, liquidFaceGeos.nz]);
+const lavaFlickerMats = [];
 
 const WATER_BUCKETS     = [0.60, 0.75, 0.88, 0.96];
 const WATER_BODY        = 0.70;
@@ -12617,8 +12705,11 @@ function recomputeGlowClusters() {
   if (!set || !set.size) return;
   const groups = new Map();
   for (const k of set) {
-    const [x, y, z] = keyXYZ(k);
-    const ck = Math.floor(x / GLOW_LIGHT_CELL) + "," + Math.floor(y / GLOW_LIGHT_CELL) + "," + Math.floor(z / GLOW_LIGHT_CELL);
+    const z = (k % KEY_MZ) - KEY_OFF;
+    const t = Math.floor(k / KEY_MZ);
+    const y = t % KEY_MZ;
+    const x = Math.floor(t / KEY_MZ) - KEY_OFF;
+    const ck = (Math.floor(x / GLOW_LIGHT_CELL) + 64) * 65536 + (Math.floor(y / GLOW_LIGHT_CELL) + 64) * 256 + (Math.floor(z / GLOW_LIGHT_CELL) + 64);
     let g = groups.get(ck);
     if (!g) { g = { n: 0, sx: 0, sy: 0, sz: 0, votes: {} }; groups.set(ck, g); }
     g.n++; g.sx += x; g.sy += y; g.sz += z;
@@ -12655,7 +12746,7 @@ function syncGlowLights(dt = 0) {
     if (d2 <= GLOW_LIGHT_DIST * GLOW_LIGHT_DIST) ranked.push([d2, i]);
   }
   ranked.sort((a, b) => a[0] - b[0]);
-  const want = Math.min(GLOW_LIGHT_MAX, ranked.length);
+  const want = Math.min(qualityLights(), ranked.length);
   const active = new Uint8Array(glowClusters.length);
   // First keep every light that already sits on a still-ranked cluster, so the
   // pool never hops between clusters while the player walks around.
@@ -12744,8 +12835,14 @@ function glowVariantNear(x, y, z) {
   const gv = worldGlowVariants.get(world);
   let best = -1, bestD = 100;
   for (const k of set) {
-    const [ox, oy, oz] = keyXYZ(k);
-    const dx = ox - x, dy = oy - y, dz = oz - z;
+    const tz = (k % KEY_MZ) - KEY_OFF;
+    if (tz < z - 10 || tz > z + 10) continue;
+    const t = Math.floor(k / KEY_MZ);
+    const ty = t % KEY_MZ;
+    if (ty < y - 10 || ty > y + 10) continue;
+    const tx = Math.floor(t / KEY_MZ) - KEY_OFF;
+    if (tx < x - 10 || tx > x + 10) continue;
+    const dx = tx - x, dy = ty - y, dz = tz - z;
     const d2 = dx * dx + dy * dy + dz * dz;
     if (d2 < bestD) {
       const v = gv.get(k);
@@ -12769,6 +12866,7 @@ const STAR_CY = 5.0;     // star centre above the foliage summit (spire tops ~+4
 const STAR_TOP = 0.65;   // platform surface above the star centre
 const STAR_MAX = 40000;
 let starAngle = 0;
+let starMatrixT = 1, lastStarCubeCount = -1;
 let starStyleIdx = 0;
 let starMesh = null;
 const starRecs = [];       // {x, y, z, phase, base} render records, rebuilt live
@@ -12924,18 +13022,24 @@ function starTick(dt, active) {
   starMesh.visible = show;
   if (!show) return;
   if (active) starAngle += STAR_SPIN * dt;
-  for (const r of starRecs) {
-    const a = starAngle + r.phase;
-    const c = Math.cos(a), s = Math.sin(a);
-    for (let i = 0; i < starShape.length; i++) {
-      const o = starShape[i];
-      starDummy.position.set(r.x + o.dx * c + o.dz * s, r.y + o.dy, r.z - o.dx * s + o.dz * c);
-      starDummy.rotation.set(0, 0, 0);
-      starDummy.updateMatrix();
-      starMesh.setMatrixAt(r.base + i, starDummy.matrix);
+  starMatrixT += dt;
+  const starStep = 1 / (QUALITY_STAR_HZ[qualityTier] || 60);
+  if (starMatrixT >= starStep || starCubeCount !== lastStarCubeCount) {
+    starMatrixT = 0;
+    lastStarCubeCount = starCubeCount;
+    for (const r of starRecs) {
+      const a = starAngle + r.phase;
+      const c = Math.cos(a), s = Math.sin(a);
+      for (let i = 0; i < starShape.length; i++) {
+        const o = starShape[i];
+        starDummy.position.set(r.x + o.dx * c + o.dz * s, r.y + o.dy, r.z - o.dx * s + o.dz * c);
+        starDummy.rotation.set(0, 0, 0);
+        starDummy.updateMatrix();
+        starMesh.setMatrixAt(r.base + i, starDummy.matrix);
+      }
     }
+    starMesh.instanceMatrix.needsUpdate = true;
   }
-  starMesh.instanceMatrix.needsUpdate = true;
   // Glowing pulse in sync with the garlands.
   starPulseT += dt;
   if (starPulseT >= 0.15 && starBase) {
@@ -13007,6 +13111,7 @@ let garlandMesh = null;
 let garlandDirty = true;
 const pineUpperVis = new Map();   // soilKey -> visible upper-spiral bulbs per run
 let garlandRevealUntil = 0;   // wall-clock: while now is below, rebuild every frame
+let garlandRevealLast = 0;    // last reveal rebuild (throttled to 10Hz)
 // Garland + star visibility, toggled live with B (applies to every planted pine).
 let decorVisible = true;
 let garlandBulbCount = 0;
@@ -13341,9 +13446,9 @@ function garlandTrimSet(p, pts, skipFloat) {
 }
 function rebuildGarlands() {
   garlandDirty = false;
+  const rebuildNowS = performance.now() / 1000;
   ensureGarlandMesh();
-  garlandBulbCount = 0;
-  if (dim !== "over" || world !== worlds.over || !plantedPines.size || !decorVisible) {
+  garlandBulbCount = 0;  if (dim !== "over" || world !== worlds.over || !plantedPines.size || !decorVisible) {
     garlandMesh.count = 0;
     garlandMesh.visible = false;
     return;
@@ -13378,8 +13483,7 @@ function rebuildGarlands() {
     const pts = garlandPathFor(p);
     const hide = garlandTrimSet(p, pts);
     // Birth reveal: garlands wrap bottom-up over 1 s after the foliage lands.
-    const nowS = performance.now() / 1000;
-    const rt = (nowS - (p.bornAt || -1e9)) / 1;
+    const rt = (rebuildNowS - (p.bornAt || -1e9)) / 1;
     const summitP = pineSummit(p.y, p.m, p.e);
     const revealY = rt >= 1 ? Infinity : (p.y + p.e + 1) + (summitP + 4.5 - (p.y + p.e + 1)) * Math.max(0, rt);
     // Upper spiral presence per run (visible bulbs in the top spire tail above
@@ -13420,6 +13524,31 @@ function getTypeMats(id) {
   if (!typeMats.has(id)) typeMats.set(id, materialsFor(id));
   return typeMats.get(id);
 }
+// Single-material fast path: single-texture blocks render with 1 draw call
+// instead of 6 (BoxGeometry groups need a material array to multiply calls).
+// Multi-map ids (GRASS/LOG/TNT) return null and keep the array path.
+const singleMats = new Map();
+function getSingleMat(id) {
+  if (singleMats.has(id)) return singleMats.get(id);
+  let m = null;
+  switch (id) {
+    case DIRT: m = material(TEX.dirt); break;
+    case STONE: m = material(TEX.stone); break;
+    case SAND: m = material(TEX.sand); break;
+    case LEAVES: m = material(TEX.leaves); break;
+    case PLANKS: m = material(TEX.planks); break;
+    case GLASS: m = material(TEX.glass, { transparent: true, opacity: 0.8, depthWrite: false }); break;
+    case PORTAL: m = material(TEX.portal, { transparent: false, opacity: 1, side: THREE.DoubleSide }); break;
+    case ENDSTONE: m = material(TEX.endstone); break;
+    case CLOUD: m = material(TEX.cloud); break;
+    case OBSIDIAN: m = material(TEX.obsidian); break;
+    case NETHERRACK: m = material(TEX.netherrack); break;
+    case SOULSAND: m = material(TEX.soulsand); break;
+    case MOON: m = basicMat(TEX.moon, { fog: false }); break;
+  }
+  singleMats.set(id, m);
+  return m;
+}
 const glowMats = new Map();   // glowstone variant -> shared material[6]
 function getGlowMats(v) {
   if (!glowMats.has(v)) glowMats.set(v, basicFace(GLOW_TEX[v], { fog: false }));
@@ -13440,7 +13569,7 @@ function getWetShellMatMoon() {
   return wetShellMatMoon;
 }
 function disposeChunkMeshes(meshes) {
-  for (const mesh of meshes.values()) { scene.remove(mesh); mesh.geometry.dispose(); }
+  for (const mesh of meshes.values()) { scene.remove(mesh); mesh.dispose(); }
 }
 
 function rebuildChunk(cx, cz) {
@@ -13453,8 +13582,7 @@ function rebuildChunk(cx, cz) {
   const x1 = Math.min(cx * CHUNK + CHUNK - 1, WORLD_RADIUS);
   const z0 = Math.max(cz * CHUNK, -WORLD_RADIUS);
   const z1 = Math.min(cz * CHUNK + CHUNK - 1, WORLD_RADIUS);
-  const counts = {};
-  const exposed = [];
+  const perId = new Map();
   const flowers = [];
   const glows = [];
   const wetDirts = [];
@@ -13483,20 +13611,19 @@ function rebuildChunk(cx, cz) {
         }
         if (isLiquid(id)) { liquidSkip.push([x, y, z, id]); continue; }
         if (!isExposed(x, y, z)) continue;
-        counts[id] = (counts[id] || 0) + 1;
-        exposed.push([x, y, z, id]);
+        let arr = perId.get(id);
+        if (!arr) { arr = []; perId.set(id, arr); }
+        arr.push([x, y, z]);
       }
     }
   const meshes = new Map();
-  if (exposed.length) {
-    for (const idStr in counts) {
-      const id = +idStr;
-      const n = counts[id];
-      const mesh = new THREE.InstancedMesh(boxGeo, getTypeMats(id), n);
+  if (perId.size) {
+    for (const [id, list] of perId) {
+      const n = list.length;
+      const mesh = new THREE.InstancedMesh(boxGeo, getSingleMat(id) || getTypeMats(id), n);
       mesh.count = n;
       let i = 0;
-      for (const [x, y, z, bid] of exposed) {
-        if (bid !== id) continue;
+      for (const [x, y, z] of list) {
         dummy.position.set(x + 0.5, y + 0.5, z + 0.5);
         dummy.rotation.set(0, 0, 0);
         dummy.scale.set(1, 1, 1);
@@ -13534,22 +13661,53 @@ function rebuildChunk(cx, cz) {
       meshes.set(key, mesh);
     };
     for (const d of ["px", "nx", "ny", "pz", "nz"]) {
-      const perId = {};
-      for (const [, , , lid] of liquidFaces[d]) perId[lid] = (perId[lid] || 0) + 1;
-      for (const idStr in perId) {
-        const lid = +idStr;
-        const list = liquidFaces[d].filter((f) => f[3] === lid);
+      const perLid = new Map();
+      for (const f of liquidFaces[d]) {
+        if (f[3] === LAVA) continue;
+        let arr = perLid.get(f[3]);
+        if (!arr) { arr = []; perLid.set(f[3], arr); }
+        arr.push(f);
+      }
+      for (const [lid, list] of perLid) {
         placeLiquid(liquidFaceGeos[d], liquidBodyMat(lid), list, "liquid_" + lid + "_" + d);
       }
     }
+    {
+      const seen = new Set();
+      const lavaOnly = [];
+      for (const d of ["px", "nx", "ny", "pz", "nz"]) {
+        for (const f of liquidFaces[d]) {
+          if (f[3] !== LAVA) continue;
+          const k = f[0] + "," + f[1] + "," + f[2];
+          if (seen.has(k)) continue;
+          seen.add(k);
+          lavaOnly.push([f[0], f[1], f[2]]);
+        }
+      }
+      if (lavaOnly.length) placeLiquid(liquidSideGeoLava, liquidBodyMat(LAVA), lavaOnly, "liquid_" + LAVA + "_sides");
+    }
     const topPerIdBucket = {};
+    const colDepthMemo = new Map();
     for (const [lx, ly, lz, lid] of liquidFaces.py) {
-      const bucket = Math.max(0, Math.min(3, liquidColumnDepth(lx, ly, lz, lid) - 1));
+      const dk = lx + "," + lz + "," + lid;
+      let depth = colDepthMemo.get(dk);
+      if (depth === undefined) { depth = liquidColumnDepth(lx, ly, lz, lid); colDepthMemo.set(dk, depth); }
+      const bucket = Math.max(0, Math.min(3, depth - 1));
       topPerIdBucket[lid] = topPerIdBucket[lid] || [[], [], [], []];
       topPerIdBucket[lid][bucket].push([lx, ly, lz]);
     }
     for (const idStr in topPerIdBucket) {
       const lid = +idStr;
+      if (lid === LAVA) {
+        // All lava buckets are identical (opacity 1, opaque): one pair of meshes.
+        const all = [];
+        for (let b = 0; b < 4; b++) for (const c of topPerIdBucket[lid][b]) all.push(c);
+        if (all.length) {
+          placeLiquid(liquidFaceGeos.py, liquidBucketMat(lid, 0), all, "liquid_" + lid + "_top_0");
+          placeLiquid(liquidFaceGeos.py, liquidBucketMatIn(lid, 0), all, "liquid_" + lid + "_topin_0");
+        }
+        continue;
+      }
       for (let b = 0; b < 4; b++) {
         const list = topPerIdBucket[lid][b];
         if (!list.length) continue;
@@ -13940,9 +14098,9 @@ function moveMobAxisX(mob, dx) {
         if (o === mob || isMobHeld(o) || isMobFrozenByGrapple(o)) continue;
         if (o.dim !== undefined && o.dim !== dim) continue;
         let need = villagerHW(mob) + villagerHW(o) + 0.04;
-        const fleeingSelf = mob.fleeUntil && performance.now() / 1000 < mob.fleeUntil;
+        const fleeingSelf = mob.fleeUntil && mobNowS < mob.fleeUntil;
         if (!fleeingSelf) {
-          const oflee = o.fleeUntil && performance.now() / 1000 < o.fleeUntil;
+          const oflee = o.fleeUntil && mobNowS < o.fleeUntil;
           if (!oflee && mobBondedPair(mob, o)) need = (villagerHW(mob) + villagerHW(o)) * 0.62 + 0.06;
         }
         if (Math.abs(mob.pos.y - o.pos.y) > 1.2) continue;
@@ -14012,9 +14170,9 @@ function moveMobAxisZ(mob, dz) {
         if (o === mob || isMobHeld(o) || isMobFrozenByGrapple(o)) continue;
         if (o.dim !== undefined && o.dim !== dim) continue;
         let need = villagerHW(mob) + villagerHW(o) + 0.04;
-        const fleeingSelf = mob.fleeUntil && performance.now() / 1000 < mob.fleeUntil;
+        const fleeingSelf = mob.fleeUntil && mobNowS < mob.fleeUntil;
         if (!fleeingSelf) {
-          const oflee = o.fleeUntil && performance.now() / 1000 < o.fleeUntil;
+          const oflee = o.fleeUntil && mobNowS < o.fleeUntil;
           if (!oflee && mobBondedPair(mob, o)) need = (villagerHW(mob) + villagerHW(o)) * 0.62 + 0.06;
         }
         if (Math.abs(mob.pos.y - o.pos.y) > 1.2) continue;
@@ -14172,9 +14330,9 @@ function wolfMoveAxisX(mob, dx) {
         if (o === mob || isMobHeld(o) || isMobFrozenByGrapple(o)) continue;
         if (o.dim !== undefined && o.dim !== dim) continue;
         let need = villagerHW(mob) + villagerHW(o) + 0.04;
-        const fleeingSelf = mob.fleeUntil && performance.now() / 1000 < mob.fleeUntil;
+        const fleeingSelf = mob.fleeUntil && mobNowS < mob.fleeUntil;
         if (!fleeingSelf) {
-          const oflee = o.fleeUntil && performance.now() / 1000 < o.fleeUntil;
+          const oflee = o.fleeUntil && mobNowS < o.fleeUntil;
           if (!oflee && mobBondedPair(mob, o)) need = (villagerHW(mob) + villagerHW(o)) * 0.62 + 0.06;
         }
         if (Math.abs(mob.pos.y - o.pos.y) > 1.2) continue;
@@ -14218,9 +14376,9 @@ function wolfMoveAxisZ(mob, dz) {
         if (o === mob || isMobHeld(o) || isMobFrozenByGrapple(o)) continue;
         if (o.dim !== undefined && o.dim !== dim) continue;
         let need = villagerHW(mob) + villagerHW(o) + 0.04;
-        const fleeingSelf = mob.fleeUntil && performance.now() / 1000 < mob.fleeUntil;
+        const fleeingSelf = mob.fleeUntil && mobNowS < mob.fleeUntil;
         if (!fleeingSelf) {
-          const oflee = o.fleeUntil && performance.now() / 1000 < o.fleeUntil;
+          const oflee = o.fleeUntil && mobNowS < o.fleeUntil;
           if (!oflee && mobBondedPair(mob, o)) need = (villagerHW(mob) + villagerHW(o)) * 0.62 + 0.06;
         }
         if (Math.abs(mob.pos.y - o.pos.y) > 1.2) continue;
@@ -15534,6 +15692,7 @@ function pickBlock(origin, dir, skipLiquid) {
   let tMaxY = dir.y !== 0 ? ((stepY > 0 ? Math.floor(origin.y) + 1 - origin.y : origin.y - Math.floor(origin.y)) / Math.abs(dir.y)) : Infinity;
   let tMaxZ = dir.z !== 0 ? ((stepZ > 0 ? Math.floor(origin.z) + 1 - origin.z : origin.z - Math.floor(origin.z)) / Math.abs(dir.z)) : Infinity;
   let face = [0, 0, 0];
+  const maxDist = Number.isFinite(REACH) ? REACH : 128;
 
   for (let i = 0; i < 1024; i++) {
     const outOfBounds = x < -WORLD_RADIUS || x > WORLD_RADIUS || z < -WORLD_RADIUS || z > WORLD_RADIUS || y < 0 || y > MAX_Y;
@@ -15548,7 +15707,7 @@ function pickBlock(origin, dir, skipLiquid) {
     } else {
       z += stepZ; tMaxZ += tDeltaZ; face = [0, 0, -stepZ];
     }
-    if (Math.min(tMaxX, tMaxY, tMaxZ) > REACH) break;
+    if (Math.min(tMaxX, tMaxY, tMaxZ) > maxDist) break;
   }
   return null;
 }
@@ -15580,19 +15739,20 @@ const grappleHead = new THREE.Mesh(new THREE.BoxGeometry(0.17, 0.17, 0.17), grap
 grappleHead.visible = false;
 scene.add(grappleHead);
 const carryGrappleCubeGeo = new THREE.BoxGeometry(0.1, 0.1, 0.1);
-const carryGrappleCubeMat = new THREE.MeshBasicMaterial({ color: 0x870000, transparent: true, opacity: 1 });
-const carryGrappleCubeMatNoFog = new THREE.MeshBasicMaterial({ color: 0x870000, transparent: true, opacity: 1, fog: false });
+const carryGrappleCubeMat = new THREE.MeshBasicMaterial({ color: 0x870000, transparent: true, opacity: 0.3 });
+const carryGrappleCubeMatNoFog = new THREE.MeshBasicMaterial({ color: 0x870000, transparent: true, opacity: 0.3, fog: false });
 const CARRY_GRAPPLE_CUBES = 2600;
 const carryGrappleCubes = new THREE.InstancedMesh(carryGrappleCubeGeo, carryGrappleCubeMat, CARRY_GRAPPLE_CUBES);
 carryGrappleCubes.frustumCulled = false;
 carryGrappleCubes.visible = false;
 scene.add(carryGrappleCubes);
-const carryGrappleHeadMat = new THREE.MeshBasicMaterial({ color: 0x5a0000, transparent: true, opacity: 1 });
+const carryGrappleHeadMat = new THREE.MeshBasicMaterial({ color: 0x5a0000, transparent: true, opacity: 0.3 });
 const carryGrappleHead = new THREE.Mesh(new THREE.BoxGeometry(0.17, 0.17, 0.17), carryGrappleHeadMat);
-const carryGrappleHeadMatNoFog = new THREE.MeshBasicMaterial({ color: 0x5a0000, transparent: true, opacity: 1, fog: false });
+const carryGrappleHeadMatNoFog = new THREE.MeshBasicMaterial({ color: 0x5a0000, transparent: true, opacity: 0.3, fog: false });
 carryGrappleHead.visible = false;
 scene.add(carryGrappleHead);
 const carryGrappleCubeMatrix = new THREE.Matrix4();
+const carryRopeA = new THREE.Vector3(), carryRopeB = new THREE.Vector3();
 function updateRopeFog(submerged) {
   if (submerged === ropeNoFog) return;
   ropeNoFog = submerged;
@@ -15605,10 +15765,11 @@ function updateRopeFog(submerged) {
 }
 
 let currentBlock = null;
+const _targetDir = new THREE.Vector3();
 function updateTarget() {
-  const dir = new THREE.Vector3();
-  camera.getWorldDirection(dir);
-  const sel = hotbarList()[selected];
+  camera.getWorldDirection(_targetDir);
+  const dir = _targetDir;
+  const sel = hotbarListCached()[selected];
   currentBlock = pickBlock(camera.position, dir, sel !== WATER && sel !== LAVA && sel !== MOON_WATER);
   if (currentBlock) {
     highlight.visible = true;
@@ -16370,7 +16531,11 @@ function makeFuseSprite() {
   return spr;
 }
 function drawFuseSprite(spr, v) {
-  const { c, ctx, tex } = spr.userData;
+  const ud = spr.userData;
+  const tenth = Math.ceil(v * 10) / 10;
+  if (ud.lastV !== undefined && Math.abs(ud.lastV - tenth) < 1e-9) return;
+  ud.lastV = tenth;
+  const { c, ctx, tex } = ud;
   ctx.clearRect(0, 0, c.width, c.height);
   ctx.font = "bold 52px monospace";
   ctx.textAlign = "center";
@@ -16410,13 +16575,13 @@ function updateTNTTarget(t, dt) {
 }
 
 function tickTNT(dt) {
-  for (const [mob, v] of [...tntEta]) {
+  for (const [mob, v] of tntEta) {
     let live = false;
     for (const t of tntLit.values()) if (t.bird === mob && t.mesh && !t.stuck) { live = true; break; }
     if (!live) tntEta.delete(mob);
     else tntEta.set(mob, v - dt);
   }
-  for (const [k, t] of [...tntLit]) {
+  for (const [k, t] of tntLit) {
     updateTNTTarget(t, dt);
     t.spr.position.set(t.px, t.py + 0.85, t.pz);
     if (t.mesh) {
@@ -16771,13 +16936,14 @@ function spawnExplosion(cx, cy, cz) {
 }
 
 function tickEffects(dt, active) {
-  if (performance.now() / 1000 < garlandRevealUntil) garlandDirty = true;
+  const nowE = performance.now() / 1000;
+  if (nowE < garlandRevealUntil && nowE - garlandRevealLast >= 0.1) { garlandRevealLast = nowE; garlandDirty = true; }
   if (garlandDirty) { rebuildGarlands(); rebuildStars(); }
   else { garlandTick(dt); starTick(dt, active); }
-  updateNetherEmbers(dt, performance.now() / 1000);
-  updateVolcanoEmbers(dt, performance.now() / 1000);
-  updateLavaMotes(dt, performance.now() / 1000);
-  updateMoonSnow(dt, performance.now() / 1000);
+  updateNetherEmbers(dt, nowE);
+  updateVolcanoEmbers(dt, nowE);
+  updateLavaMotes(dt, nowE);
+  updateMoonSnow(dt, nowE);
   for (let i = bursts.length - 1; i >= 0; i--) {
     const b = bursts[i];
     b.life -= dt;
@@ -16819,6 +16985,7 @@ let emberPts = null;
 let emberVel = null;
 let emberLife = null;
 let emberMaxLife = null;
+let emberStride = 0;
 
 function ensureEmbers() {
   if (emberPts) return;
@@ -16865,7 +17032,6 @@ function spawnEmber(i) {
       attr.array[i * 3] = bx + 0.5;
       attr.array[i * 3 + 1] = NETHER_FIRE_LEVEL + 0.6;
       attr.array[i * 3 + 2] = bz + 0.5;
-      attr.needsUpdate = true;
       emberVel[i * 3] = (Math.random() * 2 - 1) * 0.8;
       emberVel[i * 3 + 1] = 2.5 + Math.random() * 3.5;
       emberVel[i * 3 + 2] = (Math.random() * 2 - 1) * 0.8;
@@ -16880,15 +17046,17 @@ function spawnEmber(i) {
 function updateNetherEmbers(dt, time) {
   if (dim !== "nether") { removeEmbers(); return; }
   ensureEmbers();
+  emberStride = (emberStride + 1) & 1;
+  const sdt = dt * 2;
   const attr = emberPts.geometry.attributes.position;
-  for (let i = 0; i < EMBER_COUNT; i++) {
+  for (let i = emberStride; i < EMBER_COUNT; i += 2) {
     if (emberLife[i] <= 0 || attr.array[i * 3 + 1] > NETHER_FIRE_LEVEL + 24) {
       spawnEmber(i);
     } else {
-      emberLife[i] -= dt;
-      attr.array[i * 3] += (emberVel[i * 3] + Math.sin(time * 2 + i) * 0.4) * dt;
-      attr.array[i * 3 + 1] += emberVel[i * 3 + 1] * dt;
-      attr.array[i * 3 + 2] += (emberVel[i * 3 + 2] + Math.cos(time * 1.7 + i) * 0.4) * dt;
+      emberLife[i] -= sdt;
+      attr.array[i * 3] += (emberVel[i * 3] + Math.sin(time * 2 + i) * 0.4) * sdt;
+      attr.array[i * 3 + 1] += emberVel[i * 3 + 1] * sdt;
+      attr.array[i * 3 + 2] += (emberVel[i * 3 + 2] + Math.cos(time * 1.7 + i) * 0.4) * sdt;
     }
   }
   attr.needsUpdate = true;
@@ -16954,10 +17122,13 @@ function stepLavaMotes(cloud, dt, time) {
   const e = camera.position;
   const attr = cloud.pts.geometry.attributes.position;
   const R = cloud.range;
-  for (let i = 0; i < cloud.count; i++) {
-    let x = attr.array[i * 3] + (cloud.vel[i * 3] + Math.sin(time * 2 + i) * 0.3) * dt;
-    let y = attr.array[i * 3 + 1] + cloud.vel[i * 3 + 1] * dt;
-    let z = attr.array[i * 3 + 2] + (cloud.vel[i * 3 + 2] + Math.cos(time * 1.7 + i) * 0.3) * dt;
+  cloud._stride = (cloud._stride || 0) + 1;
+  const parity = cloud._stride & 1;
+  const sdt = dt * 2;
+  for (let i = parity; i < cloud.count; i += 2) {
+    let x = attr.array[i * 3] + (cloud.vel[i * 3] + Math.sin(time * 2 + i) * 0.3) * sdt;
+    let y = attr.array[i * 3 + 1] + cloud.vel[i * 3 + 1] * sdt;
+    let z = attr.array[i * 3 + 2] + (cloud.vel[i * 3 + 2] + Math.cos(time * 1.7 + i) * 0.3) * sdt;
     if (x - e.x > R) x -= 2 * R; else if (x - e.x < -R) x += 2 * R;
     if (y - e.y > R) y -= 2 * R; else if (y - e.y < -R) y += 2 * R;
     if (z - e.z > R) z -= 2 * R; else if (z - e.z < -R) z += 2 * R;
@@ -16989,6 +17160,7 @@ let volcanoVel = null;
 let volcanoBase = null;
 let volcanoLife = null;
 let volcanoMaxLife = null;
+let volcanoStride = 0;
 
 function ensureVolcanoEmbers() {
   if (volcanoPts) return;
@@ -17036,7 +17208,6 @@ function spawnVolcanoEmber(i) {
     attr.array[i * 3] = v.x + ox + 0.5;
     attr.array[i * 3 + 1] = base;
     attr.array[i * 3 + 2] = v.z + oz + 0.5;
-    attr.needsUpdate = true;
     volcanoVel[i * 3] = (Math.random() * 2 - 1) * 7;
     volcanoVel[i * 3 + 1] = 22 + Math.random() * 20;
     volcanoVel[i * 3 + 2] = (Math.random() * 2 - 1) * 7;
@@ -17051,16 +17222,18 @@ function spawnVolcanoEmber(i) {
 function updateVolcanoEmbers(dt, time) {
   if (dim !== "nether") { removeVolcanoEmbers(); return; }
   ensureVolcanoEmbers();
+  volcanoStride = (volcanoStride + 1) & 1;
+  const sdt = dt * 2;
   const attr = volcanoPts.geometry.attributes.position;
-  for (let i = 0; i < VOLCANO_EMBER_COUNT; i++) {
+  for (let i = volcanoStride; i < VOLCANO_EMBER_COUNT; i += 2) {
     if (volcanoLife[i] <= 0) {
       spawnVolcanoEmber(i);
     } else {
-      volcanoLife[i] -= dt;
-      attr.array[i * 3] += (volcanoVel[i * 3] + Math.sin(time * 3 + i) * 0.9) * dt;
-      attr.array[i * 3 + 1] += volcanoVel[i * 3 + 1] * dt;
-      attr.array[i * 3 + 2] += (volcanoVel[i * 3 + 2] + Math.cos(time * 2.4 + i) * 0.9) * dt;
-      volcanoVel[i * 3 + 1] -= 30 * dt;
+      volcanoLife[i] -= sdt;
+      attr.array[i * 3] += (volcanoVel[i * 3] + Math.sin(time * 3 + i) * 0.9) * sdt;
+      attr.array[i * 3 + 1] += volcanoVel[i * 3 + 1] * sdt;
+      attr.array[i * 3 + 2] += (volcanoVel[i * 3 + 2] + Math.cos(time * 2.4 + i) * 0.9) * sdt;
+      volcanoVel[i * 3 + 1] -= 30 * sdt;
       if (attr.array[i * 3 + 1] < volcanoBase[i] - 3) volcanoLife[i] = 0;
     }
   }
@@ -17077,6 +17250,7 @@ function updateVolcanoEmbers(dt, time) {
 // staggered plus on wrap) with a single getBlock confirm only near the ground,
 // instead of trig plus a Map lookup per flake per frame.
 const MOON_SNOW_COUNT = 700;
+const MOON_SNOW_TIER = [700, 450, 280];
 const MOON_SNOW_RANGE = 36;
 const MOON_SNOW_SIZE = 0.18;
 const MOON_SNOW_STEP = 1 / 30;
@@ -17161,7 +17335,9 @@ function updateMoonSnow(dt, time) {
   const phase = (time * 19) | 0;
   const e = camera.position;
   const attr = moonSnowPts.geometry.attributes.position;
-  for (let i = 0; i < MOON_SNOW_COUNT; i++) {
+  const snowN = MOON_SNOW_TIER[qualityTier] || MOON_SNOW_COUNT;
+  moonSnowPts.geometry.setDrawRange(0, snowN);
+  for (let i = 0; i < snowN; i++) {
     const swayX = MOON_SNOW_SIN[(phase + i * 7) & 255] * 0.5;
     const swayZ = MOON_SNOW_SIN[(phase + i * 13 + 64) & 255] * 0.5;
     let x = attr.array[i * 3] + (moonSnowVel[i * 3] + swayX) * step;
@@ -19529,12 +19705,20 @@ function serialize() {
   const growthN = pineGrowths.length;
   const pineN = plantedPines.size;
   const brokenCells = [];
+  const brokenBySoil = new Map();
+  for (const bk of brokenPineCells) {
+    const bar = bk.indexOf("|");
+    const soil = +bk.slice(0, bar);
+    const [cx, cy, cz] = bk.slice(bar + 1).split(",").map(Number);
+    if (![cx, cy, cz].every(Number.isFinite)) continue;
+    let arr = brokenBySoil.get(soil);
+    if (!arr) { arr = []; brokenBySoil.set(soil, arr); }
+    arr.push([cx, cy, cz]);
+  }
   for (const p of plantedPines.values()) {
-    const soil = key(p.x, p.y, p.z) + "|";
-    for (const bk of brokenPineCells) {
-      if (!bk.startsWith(soil)) continue;
-      const [cx, cy, cz] = bk.slice(soil.length).split(",").map(Number);
-      if (![cx, cy, cz].every(Number.isFinite)) continue;
+    const arr = brokenBySoil.get(key(p.x, p.y, p.z));
+    if (!arr) continue;
+    for (const [cx, cy, cz] of arr) {
       if (cx < -128 || cx > 127 || cz < -128 || cz > 127 || cy < 0 || cy > 65535) continue;
       brokenCells.push([p.x, p.y, p.z, cx, cy, cz]);
     }
@@ -19577,7 +19761,10 @@ function serialize() {
   const writeMap = (map, n) => {
     dv.setUint32(o, n, true); o += 4;
     map.forEach((id, k) => {
-      const [x, y, z] = keyXYZ(k);
+      const z = (k % KEY_MZ) - KEY_OFF;
+      const t = Math.floor(k / KEY_MZ);
+      const y = t % KEY_MZ;
+      const x = Math.floor(t / KEY_MZ) - KEY_OFF;
       dv.setUint8(o++, x + 128);
       dv.setUint16(o, y, true); o += 2;
       dv.setUint8(o++, z + 128);
@@ -19589,7 +19776,10 @@ function serialize() {
   writeMap(nether, nn);
   dv.setUint32(o, m, true); o += 4;
   placedFlowers.forEach((p, k) => {
-    const [fx, fy, fz] = keyXYZ(k);
+    const fz = (k % KEY_MZ) - KEY_OFF;
+    const ft = Math.floor(k / KEY_MZ);
+    const fy = ft % KEY_MZ;
+    const fx = Math.floor(ft / KEY_MZ) - KEY_OFF;
     dv.setUint8(o++, fx + 128);
     dv.setUint16(o, fy, true); o += 2;
     dv.setUint8(o++, fz + 128);
@@ -19599,7 +19789,10 @@ function serialize() {
   const writeVariants = (map, n) => {
     dv.setUint32(o, n, true); o += 4;
     map.forEach((v, k) => {
-      const [x, y, z] = keyXYZ(k);
+      const z = (k % KEY_MZ) - KEY_OFF;
+      const t = Math.floor(k / KEY_MZ);
+      const y = t % KEY_MZ;
+      const x = Math.floor(t / KEY_MZ) - KEY_OFF;
       dv.setUint8(o++, x + 128);
       dv.setUint16(o, y, true); o += 2;
       dv.setUint8(o++, z + 128);
@@ -20979,7 +21172,7 @@ async function regenerate() {
 function queueSave() {
   if (!canSave()) return;
   const now = Date.now();
-  if (now - lastManualSave > 3000) { lastManualSave = now; saveToFile(); }
+  if (now - lastManualSave > 10000) { lastManualSave = now; saveToFile(); }
 }
 
 function enterGame() {
@@ -21011,7 +21204,7 @@ function requestLock() {
   if (p && p.catch) p.catch(() => {});
 }
 
-setInterval(() => { if (canSave() && started && (worldDirty || carryMob || chainLinks.size)) saveToFile(); }, 3000);
+setInterval(() => { if (canSave() && started && (worldDirty || carryMob || chainLinks.size)) saveToFile(); }, 10000);
 addEventListener("pagehide", () => { if (canSave()) saveToFile({ keepalive: true }); });
 document.addEventListener("visibilitychange", () => { if (document.hidden && canSave()) saveToFile({ keepalive: true }); });
 
@@ -21041,6 +21234,14 @@ function hotbarList() {
 function rebuildHotbar() {
   selected = Math.min(selected, hotbarList().length - 1);
   buildHotbar();
+}
+let hotbarCacheList = null, hotbarCacheKey = "";
+function hotbarListCached() {
+  const k = dim + (hotbarMoon ? "M" : "");
+  if (hotbarCacheList && hotbarCacheKey === k) return hotbarCacheList;
+  hotbarCacheKey = k;
+  hotbarCacheList = hotbarList();
+  return hotbarCacheList;
 }
 
 function iconSrc(id) {
@@ -21349,10 +21550,42 @@ addEventListener("resize", () => {
 // ---------------------------------------------------------------------------
 let last = performance.now();
 let simActivePrev = true;
+let fpsEMA = 60, perfLogT = 0;
+let qualityTier = 0, qualityLowT = 0, qualityHighT = 0, qualityCheckT = 0;
+const QUALITY_DPR = [2, 1.25, 1];
+const QUALITY_LIGHTS = [16, 8, 4];
+const QUALITY_STAR_HZ = [60, 15, 8];
+function qualityLights() { return QUALITY_LIGHTS[qualityTier] || 16; }
+function applyQualityTier(t) {
+  t = Math.max(0, Math.min(2, t));
+  if (t === qualityTier) return;
+  qualityTier = t;
+  renderer.setPixelRatio(Math.min(devicePixelRatio, QUALITY_DPR[qualityTier]));
+  glowLightT = 0;
+  if (typeof grappleCubes !== "undefined") grappleCubes.userData.last = null;
+  if (typeof carryGrappleCubes !== "undefined") carryGrappleCubes.userData.last = null;
+}
+function tickQuality(dt) {
+  qualityCheckT += dt;
+  if (qualityCheckT < 1) return;
+  qualityCheckT = 0;
+  if (fpsEMA < 45) { qualityLowT++; qualityHighT = 0; }
+  else if (fpsEMA > 58) { qualityHighT++; qualityLowT = 0; }
+  else { qualityLowT = 0; qualityHighT = 0; }
+  if (qualityLowT >= 3 && qualityTier < 2) { qualityLowT = 0; qualityHighT = 0; applyQualityTier(qualityTier + 1); }
+  else if (qualityHighT >= 10 && qualityTier > 0) { qualityHighT = 0; qualityLowT = 0; applyQualityTier(qualityTier - 1); }
+}
 function loop(now) {
   requestAnimationFrame(loop);
   dt = Math.min(0.05, (now - last) / 1000);
   last = now;
+  if (dt > 0) fpsEMA += ((1 / dt) - fpsEMA) * 0.05;
+  tickQuality(dt);
+  perfLogT += dt;
+  if (perfLogT >= 5) {
+    perfLogT = 0;
+    if (typeof console !== "undefined") console.log("[perf] fps~" + Math.round(fpsEMA) + " q=" + qualityTier + " dim=" + dim + " chunks=" + chunkMeshes.size + " mobs=" + mobs.length + " bursts=" + (typeof bursts !== "undefined" ? bursts.length : 0));
+  }
 
   if (!loading) {
     // Freeze gameplay simulation while the pause menu (or help panel) is open:
@@ -21501,9 +21734,17 @@ function loop(now) {
     if (showRope) {
       grappleCubes.visible = true;
       grappleHead.visible = true;
+      const last = grappleCubes.userData.last;
+      const moved = !last ? Infinity :
+        (ropeA.x - last[0]) ** 2 + (ropeA.y - last[1]) ** 2 + (ropeA.z - last[2]) ** 2 +
+        (ropeB.x - last[3]) ** 2 + (ropeB.y - last[4]) ** 2 + (ropeB.z - last[5]) ** 2;
+      if (moved < 1e-6) {
+        grappleHead.position.copy(ropeB);
+      } else {
       const dx = ropeB.x - ropeA.x, dy = ropeB.y - ropeA.y, dz = ropeB.z - ropeA.z;
       const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
-      const n = Math.max(4, Math.min(GRAPPLE_CUBES, Math.round(dist / 0.15)));
+      const ropeCap = qualityTier >= 2 ? 800 : GRAPPLE_CUBES;
+      const n = Math.max(4, Math.min(ropeCap, Math.round(dist / 0.30)));
       grappleCubes.count = n;
       const ux = dx / dist, uy = dy / dist, uz = dz / dist;
       let vx = Math.abs(uy) < 0.99 ? uz : 1, vy = Math.abs(uy) < 0.99 ? 0 : 0, vz = Math.abs(uy) < 0.99 ? -ux : 0;
@@ -21521,14 +21762,15 @@ function loop(now) {
         grappleCubes.setMatrixAt(i, grappleCubeMatrix);
       }
       grappleCubes.instanceMatrix.needsUpdate = true;
+      grappleCubes.userData.last = [ropeA.x, ropeA.y, ropeA.z, ropeB.x, ropeB.y, ropeB.z];
       grappleHead.position.copy(ropeB);
+      }
     } else if (grappleCubes.visible) {
       grappleCubes.visible = false;
       grappleHead.visible = false;
     }
     // Carry grapple (red) — same animation as grapple, red rope
     let showCarryRope = false;
-    const carryRopeA = new THREE.Vector3(), carryRopeB = new THREE.Vector3();
     if (carryGrappleActive) {
       showCarryRope = true;
       carryRopeA.set(pos.x, pos.y + 0.3, pos.z);
@@ -21544,19 +21786,19 @@ function loop(now) {
       carryRopeB.copy(carryGrappleHookPos);
     }
     if (showCarryRope) {
-      carryGrappleCubeMat.opacity = 0.3;
-      carryGrappleCubeMat.transparent = true;
-      carryGrappleCubeMatNoFog.opacity = 0.3;
-      carryGrappleCubeMatNoFog.transparent = true;
-      carryGrappleHeadMat.opacity = 0.3;
-      carryGrappleHeadMat.transparent = true;
-      carryGrappleHeadMatNoFog.opacity = 0.3;
-      carryGrappleHeadMatNoFog.transparent = true;
       carryGrappleCubes.visible = true;
       carryGrappleHead.visible = true;
+      const lastC = carryGrappleCubes.userData.last;
+      const movedC = !lastC ? Infinity :
+        (carryRopeA.x - lastC[0]) ** 2 + (carryRopeA.y - lastC[1]) ** 2 + (carryRopeA.z - lastC[2]) ** 2 +
+        (carryRopeB.x - lastC[3]) ** 2 + (carryRopeB.y - lastC[4]) ** 2 + (carryRopeB.z - lastC[5]) ** 2;
+      if (movedC < 1e-6) {
+        carryGrappleHead.position.copy(carryRopeB);
+      } else {
       const cdx = carryRopeB.x - carryRopeA.x, cdy = carryRopeB.y - carryRopeA.y, cdz = carryRopeB.z - carryRopeA.z;
       const cdist = Math.hypot(cdx, cdy, cdz) || 0.001;
-      const cn = Math.max(4, Math.min(CARRY_GRAPPLE_CUBES, Math.round(cdist / 0.15)));
+      const cropeCap = qualityTier >= 2 ? 800 : CARRY_GRAPPLE_CUBES;
+      const cn = Math.max(4, Math.min(cropeCap, Math.round(cdist / 0.30)));
       carryGrappleCubes.count = cn;
       const cux = cdx / cdist, cuy = cdy / cdist, cuz = cdz / cdist;
       let cvx = Math.abs(cuy) < 0.99 ? cuz : 1, cvy = Math.abs(cuy) < 0.99 ? 0 : 0, cvz = Math.abs(cuy) < 0.99 ? -cux : 0;
@@ -21574,7 +21816,9 @@ function loop(now) {
         carryGrappleCubes.setMatrixAt(i, carryGrappleCubeMatrix);
       }
       carryGrappleCubes.instanceMatrix.needsUpdate = true;
+      carryGrappleCubes.userData.last = [carryRopeA.x, carryRopeA.y, carryRopeA.z, carryRopeB.x, carryRopeB.y, carryRopeB.z];
       carryGrappleHead.position.copy(carryRopeB);
+      }
     } else if (carryGrappleCubes.visible) {
       carryGrappleCubes.visible = false;
       carryGrappleHead.visible = false;
@@ -21612,7 +21856,8 @@ function loop(now) {
       let ms = (y - MOON_FADE_START) / (moonSpan * 0.9);
       ms = Math.max(0, Math.min(1, ms));
       ms = ms * ms * (3 - 2 * ms);
-      if (typeMats.has(MOON)) for (const mm of typeMats.get(MOON)) { mm.opacity = ms; mm.transparent = ms < 0.99; mm.depthWrite = ms >= 0.99; }
+      if (getSingleMat(MOON)) { const mm = getSingleMat(MOON); mm.opacity = ms; mm.transparent = ms < 0.99; mm.depthWrite = ms >= 0.99; }
+      else if (typeMats.has(MOON)) for (const mm of typeMats.get(MOON)) { mm.opacity = ms; mm.transparent = ms < 0.99; mm.depthWrite = ms >= 0.99; }
       if (!moonLakesGenerated && y >= MOON_FADE_END) {
         generateMoonLakes();
         for (const ck of moonLakesChunkSet) {
@@ -21706,11 +21951,11 @@ function loop(now) {
     // Glowing lava flicker
     if (liquidBodyMats.has(LAVA) || liquidBucketMats.has(LAVA) || liquidBucketMatsIn.has(LAVA)) {
       const k = 1.1 + 0.15 * Math.sin(now * 0.005) * Math.sin(now * 0.0013 + 1);
-      const lavaMats = [];
-      if (liquidBodyMats.has(LAVA)) lavaMats.push(liquidBodyMats.get(LAVA));
-      if (liquidBucketMats.has(LAVA)) for (const m of liquidBucketMats.get(LAVA)) if (m) lavaMats.push(m);
-      if (liquidBucketMatsIn.has(LAVA)) for (const m of liquidBucketMatsIn.get(LAVA)) if (m) lavaMats.push(m);
-      for (const m of lavaMats) m.color.setScalar(k);
+      lavaFlickerMats.length = 0;
+      if (liquidBodyMats.has(LAVA)) lavaFlickerMats.push(liquidBodyMats.get(LAVA));
+      if (liquidBucketMats.has(LAVA)) for (const m of liquidBucketMats.get(LAVA)) if (m) lavaFlickerMats.push(m);
+      if (liquidBucketMatsIn.has(LAVA)) for (const m of liquidBucketMatsIn.get(LAVA)) if (m) lavaFlickerMats.push(m);
+      for (const m of lavaFlickerMats) m.color.setScalar(k);
     }
 
     const pcx = chunkOf(freeCam ? camPos.x : pos.x);

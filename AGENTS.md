@@ -16,6 +16,23 @@ small Python server for saving/loading worlds.
   node --check /tmp/check.mjs`) — `package.json` declares commonjs, so checking
   `main.js` in place would misparse its `import` line; the copy is parse-only, never
   executed. Verify game logic in the browser.
+- Performance: the main loop logs `[perf] fps~N q=T ...` to the console every 5s
+  (`fpsEMA`, auto-quality tier, dim, chunks, mobs, bursts). An auto-quality
+  governor (`qualityTier` 0/1/2, `tickQuality`/`applyQualityTier` in `main.js`)
+  degrades pixel ratio (2→1.25→1), glow lights (16→8→4) and star matrix rate
+  (60→15→8 Hz) when FPS stays <45, and steps back up above 58. Bird steering
+  uses a 0.2s clearance cache (`birdCachedClearance`) plus reduced
+  `birdBestSteer` candidates beyond 40 blocks; `separateMobs` runs 2 iterations
+  with a cached `mobNowS`; BFS queues use index pointers; `rebuildChunk`
+  buckets block types in a single pass. Single-texture solids use one shared
+  material (`getSingleMat`, 1 draw call instead of 6); lava sides share one
+  merged geometry and lava tops collapse to one bucket pair (opaque, so hidden
+  faces are depth-culled — never for transparent water); chain/grapple ropes
+  skip redraws when endpoints are static and step at /0.30 density (800 cap in
+  Fast tier); garland reveal rebuilds are throttled to 10 Hz; nether/volcano
+  embers integrate at half rate with batched uploads and moon snow count scales
+  with the tier; `tickTNT` iterates maps directly, `hotbarList`/`keyXYZ` hot
+  paths are cached/inlined, and `serialize` indexes broken pine cells by soil.
 
 ## Project Structure
 
