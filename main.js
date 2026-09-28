@@ -3,7 +3,7 @@ import * as THREE from "three";
 // ---------------------------------------------------------------------------
 // Block definitions
 // ---------------------------------------------------------------------------
-const AIR = 0, GRASS = 1, DIRT = 2, STONE = 3, SAND = 4, LOG = 5, LEAVES = 6, WATER = 7, PLANKS = 8, GLASS = 9, TNT = 10, FLOWER = 11, PORTAL = 12, ENDSTONE = 13, CLOUD = 14, OBSIDIAN = 15, LAVA = 16, NETHERRACK = 17, SOULSAND = 18, MOON = 19, GLOWSTONE = 20, MOON_WATER = 21;
+const AIR = 0, GRASS = 1, DIRT = 2, STONE = 3, SAND = 4, LOG = 5, LEAVES = 6, WATER = 7, PLANKS = 8, GLASS = 9, TNT = 10, FLOWER = 11, PORTAL = 12, ENDSTONE = 13, CLOUD = 14, OBSIDIAN = 15, LAVA = 16, NETHERRACK = 17, SOULSAND = 18, MOON = 19, GLOWSTONE = 20, MOON_WATER = 21, MEGA_TNT = 22;
 
 const BLOCK_INFO = {
   [GRASS]:   { name: "Grass",    solid: true,  opaque: true,  placeable: true },
@@ -16,6 +16,7 @@ const BLOCK_INFO = {
   [PLANKS]:  { name: "Planks",   solid: true,  opaque: true,  placeable: true },
   [GLASS]:   { name: "Glass",    solid: true,  opaque: false, placeable: true },
   [TNT]:     { name: "TNT",      solid: true,  opaque: true,  placeable: true },
+  [MEGA_TNT]:{ name: "Mega TNT", solid: true,  opaque: true,  placeable: true },
   [FLOWER]:  { name: "Flower",   solid: false, opaque: false, placeable: true },
 [PORTAL]:  { name: "Portal",    solid: true,  opaque: false, placeable: true },
   [ENDSTONE]:{ name: "End Stone",solid: true,  opaque: true,  placeable: false },
@@ -227,6 +228,35 @@ const TEX = {
     ctx.fillStyle = "#c0392b"; ctx.fillRect(0, 0, 16, 16);
     pxNoise(ctx, [192, 57, 43], 12);
   }),
+  mega_side: canvasTex((ctx) => {
+    ctx.fillStyle = "#c01808"; ctx.fillRect(0, 0, 64, 64);
+    ctx.fillStyle = "#a01206"; ctx.fillRect(0, 12, 64, 40);
+    for (let y = 0; y < 64; y++) for (let x = 0; x < 64; x++) {
+      const band = y >= 12 && y <= 51;
+      const base = band ? [160, 18, 6] : [192, 24, 8];
+      const d = (Math.random() - 0.5) * 12;
+      ctx.fillStyle = `rgb(${base[0] + d},${base[1] + d},${base[2] + d})`;
+      ctx.fillRect(x, y, 1, 1);
+    }
+    ctx.fillStyle = "#f4eedd";
+    ctx.beginPath(); ctx.arc(32, 29, 15, 0, Math.PI * 2); ctx.fill();
+    ctx.fillRect(20, 36, 24, 11);
+    ctx.fillStyle = "#0d0d0d";
+    ctx.beginPath(); ctx.arc(25.5, 29, 5.4, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.arc(38.5, 29, 5.4, 0, Math.PI * 2); ctx.fill();
+    ctx.fillRect(30, 36, 4, 5);
+    for (let i = 0; i < 4; i++) ctx.fillRect(21.5 + i * 5.6, 42, 2.2, 5);
+    ctx.fillStyle = "#ffd75e";
+    ctx.beginPath(); ctx.arc(25.5, 29, 2.2, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.arc(38.5, 29, 2.2, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = "#f4eedd";
+    ctx.font = "bold 12px sans-serif"; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+    ctx.fillText("TNT", 32, 6);
+  }, 64),
+  mega_top: canvasTex((ctx) => {
+    ctx.fillStyle = "#5a130c"; ctx.fillRect(0, 0, 16, 16);
+    pxNoise(ctx, [90, 19, 12], 12);
+  }),
   glass: canvasTex((ctx) => {
     ctx.fillStyle = "rgba(190,230,255,0.55)"; ctx.fillRect(0, 0, 16, 16);
     ctx.strokeStyle = "rgba(255,255,255,0.9)"; ctx.lineWidth = 1.5;
@@ -392,6 +422,7 @@ function materialsFor(id) {
     case WATER: return faceTex(TEX.water, { transparent: true, opacity: 0.65, depthWrite: false });
     case FLOWER: return faceTex(TEX.flower, { transparent: true });
     case TNT:   return [material(TEX.tnt_side), material(TEX.tnt_side), material(TEX.tnt_top), material(TEX.tnt_top), material(TEX.tnt_side), material(TEX.tnt_side)];
+    case MEGA_TNT: return [material(TEX.mega_side), material(TEX.mega_side), material(TEX.mega_top), material(TEX.mega_top), material(TEX.mega_side), material(TEX.mega_side)];
     case PORTAL: return faceTex(TEX.portal, { transparent: false, opacity: 1, side: THREE.DoubleSide });
     case ENDSTONE: return faceTex(TEX.endstone);
     case CLOUD: return faceTex(TEX.cloud);
@@ -551,6 +582,15 @@ const worldGlowstoneSets = new WeakMap([
   [worlds.over, glowstoneBlockSets.over],
   [worlds.end, glowstoneBlockSets.end],
   [worlds.nether, glowstoneBlockSets.nether],
+]);
+
+// Same trick for TNT/MEGA_TNT blocks so TNT flood-fill queries iterate just
+// the live TNT cells instead of scanning blast-radius spheres per member.
+const tntBlockSets = { over: new Set(), end: new Set(), nether: new Set() };
+const worldTntSets = new WeakMap([
+  [worlds.over, tntBlockSets.over],
+  [worlds.end, tntBlockSets.end],
+  [worlds.nether, tntBlockSets.nether],
 ]);
 
 let portalDirty = true;
@@ -1250,11 +1290,14 @@ function rebuildPortalBlocks() {
   for (const name of ["over", "end", "nether"]) {
     const set = portalBlockSets[name];
     const gs = glowstoneBlockSets[name];
+    const ts = tntBlockSets[name];
     set.clear();
     gs.clear();
+    ts.clear();
     for (const [k, id] of worlds[name]) {
       if (id === PORTAL || id === OBSIDIAN) set.add(k);
       if (id === GLOWSTONE) gs.add(k);
+      if (id === TNT || id === MEGA_TNT) ts.add(k);
     }
   }
 }
@@ -1265,12 +1308,14 @@ function setBlock(x, y, z, id) {
   const pb = worldPortalSets.get(world);
   const gs = worldGlowstoneSets.get(world);
   const gv = worldGlowVariants.get(world);
+  const ts = worldTntSets.get(world);
   const wasG = gs.has(k);
   if (id === AIR) {
     world.delete(k);
     pb.delete(k);
     gs.delete(k);
     gv.delete(k);
+    ts.delete(k);
   } else {
     world.set(k, id);
     const ct = colTops[dim];
@@ -1279,6 +1324,7 @@ function setBlock(x, y, z, id) {
     if (id === PORTAL || id === OBSIDIAN) pb.add(k); else pb.delete(k);
     if (id === GLOWSTONE) gs.add(k); else gs.delete(k);
     if (id !== GLOWSTONE) gv.delete(k);
+    if (id === TNT || id === MEGA_TNT) ts.add(k); else ts.delete(k);
   }
   if (id !== FLOWER) placedFlowers.delete(k);
   if (dim === "over" && world === worlds.over && id !== DIRT && growableSoils.has(k)) releaseGrowable(k);
@@ -2881,7 +2927,7 @@ function birdFindPerchSpot(m, nearMax = 0) {
 }
 function birdNextLeg(m) {
   m._decideT = 1.2;
-  if ((m._noPerchT || 0) <= 0 && birdDimOf(m) !== "nether" && !birdOnMoon(m) && !(m._panicUntil && performance.now() / 1000 < m._panicUntil) && Math.random() < (birdDimOf(m) === "end" ? BIRD_END_PERCH_CHANCE : BIRD_PERCH_CHANCE) && !chainChild.has(m.id)) {
+  if ((m._noPerchT || 0) <= 0 && performance.now() / 1000 >= megaNoPerchUntil && birdDimOf(m) !== "nether" && !birdOnMoon(m) && !(m._panicUntil && performance.now() / 1000 < m._panicUntil) && Math.random() < (birdDimOf(m) === "end" ? BIRD_END_PERCH_CHANCE : BIRD_PERCH_CHANCE) && !chainChild.has(m.id)) {
     const found = birdFindPerchSpot(m);
     if (found && !(performance.now() / 1000 < villagePanicUntil && villageSqContains(found.spot.x, found.spot.z))) {
       m.mode = "toPerch";
@@ -2951,7 +2997,7 @@ function birdTakeoff(m) {
   m.perchRetry = 0;
   m._decideT = 1.2;
   m._noPerchT = BIRD_NOPERCH_T;
-  if (birdDimOf(m) !== "nether" && birdDimOf(m) !== "end" && !birdOnMoon(m) && !(m._panicUntil && performance.now() / 1000 < m._panicUntil) && Math.random() < BIRD_HOP_CHANCE && !chainChild.has(m.id)) {
+  if (birdDimOf(m) !== "nether" && birdDimOf(m) !== "end" && !birdOnMoon(m) && performance.now() / 1000 >= megaNoPerchUntil && !(m._panicUntil && performance.now() / 1000 < m._panicUntil) && Math.random() < BIRD_HOP_CHANCE && !chainChild.has(m.id)) {
     const found = birdFindPerchSpot(m, BIRD_HOP_R);
     if (found && Math.hypot(found.spot.x - m.pos.x, found.spot.y - m.pos.y, found.spot.z - m.pos.z) >= 1.5) {
       m.mode = "toPerch";
@@ -4732,6 +4778,7 @@ function updatePerchedBird(m, dt) {
     m._panicUntil = Math.max(m._panicUntil || 0, villagePanicUntil);
     birdTakeoff(m); return;
   }
+  if (performance.now() / 1000 < megaNoPerchUntil) { birdTakeoff(m); return; }
   if (!m.perchSpot || !birdPerchSupports(m.perchSpot.x, m.perchSpot.y, m.perchSpot.z)) { birdTakeoff(m); return; }
   m.perchT -= dt;
   if (m.perchT <= 0) { birdTakeoff(m); return; }
@@ -4785,6 +4832,7 @@ function updateToPerchBird(m, dt) {
     m._panicUntil = Math.max(m._panicUntil || 0, villagePanicUntil);
     birdTakeoff(m); return;
   }
+  if (performance.now() / 1000 < megaNoPerchUntil) { birdTakeoff(m); return; }
   if (!s || !birdPerchSupports(s.x, s.y, s.z)) { birdTakeoff(m); return; }
   if (birdPerchSpotTaken(s.x, s.y, s.z, m)) { birdTakeoff(m); return; }
   m.perchTimeout -= dt;
@@ -4856,11 +4904,20 @@ function updateBird(m, dt) {
     if (!m.target || m.targetMode !== "panic" || m._panicT <= 0) {
       m._panicT = 0;
       if (m.targetMode === "panic") { m.target = null; m.targetMode = null; }
+      if (!m._panicExtended && m._panicSrcX != null && m._panicSrcZ != null) {
+        const sx = m._panicSrcX, sy = m._panicSrcY != null ? m._panicSrcY : m.pos.y, sz = m._panicSrcZ;
+        if (Math.hypot(m.pos.x - sx, m.pos.y - sy, m.pos.z - sz) < MEGA_KNOCK_RADIUS) {
+          m._panicExtended = true;
+          m.target = panicBirdTarget(m, sx, sy, sz);
+          m.targetMode = "panic";
+          m._panicT = 1.5;
+        }
+      }
     } else {
       let pt = m.target;
       let pd = Math.hypot(pt.x - m.pos.x, pt.y - m.pos.y, pt.z - m.pos.z);
       if (pd < 2 && m._panicT > 0.5) {
-        m.target = panicBirdTarget(m, m._panicSrcX != null ? m._panicSrcX : m.pos.x, m._panicSrcZ != null ? m._panicSrcZ : m.pos.z);
+        m.target = panicBirdTarget(m, m._panicSrcX != null ? m._panicSrcX : m.pos.x, m._panicSrcY != null ? m._panicSrcY : m.pos.y, m._panicSrcZ != null ? m._panicSrcZ : m.pos.z);
         m.targetMode = "panic";
         pt = m.target;
         pd = Math.hypot(pt.x - m.pos.x, pt.y - m.pos.y, pt.z - m.pos.z);
@@ -8010,6 +8067,7 @@ function wanderNear(m) {
   for (let t = 0; t < 8; t++) {
     const ax = m.pos.x + (Math.random() - 0.5) * 10;
     const az = m.pos.z + (Math.random() - 0.5) * 10;
+    if (inCraterAvoid(ax, az)) continue;
     if (aabbCollidesWorld(ax, m.pos.y, az, m.hw, m.h)) continue;
     if (!hasMobGround(ax, az, m.hw, m.pos.y)) continue;
     return { x: ax, z: az };
@@ -8023,6 +8081,7 @@ function settleNearBonus(m, dCur) {
 }
 function wanderGoalFor(m) {
   if (dim !== "over") return wanderNear(m);
+  if (soilOutsideClamp(m.pos.x, m.pos.z, m.hw)) return wanderNear(m);
   let best = null, bestScore = Infinity;
   for (let t = 0; t < 30; t++) {
     const x = villageMinX + 2 + Math.random() * (villageMaxX - villageMinX - 4);
@@ -8030,6 +8089,7 @@ function wanderGoalFor(m) {
     if (isInsideAnyHouse(x, z)) continue;
     if (isInsidePool(x, z)) continue;
     if (isInsidePenPool(x, z)) continue;
+    if (inCraterAvoid(x, z)) continue;
     if (x < villageMinX + 1 || x > villageMaxX - 1 || z < villageMinZ + 1 || z > villageMaxZ - 1) continue;
     if (mobBlockedAt(x, z, m.hw, villageCenter.y + 1, m.h)) continue;
     if (aabbCollidesWorld(x, villageCenter.y + 1, z, m.hw, m.h)) continue;
@@ -8059,6 +8119,7 @@ function wanderGoalFor(m) {
     if (isInsideAnyHouse(x, z)) continue;
     if (isInsidePool(x, z)) continue;
     if (isInsidePenPool(x, z)) continue;
+    if (inCraterAvoid(x, z)) continue;
     if (mobBlockedAt(x, z, 0.27, villageCenter.y + 1)) continue;
     return { x, z };
   }
@@ -8257,6 +8318,7 @@ function fleePointAway(mob, cx, cz) {
       if (isInsidePool(tx, tz)) continue;
       if (isInsidePenPool(tx, tz)) continue;
     }
+    if (inCraterAvoid(tx, tz)) continue;
     const py = mob.pos.y;
     if (aabbCollidesWorld(tx, py, tz, mob.hw, mob.h)) continue;
     let okGround = hasGround(tx, tz, mob.hw, py);
@@ -8272,8 +8334,359 @@ function fleePointAway(mob, cx, cz) {
   const tx2 = mob.pos.x + dx * 6, tz2 = mob.pos.z + dz * 6;
   const py2 = mob.pos.y;
   const hasGround2 = mob.canStep ? wolfHasMobGround : hasMobGround;
-  if ((dim !== "over" || (!isInsidePool(tx2, tz2) && !isInsidePenPool(tx2, tz2))) && Math.abs(tx2) <= WORLD_RADIUS - 1 && Math.abs(tz2) <= WORLD_RADIUS - 1 && !aabbCollidesWorld(tx2, py2, tz2, mob.hw, mob.h) && (hasGround2(tx2, tz2, mob.hw, py2) || hasGround2(tx2, tz2, mob.hw, py2 + 1) || hasGround2(tx2, tz2, mob.hw, py2 - 1))) return { x: tx2, z: tz2 };
+  if ((dim !== "over" || (!isInsidePool(tx2, tz2) && !isInsidePenPool(tx2, tz2))) && !inCraterAvoid(tx2, tz2) && Math.abs(tx2) <= WORLD_RADIUS - 1 && Math.abs(tz2) <= WORLD_RADIUS - 1 && !aabbCollidesWorld(tx2, py2, tz2, mob.hw, mob.h) && (hasGround2(tx2, tz2, mob.hw, py2) || hasGround2(tx2, tz2, mob.hw, py2 + 1) || hasGround2(tx2, tz2, mob.hw, py2 - 1))) return { x: tx2, z: tz2 };
   return { x: mob.pos.x + dx * 3 + (Math.random() - 0.5), z: mob.pos.z + dz * 3 + (Math.random() - 0.5) };
+}
+function megaFleePoint(mob, cx, cz) {
+  let dx = mob.pos.x - cx, dz = mob.pos.z - cz;
+  let len = Math.hypot(dx, dz);
+  if (len < 0.15) { const a = Math.random() * Math.PI * 2; dx = Math.cos(a); dz = Math.sin(a); len = 1; } else { dx /= len; dz /= len; }
+  const probeFree = mob.canStep ? wolfProbeFree : mobProbeFree;
+  const hasGround = mob.canStep ? wolfHasMobGround : hasMobGround;
+  const baseAng = Math.atan2(dz, dx);
+  for (let attempt = 0; attempt < 12; attempt++) {
+    const angOff = (Math.random() - 0.5) * 1.0;
+    const ang = baseAng + angOff;
+    const dist = 20 + Math.random() * 15;
+    const tx = mob.pos.x + Math.cos(ang) * dist;
+    const tz = mob.pos.z + Math.sin(ang) * dist;
+    if (Math.abs(tx) > WORLD_RADIUS - 1 || Math.abs(tz) > WORLD_RADIUS - 1) continue;
+    if (inCraterAvoid(tx, tz)) continue;
+    if (dim === "over") {
+      if (isInsideAnyHouse(tx, tz)) continue;
+      if (isInsidePool(tx, tz)) continue;
+      if (isInsidePenPool(tx, tz)) continue;
+    }
+    const py = mob.pos.y;
+    if (aabbCollidesWorld(tx, py, tz, mob.hw, mob.h)) continue;
+    let okGround = hasGround(tx, tz, mob.hw, py);
+    if (!okGround) {
+      if (hasGround(tx, tz, mob.hw, py + 1) || hasGround(tx, tz, mob.hw, py - 1)) okGround = true;
+      else continue;
+    }
+    const d = Math.hypot(tx - mob.pos.x, tz - mob.pos.z);
+    const free = probeFree(mob.pos.x, mob.pos.z, (tx - mob.pos.x) / d, (tz - mob.pos.z) / d, Math.min(d, 12), mob.hw, py);
+    if (free < d * 0.55) continue;
+    return { x: tx, z: tz };
+  }
+  return fleePointAway(mob, cx, cz);
+}
+function panicMegaBlast(cx, cy, cz, preFuse = 0, union = null, villageTouch = null) {
+  const now = performance.now() / 1000;
+  const sqBlast = villageTouch !== null ? !!villageTouch : (preFuse === 0 && blastInVillageSq(cx, cy, cz));
+  for (const m of mobs) {
+    if (!m || m.kind === "dragon" || m.kind === "iron_golem" || m.kind === "enderman") continue;
+    if (isFlyingKind(m.kind)) continue;
+    if (mobDimOf(m) !== dim) continue;
+    let go = null;
+    if (union && union.length) {
+      if (distToMegaUnion(m.pos.x, m.pos.z, union) > MEGA_BLAST_RADIUS) continue;
+      if (sqBlast && mobInVillageSq(m)) continue;
+      go = megaFleePointUnion(m, union, cx, cz);
+      m.fleeUntil = preFuse > 0 ? Math.max(m.fleeUntil || 0, now + preFuse + 8) : now + PANIC_TIME;
+    } else {
+      if (Math.hypot(m.pos.x - cx, m.pos.y - cy, m.pos.z - cz) > MEGA_KNOCK_RADIUS) continue;
+      go = megaFleePoint(m, cx, cz);
+      m.fleeUntil = Math.max(m.fleeUntil || 0, now + preFuse + 8);
+    }
+    m.speed = WALK * 2;
+    m._outsideFlee = true; m._fleeSrcX = cx; m._fleeSrcZ = cz;
+    m.target = go;
+    m.wanderT = 1.2 + Math.random() * 0.8; m.steerCooldown = 0; m.path = null; m.pathKey = null;
+  }
+}
+let megaNoPerchUntil = 0;
+function litMegaMembers() {
+  const out = [];
+  for (const t of tntLit.values()) {
+    if (!t.mega || t.mesh || t.bird) continue;
+    if (t.bx === undefined || t.bz === undefined) continue;
+    out.push([t.bx + 0.5, t.bz + 0.5]);
+  }
+  return out;
+}
+function litMegaTouch() {
+  for (const t of tntLit.values()) {
+    if (!t.mega || t.mesh || t.bird) continue;
+    if (t.bx === undefined || t.by === undefined || t.bz === undefined) continue;
+    if (blastInVillageSq(t.bx + 0.5, t.by + 0.5, t.bz + 0.5)) return [t.bx + 0.5, t.by + 0.5, t.bz + 0.5];
+  }
+  return null;
+}
+function megaTouchesVillage(members) {
+  for (const mm of members) if (blastInVillageSq(mm[0], mm[1], mm[2])) return [mm[0], mm[1], mm[2]];
+  return null;
+}
+function nearestMegaOf(union, x, z) {
+  let bx = union[0][0], bz = union[0][1], bd = Infinity;
+  for (const mm of union) {
+    const d = (x - mm[0]) * (x - mm[0]) + (z - mm[1]) * (z - mm[1]);
+    if (d < bd) { bd = d; bx = mm[0]; bz = mm[1]; }
+  }
+  return [bx, bz];
+}
+function distToMegaUnion(x, z, union) {
+  let d = Infinity;
+  for (const mm of union) {
+    const dd = Math.hypot(x - mm[0], z - mm[1]) - MEGA_BLAST_RADIUS;
+    if (dd < d) d = dd;
+  }
+  return d;
+}
+function distToMegaUnion3D(x, y, z, union3) {
+  let d = Infinity;
+  for (const mm of union3) {
+    const dd = Math.hypot(x - mm[0], y - mm[1], z - mm[2]) - MEGA_BLAST_RADIUS;
+    if (dd < d) d = dd;
+  }
+  return d;
+}
+function clampMegaXZ(x, z) {
+  if (dim === "end") return [endSquareCoord(x), endSquareCoord(z)];
+  const B = WORLD_RADIUS - 2;
+  return [Math.max(-B, Math.min(B, x)), Math.max(-B, Math.min(B, z))];
+}
+function megaAirBand() {
+  if (dim === "end") return [DRAGON_MIN_Y, DRAGON_MAX_Y];
+  if (dim === "nether") return [NETHER_BIRD_MIN_Y, netherBirdCeiling()];
+  return [BIRD_MIN_Y, BIRD_MAX_Y];
+}
+function lavaInBox(x, y, z, hw, h) {
+  for (let by = Math.floor(y); by <= Math.floor(y + h); by++)
+    for (let bx = Math.floor(x - hw); bx <= Math.floor(x + hw); bx++)
+      for (let bz = Math.floor(z - hw); bz <= Math.floor(z + hw); bz++)
+        if (getBlock(bx, by, bz) === LAVA) return true;
+  return false;
+}
+function spotOutsideMegaUnion(union, px, pz, py, margin, hw, h, canStep, air) {
+  const [nx, nz] = nearestMegaOf(union, px, pz);
+  let dx = px - nx, dz = pz - nz;
+  if (Math.hypot(dx, dz) < 0.15) { const a = Math.random() * Math.PI * 2; dx = Math.cos(a); dz = Math.sin(a); }
+  const baseAng = Math.atan2(dz, dx);
+  const hasGround = canStep ? wolfHasMobGround : hasMobGround;
+  const offs = [0, 0.3, -0.3, 0.6, -0.6, 0.9, -0.9, 1.2, -1.2, 1.6, -1.6, 2.1, -2.1, 2.6, -2.6, Math.PI];
+  const maxR = MEGA_BLAST_RADIUS * 4 + 64;
+  let fallback = null, fallbackD = -Infinity;
+  for (const off of offs) {
+    const ang = baseAng + off;
+    const cax = Math.cos(ang), saz = Math.sin(ang);
+    for (let r = 2; r <= maxR; r += 2) {
+      const [ctx, ctz] = clampMegaXZ(px + cax * r, pz + saz * r);
+      const d = distToMegaUnion(ctx, ctz, union);
+      if (air) {
+        const band = megaAirBand();
+        const ty = Math.max(band[0], Math.min(band[1], Math.max(1.5, Math.min(MAX_Y - 1, py))));
+        if (aabbCollidesWorld(ctx, ty, ctz, hw, h)) continue;
+        if (dim === "nether" && lavaInBox(ctx, ty, ctz, hw, h)) continue;
+        if (d >= margin) return { x: ctx, y: ty, z: ctz };
+        if (d > fallbackD) { fallbackD = d; fallback = { x: ctx, y: ty, z: ctz }; }
+        continue;
+      }
+      const gy = groundYDown(ctx, ctz, py + 2, hw);
+      if (gy == null || gy < 1 || gy > MAX_Y - 2) continue;
+      if (gy > py + 3 || gy < py - 48) continue;
+      if (aabbCollidesWorld(ctx, gy, ctz, hw, h)) continue;
+      if (!hasGround(ctx, ctz, hw, gy) && !hasGround(ctx, ctz, hw, gy + 1) && !hasGround(ctx, ctz, hw, gy - 1)) continue;
+      if (d >= margin) return { x: ctx, z: ctz };
+      if (d > fallbackD) { fallbackD = d; fallback = { x: ctx, z: ctz }; }
+    }
+  }
+  return fallback;
+}
+function megaFleePointUnion(m, union, ccx, ccz) {
+  const [nx, nz] = nearestMegaOf(union, m.pos.x, m.pos.z);
+  let dx = m.pos.x - nx, dz = m.pos.z - nz;
+  if (Math.hypot(dx, dz) < 0.15) { const a = Math.random() * Math.PI * 2; dx = Math.cos(a); dz = Math.sin(a); }
+  const probeFree = m.canStep ? wolfProbeFree : mobProbeFree;
+  const hasGround = m.canStep ? wolfHasMobGround : hasMobGround;
+  const baseAng = Math.atan2(dz, dx);
+  const B = WORLD_RADIUS - 1;
+  for (const need of [MEGA_BLAST_RADIUS * 0.5, 0]) {
+    for (let attempt = 0; attempt < 12; attempt++) {
+      const ang = baseAng + (Math.random() - 0.5) * 1.0;
+      const dist = 20 + Math.random() * 15;
+      const tx = m.pos.x + Math.cos(ang) * dist;
+      const tz = m.pos.z + Math.sin(ang) * dist;
+      if (tx < -B || tx > B || tz < -B || tz > B) continue;
+      if (dim === "end" && endBlockOutsidePlatform(tx, tz)) continue;
+      if (distToMegaUnion(tx, tz, union) < need) continue;
+      if (inCraterAvoid(tx, tz)) continue;
+      if (dim === "over") {
+        if (isInsideAnyHouse(tx, tz)) continue;
+        if (isInsidePool(tx, tz)) continue;
+        if (isInsidePenPool(tx, tz)) continue;
+      }
+      const py = m.pos.y;
+      if (aabbCollidesWorld(tx, py, tz, m.hw, m.h)) continue;
+      let okGround = hasGround(tx, tz, m.hw, py);
+      if (!okGround) {
+        if (hasGround(tx, tz, m.hw, py + 1) || hasGround(tx, tz, m.hw, py - 1)) okGround = true;
+        else continue;
+      }
+      const d = Math.hypot(tx - m.pos.x, tz - m.pos.z);
+      const free = probeFree(m.pos.x, m.pos.z, (tx - m.pos.x) / d, (tz - m.pos.z) / d, Math.min(d, 12), m.hw, py);
+      if (free < d * 0.55) continue;
+      return { x: tx, z: tz };
+    }
+  }
+  return fleePointAway(m, ccx, ccz);
+}
+function birdMegaFleeTarget(m, union, cy) {
+  const [nx, nz] = nearestMegaOf(union, m.pos.x, m.pos.z);
+  let dx = m.pos.x - nx, dz = m.pos.z - nz;
+  if (Math.hypot(dx, dz) < 0.15) { const a = Math.random() * Math.PI * 2; dx = Math.cos(a); dz = Math.sin(a); }
+  const baseAng = Math.atan2(dz, dx);
+  const inEnd = endMobInEnd(m);
+  const loB = inEnd ? DRAGON_MIN_Y : birdBandMin(m);
+  const hiB = inEnd ? DRAGON_MAX_Y : birdBandMax(m);
+  for (const need of [MEGA_BLAST_RADIUS * 0.5, 0]) {
+    for (let t = 0; t < 8; t++) {
+      const ang = baseAng + (Math.random() - 0.5) * 1.2;
+      const dist = 20 + Math.random() * 10;
+      const up = 0.3 + Math.random() * 0.4;
+      let vx = Math.cos(ang), vy = up, vz = Math.sin(ang);
+      const vl = Math.hypot(vx, vy, vz) || 1;
+      vx /= vl; vy /= vl; vz /= vl;
+      let tx = m.pos.x + vx * dist;
+      let ty = m.pos.y + vy * dist;
+      let tz = m.pos.z + vz * dist;
+      ty = Math.max(loB, Math.min(hiB, ty));
+      if (inEnd) { tx = endSquareCoord(tx); tz = endSquareCoord(tz); }
+      else {
+        tx = Math.max(-WORLD_RADIUS + 2, Math.min(WORLD_RADIUS - 2, tx));
+        tz = Math.max(-WORLD_RADIUS + 2, Math.min(WORLD_RADIUS - 2, tz));
+        ty = Math.max(1.5, Math.min(MAX_Y - 1, ty));
+      }
+      if (distToMegaUnion(tx, tz, union) < need) continue;
+      if (birdSegmentFree(m.pos.x, m.pos.y, m.pos.z, tx, ty, tz, m)) return new THREE.Vector3(tx, ty, tz);
+    }
+  }
+  return panicBirdTarget(m, (union[0] || [])[0] || m.pos.x, cy, (union[0] || [])[1] || m.pos.z);
+}
+function outOfLevel(p) {
+  if (dim === "end") return endBlockOutsidePlatform(p.x, p.z) || p.y < -15 || p.y > MAX_Y - 1;
+  return Math.abs(p.x) > WORLD_RADIUS || Math.abs(p.z) > WORLD_RADIUS || p.y < -15 || p.y > MAX_Y - 1;
+}
+function clearMegaEjectFor(m) {
+  for (let i = megaEject.length - 1; i >= 0; i--) {
+    if (!megaEject[i].player && megaEject[i].m === m) megaEject.splice(i, 1);
+  }
+}
+function megaCraterRespawn(m, crater) {
+  const union = crater.members && crater.members.length ? crater.members : [[crater.cx, crater.cz]];
+  const inEnd = dim === "end";
+  const B = WORLD_RADIUS - 2;
+  const onMap = (x, z) => inEnd ? !endBlockOutsidePlatform(x, z) : (x >= -B && x <= B && z >= -B && z <= B);
+  clearMegaEjectFor(m);
+  delete m._ballisticUntil;
+  delete m._megaStraight;
+  delete m._megaCrater;
+  if (isBirdKind(m.kind)) {
+    const band = megaAirBand();
+    const ty = Math.max(band[0], Math.min(band[1], Math.max(1.5, Math.min(MAX_Y - 1, crater.cy != null ? crater.cy : m.pos.y))));
+    let fallback = null, fallbackD = Infinity;
+    for (let r = 0; r <= MEGA_BLAST_RADIUS * 3 + 24; r += 2) {
+      for (let a = 0; a < 8; a++) {
+        const tx = r === 0 ? crater.cx : crater.cx + Math.cos(a / 8 * Math.PI * 2) * r;
+        const tz = r === 0 ? crater.cz : crater.cz + Math.sin(a / 8 * Math.PI * 2) * r;
+        if (!onMap(tx, tz)) continue;
+        if (!birdProbeFree(tx, ty, tz, m)) continue;
+        const d = distToMegaUnion(tx, tz, union);
+        if (d <= MEGA_BLAST_RADIUS) {
+          m.pos.set(tx, ty, tz);
+          const yaw2 = Math.random() * Math.PI * 2;
+          m.vel.set(Math.cos(yaw2) * BIRD_SPEED, 0, Math.sin(yaw2) * BIRD_SPEED);
+          m.onGround = false;
+          m.mode = "straight"; m.arc = null; m.target = null; m.targetMode = null;
+          m.perchSpot = null; m.perchGroup = null; m.perchT = 0; m.perchWander = null; m.perchWanderT = 0; m.perchTimeout = 0; m.perchRetry = 0;
+          if (m.mesh) m.mesh.position.copy(m.pos);
+          return true;
+        }
+        if (d < fallbackD) { fallbackD = d; fallback = { x: tx, z: tz }; }
+      }
+    }
+    if (fallback) {
+      m.pos.set(fallback.x, ty, fallback.z);
+      const yaw2 = Math.random() * Math.PI * 2;
+      m.vel.set(Math.cos(yaw2) * BIRD_SPEED, 0, Math.sin(yaw2) * BIRD_SPEED);
+      m.onGround = false;
+      m.mode = "straight"; m.arc = null; m.target = null; m.targetMode = null;
+      m.perchSpot = null; m.perchGroup = null; m.perchT = 0; m.perchWander = null; m.perchWanderT = 0; m.perchTimeout = 0; m.perchRetry = 0;
+      if (m.mesh) m.mesh.position.copy(m.pos);
+      return true;
+    }
+    return false;
+  }
+  const hint = (crater.cy != null ? crater.cy : Math.floor(m.pos.y)) + 4;
+  for (let r = 0; r <= MEGA_BLAST_RADIUS * 3 + 24; r += 1) {
+    for (let a = 0; a < 8; a++) {
+      const tx = r === 0 ? crater.cx : crater.cx + Math.cos(a / 8 * Math.PI * 2) * r;
+      const tz = r === 0 ? crater.cz : crater.cz + Math.sin(a / 8 * Math.PI * 2) * r;
+      if (!onMap(tx, tz)) continue;
+      const gy = groundYDown(tx, tz, hint, m.hw);
+      if (gy == null || gy < 1 || gy > MAX_Y - 2) continue;
+      if (aabbCollidesWorld(tx, gy, tz, m.hw, m.h)) continue;
+      m.pos.set(tx, gy, tz);
+      m.vel.set(0, 0, 0);
+      m.onGround = true;
+      m.fleeUntil = 0; m.target = null; m.path = null; m.pathKey = null;
+      if (m.mesh) m.mesh.position.copy(m.pos);
+      return true;
+    }
+  }
+  return false;
+}
+function endermanMegaSpot(m, union) {
+  const inEnd = dim === "end" && (m.dim === undefined || m.dim === "end");
+  const others = endermanOthers(m).filter((o) => o.dim === m.dim);
+  const B = WORLD_RADIUS - 2;
+  const okXZ = (x, z) => {
+    if (inEnd) {
+      if (endBlockOutsidePlatform(x, z)) return false;
+      if (Math.abs(x) <= 3 && Math.abs(z - END_RETURN_Z) <= 3) return false;
+      return true;
+    }
+    return x >= -B && x <= B && z >= -B && z <= B;
+  };
+  const landY = (x, z) => {
+    if (inEnd) {
+      if (isSolid(x, END_PLATFORM_TOP + 1, z) || isSolid(x, END_PLATFORM_TOP + 2, z)) return null;
+      return END_PLATFORM_TOP + 1;
+    }
+    return endermanSurfaceY(x, z, m.pos.y);
+  };
+  const ex = Math.round(m.pos.x), ez = Math.round(m.pos.z);
+  for (const sep of [true, false]) {
+    for (let d = 1; d <= 48; d++) {
+      for (const c of endermanRingCells(ex, ez, d)) {
+        if (!okXZ(c.x, c.z)) continue;
+        if (distToMegaUnion(c.x, c.z, union) < MEGA_BLAST_RADIUS * 0.5) continue;
+        const y = landY(c.x, c.z);
+        if (y == null) continue;
+        if (sep && !endermanSeparated(others, c.x, c.z)) continue;
+        return { x: c.x, z: c.z, y };
+      }
+    }
+  }
+  return null;
+}
+function panicMegaLanding(m, crater) {
+  if (!m || !mobs.includes(m)) return;
+  if (m.kind === "dragon" || m.kind === "iron_golem" || m.kind === "enderman") return;
+  if (isMobHeld(m) || isMobFrozenByGrapple(m) || isChained(m)) return;
+  if (mobDimOf(m) !== dim) return;
+  if (!crater) return;
+  panicSingleMob(m, crater.cx, crater.cy, crater.cz, true);
+}
+function megaTeleportEnderman(m, union) {  const spot = endermanMegaSpot(m, union);
+  if (!spot) return false;
+  if (isChained(m)) { severChainMob(m); resumeChainedMob(m); }
+  m.lookT = 0;
+  endermanTeleport(m, spot.x, spot.z, spot.y);
+  m.falling = false; m.baseY = m.pos.y;
+  m.eyeRedT = ENDERMAN_RED_TIME;
+  delete m._ballisticUntil; delete m._megaStraight; delete m._megaCrater;
+  return true;
 }
 function hasMobGround(x, z, hw, y) {
   const py = y != null ? y : villageCenter.y + 1;
@@ -8393,6 +8806,61 @@ function mobHasGroundFor(m,x,z,hw,y){ return m.canStep ? wolfHasMobGround(x,z,hw
 function mobBlockedAtFor(m,x,z,hw,y){ return m.canStep ? wolfBlockedAt(x,z,hw,y) : mobBlockedAt(x,z,hw,y); }
 function mobProbeFreeFor(m,x,z,dx,dz,d,hw,y){ return m.canStep ? wolfProbeFree(x,z,dx,dz,d,hw,y) : mobProbeFree(x,z,dx,dz,d,hw,y); }
 function isPigCow(m){ return m.kind === "pig" || m.kind === "cow"; }
+function penDestroyed() {
+  if (dim !== "over" || !villagePen) return false;
+  const gy = groundYDown(villagePen.cx + 0.5, villagePen.cz + 0.5, villageCenter.y + 1, 0.32);
+  return gy == null || Math.abs(gy - villageCenter.y) > 4;
+}
+function homeIntactFor(m) {
+  if (dim !== "over") return false;
+  if (m.kind === "pig" || m.kind === "cow") return !penDestroyed();
+  const h = m.homeId >= 0 ? villageHouses[m.homeId] : null;
+  if (!h) return false;
+  const gy = groundYDown(h.cx + 0.5, h.cz + 0.5, villageCenter.y + 1, m.hw);
+  return gy != null && Math.abs(gy - villageCenter.y) <= 4;
+}
+function homeReachable(m, tx, tz) {
+  const fn = m.canStep ? wolfFindPath : findPlantPath;
+  return !!fn(m.pos.x, m.pos.z, tx, tz, m.hw, m.pos.y);
+}
+function updateHomeReturn(m, now) {
+  if (!m._returnHome || dim !== "over") return;
+  if (!soilOutsideClamp(m.pos.x, m.pos.z, m.hw)) { delete m._returnHome; delete m._homeRetryT; delete m._penReturn; return; }
+  const isPig = m.kind === "pig" || m.kind === "cow";
+  if (isPig && isInsidePen(m.pos.x, m.pos.z)) { delete m._returnHome; delete m._homeRetryT; delete m._penReturn; return; }
+  if (m.fleeUntil != null && now < m.fleeUntil) return;
+  if (m.mode !== "wander" && m.mode !== "follow") return;
+  if (m.isBaby || m.kind === "cat") {
+    const p = m.isBaby ? babyParentFor(m) : catParentFor(m);
+    if (p && Math.hypot(p.pos.x - m.pos.x, p.pos.z - m.pos.z) <= 15) return;
+  }
+  if (m._penReturn && m.target) return;
+  if (m._homeRetryT && now < m._homeRetryT) return;
+  if (!homeIntactFor(m)) { delete m._returnHome; return; }
+  let gx, gz;
+  if (isPig) {
+    const gap = nearestPenGap(m.pos.x, m.pos.z);
+    if (!gap) { m._homeRetryT = now + 12 + Math.random() * 8; return; }
+    const inside = penGapInside(gap);
+    gx = inside.x; gz = inside.z;
+  } else {
+    const h = villageHouses[m.homeId];
+    if (!h) { delete m._returnHome; return; }
+    gx = h.padX; gz = h.padZ;
+  }
+  if (!homeReachable(m, gx, gz)) { m._homeRetryT = now + 12 + Math.random() * 8; return; }
+  delete m._homeRetryT;
+  m.speed = WALK / 2;
+  if (isPig) {
+    m._penReturn = true;
+    m.target = { x: gx, z: gz };
+    m.wanderT = 3 + Math.random() * 2; m.steerCooldown = 0; m.path = null; m.pathKey = null;
+  } else {
+    m.mode = "goHome";
+    m.target = { x: gx, z: gz };
+    m.path = null; m.pathKey = null;
+  }
+}
 function pigOverlapsFence(x,z,hw){
   if(!villagePen) return false;
   const vy=villagePen.vy+1;
@@ -8407,15 +8875,14 @@ function pigOverlapsFence(x,z,hw){
   }
   return false;
 }
-function pigFenceSlideOut(mob) {
-  const pen = villagePen;
+function pigFenceSlideOut(mob) {  const pen = villagePen;
   if (!pen) return false;
   const dx = (pen.cx + 0.5) - mob.pos.x, dz = (pen.cz + 0.5) - mob.pos.z;
   const d = Math.hypot(dx, dz) || 1;
   const ux = dx / d, uz = dz / d;
   for (let s = 0.1; s <= 2.0; s += 0.1) {
     const nx = mob.pos.x + ux * s, nz = mob.pos.z + uz * s;
-    if (!pigOverlapsFence(nx, nz, mob.hw) && !aabbCollidesWorld(nx, mob.pos.y, nz, mob.hw, mob.h)) {
+    if (!pigOverlapsFence(nx, nz, mob.hw) && !aabbCollidesWorld(nx, mob.pos.y, nz, mob.hw, mob.h) && hasMobGround(nx, nz, mob.hw, mob.pos.y)) {
       mob.pos.x = nx; mob.pos.z = nz;
       mob.vel.x = 0; mob.vel.z = 0; mob.vel.y = 0;
       mob.onGround = true;
@@ -8423,13 +8890,8 @@ function pigFenceSlideOut(mob) {
       return true;
     }
   }
-  mob.pos.x = pen.cx + 0.5;
-  mob.pos.z = pen.cz + 0.5;
-  mob.pos.y = pen.vy + 1;
   mob.vel.x = 0; mob.vel.z = 0; mob.vel.y = 0;
-  mob.onGround = true;
-  if (mobStats) mobStats.worldCol++;
-  return true;
+  return false;
 }
 function wolfFindPath(sx, sz, tx, tz, hw, pyHint) {
   if (hw == null) hw = 0.30;
@@ -10177,6 +10639,10 @@ function updateMobs(dt) {
     if (isMobHeld(m)) continue;
     if (isChained(m)) { m.mesh.position.copy(m.pos); continue; }
     if (isMobFrozenByGrapple(m)) continue;
+    if (m._ballisticUntil != null) {
+      if (performance.now() / 1000 >= m._ballisticUntil || mobDimOf(m) !== dim) delete m._ballisticUntil;
+      else { tickBallisticMob(m, dt); continue; }
+    }
     if (isArrivalFrozen(m)) {
       if (m.vel) m.vel.set(0, 0, 0);
       if (m.mesh) m.mesh.position.copy(m.pos);
@@ -10268,7 +10734,9 @@ function updateMobs(dt) {
       continue;
     }
     if (m.pos.y < -15) {
-      if (m.villageBound === false) {
+      if (m._megaCrater && megaCraterRespawn(m, m._megaCrater)) {
+        m.onGround = true;
+      } else if (m.villageBound === false) {
         const gy = groundYForMob(m.pos.x, m.pos.z, 30, m.hw);
         m.pos.set(m.pos.x, gy, m.pos.z);
         m.vel.set(0, 0, 0);
@@ -10324,6 +10792,7 @@ function updateMobs(dt) {
         }
       }
     } else if (m.kind === "pig" || m.kind === "cow") {
+      updateHomeReturn(m, now);
       if (m.target && !isInsidePen(m.target.x, m.target.z)) {
         // debug
         // console.log("pig outside target", m.id, m.pos.x.toFixed(2), m.pos.z.toFixed(2), m.target.x.toFixed(2), m.target.z.toFixed(2), m.vel.x.toFixed(2), m.onGround);
@@ -10340,6 +10809,13 @@ function updateMobs(dt) {
         } else {
           m.speed = WALK * 2;
           if (!insidePen) {
+            if (penDestroyed()) {
+              m.wanderT -= dt;
+              if (!m.target || Math.hypot(m.target.x - m.pos.x, m.target.z - m.pos.z) < 0.8 || m.wanderT <= 0) {
+                m.target = fleePointAway(m, m._fleeSrcX != null ? m._fleeSrcX : m.pos.x, m._fleeSrcZ != null ? m._fleeSrcZ : m.pos.z);
+                m.wanderT = 1.2 + Math.random() * 0.8; m.steerCooldown = 0; m.path = null; m.pathKey = null;
+              }
+            } else {
             const gap = nearestPenGap(m.pos.x, m.pos.z);
             if (gap) {
               const inside = penGapInside(gap);
@@ -10359,6 +10835,7 @@ function updateMobs(dt) {
               if (!m.target || Math.hypot(m.target.x - m.pos.x, m.target.z - m.pos.z) < 0.8 || m.wanderT <= 0) {
                 m.target = randomAroundPenPoint(m); m.wanderT = 0.35 + Math.random()*0.35; m.steerCooldown = 0; m.path = null; m.pathKey = null;
               }
+            }
             }
           } else {
             m.wanderT -= dt;
@@ -10422,6 +10899,12 @@ function updateMobs(dt) {
       }
     } else if (m.mode === "goOut" || m.mode === "goHome") {
       const house = villageHouses[m.homeId];
+      if (m._returnHome && !homeIntactFor(m)) {
+        delete m._returnHome; delete m._homeRetryT;
+        m.mode = "wander"; m.speed = WALK / 2;
+        m.target = wanderNear(m); m.wanderT = 2 + Math.random() * 2;
+        m.path = null; m.pathKey = null; m.steerCooldown = 0;
+      } else {
       const isOut = m.mode === "goOut";
       const fleeing = m.fleeUntil != null && now < m.fleeUntil;
       const dest = isOut ? { x: house.apronX, z: house.apronZ } : { x: house.padX, z: house.padZ };
@@ -10434,6 +10917,7 @@ function updateMobs(dt) {
       } else {
         m.target = dest;
       }
+      }
     } else {
       // wander / follow — babies and cats without an available parent wander like adults
       const followKind = m.isBaby || m.kind === "cat";
@@ -10444,11 +10928,17 @@ function updateMobs(dt) {
           const ph = villageHouses[p.homeId], mh = villageHouses[m.homeId];
           const pInside = ph ? p.pos.x>ph.minX&&p.pos.x<ph.maxX&&p.pos.z>ph.minZ&&p.pos.z<ph.maxZ : false;
           const meInside = mh ? m.pos.x>mh.minX&&m.pos.x<mh.maxX&&m.pos.z>mh.minZ&&m.pos.z<mh.maxZ : false;
-          if (pInside !== meInside && ph && mh && dim === "over") {
+          if (pInside !== meInside && ph && mh && dim === "over" && !soilOutsideClamp(m.pos.x, m.pos.z, m.hw)) {
             const house = pInside ? ph : mh;
             m.mode = pInside ? "goHome" : "goOut";
             m.speed = WALK / 2;
             m.target = pInside ? { x: house.padX, z: house.padZ } : { x: house.apronX, z: house.apronZ };
+          } else if (dim === "over" && soilOutsideClamp(m.pos.x, m.pos.z, m.hw) && pd > 15) {
+            if (m.mode === "follow") m.mode = "wander";
+            m.speed = WALK / 2;
+            m.target = wanderNear(m);
+            m.wanderT = 2 + Math.random() * 2;
+            m.path = null; m.pathKey = null;
           } else if (pd > FOLLOW_ENGAGE_D || (m.mode === "follow" && pd > FOLLOW_HOLD_D)) {
             m.mode = "follow";
             m.speed = WALK / 2 * 1.3;
@@ -10471,13 +10961,14 @@ function updateMobs(dt) {
           m.speed = WALK / 2;
         }
       }
+      updateHomeReturn(m, now);
       m.wanderT -= dt;
       if (m.wanderT <= 0 && m.mode === "wander" && (m.villageBound === false || !m.isBaby)) {
         if (m.villageBound === false) {
           // outside village: wander near current pos
           m.target = wanderNear(m);
           m.wanderT = 3 + Math.random() * 4;
-        } else if (m.homeId >= 0 && Math.random() < 0.25) {
+        } else if (!soilOutsideClamp(m.pos.x, m.pos.z, m.hw) && m.homeId >= 0 && Math.random() < 0.25) {
           m.mode = "goHome";
           m.target = { x: villageHouses[m.homeId].apronX, z: villageHouses[m.homeId].apronZ };
         } else {
@@ -10693,7 +11184,7 @@ function updateMobs(dt) {
     const canStep = !!m.canStep;
     const probeFree = canStep ? wolfProbeFree : mobProbeFree;
     const hasGround = canStep ? wolfHasMobGround : hasMobGround;
-    const findPath = m.mode === "goPlant" ? findPlantPath : (canStep ? wolfFindPath : findVillagePath);
+    const findPath = m.mode === "goPlant" ? findPlantPath : ((m.mode === "goHome" && m._returnHome) || m._penReturn ? (canStep ? wolfFindPath : findPlantPath) : (canStep ? wolfFindPath : findVillagePath));
     const goalFor = canStep ? wanderGoalForWolf : wanderGoalFor;
     let poolEx = null;
     const pHead = mobHeadonHeading(m);
@@ -11001,24 +11492,25 @@ function updateMobs(dt) {
         if (bestF > 0.35) {
           const tx2 = m.pos.x + bx * (1.5 + Math.random()*2.5);
           const tz2 = m.pos.z + bz * (1.5 + Math.random()*2.5);
-          const cx = m.villageBound === false ? tx2 : Math.max(villageMinX+1, Math.min(villageMaxX-1, tx2));
-          const cz = m.villageBound === false ? tz2 : Math.max(villageMinZ+1, Math.min(villageMaxZ-1, tz2));
+          const outR = soilOutsideClamp(m.pos.x, m.pos.z, m.hw);
+          const cx = outR ? tx2 : Math.max(villageMinX+1, Math.min(villageMaxX-1, tx2));
+          const cz = outR ? tz2 : Math.max(villageMinZ+1, Math.min(villageMaxZ-1, tz2));
           const canStand = (!aabbCollidesWorld(cx, m.pos.y, cz, m.hw, m.h) && hasGround(cx, cz, m.hw, m.pos.y)) || (!aabbCollidesWorld(cx, m.pos.y+1, cz, m.hw, m.h) && hasGround(cx, cz, m.hw, m.pos.y+1)) || (!aabbCollidesWorld(cx, m.pos.y-1, cz, m.hw, m.h) && hasGround(cx, cz, m.hw, m.pos.y-1));
           if (canStand && !isInsideAnyHouse(cx, cz)) {
             m.target = { x: cx, z: cz };
             m.lastTarget = { x: cx, z: cz };
           } else {
-            if (m.villageBound === false) {
+            if (outR) {
               m.target = { x: tx2, z: tz2 };
             } else {
-              m.target = goalFor(m);
+              m.target = m.kind === "cat" ? wanderGoalFor(m) : goalFor(m);
             }
           }
           m.path = null; m.pathKey = null;
           m.vel.x = bx * (WALK/2) * 0.7; m.vel.z = bz * (WALK/2) * 0.7;
           m.steerX = m.vel.x; m.steerZ = m.vel.z; m.steerCooldown = 0.5;
         } else {
-          m.target = goalFor(m);
+          m.target = m.kind === "cat" ? wanderGoalFor(m) : goalFor(m);
           m.path = null; m.pathKey = null;
           m.vel.x = bx * (WALK / 2) * 0.5; m.vel.z = bz * (WALK / 2) * 0.5;
           m.steerX = m.vel.x; m.steerZ = m.vel.z; m.steerCooldown = 0.5;
@@ -11079,6 +11571,19 @@ const OUTSIDE_PANIC_DIST = 10;
 const VILLAGE_PANIC_TIME = 5;
 const VILLAGER_PANIC_TIME = 8;
 let villagePanicUntil = 0;
+const craterAvoid = [];
+function recordCraterAvoid(cx, cz, r) {
+  craterAvoid.push({ x: cx, z: cz, r, until: performance.now() / 1000 + 10 });
+}
+function inCraterAvoid(x, z) {
+  const now = performance.now() / 1000;
+  for (let i = craterAvoid.length - 1; i >= 0; i--) {
+    if (craterAvoid[i].until < now) { craterAvoid.splice(i, 1); continue; }
+    const c = craterAvoid[i];
+    if ((x - c.x) * (x - c.x) + (z - c.z) * (z - c.z) < c.r * c.r) return true;
+  }
+  return false;
+}
 function mobPanicSnapshot(m, now) {
   const t = isFinite(now) ? now : performance.now() / 1000;
   let fleeRemain = 0, panicT = 0, panicUntilRemain = 0, srcX = 0, srcZ = 0, flags = 0;
@@ -11131,9 +11636,10 @@ function resumeMobPanic(m, e) {
     m.perchSpot = null; m.perchGroup = null; m.perchT = 0; m.perchWander = null; m.perchWanderT = 0; m.perchTimeout = 0; m.perchRetry = 0;
     m.mode = "straight"; m.arc = null;
     m._tunnel = false; m._tFree = 0; m._tPath = null; m._tGoal = null;
-    m.target = (flags & 2) ? panicBirdLeaveTarget(m, sx, sz) : panicBirdTarget(m, sx, sz);
+    m.target = (flags & 2) ? panicBirdLeaveTarget(m, sx, m.pos.y, sz) : panicBirdTarget(m, sx, m.pos.y, sz);
     m.targetMode = "panic";
     m._panicSrcX = sx; m._panicSrcZ = sz;
+    m._panicExtended = false;
     m._panicVillage = !!(flags & 2);
     m._panicT = Math.max(pT, 0.05);
     m._panicUntil = now + Math.max(pUntil, 0.05);
@@ -11180,6 +11686,7 @@ function shiftPausedTimers(d) {
     if (m._frozenUntil != null && m._frozenUntil > simPauseStart) m._frozenUntil += d;
   }
   if (villagePanicUntil > simPauseStart) villagePanicUntil += d;
+  if (megaNoPerchUntil > simPauseStart) megaNoPerchUntil += d;
   if (explosionQueue && explosionQueue.length) {
     const psMs = simPauseStart * 1000, dMs = d * 1000;
     for (const q of explosionQueue) if (q.due && q.due > psMs) q.due += dMs;
@@ -11227,9 +11734,18 @@ function panicVillagers(cx, cy, cz) {
       m.mode = "inside";
       m.target = centre;
     } else {
-      m.mode = "goOut";
-      m.target = centre;
-      m.path = null; m.pathKey = null; m.wanderT = 99;
+      const gy = groundYDown(centre.x, centre.z, villageCenter.y + 1, m.hw);
+      if (gy == null || Math.abs(gy - villageCenter.y) > 4) {
+        m.speed = WALK * 2;
+        m._outsideFlee = true; m._fleeSrcX = cx; m._fleeSrcZ = cz;
+        m.mode = "wander";
+        m.target = fleePointAway(m, cx, cz);
+        m.path = null; m.pathKey = null; m.wanderT = 1.2 + Math.random() * 0.8; m.steerCooldown = 0;
+      } else {
+        m.mode = "goOut";
+        m.target = centre;
+        m.path = null; m.pathKey = null; m.wanderT = 99;
+      }
     }
   }
 }
@@ -11266,9 +11782,17 @@ function panicCats(cx, cy, cz) {
       m.mode = "inside";
       m.target = centre;
     } else {
-      m.mode = "goOut";
-      m.target = centre;
-      m.path = null; m.pathKey = null; m.wanderT = 99;
+      const gy = groundYDown(centre.x, centre.z, villageCenter.y + 1, m.hw);
+      if (gy == null || Math.abs(gy - villageCenter.y) > 4) {
+        m._outsideFlee = true; m._fleeSrcX = cx; m._fleeSrcZ = cz;
+        m.mode = "wander";
+        m.target = fleePointAway(m, cx, cz);
+        m.path = null; m.pathKey = null; m.wanderT = 1.2 + Math.random() * 0.8; m.steerCooldown = 0;
+      } else {
+        m.mode = "goOut";
+        m.target = centre;
+        m.path = null; m.pathKey = null; m.wanderT = 99;
+      }
     }
   }
 }
@@ -11292,6 +11816,10 @@ function panicPenMobs(cx, cy, cz) {
       if (insidePen) {
         m.target = wanderGoalForPen(m);
         m.wanderT = 0.25 + Math.random()*0.25; m.steerCooldown = 0; m.path = null; m.pathKey = null;
+      } else if (penDestroyed()) {
+        m.target = fleePointAway(m, cx, cz);
+        m.wanderT = 1.2 + Math.random() * 0.8; m.steerCooldown = 0;
+        m.path = null; m.pathKey = null;
       } else {
         const gap = nearestPenGap(m.pos.x, m.pos.z);
         if (gap) {
@@ -11398,30 +11926,37 @@ function wolfLeaveTarget(m, cx, cz) {
   }
   return fleePointAway(m, cx, cz);
 }
-function panicBirdTarget(m, cx, cz) {
-  let dx = m.pos.x - cx, dz = m.pos.z - cz;
-  let len = Math.hypot(dx, dz);
-  if (len < 0.15) { const a = Math.random() * Math.PI * 2; dx = Math.cos(a); dz = Math.sin(a); len = 1; }
-  else { dx /= len; dz /= len; }
+function panicBirdTarget(m, cx, cy, cz) {
+  let dx = m.pos.x - cx, dy = m.pos.y - cy, dz = m.pos.z - cz;
+  let len = Math.hypot(dx, dy, dz);
+  if (len < 0.15) { const a = Math.random() * Math.PI * 2; dx = Math.cos(a); dz = Math.sin(a); dy = 0.5; len = 1; }
+  else { dx /= len; dy /= len; dz /= len; }
   const inEnd = endMobInEnd(m);
   const loB = inEnd ? DRAGON_MIN_Y : birdBandMin(m);
   const hiB = inEnd ? DRAGON_MAX_Y : birdBandMax(m);
   for (let t = 0; t < 8; t++) {
     const ang = Math.atan2(dz, dx) + (Math.random() - 0.5) * 1.2;
-    const dist = 15 + Math.random() * 10;
-    let tx = m.pos.x + Math.cos(ang) * dist;
-    let tz = m.pos.z + Math.sin(ang) * dist;
-    let ty = Math.max(loB, Math.min(hiB, m.pos.y + (Math.random() - 0.5) * 6));
+    const dist = 20 + Math.random() * 10;
+    const up = 0.3 + Math.random() * 0.4;
+    let vx = Math.cos(ang), vy = up, vz = Math.sin(ang);
+    const vl = Math.hypot(vx, vy, vz) || 1;
+    vx /= vl; vy /= vl; vz /= vl;
+    let tx = m.pos.x + vx * dist;
+    let ty = m.pos.y + vy * dist;
+    let tz = m.pos.z + vz * dist;
+    const ox = tx - m.pos.x, oy = ty - m.pos.y, oz = tz - m.pos.z;
+    if (ox * dx + oy * dy + oz * dz <= 0) continue;
+    ty = Math.max(loB, Math.min(hiB, ty));
     if (inEnd) { tx = endSquareCoord(tx); tz = endSquareCoord(tz); }
     else { tx = Math.max(-WORLD_RADIUS + 2, Math.min(WORLD_RADIUS - 2, tx)); tz = Math.max(-WORLD_RADIUS + 2, Math.min(WORLD_RADIUS - 2, tz)); ty = Math.max(1.5, Math.min(MAX_Y - 1, ty)); }
     if (birdSegmentFree(m.pos.x, m.pos.y, m.pos.z, tx, ty, tz, m)) return new THREE.Vector3(tx, ty, tz);
   }
-  return new THREE.Vector3(
-    Math.max(-WORLD_RADIUS + 2, Math.min(WORLD_RADIUS - 2, m.pos.x + dx * 10)),
-    Math.max(loB, Math.min(hiB, m.pos.y)),
-    Math.max(-WORLD_RADIUS + 2, Math.min(WORLD_RADIUS - 2, m.pos.z + dz * 10)));
+  const fx = Math.max(-WORLD_RADIUS + 2, Math.min(WORLD_RADIUS - 2, m.pos.x + dx * 10));
+  const fz = Math.max(-WORLD_RADIUS + 2, Math.min(WORLD_RADIUS - 2, m.pos.z + dz * 10));
+  const fy = Math.max(loB, Math.min(hiB, m.pos.y + 4));
+  return new THREE.Vector3(inEnd ? endSquareCoord(fx) : fx, inEnd ? fy : Math.max(1.5, Math.min(MAX_Y - 1, fy)), inEnd ? endSquareCoord(fz) : fz);
 }
-function panicBirdLeaveTarget(m, cx, cz) {
+function panicBirdLeaveTarget(m, cx, cy, cz) {
   const [bdx, bdz] = panicLeaveDir(m.pos.x, m.pos.z, cx, cz);
   const baseAng = Math.atan2(bdz, bdx);
   const inEnd = endMobInEnd(m);
@@ -11442,7 +11977,7 @@ function panicBirdLeaveTarget(m, cx, cz) {
     }
     if (birdSegmentFree(m.pos.x, m.pos.y, m.pos.z, tx, ty, tz, m)) return new THREE.Vector3(tx, ty, tz);
   }
-  return panicBirdTarget(m, cx, cz);
+  return panicBirdTarget(m, cx, cy, cz);
 }
 function panicBird(m, cx, cy, cz, villageBlast, force) {
   if (!force) {
@@ -11456,9 +11991,10 @@ function panicBird(m, cx, cy, cz, villageBlast, force) {
   m.perchSpot = null; m.perchGroup = null; m.perchT = 0; m.perchWander = null; m.perchWanderT = 0; m.perchTimeout = 0; m.perchRetry = 0;
   m.mode = "straight"; m.arc = null;
   m._tunnel = false; m._tFree = 0; m._tPath = null; m._tGoal = null;
-  m.target = villageBlast ? panicBirdLeaveTarget(m, cx, cz) : panicBirdTarget(m, cx, cz);
+  m.target = villageBlast ? panicBirdLeaveTarget(m, cx, cy, cz) : panicBirdTarget(m, cx, cy, cz);
   m.targetMode = "panic";
-  m._panicSrcX = cx; m._panicSrcZ = cz;
+  m._panicSrcX = cx; m._panicSrcZ = cz; m._panicSrcY = cy;
+  m._panicExtended = false;
   m._panicVillage = !!villageBlast;
   m._panicT = PANIC_TIME;
   m._panicUntil = performance.now() / 1000 + (villageBlast ? VILLAGE_PANIC_TIME : PANIC_TIME);
@@ -11554,6 +12090,7 @@ function generateWorld() {
   colTops.over.fill(0);
   portalBlockSets.over.clear();
   glowstoneBlockSets.over.clear();
+  tntBlockSets.over.clear();
   glowVariants.over.clear();
   visitGrid.clear();
   waterScale = 1 + (hash2(0, 0, seed + 333) * 4 | 0);
@@ -11768,6 +12305,7 @@ function generateEnd() {
   colTops.end.fill(0);
   portalBlockSets.end.clear();
   glowstoneBlockSets.end.clear();
+  tntBlockSets.end.clear();
   glowVariants.end.clear();
   const R = END_PLATFORM_R;
   const ct = colTops.end;
@@ -12198,6 +12736,7 @@ function generateNether() {
   w.clear();
   portalBlockSets.nether.clear();
   glowstoneBlockSets.nether.clear();
+  tntBlockSets.nether.clear();
   glowVariants.nether.clear();
   const S = WORLD_RADIUS;
   generateNetherRivers();
@@ -13545,6 +14084,7 @@ function getSingleMat(id) {
     case NETHERRACK: m = material(TEX.netherrack); break;
     case SOULSAND: m = material(TEX.soulsand); break;
     case MOON: m = basicMat(TEX.moon, { fog: false }); break;
+    case MEGA_TNT: m = basicMat(TEX.mega_side, { fog: false }); break;
   }
   singleMats.set(id, m);
   return m;
@@ -13587,6 +14127,12 @@ function rebuildChunk(cx, cz) {
   const glows = [];
   const wetDirts = [];
   const liquidSkip = [];
+  const litMegas = [];
+  let litMegaKeys = null;
+  if (tntLit.size) {
+    litMegaKeys = new Set();
+    for (const [k, t] of tntLit) if (t.mega && !t.mesh) litMegaKeys.add(k);
+  }
   for (let x = x0; x <= x1; x++)
     for (let z = z0; z <= z1; z++) {
       const ct = colTops[dim][colTopIdx(x, z)];
@@ -13607,6 +14153,10 @@ function rebuildChunk(cx, cz) {
         }
         if (id === DIRT && wetSoilSet.has(key(x, y, z))) {
           if (isExposed(x, y, z)) wetDirts.push([x, y, z]);
+          continue;
+        }
+        if (id === MEGA_TNT && litMegaKeys && litMegaKeys.has(key(x, y, z))) {
+          if (isExposed(x, y, z)) litMegas.push([x, y, z]);
           continue;
         }
         if (isLiquid(id)) { liquidSkip.push([x, y, z, id]); continue; }
@@ -13800,6 +14350,37 @@ function rebuildChunk(cx, cz) {
     };
     if (wetBlue.length) placeShell(wetBlue, getWetShellMat(), "wetshell");
     if (wetGrey.length) placeShell(wetGrey, getWetShellMatMoon(), "wetshellMoon");
+  }
+  if (litMegas.length) {
+    const mesh = new THREE.InstancedMesh(boxGeo, getLitMegaMat(), litMegas.length);
+    mesh.count = litMegas.length;
+    let i = 0;
+    for (const [x, y, z] of litMegas) {
+      dummy.position.set(x + 0.5, y + 0.5, z + 0.5);
+      dummy.rotation.set(0, 0, 0);
+      dummy.scale.set(1, 1, 1);
+      dummy.updateMatrix();
+      mesh.setMatrixAt(i++, dummy.matrix);
+    }
+    mesh.instanceMatrix.needsUpdate = true;
+    mesh.computeBoundingSphere();
+    scene.add(mesh);
+    meshes.set("megatit", mesh);
+    const veil = new THREE.InstancedMesh(boxGeo, getLitMegaVeilMat(), litMegas.length);
+    veil.count = litMegas.length;
+    let j = 0;
+    for (const [x, y, z] of litMegas) {
+      dummy.position.set(x + 0.5, y + 0.5, z + 0.5);
+      dummy.rotation.set(0, 0, 0);
+      dummy.scale.set(1.06, 1.06, 1.06);
+      dummy.updateMatrix();
+      veil.setMatrixAt(j++, dummy.matrix);
+    }
+    veil.instanceMatrix.needsUpdate = true;
+    veil.computeBoundingSphere();
+    veil.renderOrder = 1;
+    scene.add(veil);
+    meshes.set("megaveil", veil);
   }
   chunkMeshes.set(ck, meshes);
 }
@@ -14252,10 +14833,14 @@ function mobPhysicsStep(mob, dt, g) {
   if (mob.villageBound) {
     const minX = villageMinX + mob.hw + 0.5, maxX = villageMaxX - mob.hw - 0.5;
     const minZ = villageMinZ + mob.hw + 0.5, maxZ = villageMaxZ - mob.hw - 0.5;
-    if (mob.pos.x < minX) { mob.pos.x = minX; mob.vel.x = 0; }
-    if (mob.pos.x > maxX) { mob.pos.x = maxX; mob.vel.x = 0; }
-    if (mob.pos.z < minZ) { mob.pos.z = minZ; mob.vel.z = 0; }
-    if (mob.pos.z > maxZ) { mob.pos.z = maxZ; mob.vel.z = 0; }
+    if (mob.pos.x >= minX && mob.pos.x <= maxX && mob.pos.z >= minZ && mob.pos.z <= maxZ) delete mob._noClamp;
+    const fleeing = mob.fleeUntil != null && performance.now() / 1000 < mob.fleeUntil;
+    if (!fleeing && !mob._noClamp) {
+      if (mob.pos.x < minX) { mob.pos.x = minX; mob.vel.x = 0; }
+      if (mob.pos.x > maxX) { mob.pos.x = maxX; mob.vel.x = 0; }
+      if (mob.pos.z < minZ) { mob.pos.z = minZ; mob.vel.z = 0; }
+      if (mob.pos.z > maxZ) { mob.pos.z = maxZ; mob.vel.z = 0; }
+    }
   }
   if(isPigCow(mob) && villagePen && pigOverlapsFence(mob.pos.x, mob.pos.z, mob.hw)){
     pigFenceSlideOut(mob);
@@ -14344,6 +14929,13 @@ function wolfMoveAxisX(mob, dx) {
       if (!block) {} else { mob.pos.x = oldX; mob.vel.x = 0; if (mobStats) mobStats.mobCol++; return true; }
     } else { mob.pos.x = oldX; mob.vel.x = 0; if (mobStats) mobStats.mobCol++; return true; }
   }
+  if (mob.onGround && !mobHasGroundFor(mob, mob.pos.x, mob.pos.z, mob.hw, mob.pos.y)) {
+    if (mobHasGroundFor(mob, mob.pos.x, mob.pos.z, mob.hw, mob.pos.y-1) && !aabbCollidesWorld(mob.pos.x, mob.pos.y-1, mob.pos.z, mob.hw, mob.h)) {
+      mob.pos.y -= 1;
+      return false;
+    }
+    mob.pos.x -= dx; mob.vel.x = 0; return true;
+  }
   return false;
 }
 function wolfMoveAxisZ(mob, dz) {
@@ -14390,6 +14982,13 @@ function wolfMoveAxisZ(mob, dz) {
       if (!block) {} else { mob.pos.z = oldZ; mob.vel.z = 0; if (mobStats) mobStats.mobCol++; return true; }
     } else { mob.pos.z = oldZ; mob.vel.z = 0; if (mobStats) mobStats.mobCol++; return true; }
   }
+  if (mob.onGround && !mobHasGroundFor(mob, mob.pos.x, mob.pos.z, mob.hw, mob.pos.y)) {
+    if (mobHasGroundFor(mob, mob.pos.x, mob.pos.z, mob.hw, mob.pos.y-1) && !aabbCollidesWorld(mob.pos.x, mob.pos.y-1, mob.pos.z, mob.hw, mob.h)) {
+      mob.pos.y -= 1;
+      return false;
+    }
+    mob.pos.z -= dz; mob.vel.z = 0; return true;
+  }
   return false;
 }
 function wolfPhysicsStep(mob, dt, g) {
@@ -14434,10 +15033,14 @@ function wolfPhysicsStep(mob, dt, g) {
   if (mob.villageBound) {
     const minX = villageMinX + mob.hw + 0.5, maxX = villageMaxX - mob.hw - 0.5;
     const minZ = villageMinZ + mob.hw + 0.5, maxZ = villageMaxZ - mob.hw - 0.5;
-    if (mob.pos.x < minX) { mob.pos.x = minX; mob.vel.x = 0; }
-    if (mob.pos.x > maxX) { mob.pos.x = maxX; mob.vel.x = 0; }
-    if (mob.pos.z < minZ) { mob.pos.z = minZ; mob.vel.z = 0; }
-    if (mob.pos.z > maxZ) { mob.pos.z = maxZ; mob.vel.z = 0; }
+    if (mob.pos.x >= minX && mob.pos.x <= maxX && mob.pos.z >= minZ && mob.pos.z <= maxZ) delete mob._noClamp;
+    const fleeing = mob.fleeUntil != null && performance.now() / 1000 < mob.fleeUntil;
+    if (!fleeing && !mob._noClamp) {
+      if (mob.pos.x < minX) { mob.pos.x = minX; mob.vel.x = 0; }
+      if (mob.pos.x > maxX) { mob.pos.x = maxX; mob.vel.x = 0; }
+      if (mob.pos.z < minZ) { mob.pos.z = minZ; mob.vel.z = 0; }
+      if (mob.pos.z > maxZ) { mob.pos.z = maxZ; mob.vel.z = 0; }
+    }
   }
 }
 
@@ -15326,7 +15929,7 @@ function updatePlayer(dt) {
     wasInWater = inWater;
   }
 
-  if (flying) {
+  if (flying && !flingActive) {
     stepDown = false;
     stepUp = false;
     stepFromWater = false;
@@ -15412,13 +16015,23 @@ function updatePlayer(dt) {
     const speed = Math.min(baseSpeed * jumpBoost, WALK * 3);
     if (move.lengthSq() > 0) move.normalize().multiplyScalar(speed);
     if (flingActive) {
-      vel.x += move.x * 4.0 * dt;
-      vel.z += move.z * 4.0 * dt;
-      const damp = Math.max(0, 1 - 0.6 * dt);
-      vel.x *= damp; vel.z *= damp;
-      const sp = Math.hypot(vel.x, vel.z);
-      if (sp > GRAPPLE_FLING) { vel.x *= GRAPPLE_FLING / sp; vel.z *= GRAPPLE_FLING / sp; }
-      if (sp < 1) { flingActive = false; }
+      if (freeCam && megaRide) {
+        vel.set(megaRide.dx * megaRide.spd, megaRide.dy * megaRide.spd, megaRide.dz * megaRide.spd);
+        const dd = Math.hypot(pos.x - megaRide.cx, pos.y - megaRide.cy, pos.z - megaRide.cz);
+        if (dd > MEGA_BLAST_RADIUS + 4 || performance.now() / 1000 > megaRide.until || onGround) {
+          megaRide = null;
+          flingActive = false;
+          vel.set(0, 0, 0);
+        }
+      } else {
+        vel.x += move.x * 4.0 * dt;
+        vel.z += move.z * 4.0 * dt;
+        const damp = Math.max(0, 1 - 0.6 * dt);
+        vel.x *= damp; vel.z *= damp;
+        const sp = Math.hypot(vel.x, vel.z);
+        if (sp > GRAPPLE_FLING) { vel.x *= GRAPPLE_FLING / sp; vel.z *= GRAPPLE_FLING / sp; }
+        if (sp < 1) { flingActive = false; }
+      }
     } else if (!onGround && !stepUp) {
       if (move.lengthSq() > 0) {
         const k = Math.min(1, AIR_STEER * dt);
@@ -15427,7 +16040,8 @@ function updatePlayer(dt) {
         vel.x += (move.x * (airTarget / speed) - vel.x) * k;
         vel.z += (move.z * (airTarget / speed) - vel.z) * k;
       } else {
-        const dampVal = jumpBoost > 1 ? 0.08 : JUMP_FLING_DAMP;
+        const launched = performance.now() / 1000 < megaLaunchedUntil;
+        const dampVal = launched ? 0.6 : (jumpBoost > 1 ? 0.08 : JUMP_FLING_DAMP);
         const damp = Math.max(0, 1 - dampVal * dt);
         vel.x *= damp; vel.z *= damp;
       }
@@ -15463,11 +16077,11 @@ function updatePlayer(dt) {
         else vel.y = -STEP_SPEED;
       }
     } else {
-      vel.y -= g * dt;
+      if (!(freeCam && megaRide)) vel.y -= g * dt;
       // Hold Shift to keep climbing: the thrust fades in smoothly from takeoff
       // (no hard threshold), so a quick tap barely climbs while a hold engages
       // immediately instead of after a dead delay.
-      if (!onGround && spaceNow && airT < JUMP_HOLD_TIME && vel.y > 0) {
+      if (!onGround && spaceNow && airT < JUMP_HOLD_TIME && vel.y > 0 && !(freeCam && megaRide)) {
         airT += dt;
         vel.y += JUMP_THRUST * Math.min(1, airT / JUMP_RAMP) * dt;
         // Boost: extra upward acceleration for the first JUMP_BOOST_TIME of a
@@ -15577,6 +16191,7 @@ function exitFreeCam() {
   pos.set(camPos.x, Math.max(0, camPos.y), camPos.z);
   vel.set(0, 0, 0);
   flingActive = false;
+  megaRide = null;
 }
 
 function headInWater() {
@@ -15785,6 +16400,7 @@ function breakBlock() {
   if ((getBlock(x, y, z) === STONE || getBlock(x, y, z) === NETHERRACK) && y === 0) return;
   if (isMobStandingOn(x, y, z, true) || intersectsMob(x, y, z, true)) return;
   if (getBlock(x, y, z) === TNT) { igniteTNT(x, y, z); return; }
+  if (getBlock(x, y, z) === MEGA_TNT) { igniteTNT(x, y, z, MEGA_FUSE_TIME); return; }
   const bid = getBlock(x, y, z);
   if (bid === WATER || bid === LAVA || bid === MOON_WATER) return;
   const pineOwner = (bid === LOG || bid === LEAVES) ? pineAt(x, y, z) : null;
@@ -15918,6 +16534,7 @@ function lineStep(fx, fy, fz, dx, dy, dz) {
 // clockwise, dropping one block per turn, until the slope to the feet
 // flattens and chainStep resumes normal plateauing.
 function chainStep() {
+  if (hotbarList()[selected] === MEGA_TNT) return;
   if (!chainHome) return;
   const dest = feetDest();
   if (!dest) return;
@@ -16028,6 +16645,44 @@ function intersectsPlayer(bx, by, bz) {
 // ---------------------------------------------------------------------------
 const FUSE_TIME = 3;
 const BLAST_RADIUS = 3;
+const MEGA_BLAST_RADIUS = BLAST_RADIUS * 5;
+const MEGA_FUSE_TIME = 8;
+const MEGA_KNOCK_RADIUS = MEGA_BLAST_RADIUS * 2;
+const MEGA_KNOCK_SPEED = 30;
+const MEGA_SHAKE_DIST = 150;
+const MEGA_QUIET = false;
+const MEGA_FX_T = 0.5;
+let camTrauma = 0;
+function addCamShake(a) { camTrauma = Math.min(1.5, camTrauma + a); }
+// Blink choreography for lit TNT: deterministic phase from remaining fuse.
+// Frequency ramps exponentially from ~1 Hz at full fuse to ~14 Hz at
+// detonation (perceptually saturated over the final second); output is a
+// strobing 0/1 that tightens toward the end. Pure function of fuse, so it is
+// pause-safe, save-safe, and phase-identical after reload.
+const BLINK_FMIN = 1, BLINK_FMAX = 14;
+const BLINK_RATIO = BLINK_FMAX / BLINK_FMIN;
+const BLINK_LR = Math.log(BLINK_RATIO);
+function blinkPhase(fuse, total) {
+  const e = Math.min(Math.max(0, total - fuse), total * 1.5);
+  return (BLINK_FMIN * total / BLINK_LR) * (Math.pow(BLINK_RATIO, e / total) - 1);
+}
+function blinkOn(fuse, total, duty = 0.5) {
+  return (blinkPhase(fuse, total) % 1) < duty ? 1 : 0;
+}
+function blinkSmooth(fuse, total) {
+  const p = blinkPhase(fuse, total) % 1;
+  return 0.5 - 0.5 * Math.cos(2 * Math.PI * p);
+}
+function blinkWhite(fuse) {
+  if (fuse >= 5) return 0;
+  if (fuse <= 1) return 1;
+  return smoothstep((5 - fuse) / 4);
+}
+function megaWhiteEff(fuse, total) {
+  const w = blinkWhite(fuse);
+  const f = fuse >= 1.2 ? 0.3 : 0.3 + 0.7 * smoothstep((1.2 - fuse) / 1.2);
+  return w * (f + (1 - f) * blinkSmooth(fuse, total));
+}
 const DRAGON_FULL_DMG = 0.125;
 const TNT_HOME_SPEED = 11;
 const DRAGON_STICK_DIST = 1.2;
@@ -16056,16 +16711,216 @@ const explosionQueue = [];
 let explosionBudgetMs = 7;
 let explosionsPerFrame = 64;
 const chainPending = new Set();
+let poolConsumed = null;
+let mobPillarCache = null;
 
 function makeTNTBomb() {
   return new THREE.Mesh(tntBombGeo, tntBombMats);
 }
 
 function clearTNTVisual(t) {
-  scene.remove(t.spr);
-  t.spr.material.map.dispose();
-  t.spr.material.dispose();
+  if (t.spr) {
+    scene.remove(t.spr);
+    t.spr.material.map.dispose();
+    t.spr.material.dispose();
+    t.spr = null;
+  }
   if (t.mesh) { scene.remove(t.mesh); t.mesh = null; }
+}
+
+const megaWhiteHeat = new THREE.Color(0xffffff);
+const MEGA_WHITE_TEX_CAP = 0.9;
+let litMegaTex = null;
+let litMegaTexCtx = null;
+let litMegaTexEff = -1;
+function getLitMegaTex() {
+  if (!litMegaTex) {
+    const c = document.createElement("canvas");
+    c.width = c.height = 64;
+    litMegaTexCtx = c.getContext("2d");
+    litMegaTexCtx.drawImage(TEX.mega_side.image, 0, 0);
+    litMegaTex = new THREE.CanvasTexture(c);
+    litMegaTex.magFilter = THREE.NearestFilter;
+    litMegaTex.minFilter = THREE.LinearMipmapLinearFilter;
+    litMegaTex.generateMipmaps = true;
+    litMegaTex.anisotropy = 4;
+    litMegaTex.colorSpace = THREE.SRGBColorSpace;
+    litMegaTexEff = 0;
+  }
+  return litMegaTex;
+}
+function tickLitMegaTex(eff) {
+  getLitMegaTex();
+  const e = Math.max(0, Math.min(MEGA_WHITE_TEX_CAP, eff));
+  if (Math.abs(e - litMegaTexEff) < 0.002) return;
+  litMegaTexEff = e;
+  litMegaTexCtx.globalCompositeOperation = "source-over";
+  litMegaTexCtx.globalAlpha = 1;
+  litMegaTexCtx.drawImage(TEX.mega_side.image, 0, 0);
+  if (e > 0) {
+    litMegaTexCtx.globalAlpha = e;
+    litMegaTexCtx.fillStyle = "#ffffff";
+    litMegaTexCtx.fillRect(0, 0, 64, 64);
+    litMegaTexCtx.globalAlpha = 1;
+  }
+  litMegaTex.needsUpdate = true;
+}
+let litMegaMat = null;
+function getLitMegaMat() {
+  if (!litMegaMat) litMegaMat = new THREE.MeshBasicMaterial({ map: getLitMegaTex(), fog: false, toneMapped: false });
+  return litMegaMat;
+}
+let litMegaVeilMat = null;
+function getLitMegaVeilMat() {
+  if (!litMegaVeilMat) litMegaVeilMat = new THREE.MeshBasicMaterial({ color: 0xff2211, transparent: true, opacity: 0.05, fog: false, toneMapped: false, depthWrite: false, blending: THREE.AdditiveBlending, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 });
+  return litMegaVeilMat;
+}
+
+const MEGA_LIGHT_MAX = 8;
+const MEGA_LIGHT_CELL = 5;
+const MEGA_LIGHT_REFRESH = 0.5;
+let megaLightClusters = [];   // [{ck, x, y, z, fuse}] centroid + min fuse per cell
+let megaLightBeats = new Map(); // ck -> {beats, blinkWas}
+let megaLights = [];          // pooled PointLights, each {ck, light}
+let megaLightT = 0;           // countdown until the next light re-assignment
+let megaLightCx = 0, megaLightCz = 0;
+let megaLightCkSig = "";
+function megaBucketCk(bx, by, bz) {
+  return (Math.floor(bx / MEGA_LIGHT_CELL) + 64) * 65536 + (Math.floor(by / MEGA_LIGHT_CELL) + 64) * 256 + (Math.floor(bz / MEGA_LIGHT_CELL) + 64);
+}
+function recomputeMegaLightClusters() {
+  const groups = new Map();
+  for (const t of tntLit.values()) {
+    if (!t.mega || t.mesh) continue;
+    const ck = megaBucketCk(t.bx, t.by, t.bz);
+    let g = groups.get(ck);
+    if (!g) { g = { n: 0, sx: 0, sy: 0, sz: 0, fuse: Infinity }; groups.set(ck, g); }
+    g.n++; g.sx += t.bx; g.sy += t.by; g.sz += t.bz;
+    if (t.fuse < g.fuse) g.fuse = t.fuse;
+  }
+  megaLightClusters = [];
+  const sig = [...groups.keys()].sort((a, b) => a - b).join(",");
+  for (const [ck, g] of groups) {
+    megaLightClusters.push({ ck, x: g.sx / g.n + 0.5, y: g.sy / g.n + 1.5, z: g.sz / g.n + 0.5, fuse: g.fuse });
+  }
+  for (const ck of [...megaLightBeats.keys()]) if (!groups.has(ck)) megaLightBeats.delete(ck);
+  if (sig !== megaLightCkSig) {
+    megaLightCkSig = sig;
+    megaLightT = 0;
+    megaLightCx = megaLightCz = Infinity;
+  }
+}
+function syncMegaLights(dt = 0) {
+  if (megaLightT > 0) megaLightT -= dt;
+  const pcx = chunkOf(camera.position.x), pcz = chunkOf(camera.position.z);
+  if (megaLightT > 0 || (pcx === megaLightCx && pcz === megaLightCz)) return;
+  megaLightT = MEGA_LIGHT_REFRESH;
+  megaLightCx = pcx;
+  megaLightCz = pcz;
+  if (!megaLightClusters.length) {
+    for (const L of megaLights) if (L) { L.light.visible = false; L.ck = -1; }
+    return;
+  }
+  const cam = camera.position;
+  const ranked = [];
+  for (const c of megaLightClusters) {
+    const dx = c.x - cam.x, dy = c.y - cam.y, dz = c.z - cam.z;
+    const d2 = dx * dx + dy * dy + dz * dz;
+    if (d2 <= GLOW_LIGHT_DIST * GLOW_LIGHT_DIST) ranked.push([d2, c.ck]);
+  }
+  ranked.sort((a, b) => a[0] - b[0]);
+  const want = Math.min(MEGA_LIGHT_MAX, qualityLights(), ranked.length);
+  const active = new Set();
+  for (let i = 0; i < megaLights.length; i++) {
+    const L = megaLights[i];
+    if (!L || L.ck < 0) continue;
+    for (let j = 0; j < want; j++) {
+      if (ranked[j][1] === L.ck) {
+        active.add(L.ck);
+        L.light.visible = true;
+        break;
+      }
+    }
+  }
+  for (let j = 0; j < want; j++) {
+    const ck = ranked[j][1];
+    if (active.has(ck)) continue;
+    let slot = -1;
+    for (let i = 0; i < MEGA_LIGHT_MAX; i++) {
+      const L = megaLights[i];
+      if (!L || L.ck < 0 || !active.has(L.ck)) { slot = i; break; }
+    }
+    if (slot < 0) break;
+    const L = megaLights[slot] || (megaLights[slot] = makeMegaLight());
+    L.ck = ck;
+    L.light.visible = true;
+    active.add(ck);
+  }
+  for (let i = 0; i < megaLights.length; i++) {
+    const L = megaLights[i];
+    if (L && (L.ck < 0 || !active.has(L.ck))) {
+      L.light.visible = false;
+      L.ck = -1;
+    }
+  }
+}
+function tickMegaLights() {
+  if (!megaLights.length && !litMegaMat) return;
+  const fuseByCk = new Map();
+  let minFuseAll = Infinity;
+  for (const t of tntLit.values()) {
+    if (!t.mega || t.mesh) continue;
+    if (t.fuse < minFuseAll) minFuseAll = t.fuse;
+    const ck = megaBucketCk(t.bx, t.by, t.bz);
+    const f = fuseByCk.get(ck);
+    if (f === undefined || t.fuse < f) fuseByCk.set(ck, t.fuse);
+  }
+  const cmap = new Map(megaLightClusters.map((c) => [c.ck, c]));
+  const nowL = performance.now();
+  if (litMegaMat) {
+    litMegaMat.color.setHex(0xff2211).lerp(megaWhiteHeat, megaWhiteEff(minFuseAll, MEGA_FUSE_TIME));
+  }
+  if (litMegaVeilMat) {
+    const vf = minFuseAll === Infinity ? 8 : minFuseAll;
+    const wAll = blinkWhite(minFuseAll);
+    const effAll = megaWhiteEff(minFuseAll, MEGA_FUSE_TIME);
+    litMegaVeilMat.color.setHex(0xff2211).lerp(megaWhiteHeat, effAll);
+    litMegaVeilMat.opacity = 0.05 + 0.45 * blinkSmooth(vf, MEGA_FUSE_TIME) * wAll + 0.1 * effAll;
+    tickLitMegaTex(minFuseAll === Infinity ? 0 : effAll);
+  } else {
+    tickLitMegaTex(0);
+  }
+  for (const L of megaLights) {
+    if (!L || !L.light.visible || L.ck < 0) continue;
+    const c = cmap.get(L.ck);
+    if (!c) { L.light.visible = false; L.ck = -1; continue; }
+    const fuse = fuseByCk.has(L.ck) ? fuseByCk.get(L.ck) : c.fuse;
+    let st = megaLightBeats.get(L.ck);
+    if (!st) { st = { beats: 0, blinkWas: 0 }; megaLightBeats.set(L.ck, st); }
+    const k = Math.max(0, Math.min(1, (5 - fuse) / 4));
+    const b = blinkSmooth(fuse, MEGA_FUSE_TIME);
+    const effW = megaWhiteEff(fuse, MEGA_FUSE_TIME);
+    const flicker = 8 * Math.sin(nowL * 0.011 + 2);
+    L.light.position.set(c.x, c.y, c.z);
+    L.light.intensity = 30 + b * (50 + 90 * k) + effW * 60 + flicker;
+    const wasOn = st.blinkWas >= 0.5;
+    if (b >= 0.5 && !wasOn) {
+      st.beats++;
+      L.light.distance = Math.min(34, 7 + 1.5 * st.beats + 12 * k);
+    }
+    st.blinkWas = b;
+    L.light.color.setHex(0xff2211).lerp(megaWhiteHeat, effW);
+  }
+}
+function makeMegaLight() {
+  const light = new THREE.PointLight(0xff2211, 60, 7, 1);
+  scene.add(light);
+  return { ck: -1, light };
+}
+function clearMegaLights() {
+  for (const L of megaLights) if (L) scene.remove(L.light);
+  megaLights = [];
+  megaLightBeats.clear();
 }
 
 function purgeLiveTNT() {
@@ -16073,6 +16928,18 @@ function purgeLiveTNT() {
   tntLit.clear();
   tntEta.clear();
   explosionQueue.length = 0;
+  chainPending.clear();
+  for (const m of mobs) {
+    delete m._returnHome; delete m._homeRetryT; delete m._penReturn;
+    if (m._ballisticUntil != null) {
+      delete m._ballisticUntil;
+      delete m._megaStraight;
+      delete m._megaCrater;
+      if (m.kind === "enderman") { m.falling = false; m.baseY = m.pos.y; }
+    }
+  }
+  megaEject.length = 0;
+  megaNoPerchUntil = 0;
 }
 
 function purgeLiveEffects() {
@@ -16094,7 +16961,7 @@ const FX_SNAPSHOT_MAX = 24;
 function snapshotLiveFx() {
   const fx = [];
   for (const b of bursts) {
-    if (b.tag === undefined || b.tag > 3 || !(b.life > 0)) continue;
+    if (b.tag === undefined || b.tag > 4 || !(b.life > 0)) continue;
     if (![b.fx, b.fy, b.fz].every(isFinite)) continue;
     fx.push({ tag: b.tag, x: b.fx, y: b.fy, z: b.fz, hex: b.hex || 0 });
     if (fx.length >= FX_SNAPSHOT_MAX) break;
@@ -16110,6 +16977,7 @@ function replayLiveFx(list) {
     else if (e.tag === 1) spawnBirdBurst(e.x, e.y, e.z);
     else if (e.tag === 2) spawnDragonBurst(e.x, e.y, e.z, e.hex || 0xd06bff);
     else if (e.tag === 3) spawnDragonDeath(e.x, e.y, e.z);
+    else if (e.tag === 4 && !MEGA_QUIET) spawnMegaExplosion(e.x, e.y, e.z);
   }
 }
 
@@ -16201,7 +17069,7 @@ function restoreLiveTNT(savedBombs, savedQueue, savedEtas) {
       }
       explosionQueue.push({
         x: e.x, y: e.y, z: e.z,
-        pointBlank: !!e.pointBlank, homing: !!e.homing,
+        pointBlank: !!e.pointBlank, homing: !!e.homing, mega: !!e.mega,
         due: e.remain > 0.01 ? now + e.remain * 1000 : 0,
         ...(bird ? { bird } : {}),
       });
@@ -16217,10 +17085,12 @@ function restoreLiveTNT(savedBombs, savedQueue, savedEtas) {
         bird = findSavedTargetMob(dim, e.tkind, e.tx, e.ty, e.tz);
         if (!bird) continue;
       }
-      const spr = makeFuseSprite();
-      spr.position.set(e.px, e.py + 0.85, e.pz);
-      scene.add(spr);
-      drawFuseSprite(spr, Math.max(0, bird ? e.life : e.fuse));
+      const spr = e.mega ? null : makeFuseSprite();
+      if (spr) {
+        spr.position.set(e.px, e.py + 0.85, e.pz);
+        scene.add(spr);
+        drawFuseSprite(spr, Math.max(0, bird ? e.life : e.fuse));
+      }
       let mesh = null;
       if (e.hasMesh) {
         mesh = makeTNTBomb();
@@ -16231,7 +17101,7 @@ function restoreLiveTNT(savedBombs, savedQueue, savedEtas) {
         bx: e.bx, by: e.by, bz: e.bz,
         px: e.px, py: e.py, pz: e.pz,
         fuse: e.fuse, life: e.life,
-        spr, mesh, stuck: !!e.stuck,
+        spr, mesh, stuck: !!e.stuck, mega: !!e.mega,
         ax: e.ax, ay: e.ay, az: e.az,
         bird,
       };
@@ -16282,25 +17152,56 @@ function fizzleTNT(bx, by, bz) {
   queueSave();
   spawnBirdBurst(bx + 0.5, by + 0.5, bz + 0.5);
 }
+function megaAimOnMob(bx, by, bz) {
+  if (chainBreaking) return null;
+  const dir = new THREE.Vector3();
+  camera.getWorldDirection(dir);
+  const eye = camera.position;
+  const mob = pickMob(dir, BIRD_AIM_DIST);
+  if (!mob) return null;
+  const off = getMobHitOffset(eye, dir, mob);
+  const hx = off ? mob.pos.x + off.x : mob.pos.x, hy = off ? mob.pos.y + off.y : mob.pos.y + mob.h * 0.5, hz = off ? mob.pos.z + off.z : mob.pos.z;
+  const mobT = Math.hypot(hx - eye.x, hy - eye.y, hz - eye.z);
+  const blockT = Math.hypot(bx + 0.5 - eye.x, by + 0.5 - eye.y, bz + 0.5 - eye.z);
+  return mobT <= blockT + 0.5 ? mob : null;
+}
 function igniteTNT(bx, by, bz, fuse = FUSE_TIME) {
   const k = key(bx, by, bz);
   if (tntLit.has(k)) {
     const t = tntLit.get(k);
+    if (t.mega) {
+      if (megaAimOnMob(bx, by, bz)) return;
+      clearTNTVisual(t);
+      tntLit.delete(k);
+      chainPending.add(k);
+      enqueueExplosion(bx, by, bz, t.stuck, false, 0, true, true);
+      return;
+    }
     clearTNTVisual(t);
     tntLit.delete(k);
-    if (tntFizzleAim(bx, by, bz)) {
+    if (!t.mega && tntFizzleAim(bx, by, bz)) {
       fizzleTNT(bx, by, bz);
       return;
     }
-    explodeTNT(bx, by, bz, t.stuck);
+    explodeTNT(bx, by, bz, t.stuck, false, !!t.mega);
     return;
   }
-  const spr = makeFuseSprite();
-  spr.position.set(bx + 0.5, by + 1.35, bz + 0.5);
-  scene.add(spr);
-  const t = { bx, by, bz, px: bx + 0.5, py: by + 1.1, pz: bz + 0.5, fuse, life: fuse + 2, spr, mesh: null, stuck: false, ax: 0, ay: 0, az: 0, bird: null };
+  const mega = getBlock(bx, by, bz) === MEGA_TNT;
+  if (mega && megaAimOnMob(bx, by, bz)) return;
+  const spr = mega ? null : makeFuseSprite();
+  if (spr) {
+    spr.position.set(bx + 0.5, by + 1.35, bz + 0.5);
+    scene.add(spr);
+  }
+  const t = { bx, by, bz, px: bx + 0.5, py: by + 1.1, pz: bz + 0.5, fuse, life: fuse + 2, spr, mesh: null, stuck: false, ax: 0, ay: 0, az: 0, bird: null, mega };
+  if (mega) {
+    tntLit.set(k, t);
+    refreshBlocks([[bx, by, bz]]);
+    panicMegaIgnite(bx + 0.5, by + 0.5, bz + 0.5);
+    return;
+  }
   let aimed = null;
-  if ((dim === "over" || dim === "end" || dim === "nether") && !chainBreaking) {
+  if (!mega && (dim === "over" || dim === "end" || dim === "nether") && !chainBreaking) {
     const dir = new THREE.Vector3();
     camera.getWorldDirection(dir);
     const eye = camera.position;
@@ -16323,7 +17224,7 @@ function igniteTNT(bx, by, bz, fuse = FUSE_TIME) {
       }
     }
   }
-  if (dim === "end" && dragon.mesh && dragon.mob && !chainBreaking && !t.bird) {
+  if (!mega && dim === "end" && dragon.mesh && dragon.mob && !chainBreaking && !t.bird) {
     const dir = new THREE.Vector3();
     camera.getWorldDirection(dir);
     const eye = camera.position;
@@ -16362,7 +17263,40 @@ function igniteTNT(bx, by, bz, fuse = FUSE_TIME) {
     fizzleTNT(bx, by, bz);
     return;
   }
+  if (!t.bird) {
+    tntLit.set(k, t);
+    return;
+  }
   tntLit.set(k, t);
+}
+
+function panicMegaIgnite(cx, cy, cz) {
+  const now = performance.now() / 1000;
+  megaNoPerchUntil = Math.max(megaNoPerchUntil, now + MEGA_FUSE_TIME + PANIC_TIME);
+  const union = litMegaMembers();
+  if (!union.length) union.push([cx, cz]);
+  let ccx = 0, ccz = 0;
+  for (const mm of union) { ccx += mm[0]; ccz += mm[1]; }
+  ccx /= union.length; ccz /= union.length;
+  const touch = litMegaTouch();
+  if (touch) {
+    panicVillagers(touch[0], touch[1], touch[2]);
+    panicCats(touch[0], touch[1], touch[2]);
+    panicPenMobs(touch[0], touch[1], touch[2]);
+    panicWolves(touch[0], touch[1], touch[2]);
+  }
+  panicMegaBlast(ccx, cy, ccz, MEGA_FUSE_TIME, union, touch);
+  for (const m of mobs) {
+    if (!m || m.kind === "dragon" || m.kind === "enderman" || !isBirdKind(m.kind)) continue;
+    if (mobDimOf(m) !== dim) continue;
+    if (distToMegaUnion(m.pos.x, m.pos.z, union) > MEGA_BLAST_RADIUS) continue;
+    m._panicT = Math.max(m._panicT || 0, MEGA_FUSE_TIME + PANIC_TIME);
+    m._panicUntil = Math.max(m._panicUntil || 0, now + MEGA_FUSE_TIME + PANIC_TIME);
+    if (isMobHeld(m) || isMobFrozenByGrapple(m) || isChained(m)) continue;
+    panicBird(m, ccx, cy, ccz, false, true);
+    m.target = birdMegaFleeTarget(m, union, cy);
+    m.targetMode = "panic";
+  }
 }
 
 let tntFlySeq = 0;
@@ -16525,11 +17459,12 @@ function makeFuseSprite() {
   spr.userData = { c, ctx, tex };
   return spr;
 }
-function drawFuseSprite(spr, v) {
+function drawFuseSprite(spr, v, red = false) {
   const ud = spr.userData;
   const tenth = Math.ceil(v * 10) / 10;
-  if (ud.lastV !== undefined && Math.abs(ud.lastV - tenth) < 1e-9) return;
+  if (ud.lastV !== undefined && Math.abs(ud.lastV - tenth) < 1e-9 && ud.lastRed === red) return;
   ud.lastV = tenth;
+  ud.lastRed = red;
   const { c, ctx, tex } = ud;
   ctx.clearRect(0, 0, c.width, c.height);
   ctx.font = "bold 52px monospace";
@@ -16538,7 +17473,7 @@ function drawFuseSprite(spr, v) {
   ctx.lineWidth = 10;
   ctx.strokeStyle = "rgba(0,0,0,0.85)";
   ctx.strokeText(v.toFixed(1), 64, 32);
-  ctx.fillStyle = v <= 1 ? "#ff6a3d" : "#ffffff";
+  ctx.fillStyle = red ? "#ff2222" : (v <= 1 ? "#ff6a3d" : "#ffffff");
   ctx.fillText(v.toFixed(1), 64, 32);
   tex.needsUpdate = true;
 }
@@ -16578,7 +17513,7 @@ function tickTNT(dt) {
   }
   for (const [k, t] of tntLit) {
     updateTNTTarget(t, dt);
-    t.spr.position.set(t.px, t.py + 0.85, t.pz);
+    if (t.spr) t.spr.position.set(t.px, t.py + 0.85, t.pz);
     if (t.mesh) {
       t.mesh.position.set(t.px, t.py, t.pz);
       if (t.stuck) {
@@ -16632,6 +17567,7 @@ function tickTNT(dt) {
           if (front) panicSingleMob(front, t.px, t.py, t.pz);
         } else {
           drawFuseSprite(t.spr, Math.max(0, t.life));
+          t.spr.material.opacity = 0.55 + 0.45 * blinkSmooth(t.life, FUSE_TIME + 2);
         }
       } else if (!dragon.mesh) {
         clearTNTVisual(t);
@@ -16647,37 +17583,239 @@ function tickTNT(dt) {
     if (t.fuse <= 0) {
       clearTNTVisual(t);
       tntLit.delete(k);
-      enqueueExplosion(t.bx, t.by, t.bz, t.stuck, false);
-    } else {
-      drawFuseSprite(t.spr, t.fuse);
+      if (t.mega) {
+        chainPending.add(k);
+        enqueueExplosion(t.bx, t.by, t.bz, t.stuck, false, 0, true, false);
+      }
+      else enqueueExplosion(t.bx, t.by, t.bz, t.stuck, false);
+    } else if (!t.mega) {
+      drawFuseSprite(t.spr, t.fuse, false);
+      t.spr.material.opacity = 0.55 + 0.45 * blinkSmooth(t.fuse, FUSE_TIME);
     }
   }
 }
 
 const CHAIN_DELAY = 50;
-function enqueueExplosion(x, y, z, pointBlank, homing = false, delay = 0) {
+function enqueueExplosion(x, y, z, pointBlank, homing = false, delay = 0, mega = false, front = false) {
   const due = delay ? performance.now() + delay : 0;
-  explosionQueue.push({ x, y, z, pointBlank, homing, due });
+  const e = { x, y, z, pointBlank, homing, due, mega: !!mega };
+  if (front) explosionQueue.unshift(e);
+  else explosionQueue.push(e);
 }
-function explodeTNT(x, y, z, pointBlank, homing = false) {
-  enqueueExplosion(x, y, z, pointBlank, homing);
+function explodeTNT(x, y, z, pointBlank, homing = false, mega = false) {
+  enqueueExplosion(x, y, z, pointBlank, homing, 0, mega);
 }
 function explodeBird(x, y, z, pointBlank) {
   explosionQueue.push({ x, y, z, pointBlank, homing: true, due: 0, bird: true });
 }
+function carveBlastSphere(bx, by, bz, mega, batchKeys) {
+  let brokePine = false;
+  const k0 = key(bx, by, bz);
+  if (!protectedBlocks.has(dim + ":" + k0) && !batchKeys.has(k0)) {
+    const id0 = getBlock(bx, by, bz);
+    if (id0 === TNT || id0 === MEGA_TNT || (mobPillarCache ? !mobPillarCache.has(k0) : (!isMobStandingOn(bx, by, bz) && !intersectsMob(bx, by, bz)))) {
+      if (id0 !== WATER && id0 !== LAVA && !((id0 === STONE || id0 === NETHERRACK) && by === 0)) {
+        if ((id0 === LOG || id0 === LEAVES) && plantedPines.size && pineCellAt(bx, by, bz)) brokePine = true;
+        batchKeys.add(k0);
+        setBlock(bx, by, bz, AIR);
+        refreshDefer.push([bx, by, bz]);
+      }
+    }
+  }
+  const R = mega ? MEGA_BLAST_RADIUS : BLAST_RADIUS, R2 = R * R;
+  for (let dx = -R; dx <= R; dx++) for (let dy = -R; dy <= R; dy++) for (let dz = -R; dz <= R; dz++) {
+    if (dx * dx + dy * dy + dz * dz > R2) continue;
+    const gx = bx + dx, gy = by + dy, gz = bz + dz;
+    if (gy < 0 || gy > MAX_Y) continue;
+    if (gx < -WORLD_RADIUS || gx > WORLD_RADIUS || gz < -WORLD_RADIUS || gz > WORLD_RADIUS) continue;
+    const kk = key(gx, gy, gz);
+    if (batchKeys.has(kk)) continue;
+    const id = getBlock(gx, gy, gz);
+    if (id !== TNT && id !== MEGA_TNT && (mobPillarCache ? mobPillarCache.has(kk) : (isMobStandingOn(gx, gy, gz) || intersectsMob(gx, gy, gz)))) continue;
+    if (id === AIR || id === WATER || id === LAVA) continue;
+    if ((id === STONE || id === NETHERRACK) && gy === 0) continue;
+    if (protectedBlocks.has(dim + ":" + kk)) continue;
+    if ((id === TNT || id === MEGA_TNT) && !(poolConsumed && poolConsumed.has(kk))) {
+      const isMega = id === MEGA_TNT;
+      const instant = mega || isMega;
+      if (tntLit.has(kk)) {
+        const lt = tntLit.get(kk);
+        if (!lt.mesh) {
+          if (chainPending.has(kk)) continue;
+          clearTNTVisual(lt);
+          tntLit.delete(kk);
+          chainPending.add(kk);
+          if (isMega) enqueueExplosion(gx, gy, gz, lt.stuck, false, 0, true, true);
+          else enqueueExplosion(gx, gy, gz, lt.stuck, false, instant ? 0 : CHAIN_DELAY, false, instant);
+        }
+      } else {
+        if (chainPending.has(kk)) continue;
+        chainPending.add(kk);
+        if (isMega) enqueueExplosion(gx, gy, gz, false, false, 0, true, true);
+        else enqueueExplosion(gx, gy, gz, false, false, instant ? 0 : CHAIN_DELAY, false, instant);
+      }
+      continue;
+    }
+    batchKeys.add(kk);
+    const blastPineOwner = (id === LOG || id === LEAVES) && plantedPines.size ? pineAt(gx, gy, gz) : null;
+    if (blastPineOwner) {
+      brokePine = true;
+      const bk = key(blastPineOwner.x, blastPineOwner.y, blastPineOwner.z) + "|" + gx + "," + gy + "," + gz;
+      brokenPineCells.add(bk);
+    }
+    setBlock(gx, gy, gz, AIR);
+    refreshDefer.push([gx, gy, gz]);
+  }
+  return brokePine;
+}
+function processMegaPool(seeds, batchKeys) {
+  // One single explosion: transitively-close TNT/MEGA_TNT are discovered live
+  // over the TNT index (catches blocks placed after lighting) and union-carved
+  // once. Consumed members are carved inline below, never re-enqueued.
+  const members = [];
+  const memberSet = new Set();
+  const takeLive = (bx, by, bz) => {
+    const k = key(bx, by, bz);
+    if (memberSet.has(k)) return null;
+    const id = getBlock(bx, by, bz);
+    if (id !== TNT && id !== MEGA_TNT) return null;
+    if (protectedBlocks.has(dim + ":" + k)) return null;
+    const lt = tntLit.get(k);
+    if (lt) {
+      if (lt.mesh) return null;
+      clearTNTVisual(lt);
+      tntLit.delete(k);
+    }
+    memberSet.add(k);
+    const m = { x: bx, y: by, z: bz, mega: id === MEGA_TNT };
+    members.push(m);
+    return m;
+  };
+  for (const s of seeds) takeLive(Math.floor(s.x), Math.floor(s.y), Math.floor(s.z));
+  const set = worldTntSets.get(world);
+  if (set && set.size) {
+    const cells = [];
+    for (const k of set) {
+      if (memberSet.has(k)) continue;
+      const [x, y, z] = keyXYZ(k);
+      cells.push({ k, x, y, z });
+    }
+    for (let i = 0; i < members.length; i++) {
+      const m = members[i];
+      const R = m.mega ? MEGA_BLAST_RADIUS : BLAST_RADIUS, R2 = R * R;
+      for (let j = cells.length - 1; j >= 0; j--) {
+        const cell = cells[j];
+        const dx = cell.x - m.x, dy = cell.y - m.y, dz = cell.z - m.z;
+        if (dx * dx + dy * dy + dz * dz > R2) continue;
+        const id = getBlock(cell.x, cell.y, cell.z);
+        if (id !== TNT && id !== MEGA_TNT) { cells.splice(j, 1); continue; }
+        if (protectedBlocks.has(dim + ":" + cell.k)) { cells.splice(j, 1); continue; }
+        cells.splice(j, 1);
+        const lt = tntLit.get(cell.k);
+        if (lt) {
+          if (lt.mesh) continue;
+          clearTNTVisual(lt);
+          tntLit.delete(cell.k);
+        }
+        memberSet.add(cell.k);
+        members.push({ x: cell.x, y: cell.y, z: cell.z, mega: id === MEGA_TNT });
+      }
+    }
+  }
+  for (let i = explosionQueue.length - 1; i >= 0; i--) {
+    const q = explosionQueue[i];
+    if (q.bird || q.homing) continue;
+    const qk = key(Math.floor(q.x), Math.floor(q.y), Math.floor(q.z));
+    if (memberSet.has(qk)) {
+      explosionQueue.splice(i, 1);
+      if (chainPending.has(qk)) chainPending.delete(qk);
+    }
+  }
+  for (const k of memberSet) if (chainPending.has(k)) chainPending.delete(k);
+  let brokePine = false;
+  let ccx = 0, ccy = 0, ccz = 0;
+  for (const m of members) { ccx += m.x + 0.5; ccy += m.y + 0.5; ccz += m.z + 0.5; }
+  ccx /= members.length; ccy /= members.length; ccz /= members.length;
+  let maxDist = 0;
+  for (const m of members) {
+    const mx = m.x + 0.5, my = m.y + 0.5, mz = m.z + 0.5;
+    maxDist = Math.max(maxDist, Math.hypot(mx - ccx, my - ccy, mz - ccz));
+  }
+  poolConsumed = memberSet;
+  try {
+    for (const m of members) {
+      if (carveBlastSphere(m.x, m.y, m.z, m.mega, batchKeys)) brokePine = true;
+    }
+  } finally {
+    poolConsumed = null;
+  }
+  if (!MEGA_QUIET) spawnMegaUnion(members, ccx, ccy, ccz, maxDist);
+  recordCraterAvoid(ccx, ccz, maxDist + MEGA_BLAST_RADIUS + 2);
+  const megaUnion = [];
+  const megaMembers3 = [];
+  for (const m of members) if (m.mega) { megaUnion.push([m.x + 0.5, m.z + 0.5]); megaMembers3.push([m.x + 0.5, m.y + 0.5, m.z + 0.5]); }
+  if (!megaUnion.length) megaUnion.push([ccx, ccz]);
+  const touchXYZ = megaTouchesVillage(megaMembers3);
+  if (mobs.length) handleMobExplosion(touchXYZ ? touchXYZ[0] : ccx, touchXYZ ? touchXYZ[1] : ccy, touchXYZ ? touchXYZ[2] : ccz);
+  megaNoPerchUntil = Math.max(megaNoPerchUntil, performance.now() / 1000 + PANIC_TIME);
+  applyMegaKnockback(ccx, ccy, ccz, megaMembers3.length ? megaMembers3 : null);
+  panicMegaBlast(ccx, ccy, ccz, 0, megaUnion, touchXYZ);
+  return brokePine;
+}
 function processExplosionQueue() {
   if (!explosionQueue.length) return;
   const t0 = performance.now();
-  let processed = 0;
+  let processed = 0, megaChained = 0;
   refreshDefer = [];
   glowDefer++;
   const batchKeys = new Set();
-  while (explosionQueue.length && processed < explosionsPerFrame && (performance.now() - t0) < explosionBudgetMs) {
+  mobPillarCache = new Set();
+  try {
+  for (const m of mobs) {
+    if (isMobHeld(m) || isChained(m)) continue;
+    if (m.dim !== undefined && m.dim !== dim) continue;
+    const hw = villagerHW(m) + 0.05, hh = villagerH(m);
+    const x0 = Math.floor(m.pos.x - hw), x1 = Math.floor(m.pos.x + hw);
+    const z0 = Math.floor(m.pos.z - hw), z1 = Math.floor(m.pos.z + hw);
+    const y0 = Math.floor(m.pos.y) - 1, y1 = Math.floor(m.pos.y + hh);
+    for (let cx = x0; cx <= x1; cx++) for (let cy = y0; cy <= y1; cy++) for (let cz = z0; cz <= z1; cz++) mobPillarCache.add(key(cx, cy, cz));
+  }
+  while (explosionQueue.length) {
+    const head = explosionQueue[0];
+    const freeMega = head.mega && !head.due && !head.homing && !head.bird && megaChained < 8 && (performance.now() - t0) < explosionBudgetMs;
+    if (!freeMega) {
+      if (processed >= explosionsPerFrame) break;
+      if ((performance.now() - t0) >= explosionBudgetMs) break;
+    }
     const peek = explosionQueue[0];
     if (peek.due && peek.due > performance.now()) break;
-    const { x, y, z, pointBlank, homing, bird } = explosionQueue.shift();
+    const { x, y, z, pointBlank, homing, bird, mega } = explosionQueue.shift();
     const kShift = key(Math.floor(x), Math.floor(y), Math.floor(z));
     if (chainPending.has(kShift)) chainPending.delete(kShift);
+    if (mega && !homing && !bird) {
+      const members = [{ x, y, z }];
+      while (members.length < 12 && explosionQueue.length) {
+        const q = explosionQueue[0];
+        if (!(q.mega && !q.due && !q.homing && !q.bird)) break;
+        let near = false;
+        for (const m of members) {
+          const ddx = q.x - m.x, ddy = q.y - m.y, ddz = q.z - m.z;
+          if (ddx * ddx + ddy * ddy + ddz * ddz <= MEGA_BLAST_RADIUS * MEGA_BLAST_RADIUS) { near = true; break; }
+        }
+        if (!near) break;
+        members.push({ x: q.x, y: q.y, z: q.z });
+        explosionQueue.shift();
+        const kq = key(Math.floor(q.x), Math.floor(q.y), Math.floor(q.z));
+        if (chainPending.has(kq)) chainPending.delete(kq);
+      }
+      const brokePine = processMegaPool(members, batchKeys);
+      const seed = members[0];
+      if (brokePine) cullSmallChainsNear(Math.floor(seed.x), Math.floor(seed.y), Math.floor(seed.z), 3, 8);
+      megaChained += members.length;
+      processed += members.length;
+      continue;
+    }
+    if (mega) megaChained++;
     const cx = x + 0.5, cy = y + 0.5, cz = z + 0.5;
     let brokePine = false;
     const dragonHit = dim === "end" && dragon.mesh && homing && pointBlank && !bird;
@@ -16685,65 +17823,28 @@ function processExplosionQueue() {
     if (bird) spawnBirdBurst(cx, cy, cz);
     else if (pointBlank && dragonHit) spawnDragonBurst(cx, cy, cz, dragonBurstColor());
     else if (pointBlank) spawnDragonBurst(cx, cy, cz);
+    else if (mega) { if (!MEGA_QUIET) spawnMegaExplosion(cx, cy, cz); }
     else spawnExplosion(cx, cy, cz);
-    if (mobs.length) handleMobExplosion(cx, cy, cz);
-    if (homing) { processed++; continue; }
-    const bx = Math.floor(x), by = Math.floor(y), bz = Math.floor(z);
-    const k0 = key(bx, by, bz);
-    if (!protectedBlocks.has(dim + ":" + k0) && !batchKeys.has(k0)) {
-      const id0 = getBlock(bx, by, bz);
-      if (id0 === TNT || (!isMobStandingOn(bx, by, bz) && !intersectsMob(bx, by, bz))) {
-        if (id0 !== WATER && id0 !== LAVA && !((id0 === STONE || id0 === NETHERRACK) && by === 0)) {
-          if ((id0 === LOG || id0 === LEAVES) && pineCellAt(bx, by, bz)) brokePine = true;
-          batchKeys.add(k0);
-          setBlock(bx, by, bz, AIR);
-          refreshDefer.push([bx, by, bz]);
-        }
-      }
+    if (homing) {
+      if (mobs.length) handleMobExplosion(cx, cy, cz);
+      processed++;
+      continue;
     }
-    const R = BLAST_RADIUS, R2 = R * R;
-    for (let dx = -R; dx <= R; dx++) for (let dy = -R; dy <= R; dy++) for (let dz = -R; dz <= R; dz++) {
-      if (dx * dx + dy * dy + dz * dz > R2) continue;
-      const gx = bx + dx, gy = by + dy, gz = bz + dz;
-      if (gy < 0 || gy > MAX_Y) continue;
-      if (gx < -WORLD_RADIUS || gx > WORLD_RADIUS || gz < -WORLD_RADIUS || gz > WORLD_RADIUS) continue;
-      const kk = key(gx, gy, gz);
-      if (batchKeys.has(kk)) continue;
-      const id = getBlock(gx, gy, gz);
-      if (id !== TNT && (isMobStandingOn(gx, gy, gz) || intersectsMob(gx, gy, gz))) continue;
-      if (id === AIR || id === WATER || id === LAVA) continue;
-      if ((id === STONE || id === NETHERRACK) && gy === 0) continue;
-      if (protectedBlocks.has(dim + ":" + kk)) continue;
-      if (id === TNT) {
-        if (tntLit.has(kk)) {
-          const lt = tntLit.get(kk);
-          if (!lt.mesh) {
-            if (chainPending.has(kk)) continue;
-            clearTNTVisual(lt);
-            tntLit.delete(kk);
-            chainPending.add(kk);
-            enqueueExplosion(gx, gy, gz, lt.stuck, false, CHAIN_DELAY);
-          }
-        } else {
-          if (chainPending.has(kk)) continue;
-          chainPending.add(kk);
-          enqueueExplosion(gx, gy, gz, false, false, CHAIN_DELAY);
-        }
-        continue;
-      }
-      batchKeys.add(kk);
-      const blastPineOwner = (id === LOG || id === LEAVES) ? pineAt(gx, gy, gz) : null;
-      if (blastPineOwner) {
-        brokePine = true;
-        const bk = key(blastPineOwner.x, blastPineOwner.y, blastPineOwner.z) + "|" + gx + "," + gy + "," + gz;
-        brokenPineCells.add(bk);
-      }
-      setBlock(gx, gy, gz, AIR);
-      refreshDefer.push([gx, gy, gz]);
+    const bx = Math.floor(x), by = Math.floor(y), bz = Math.floor(z);
+    if (carveBlastSphere(bx, by, bz, mega, batchKeys)) brokePine = true;
+    if (mobs.length) handleMobExplosion(cx, cy, cz);
+    if (mega) {
+      recordCraterAvoid(cx, cz, MEGA_BLAST_RADIUS + 2);
+      megaNoPerchUntil = Math.max(megaNoPerchUntil, performance.now() / 1000 + PANIC_TIME);
+      applyMegaKnockback(cx, cy, cz, [[x + 0.5, y + 0.5, z + 0.5]]);
+      panicMegaBlast(cx, cy, cz, 0, [[x + 0.5, z + 0.5]]);
     }
     if (brokePine) cullSmallChainsNear(bx, by, bz, 3, 8);
     processed++;
   }
+  } finally {
+  mobPillarCache = null;
+  poolConsumed = null;
   glowDefer--;
   if (glowDefer === 0 && glowDirtyDeferred) { glowDirtyDeferred = false; recomputeGlowClusters(); syncGlowLights(); }
   const toRefresh = refreshDefer;
@@ -16752,6 +17853,7 @@ function processExplosionQueue() {
     refreshBlocks(toRefresh);
     if (plantedPines.size) garlandDirty = true;
     queueSave();
+  }
   }
 }
 
@@ -16930,6 +18032,456 @@ function spawnExplosion(cx, cy, cz) {
   bursts.push({ pts, geo, mat, vel, life: 0.8, max: 0.8, tag: 0, fx: cx, fy: cy, fz: cz });
 }
 
+function spawnMegaExplosion(cx, cy, cz, scale = 1) {
+  const flash = new THREE.Mesh(
+    new THREE.SphereGeometry(3.5 * Math.cbrt(scale), 14, 10),
+    new THREE.MeshBasicMaterial({ color: 0xfff2cc, transparent: true, opacity: 1 })
+  );
+  flash.position.set(cx, cy, cz);
+  scene.add(flash);
+  flashes.push({ mesh: flash, born: performance.now(), life: 0.6 * MEGA_FX_T });
+
+  const N = Math.round(384 * scale);
+  const posA = new Float32Array(N * 3);
+  const colA = new Float32Array(N * 3);
+  const vel = new Float32Array(N * 3);
+  for (let i = 0; i < N; i++) {
+    posA[i * 3] = cx + (Math.random() - 0.5) * 6; posA[i * 3 + 1] = cy + (Math.random() - 0.5) * 6; posA[i * 3 + 2] = cz + (Math.random() - 0.5) * 6;
+    const r = Math.random();
+    if (r < 0.3) { colA[i * 3] = 1; colA[i * 3 + 1] = 0.9; colA[i * 3 + 2] = 0.7; }
+    else if (r < 0.65) { colA[i * 3] = 1; colA[i * 3 + 1] = 0.45 + Math.random() * 0.2; colA[i * 3 + 2] = 0.08; }
+    else { colA[i * 3] = 0.8; colA[i * 3 + 1] = 0.15 + Math.random() * 0.1; colA[i * 3 + 2] = 0.04; }
+    const th = Math.random() * Math.PI * 2;
+    const ph = Math.acos(2 * Math.random() - 1);
+    const s = 4 + Math.random() * 6;
+    vel[i * 3] = s * Math.sin(ph) * Math.cos(th);
+    vel[i * 3 + 1] = s * Math.cos(ph) + 3;
+    vel[i * 3 + 2] = s * Math.sin(ph) * Math.sin(th);
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute("position", new THREE.BufferAttribute(posA, 3));
+  geo.setAttribute("color", new THREE.BufferAttribute(colA, 3));
+  const mat = new THREE.PointsMaterial({
+    size: 2.2, vertexColors: true, transparent: true, opacity: 1,
+    depthWrite: false,
+  });
+  const pts = new THREE.Points(geo, mat);
+  pts.frustumCulled = false;
+  scene.add(pts);
+  bursts.push({ pts, geo, mat, vel, life: 3 * MEGA_FX_T, max: 3 * MEGA_FX_T, grav: -6, tag: 4, fx: cx, fy: cy, fz: cz });
+  megaFire(cx, cy, cz, scale);
+  megaMushroom(cx, cy, cz, scale);
+}
+
+function spawnMegaUnion(members, ccx, ccy, ccz, maxDist) {
+  // The union of all member explosions: one flash + one cylindrical shockwave
+  // at the centroid, one crater-sized radial fireball shell per member (R = its
+  // own blast radius, merged by overlap), plus small fire/smoke per member —
+  // all sharing bounded total budgets.
+  const n = members.length;
+  const flash = new THREE.Mesh(
+    new THREE.SphereGeometry(3.5 * Math.cbrt(Math.min(2.5, 1 + 0.25 * (n - 1))), 14, 10),
+    new THREE.MeshBasicMaterial({ color: 0xfff2cc, transparent: true, opacity: 1 })
+  );
+  flash.position.set(ccx, ccy, ccz);
+  scene.add(flash);
+  flashes.push({ mesh: flash, born: performance.now(), life: 0.6 * MEGA_FX_T });
+  const shock = new THREE.Mesh(
+    new THREE.CylinderGeometry(1, 1, 2.5, 48, 1, true),
+    new THREE.MeshBasicMaterial({ color: 0xffd9a0, transparent: true, opacity: 0.55, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide, fog: false })
+  );
+  shock.position.set(ccx, ccy, ccz);
+  scene.add(shock);
+  flashes.push({ mesh: shock, born: performance.now(), life: 0.7 * MEGA_FX_T, shock: true, rMax: maxDist + MEGA_BLAST_RADIUS });
+  const per = Math.max(40, Math.floor(2400 / Math.max(1, n)));
+  let budget = Math.min(3000, per * n);
+  let shellBudget = 3000;
+  for (const m of members) {
+    const mx = m.x + 0.5, my = m.y + 0.5, mz = m.z + 0.5;
+    if (budget > 0) {
+      const Ni = Math.min(per, budget);
+      budget -= Ni;
+      const Nf = Math.round(Ni * 0.65), Ns = Ni - Nf;
+    if (Nf > 0) megaCloud(mx, my, mz, Nf, 2.6, 3.6 * MEGA_FX_T, 2, false,
+      () => {
+        const r = Math.random();
+        if (r < 0.3) return [0.7, 0.07 + Math.random() * 0.05, 0.02];
+        if (r < 0.7) return [1, 0.3 + Math.random() * 0.15, 0.04];
+        return [1, 0.7 + Math.random() * 0.2, 0.12];
+      },
+      () => [mx + (Math.random() - 0.5) * 8, my + Math.random() * 5, mz + (Math.random() - 0.5) * 8],
+      () => {
+        const th = Math.random() * Math.PI * 2;
+        const s = 1 + Math.random() * 2.5;
+        return [s * Math.cos(th), 3 + Math.random() * 5, s * Math.sin(th)];
+      });
+    if (Ns > 0) megaCloud(mx, my, mz, Ns, 2.2, 4 * MEGA_FX_T, -1, false,
+      () => {
+        const g = 0.25 + Math.random() * 0.18;
+        return [g + 0.1, g, Math.max(0, g - 0.03)];
+      },
+      () => [mx + (Math.random() - 0.5) * 5, my + Math.random() * 6, mz + (Math.random() - 0.5) * 5],
+      () => [(Math.random() - 0.5) * 2, 9 + Math.random() * 7, (Math.random() - 0.5) * 2]);
+    }
+    if (shellBudget > 0) {
+      const R = m.mega ? MEGA_BLAST_RADIUS : BLAST_RADIUS;
+      const Nsh = Math.min(shellBudget, Math.min(m.mega ? 2000 : 120, Math.max(m.mega ? 150 : 60, Math.floor(3000 / Math.max(1, n)))));
+      shellBudget -= Nsh;
+      if (Nsh > 0) megaCloud(mx, my, mz, Nsh, m.mega ? 2.2 : 0.8, 1.0 * MEGA_FX_T, -4, true,
+        () => {
+          const r = Math.random();
+          if (r < 0.3) return [1, 0.9, 0.7];
+          if (r < 0.65) return [1, 0.45 + Math.random() * 0.2, 0.08];
+          return [0.8, 0.15 + Math.random() * 0.1, 0.04];
+        },
+        () => {
+          const th = Math.random() * Math.PI * 2, ph = Math.acos(2 * Math.random() - 1);
+          return [mx + R * Math.sin(ph) * Math.cos(th) + (Math.random() - 0.5), my + R * Math.cos(ph) + (Math.random() - 0.5), mz + R * Math.sin(ph) * Math.sin(th) + (Math.random() - 0.5)];
+        },
+        (i, p) => {
+          const dx = p[0] - mx, dy = p[1] - my, dz = p[2] - mz;
+          const dl = Math.hypot(dx, dy, dz) || 1;
+          const s = 10 + Math.random() * 8;
+          return [dx / dl * s, dy / dl * s + 2, dz / dl * s];
+        });
+    }
+  }
+}
+
+function megaCloud(cx, cy, cz, N, size, life, grav, additive, colFn, posFn, velFn) {
+  const posA = new Float32Array(N * 3);
+  const colA = new Float32Array(N * 3);
+  const vel = new Float32Array(N * 3);
+  for (let i = 0; i < N; i++) {
+    const p = posFn(i);
+    posA[i * 3] = p[0]; posA[i * 3 + 1] = p[1]; posA[i * 3 + 2] = p[2];
+    const c = colFn(i);
+    colA[i * 3] = c[0]; colA[i * 3 + 1] = c[1]; colA[i * 3 + 2] = c[2];
+    const v = velFn(i, p);
+    vel[i * 3] = v[0]; vel[i * 3 + 1] = v[1]; vel[i * 3 + 2] = v[2];
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute("position", new THREE.BufferAttribute(posA, 3));
+  geo.setAttribute("color", new THREE.BufferAttribute(colA, 3));
+  const mat = new THREE.PointsMaterial({
+    size, vertexColors: true, transparent: true, opacity: 1,
+    depthWrite: false, ...(additive ? { blending: THREE.AdditiveBlending } : {}),
+  });
+  const pts = new THREE.Points(geo, mat);
+  pts.frustumCulled = false;
+  scene.add(pts);
+  bursts.push({ pts, geo, mat, vel, life, max: life, grav, tag: 4, fx: cx, fy: cy, fz: cz });
+}
+
+function megaFire(cx, cy, cz, scale = 1) {
+  megaCloud(cx, cy, cz, Math.round(350 * scale), 2.6, 3.6 * MEGA_FX_T, 2, false,
+    () => {
+      const r = Math.random();
+      if (r < 0.3) return [0.7, 0.07 + Math.random() * 0.05, 0.02];
+      if (r < 0.7) return [1, 0.3 + Math.random() * 0.15, 0.04];
+      return [1, 0.7 + Math.random() * 0.2, 0.12];
+    },
+    () => [cx + (Math.random() - 0.5) * 12, cy + Math.random() * 7, cz + (Math.random() - 0.5) * 12],
+    () => {
+      const th = Math.random() * Math.PI * 2;
+      const s = 1 + Math.random() * 2.5;
+      return [s * Math.cos(th), 3 + Math.random() * 5, s * Math.sin(th)];
+    });
+  megaCloud(cx, cy, cz, Math.round(180 * scale), 1.4, 2.6 * MEGA_FX_T, -3, false,
+    () => [0.9, 0.32 + Math.random() * 0.12, 0.1],
+    () => [cx + (Math.random() - 0.5) * 6, cy + Math.random() * 5, cz + (Math.random() - 0.5) * 6],
+    () => [(Math.random() - 0.5) * 4, 10 + Math.random() * 8, (Math.random() - 0.5) * 4]);
+  megaCloud(cx, cy, cz, Math.round(220 * scale), 2.2, 4 * MEGA_FX_T, -1, false,
+    () => {
+      const g = 0.25 + Math.random() * 0.18;
+      return [g + 0.1, g, Math.max(0, g - 0.03)];
+    },
+    () => [cx + (Math.random() - 0.5) * 7, cy + Math.random() * 15, cz + (Math.random() - 0.5) * 7],
+    () => [(Math.random() - 0.5) * 2, 9 + Math.random() * 7, (Math.random() - 0.5) * 2]);
+}
+
+function megaMushroom(cx, cy, cz, scale = 1) {
+  megaCloud(cx, cy, cz, Math.round(350 * scale), 2.6, 4.2 * MEGA_FX_T, -1.5, false,
+    () => {
+      const g = 0.32 + Math.random() * 0.2;
+      return [Math.min(1, g + 0.12), g, Math.max(0, g - 0.04)];
+    },
+    () => {
+      const th = Math.random() * Math.PI * 2;
+      const r = 3 + Math.random() * 9;
+      return [cx + r * Math.cos(th), cy + 15 + Math.random() * 8, cz + r * Math.sin(th)];
+    },
+    (i, p) => {
+      const dx = p[0] - cx, dz = p[2] - cz;
+      const dl = Math.hypot(dx, dz) || 1;
+      const s = 2 + Math.random() * 4;
+      return [dx / dl * s, Math.random() * 1.5, dz / dl * s];
+    });
+}
+
+const megaEject = [];
+const MEGA_EJECT_DUR = 1.2;
+const MEGA_EJECT_OUT = MEGA_BLAST_RADIUS + 4;
+const MEGA_FLY_TIME = 4;
+let megaLaunchedUntil = 0;
+let megaRide = null;
+function megaOutsideTarget(cx, cz, px, pz, hw, h, py, canStep) {
+  let dx = px - cx, dz = pz - cz;
+  let dl = Math.hypot(dx, dz);
+  if (dl < 0.001) { dx = 1; dz = 0; dl = 1; }
+  dx /= dl; dz /= dl;
+  const hasGround = canStep ? wolfHasMobGround : hasMobGround;
+  for (let r = MEGA_EJECT_OUT; r <= MEGA_EJECT_OUT + 12; r += 2) {
+    const tx = cx + dx * r, tz = cz + dz * r;
+    if (Math.abs(tx) > WORLD_RADIUS - 2 || Math.abs(tz) > WORLD_RADIUS - 2) continue;
+    const gy = groundYDown(tx, tz, py + 2, hw);
+    if (gy == null || gy < py - 25 || gy > py + 3) continue;
+    if (aabbCollidesWorld(tx, gy, tz, hw, h)) continue;
+    if (!hasGround(tx, tz, hw, gy) && !hasGround(tx, tz, hw, gy + 1) && !hasGround(tx, tz, hw, gy - 1)) continue;
+    return { x: tx, z: tz };
+  }
+  return null;
+}
+function resolveEmbedded(p, hw, h) {
+  if (!aabbCollidesWorld(p.x, p.y, p.z, hw, h)) return true;
+  const axes = [[0.25, 0, 0], [-0.25, 0, 0], [0, 0, 0.25], [0, 0, -0.25], [0, 0.25, 0], [0, -0.25, 0]];
+  for (let d = 1; d <= 8; d++) {
+    for (const a of axes) {
+      const nx = p.x + a[0] * d, ny = p.y + a[1] * d, nz = p.z + a[2] * d;
+      if (!aabbCollidesWorld(nx, ny, nz, hw, h)) { p.set(nx, ny, nz); return true; }
+    }
+  }
+  return false;
+}
+function applyMegaKnockback(cx, cy, cz, members = null) {
+  const R = MEGA_BLAST_RADIUS;
+  const now = performance.now() / 1000;
+  const union3 = members && members.length ? members : [[cx, cy, cz]];
+  const union = union3.map((mm) => [mm[0], mm[2]]);
+  const crater = { members: union, cx, cz, cy };
+  if (distToMegaUnion3D(pos.x, pos.y + 0.9, pos.z, union3) < 0) {
+    let dx = pos.x - cx, dz = pos.z - cz;
+    const d0 = Math.hypot(dx, dz);
+    if (d0 < 0.001) { dx = 1; dz = 0; } else { dx /= d0; dz /= d0; }
+    const f = Math.max(0, 1 - d0 / (R * 2));
+    if (resolveEmbedded(pos, PLAYER_HW, PLAYER_H)) {
+      let ftx, ftz;
+      if (freeCam) {
+        const t = spotOutsideMegaUnion(union, pos.x, pos.z, camera.position.y, R * 0.5, PLAYER_HW, PLAYER_H, true, true);
+        const band = megaAirBand();
+        const ty = t ? t.y : Math.max(band[0], Math.min(band[1], camera.position.y));
+        const rc = t ? [t.x, t.z] : clampMegaXZ(pos.x + dx * (R + R * 0.5), pos.z + dz * (R + R * 0.5));
+        ftx = rc[0]; ftz = rc[1];
+        const ax = ftx - pos.x, ay = ty - (pos.y + 0.9), az = ftz - pos.z;
+        const al = Math.hypot(ax, ay, az) || 1;
+        const spd = Math.min(GRAPPLE_FLING, 20 + 14 * f);
+        vel.set(ax / al * spd, ay / al * spd, az / al * spd);
+        flingActive = true;
+        megaRide = { dx: ax / al, dy: ay / al, dz: az / al, spd, cx, cy, cz, until: now + MEGA_FLY_TIME };
+      } else {
+        const t = spotOutsideMegaUnion(union, pos.x, pos.z, pos.y, R * 0.5, PLAYER_HW, PLAYER_H, true, false);
+        ftx = t ? t.x : pos.x; ftz = t ? t.z : pos.z;
+        const dist = Math.hypot(ftx - pos.x, ftz - pos.z);
+        const Vup = 22 + 8 * f;
+        const airT = 2 * Vup / GRAVITY;
+        const V0 = Math.min(40, Math.max(4, dist / Math.max(0.5, airT)));
+        vel.set(dx * V0, Vup, dz * V0);
+        megaLaunchedUntil = now + MEGA_FLY_TIME;
+      }
+      onGround = false;
+      megaEject.push({ player: true, cx, cz, tx: ftx, tz: ftz, t0: now, crater });
+    }
+  }
+  for (const m of mobs) {
+    if (!m || m.kind === "dragon" || isMobHeld(m) || isMobFrozenByGrapple(m)) continue;
+    if (mobDimOf(m) !== dim) continue;
+    if (!m.vel) m.vel = new THREE.Vector3();
+    if (m.kind === "enderman") {
+      if (distToMegaUnion3D(m.pos.x, m.pos.y + m.h * 0.5, m.pos.z, union3) >= 0) continue;
+      megaTeleportEnderman(m, union); continue;
+    }
+    if (distToMegaUnion3D(m.pos.x, m.pos.y + m.h * 0.5, m.pos.z, union3) >= 0) continue;
+    if (isChained(m)) severChainMob(m);
+    if (!resolveEmbedded(m.pos, m.hw, m.h)) continue;
+    const [nx, nz] = nearestMegaOf(union, m.pos.x, m.pos.z);
+    let dx = m.pos.x - nx, dz = m.pos.z - nz;
+    let dl = Math.hypot(dx, dz);
+    if (dl < 0.001) { dx = 1; dz = 0; dl = 1; }
+    dx /= dl; dz /= dl;
+    const f = Math.max(0, 1 - dl / (R * 2));
+    if (isBirdKind(m.kind)) {
+      const t = spotOutsideMegaUnion(union, m.pos.x, m.pos.z, m.pos.y, R * 0.5, m.hw, m.h, false, true);
+      let tx, ty, tz;
+      if (t) { tx = t.x; ty = t.y; tz = t.z; }
+      else {
+        const band = megaAirBand();
+        ty = Math.max(band[0], Math.min(band[1], m.pos.y));
+        [tx, tz] = clampMegaXZ(m.pos.x + dx * R, m.pos.z + dz * R);
+      }
+      let vx = tx - m.pos.x, vy = ty - m.pos.y, vz = tz - m.pos.z;
+      const vl = Math.hypot(vx, vy, vz);
+      const spd = 20 + 14 * f;
+      if (vl < 0.01) { vx = dx; vy = 0.3; vz = dz; }
+      else { vx /= vl; vy /= vl; vz /= vl; }
+      m.vel.set(vx * spd, vy * spd, vz * spd);
+      m.onGround = false;
+      m._ballisticUntil = now + MEGA_FLY_TIME;
+      m._megaStraight = { tx, ty, tz, speed: spd, stuckT: 0 };
+      m._megaCrater = crater;
+      m.perchSpot = null; m.perchGroup = null; m.perchT = 0; m.perchWander = null; m.perchWanderT = 0; m.perchTimeout = 0; m.perchRetry = 0;
+      m.mode = "straight"; m.arc = null; m.target = null; m.targetMode = null;
+      m._panicT = 0; m._panicUntil = 0;
+      megaEject.push({ player: false, m, cx, cz, tx, ty, tz, t0: now, crater, straight: true });
+    } else {
+      const t = spotOutsideMegaUnion(union, m.pos.x, m.pos.z, m.pos.y, R * 0.5, m.hw, m.h, !!m.canStep, false);
+      const ftx = t ? t.x : undefined, ftz = t ? t.z : undefined;
+      const dist = t ? Math.hypot(t.x - m.pos.x, t.z - m.pos.z) : 0;
+      const Vup = 22 + 8 * f;
+      const airT = 2 * Vup / GRAVITY;
+      const V0 = t ? Math.min(40, Math.max(4, dist / Math.max(0.5, airT))) : 12;
+      m.vel.set(dx * V0, Vup, dz * V0);
+      m.onGround = false;
+      m._ballisticUntil = now + MEGA_FLY_TIME;
+      m._megaCrater = crater;
+      m.target = null; m.path = null; m.pathKey = null;
+      m.wanderT = 0.5;
+      m._noClamp = true;
+      const homed = m.kind === "pig" || m.kind === "cow" ||
+        ((!m.kind || m.kind === "villager" || m.kind === "cat") && m.homeId >= 0);
+      if (homed) { m._returnHome = true; delete m._homeRetryT; delete m._penReturn; }
+      if (m.mode === "goOut" || m.mode === "inside" || m.mode === "goHome") m.mode = "wander";
+      m.target = null; m.path = null; m.pathKey = null;
+      m.wanderT = 0.5;
+      m.fleeUntil = 0; delete m._outsideFlee; delete m._fleeSrcX; delete m._fleeSrcZ; m.speed = WALK / 2;
+      megaEject.push({ player: false, m, cx, cz, tx: ftx, tz: ftz, t0: now, crater });
+    }
+  }
+  const dc = Math.max(0, distToMegaUnion(camera.position.x, camera.position.z, union));
+  if (!MEGA_QUIET) addCamShake(dc < R ? 1.5 : Math.max(0, 1.5 * Math.sqrt(Math.max(0, 1 - dc / MEGA_SHAKE_DIST))));
+}
+function clampMegaMob(m) {
+  if (dim === "end") {
+    endClampXZPos(m.pos);
+    if (m.pos.y > MAX_Y - 1) m.pos.y = MAX_Y - 1;
+  } else {
+    const B = WORLD_RADIUS - 1;
+    m.pos.x = Math.max(-B, Math.min(B, m.pos.x));
+    m.pos.z = Math.max(-B, Math.min(B, m.pos.z));
+    if (m.pos.y > MAX_Y - 1) m.pos.y = MAX_Y - 1;
+  }
+}
+function endMegaBallistic(m) {
+  const crater = m._megaCrater;
+  clearMegaEjectFor(m);
+  delete m._ballisticUntil;
+  delete m._megaStraight;
+  delete m._megaCrater;
+  if (isBirdKind(m.kind)) {
+    let yaw2 = Math.atan2(m.vel.x, m.vel.z);
+    if (!isFinite(yaw2)) yaw2 = Math.random() * Math.PI * 2;
+    m.vel.set(Math.sin(yaw2) * BIRD_SPEED, 0, Math.cos(yaw2) * BIRD_SPEED);
+    m.mode = "straight"; m.arc = null; m.target = null; m.targetMode = null;
+  } else {
+    m.vel.x *= 0.2; m.vel.z *= 0.2;
+  }
+  if (m.mesh) m.mesh.position.copy(m.pos);
+  panicMegaLanding(m, crater);
+}
+function tickBallisticMob(m, dt) {
+  if (m._megaStraight) {
+    const s = m._megaStraight;
+    const dx = s.tx - m.pos.x, dy = s.ty - m.pos.y, dz = s.tz - m.pos.z;
+    const dist = Math.hypot(dx, dy, dz);
+    if (dist < 0.7) { endMegaBallistic(m); return; }
+    const step = Math.min(dist, s.speed * dt);
+    const n = Math.max(1, Math.ceil(step / 0.4));
+    const ox = m.pos.x, oy = m.pos.y, oz = m.pos.z;
+    for (let k = 0; k < n; k++) chainMoveAxis(m, dx / dist * step / n, dy / dist * step / n, dz / dist * step / n);
+    if (m.mesh) m.mesh.position.copy(m.pos);
+    clampMegaMob(m);
+    const moved = Math.hypot(m.pos.x - ox, m.pos.y - oy, m.pos.z - oz);
+    if (moved < Math.min(0.05, step * 0.25)) {
+      s.stuckT = (s.stuckT || 0) + dt;
+      if (s.stuckT > 0.6) { endMegaBallistic(m); return; }
+    } else s.stuckT = 0;
+    return;
+  }  m.vel.y = Math.max(-40, m.vel.y - GRAVITY * dt);
+  const sx = m.vel.x * dt, sy = m.vel.y * dt, sz = m.vel.z * dt;
+  const smax = Math.max(Math.abs(sx), Math.abs(sy), Math.abs(sz));
+  const sn = Math.max(1, Math.ceil(smax / 0.4));
+  for (let k = 0; k < sn; k++) chainMoveAxis(m, sx / sn, sy / sn, sz / sn);
+  if (m.mesh) m.mesh.position.copy(m.pos);
+  clampMegaMob(m);
+  if (m.kind === "enderman") m.lookT = 0;
+  if (m.vel.y <= 0 && aabbCollidesWorld(m.pos.x, m.pos.y - 0.06, m.pos.z, m.hw, m.h)) {
+    m.pos.y = Math.floor(m.pos.y - 0.06) + 1 + 0.001;
+    m.vel.y = 0;
+    m.onGround = true;
+    megaFlyLand(m);
+  }
+}
+function megaFlyLand(m) {
+  const i = megaEject.findIndex((e) => !e.player && e.m === m);
+  if (i < 0) {
+    delete m._ballisticUntil;
+    delete m._megaStraight;
+    delete m._megaCrater;
+    if (m.kind === "enderman") { m.falling = false; m.baseY = m.pos.y; }
+    return;
+  }
+  const e = megaEject[i];
+  if (outOfLevel(m.pos)) {
+    megaEject.splice(i, 1);
+    if (e.crater) megaCraterRespawn(m, e.crater);
+    else {
+      delete m._ballisticUntil;
+      delete m._megaStraight;
+      delete m._megaCrater;
+    }
+    return;
+  }
+  megaEject.splice(i, 1);
+  delete m._ballisticUntil;
+  delete m._megaStraight;
+  delete m._megaCrater;
+  if (m.kind === "enderman") { m.falling = false; m.baseY = m.pos.y; }
+  if (m.kind === "iron_golem") m.vel.set(0, 0, 0);
+  else { m.vel.x *= 0.2; m.vel.z *= 0.2; }
+  panicMegaLanding(m, e.crater);
+}
+function tickMegaEject(dt) {
+  if (!megaEject.length) return;
+  const now = performance.now() / 1000;
+  const simA = !started || (locked && !helpOpen);
+  for (let i = megaEject.length - 1; i >= 0; i--) {
+    const e = megaEject[i];
+    if (e.player) {
+      if (!simA || (freeCam && !flingActive)) { if (now - e.t0 > MEGA_FLY_TIME + 1) megaEject.splice(i, 1); continue; }
+      if (onGround) {
+        megaEject.splice(i, 1);
+      } else if (now - e.t0 > MEGA_FLY_TIME) megaEject.splice(i, 1);
+      continue;
+    }
+    const m = e.m;
+    if (!mobs.includes(m) || isMobHeld(m) || isMobFrozenByGrapple(m) || mobDimOf(m) !== dim || m._ballisticUntil == null) {
+      megaEject.splice(i, 1);
+      continue;
+    }
+    if (now - e.t0 > MEGA_FLY_TIME) {
+      delete m._ballisticUntil;
+      delete m._megaStraight;
+      if (outOfLevel(m.pos) && e.crater) {
+        megaCraterRespawn(m, e.crater);
+        continue;
+      }
+      delete m._megaCrater;
+      if (m.kind === "enderman") { m.falling = false; m.baseY = m.pos.y; }
+      megaEject.splice(i, 1);
+      panicMegaLanding(m, e.crater);
+    }
+  }
+}
+
 function tickEffects(dt, active) {
   const nowE = performance.now() / 1000;
   if (nowE < garlandRevealUntil && nowE - garlandRevealLast >= 0.1) { garlandRevealLast = nowE; garlandDirty = true; }
@@ -16947,7 +18499,7 @@ function tickEffects(dt, active) {
       attr.array[j * 3] += b.vel[j * 3] * dt;
       attr.array[j * 3 + 1] += b.vel[j * 3 + 1] * dt;
       attr.array[j * 3 + 2] += b.vel[j * 3 + 2] * dt;
-      b.vel[j * 3 + 1] -= 22 * dt;
+      b.vel[j * 3 + 1] += (b.grav === undefined ? -22 : b.grav) * dt;
     }
     attr.needsUpdate = true;
     if (b.life <= 0) {
@@ -16970,8 +18522,15 @@ function tickEffects(dt, active) {
       continue;
     }
     const t = age / f.life;
-    f.mesh.scale.setScalar(0.4 + t * 4.2);
-    f.mesh.material.opacity = 0.95 * (1 - t);
+    if (f.shock) {
+      const e = 1 - Math.pow(1 - t, 3);
+      const r = Math.max(0.001, e * (f.rMax || 10));
+      f.mesh.scale.set(r, 1, r);
+      f.mesh.material.opacity = 0.55 * (1 - t);
+    } else {
+      f.mesh.scale.setScalar(0.4 + t * 4.2);
+      f.mesh.material.opacity = 0.95 * (1 - t);
+    }
   }
 }
 
@@ -17373,6 +18932,16 @@ const END_RETURN_BASE_Y = END_PLATFORM_TOP + 1;
 const protectedBlocks = new Set();
 const protKey = (x, y, z) => dim + ":" + key(x, y, z);
 let endCleared = false;
+let megaUnlocked = false;
+function unlockMegaTNT() {
+  if (megaUnlocked) return false;
+  megaUnlocked = true;
+  rebuildHotbar(MEGA_TNT);
+  unlockFlashT = UNLOCK_FLASH_TIME;
+  spawnUnlockBurst(pos.x, pos.y + 1, pos.z);
+  queueSave();
+  return true;
+}
 let dormantMsgAt = 0;
 
 function buildReturnPortal(skipMesh = false) {
@@ -17553,6 +19122,7 @@ function suspendLiveDim() {
   for (const m of mobs) if (mobDimOf(m) === dim) clearMobPanic(m);
   purgeDimMobs(dim, true);
   villagePanicUntil = 0;
+  megaNoPerchUntil = 0;
   pendingCarriedIdx = null;
 }
 
@@ -17574,6 +19144,7 @@ function goToDimension(name, sx, sy, sz) {
   dim = name;
   world = worlds[name];
   clearGlowLights();
+  clearMegaLights();
   rebuildHotbar();
   portalDirty = true;
   worldDirty = true;
@@ -17583,6 +19154,7 @@ function goToDimension(name, sx, sy, sz) {
   for (const m of mobs) m.mesh.visible = (mobDimOf(m) === dim) || m === carryMob || m === carryGrappleMob;
   for (const m of mobs) if (mobDimOf(m) === dim) clearMobPanic(m);
   villagePanicUntil = 0;
+  megaNoPerchUntil = 0;
   if (name === "end") {
     if (!worlds.end.size) {
       generateEnd();
@@ -17654,6 +19226,8 @@ function goToDimension(name, sx, sy, sz) {
   garlandDirty = true;
   recomputeGlowClusters();
   syncGlowLights();
+  recomputeMegaLightClusters();
+  syncMegaLights();
   if (freeCam) { camera.position.copy(camPos); camera.rotation.set(pitch, yaw, 0); }
   else updateCamera();
   portalCd = 1.5;
@@ -18913,6 +20487,7 @@ function updateDragon(dt) {
       queueSave();
       spawnDragonDeath(dx, dy, dz);
       showMsg("Ender Dragon is defeated");
+      unlockMegaTNT();
     }
     return;
   }
@@ -19210,6 +20785,37 @@ function spawnEndermanBurst(cx, cy, cz) {
   const pts = new THREE.Points(geo, mat);
   scene.add(pts);
   bursts.push({ pts, geo, mat, vel, life: 0.7, max: 0.7, tag: 4, fx: cx, fy: cy, fz: cz });
+}
+
+function spawnUnlockBurst(cx, cy, cz) {
+  const N = 90;
+  const posA = new Float32Array(N * 3);
+  const colA = new Float32Array(N * 3);
+  const vel = new Float32Array(N * 3);
+  for (let i = 0; i < N; i++) {
+    posA[i * 3] = cx; posA[i * 3 + 1] = cy; posA[i * 3 + 2] = cz;
+    const r = Math.random();
+    if (r < 0.45) { colA[i * 3] = 1; colA[i * 3 + 1] = 0.84 + Math.random() * 0.1; colA[i * 3 + 2] = 0.37; }
+    else if (r < 0.8) { colA[i * 3] = 1; colA[i * 3 + 1] = 0.95; colA[i * 3 + 2] = 0.8; }
+    else { colA[i * 3] = 1; colA[i * 3 + 1] = 1; colA[i * 3 + 2] = 1; }
+    const th = Math.random() * Math.PI * 2;
+    const ph = Math.acos(2 * Math.random() - 1);
+    const s = 3 + Math.random() * 5;
+    vel[i * 3] = s * Math.sin(ph) * Math.cos(th);
+    vel[i * 3 + 1] = s * Math.cos(ph) + 2;
+    vel[i * 3 + 2] = s * Math.sin(ph) * Math.sin(th);
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute("position", new THREE.BufferAttribute(posA, 3));
+  geo.setAttribute("color", new THREE.BufferAttribute(colA, 3));
+  const mat = new THREE.PointsMaterial({
+    size: 0.35, vertexColors: true, transparent: true, opacity: 1,
+    depthWrite: false, blending: THREE.AdditiveBlending,
+  });
+  const pts = new THREE.Points(geo, mat);
+  pts.frustumCulled = false;
+  scene.add(pts);
+  bursts.push({ pts, geo, mat, vel, life: 1.2, max: 1.2, tag: 4, fx: cx, fy: cy, fz: cz });
 }
 
 function endermanPickSpot(cx, cz, minDist, others = [], maxDist = END_MOB_R, px = null, pz = null) {
@@ -19690,8 +21296,8 @@ function serialize() {
   const dragonPresent = dragonSaveable() || (dim === "end" && !endCleared && dragon.mesh && dragon.dying > 0);
   let tntBytes = 1 + 4 + 4 + 4;
   if (dragonPresent) tntBytes += 43;
-  for (const b of liveTNTSize.bombs) tntBytes += b.targetKind === 2 ? 55 : 42;
-  for (const e of liveTNTSize.queue) tntBytes += e.qKind === 2 ? 32 : 19;
+  for (const b of liveTNTSize.bombs) tntBytes += (b.targetKind === 2 ? 55 : 42) + 1;
+  for (const e of liveTNTSize.queue) tntBytes += (e.qKind === 2 ? 32 : 19) + 1;
   for (const e of liveTNTSize.etas) tntBytes += e.targetKind === 2 ? 18 : 5;
   const liveFx = snapshotLiveFx();
   const fxBytes = 4 + liveFx.length * 17;
@@ -19719,11 +21325,11 @@ function serialize() {
     }
   }
   const brokenN = brokenCells.length;
-  const buf = new ArrayBuffer(117 + 18 + (on + en + nn) * 5 + m * 6 + (gov + gev + gnv) * 5 + 1 + 4 + growN * 14 + 4 + growthN * 16 + 5 + pineN * 10 + winLen + 16 + 4 + (mobN + endMobN + netherMobN) * MOB_SAVE_BYTES + 24 + 4 + (chainPairs.length + chainPairsEnd.length + chainPairsNether.length) * 4 + 4 + 1 + 1 + 4 + exitBytes + tntBytes + fxBytes + 2 + 4 + brokenN * 8);
+  const buf = new ArrayBuffer(117 + 18 + (on + en + nn) * 5 + m * 6 + (gov + gev + gnv) * 5 + 1 + 4 + growN * 14 + 4 + growthN * 16 + 5 + pineN * 10 + winLen + 16 + 4 + (mobN + endMobN + netherMobN) * MOB_SAVE_BYTES + 24 + 4 + (chainPairs.length + chainPairsEnd.length + chainPairsNether.length) * 4 + 4 + 1 + 1 + 1 + 4 + exitBytes + tntBytes + fxBytes + 2 + 4 + brokenN * 8);
   const dv = new DataView(buf);
   let o = 0;
   new Uint8Array(buf, o, 9).set(SAVE_MAGIC); o += 9;
-  dv.setUint8(o++, 38); // format version
+  dv.setUint8(o++, 40); // format version
   dv.setUint8(o++, dim === "end" ? 1 : dim === "nether" ? 2 : 0);
   dv.setInt32(o, seed, true); o += 4;
   dv.setInt32(o, endSeed, true); o += 4;
@@ -19891,6 +21497,7 @@ function serialize() {
   }
   dv.setUint8(o++, carriedDim & 255);
   dv.setUint8(o++, endCleared ? 1 : 0);
+  dv.setUint8(o++, megaUnlocked ? 1 : 0);
   dv.setFloat32(o, villagePanicRemain, true); o += 4;
   const writeExit = (ex) => {
     if (!ex) { dv.setUint8(o++, 0); return; }
@@ -19939,6 +21546,7 @@ function serialize() {
     dv.setFloat32(o, t.az || 0, true); o += 4;
     dv.setUint8(o++, t.mesh ? 1 : 0);
     dv.setUint8(o++, t.by < 0 ? 1 : 0);
+    dv.setUint8(o++, t.mega ? 1 : 0);
     dv.setUint8(o++, b.targetKind & 255);
     if (b.targetKind === 2) {
       dv.setUint8(o++, b.tkind & 255);
@@ -19955,6 +21563,7 @@ function serialize() {
     dv.setFloat32(o, q.z, true); o += 4;
     dv.setUint8(o++, q.pointBlank ? 1 : 0);
     dv.setUint8(o++, q.homing ? 1 : 0);
+    dv.setUint8(o++, q.mega ? 1 : 0);
     dv.setUint8(o++, e.qKind & 255);
     if (e.qKind === 2) {
       dv.setUint8(o++, e.qk & 255);
@@ -19993,7 +21602,7 @@ function deserialize(buf) {
   for (let i = 0; i < 9; i++) if (new Uint8Array(buf, o, 9)[i] !== SAVE_MAGIC[i]) throw new Error("Not a MiniCraft save");
   o += 9;
   const ver = dv.getUint8(o++);
-  if (ver !== 1 && ver !== 2 && ver !== 3 && ver !== 4 && ver !== 5 && ver !== 6 && ver !== 7 && ver !== 8 && ver !== 9 && ver !== 10 && ver !== 11 && ver !== 12 && ver !== 13 && ver !== 14 && ver !== 15 && ver !== 16 && ver !== 17 && ver !== 18 && ver !== 19 && ver !== 20 && ver !== 21 && ver !== 22 && ver !== 23 && ver !== 24 && ver !== 25 && ver !== 26 && ver !== 27 && ver !== 28 && ver !== 29 && ver !== 30 && ver !== 31 && ver !== 32 && ver !== 33 && ver !== 34 && ver !== 35 && ver !== 36 && ver !== 37 && ver !== 38) throw new Error("Unsupported save version");
+  if (ver !== 1 && ver !== 2 && ver !== 3 && ver !== 4 && ver !== 5 && ver !== 6 && ver !== 7 && ver !== 8 && ver !== 9 && ver !== 10 && ver !== 11 && ver !== 12 && ver !== 13 && ver !== 14 && ver !== 15 && ver !== 16 && ver !== 17 && ver !== 18 && ver !== 19 && ver !== 20 && ver !== 21 && ver !== 22 && ver !== 23 && ver !== 24 && ver !== 25 && ver !== 26 && ver !== 27 && ver !== 28 && ver !== 29 && ver !== 30 && ver !== 31 && ver !== 32 && ver !== 33 && ver !== 34 && ver !== 35 && ver !== 36 && ver !== 37 && ver !== 38 && ver !== 39 && ver !== 40) throw new Error("Unsupported save version");
   const yWidth = ver >= 8 ? 2 : 1;
   const readY = () => { const y = yWidth === 2 ? dv.getUint16(o, true) : dv.getUint8(o); o += yWidth; return y; };
   placedFlowers.clear();
@@ -20025,6 +21634,7 @@ function deserialize(buf) {
   netherExit = null;
   endExit = null;
   endCleared = false;
+  megaUnlocked = false;
   pendingDragon = null;
   pendingTNTBombs = null;
   pendingTNTQueue = null;
@@ -20352,6 +21962,8 @@ function deserialize(buf) {
     const cd = dv.getUint8(o++);
     pendingCarriedDim = cd === 1 ? 1 : cd === 2 ? 2 : 0;
     endCleared = dv.getUint8(o++) === 1;
+    megaUnlocked = ver >= 40 ? dv.getUint8(o++) === 1 : false;
+    megaUnlocked = megaUnlocked || endCleared;
     if (ver >= 21) {
       const vp = dv.getFloat32(o, true); o += 4;
       pendingVillagePanic = isFinite(vp) ? Math.min(Math.max(0, vp), VILLAGE_PANIC_TIME) : 0;
@@ -20415,6 +22027,7 @@ function deserialize(buf) {
         const az = dv.getFloat32(o, true); o += 4;
         const hasMesh = dv.getUint8(o++) === 1;
         const flyFlag = ver >= 18 ? dv.getUint8(o++) === 1 : by < 0;
+        const megaFlag = ver >= 39 ? dv.getUint8(o++) === 1 : false;
         const targetKind = dv.getUint8(o++);
         let tkind = 0, tx = 0, ty = 0, tz = 0;
         if (targetKind === 2) {
@@ -20424,7 +22037,7 @@ function deserialize(buf) {
           tz = dv.getFloat32(o, true); o += 4;
         }
         if (![px, py, pz, fuse, life].every(isFinite)) continue;
-        arr.push({ bx, by, bz, px, py, pz, fuse, life, stuck, ax, ay, az, hasMesh, fly: flyFlag, targetKind, tkind, tx, ty, tz });
+        arr.push({ bx, by, bz, px, py, pz, fuse, life, stuck, ax, ay, az, hasMesh, fly: flyFlag, mega: megaFlag, targetKind, tkind, tx, ty, tz });
       }
       return arr;
     };
@@ -20437,6 +22050,7 @@ function deserialize(buf) {
         const z = dv.getFloat32(o, true); o += 4;
         const pointBlank = dv.getUint8(o++) === 1;
         const homing = dv.getUint8(o++) === 1;
+        const megaQ = ver >= 39 ? dv.getUint8(o++) === 1 : false;
         const qKind = dv.getUint8(o++);
         let qk = 0, qx = 0, qy = 0, qz = 0;
         if (qKind === 2) {
@@ -20447,7 +22061,7 @@ function deserialize(buf) {
         }
         const remain = dv.getFloat32(o, true); o += 4;
         if (![x, y, z].every(isFinite)) continue;
-        arr.push({ x, y, z, pointBlank, homing, qKind, qk, qx, qy, qz, remain: isFinite(remain) ? remain : 0 });
+        arr.push({ x, y, z, pointBlank, homing, mega: megaQ, qKind, qk, qx, qy, qz, remain: isFinite(remain) ? remain : 0 });
       }
       return arr;
     };
@@ -20480,7 +22094,7 @@ function deserialize(buf) {
         const y = dv.getFloat32(o, true); o += 4;
         const z = dv.getFloat32(o, true); o += 4;
         const hex = dv.getUint32(o, true); o += 4;
-        if (tag > 3 || ![x, y, z].every(isFinite)) continue;
+        if (tag > 4 || ![x, y, z].every(isFinite)) continue;
         pendingFx.push({ tag, x, y, z, hex });
       }
     }
@@ -20504,6 +22118,8 @@ function deserialize(buf) {
   rebuildHotbar();
   recomputeGlowClusters();
   syncGlowLights();
+  recomputeMegaLightClusters();
+  syncMegaLights();
   moonLakesGenerated = false;
   moonLakesChunkSet.clear();
   for (const [k, id] of worlds.over) if (id === MOON_WATER) {
@@ -21029,6 +22645,8 @@ function resetDims() {
   portalBlockSets.nether.clear();
   glowstoneBlockSets.end.clear();
   glowstoneBlockSets.nether.clear();
+  tntBlockSets.end.clear();
+  tntBlockSets.nether.clear();
   glowVariants.end.clear();
   glowVariants.nether.clear();
   portalDirty = true;
@@ -21038,6 +22656,7 @@ function resetDims() {
   overPortalWin = null;
   overPortalDir = null;
   endCleared = false;
+  megaUnlocked = false;
   netReturnWin = null;
   endReturnWin = null;
   netherExit = null;
@@ -21145,6 +22764,8 @@ async function buildWorld() {
     rebuildHotbar();
     recomputeGlowClusters();
     syncGlowLights();
+    recomputeMegaLightClusters();
+    syncMegaLights();
     if (DEV_START_DIM === "end") {
       overworldMobCache = snapshotOverworldMobs(false);
       removeVillagers();
@@ -21206,9 +22827,38 @@ document.addEventListener("visibilitychange", () => { if (document.hidden && can
 // ---------------------------------------------------------------------------
 // UI / hotbar
 // ---------------------------------------------------------------------------
-const HOTBAR = [GRASS, DIRT, STONE, SAND, LOG, PLANKS, GLASS, LEAVES, WATER, FLOWER, TNT, PORTAL, OBSIDIAN];
+const HOTBAR = [GRASS, DIRT, STONE, SAND, LOG, PLANKS, GLASS, LEAVES, WATER, FLOWER, TNT, MEGA_TNT, PORTAL, OBSIDIAN];
 let selected = 0;
 const hotbarEl = document.getElementById("hotbar");
+const dangerEl = document.getElementById("danger");
+let dangerShakeT = 0;
+function updateMegaDanger(dt) {
+  let nearest = Infinity;
+  let minFuse = Infinity;
+  const simA = !started || (locked && !helpOpen);
+  for (const t of tntLit.values()) {
+    if (!t.mega || t.mesh) continue;
+    const d = Math.hypot(t.bx + 0.5 - camera.position.x, t.by + 0.5 - camera.position.y, t.bz + 0.5 - camera.position.z);
+    if (d < nearest) nearest = d;
+    if (t.fuse < minFuse) minFuse = t.fuse;
+  }
+  const k = minFuse === Infinity ? 0 : Math.max(0, Math.min(1, (2 - minFuse) / 2));
+  const beat = minFuse === Infinity ? 0 : blinkSmooth(minFuse, MEGA_FUSE_TIME);
+  if (dangerEl) dangerEl.style.opacity = nearest < 10 ? String(Math.min(0.95, (1 - nearest / 10) * (0.6 + 0.4 * k) + 0.25 * k * beat)) : "0";
+  if (nearest < 8 && started && simA) {
+    dangerShakeT += dt;
+    const interval = 0.5 - 0.35 * k;
+    if (dangerShakeT >= interval) { dangerShakeT = 0; if (!MEGA_QUIET) addCamShake(0.08 + 0.12 * k * (0.5 + 0.5 * beat)); }
+  } else dangerShakeT = 0;
+}
+const unlockFlashEl = document.getElementById("unlockFlash");
+const UNLOCK_FLASH_TIME = 1.5;
+let unlockFlashT = 0;
+function tickUnlockFlash(dt) {
+  if (unlockFlashT <= 0) return;
+  unlockFlashT = Math.max(0, unlockFlashT - dt);
+  if (unlockFlashEl) unlockFlashEl.style.opacity = String(0.9 * (unlockFlashT / UNLOCK_FLASH_TIME));
+}
 
 // The hotbar is dimension-aware: in the Nether and the End the Flower slot
 // holds GLOWSTONE and the Water slot holds lava; the Overworld keeps
@@ -21220,19 +22870,21 @@ function onMoon() {
   return dim === "over" && pos.y >= MOON_FADE_START;
 }
 function hotbarList() {
+  let list;
   if (dim === "nether" || dim === "end")
-    return [GRASS, DIRT, STONE, SAND, LOG, PLANKS, GLASS, LEAVES, LAVA, GLOWSTONE, TNT, PORTAL, OBSIDIAN];
-  if (hotbarMoon)
-    return [GRASS, DIRT, STONE, SAND, LOG, PLANKS, GLASS, LEAVES, MOON_WATER, GLOWSTONE, TNT, PORTAL, OBSIDIAN];
-  return HOTBAR;
+    list = [GRASS, DIRT, STONE, SAND, LOG, PLANKS, GLASS, LEAVES, LAVA, GLOWSTONE, TNT, MEGA_TNT, PORTAL, OBSIDIAN];
+  else if (hotbarMoon)
+    list = [GRASS, DIRT, STONE, SAND, LOG, PLANKS, GLASS, LEAVES, MOON_WATER, GLOWSTONE, TNT, MEGA_TNT, PORTAL, OBSIDIAN];
+  else list = HOTBAR.slice();
+  return megaUnlocked ? list : list.filter((id) => id !== MEGA_TNT);
 }
-function rebuildHotbar() {
+function rebuildHotbar(popId = -1) {
   selected = Math.min(selected, hotbarList().length - 1);
-  buildHotbar();
+  buildHotbar(popId);
 }
 let hotbarCacheList = null, hotbarCacheKey = "";
 function hotbarListCached() {
-  const k = dim + (hotbarMoon ? "M" : "");
+  const k = dim + (hotbarMoon ? "M" : "") + (megaUnlocked ? "U" : "");
   if (hotbarCacheList && hotbarCacheKey === k) return hotbarCacheList;
   hotbarCacheKey = k;
   hotbarCacheList = hotbarList();
@@ -21244,11 +22896,16 @@ function iconSrc(id) {
   const map = texs[0].map;
   return map.image.toDataURL();
 }
-function buildHotbar() {
+function buildHotbar(popId = -1) {
   hotbarEl.innerHTML = "";
   hotbarList().forEach((id, i) => {
     const slot = document.createElement("div");
-    slot.className = "slot" + (i === selected ? " selected" : "");
+    slot.className = "slot" + (i === selected ? " selected" : "") + (id === popId ? " unlock-pop" : "");
+    if (id === popId) {
+      const dropPop = () => slot.classList.remove("unlock-pop");
+      slot.addEventListener("animationend", dropPop, { once: true });
+      setTimeout(dropPop, 1500);
+    }
     const img = document.createElement("img");
     img.src = iconSrc(id);
     slot.appendChild(img);
@@ -21594,7 +23251,7 @@ function loop(now) {
       simPauseStart = 0;
     }
     simActivePrev = simActive;
-    if (freeCam) {
+    if (freeCam && !flingActive) {
       if (simActive) updateFreeCam(dt);
       camera.position.copy(camPos);
       // While flying, the build anchor follows the camera, so placing and
@@ -21604,11 +23261,25 @@ function loop(now) {
     } else {
       if (simActive) {
         updatePlayer(dt);
-        if (pos.y < -20) { vel.set(0, 0, 0); spawnPlayer(); detachDisplacementGrapple(); grappleRetracting = false; }
+        if (pos.y < -20) { vel.set(0, 0, 0); megaRide = null; spawnPlayer(); detachDisplacementGrapple(); grappleRetracting = false; }
       }
       camera.position.set(pos.x, pos.y + EYE, pos.z);
+      // A mega-blast fling rides real physics even in fly mode; keep the
+      // freeCam anchor glued to the camera so flight resumes where you land.
+      if (freeCam) camPos.copy(camera.position);
     }
     camera.rotation.set(pitch, yaw, 0);
+    if (camTrauma > 0) {
+      if (simActive) camTrauma = Math.max(0, camTrauma - dt * 1.4);
+      const sh = Math.pow(camTrauma, 1.5);
+      const st = performance.now() / 1000;
+      camera.rotation.x += Math.sin(st * 61.7) * 0.22 * sh;
+      camera.rotation.y += Math.sin(st * 53.3 + 1.7) * 0.22 * sh;
+      camera.rotation.z += Math.sin(st * 47.1 + 0.6) * 0.14 * sh;
+      camera.position.x += Math.sin(st * 67.3 + 0.9) * 0.6 * sh;
+      camera.position.y += Math.sin(st * 71.9) * 0.6 * sh;
+      camera.position.z += Math.sin(st * 59.7 + 2.1) * 0.6 * sh;
+    }
     const moon = onMoon();
     if (moon !== hotbarMoon) { hotbarMoon = moon; rebuildHotbar(); }
     updateTarget();
@@ -21616,7 +23287,7 @@ function loop(now) {
     if (simActive) updateCarryGrapple(dt);
     if (locked) {
       if (editHold[0].down) {
-        if (!leftStairs && !leftEverMoved) {
+        if (!leftStairs && !leftEverMoved && hotbarList()[selected] !== MEGA_TNT) {
           if (!leftMoved) {
             leftTimer += dt;
             if (leftTimer >= 1) {
@@ -21824,6 +23495,9 @@ function loop(now) {
     }
     tickEffects(dt, simActive);
     syncGlowLights(dt);
+    recomputeMegaLightClusters();
+    syncMegaLights(dt);
+    tickMegaLights();
     if (portalCd > 0) portalCd -= dt;
     updatePortalVisual();
     if (simActive) checkPortal();
@@ -21831,7 +23505,10 @@ function loop(now) {
     if (locked && started && !helpOpen) updateMobs(dt);
     if (simActive) { tickSoilTimers(dt); tickPineGrowths(dt); tickPineFailBlinks(dt); }
     if (locked && started && !helpOpen) updateChains(dt);
+    tickMegaEject(dt);
     if (toastTimer > 0) { toastTimer -= dt; if (toastTimer <= 0) toastEl.style.opacity = "0"; }
+    updateMegaDanger(dt);
+    tickUnlockFlash(dt);
 
     if (dim === "over") {
       const y = camera.position.y;
@@ -21952,6 +23629,11 @@ function loop(now) {
       if (liquidBucketMatsIn.has(LAVA)) for (const m of liquidBucketMatsIn.get(LAVA)) if (m) lavaFlickerMats.push(m);
       for (const m of lavaFlickerMats) m.color.setScalar(k);
     }
+    if (singleMats.has(MEGA_TNT) && singleMats.get(MEGA_TNT)) {
+      const mm = singleMats.get(MEGA_TNT);
+      const pk = 0.9 + 0.1 * Math.sin(now * 0.0025);
+      mm.color.setRGB(1, pk, pk * 0.96);
+    }
 
     const pcx = chunkOf(freeCam ? camPos.x : pos.x);
     const pcz = chunkOf(freeCam ? camPos.z : pos.z);
@@ -21977,19 +23659,19 @@ requestAnimationFrame(loop);
 if (location.search.includes('test')) {
   window._test = {
     get world(){ return world; }, get worlds(){ return worlds; }, get mobs(){ return mobs; },
-    getBlock, setBlock, handleMobExplosion, processExplosionQueue, isMobStandingOn, intersectsMob, key, BLAST_RADIUS, TNT, STONE, AIR, get SAND(){ return SAND; }, get WATER(){ return WATER; }, get VILLAGE_POOL_W(){ return VILLAGE_POOL_W; }, get VILLAGE_POOL_D(){ return VILLAGE_POOL_D; }, get VILLAGE_POOL_DEPTH(){ return VILLAGE_POOL_DEPTH; }, get VILLAGE_PEN_POOL_W(){ return VILLAGE_PEN_POOL_W; }, get VILLAGE_PEN_POOL_D(){ return VILLAGE_PEN_POOL_D; }, get VILLAGE_PEN_POOL_DEPTH(){ return VILLAGE_PEN_POOL_DEPTH; },
+    getBlock, setBlock, handleMobExplosion, processExplosionQueue, carveBlastSphere, processMegaPool, spawnMegaUnion, isMobStandingOn, intersectsMob, key, BLAST_RADIUS, MEGA_BLAST_RADIUS, MEGA_KNOCK_RADIUS, MEGA_FUSE_TIME, MEGA_EJECT_DUR, MEGA_FLY_TIME, TNT, MEGA_TNT, spawnMegaExplosion, applyMegaKnockback, addCamShake, tickMegaEject, tickBallisticMob, megaFlyLand, megaOutsideTarget, distToMegaUnion, distToMegaUnion3D, nearestMegaOf, spotOutsideMegaUnion, litMegaMembers, litMegaTouch, megaTouchesVillage, megaCraterRespawn, endermanMegaSpot, megaTeleportEnderman, birdMegaFleeTarget, megaFleePointUnion, clampMegaXZ, megaAirBand, outOfLevel, endMegaBallistic, clampMegaMob, getMegaNoPerchUntil(){ return megaNoPerchUntil; }, resolveEmbedded, get megaEject(){ return megaEject; }, STONE, AIR, get SAND(){ return SAND; }, get WATER(){ return WATER; }, get VILLAGE_POOL_W(){ return VILLAGE_POOL_W; }, get VILLAGE_POOL_D(){ return VILLAGE_POOL_D; }, get VILLAGE_POOL_DEPTH(){ return VILLAGE_POOL_DEPTH; }, get VILLAGE_PEN_POOL_W(){ return VILLAGE_PEN_POOL_W; }, get VILLAGE_PEN_POOL_D(){ return VILLAGE_PEN_POOL_D; }, get VILLAGE_PEN_POOL_DEPTH(){ return VILLAGE_PEN_POOL_DEPTH; },
     get villageCenter(){ return villageCenter; }, get villageHouses(){ return villageHouses; }, get villagePen(){ return villagePen; }, get villagePool(){ return villagePool; }, get isInsidePen(){ return isInsidePen; }, get isInsidePool(){ return isInsidePool; }, get isInsidePenPool(){ return isInsidePenPool; }, get poolExitTarget(){ return poolExitTarget; }, get penPoolExitTarget(){ return penPoolExitTarget; }, get LOG(){ return LOG; }, findPenGaps, nearestPenGap, penGapInside, penGapOutside, hasMobGround, mobBlockedAt, aabbCollidesWorld, mobProbeFree, randomPenPoint, randomAroundPenPoint, groundYForMob, get CLOUD_BASE(){ return CLOUD_BASE; }, get CLOUD_TOP(){ return CLOUD_TOP; }, get MAX_Y(){ return MAX_Y; },
     getTypeMats, get typeMats(){ return typeMats; }, buildWorld, generateWorld, generateMoonLakes, get moonLakesGenerated(){ return moonLakesGenerated; }, computeVillageLayout, spawnVillagers, refreshBlocks, rebuildMeshes, get chunkMeshes(){ return chunkMeshes; }, get boxGeo(){ return boxGeo; }, THREE,
     get pos(){ return pos; }, get vel(){ return vel; }, get camera(){ return camera; }, get scene(){ return scene; }, get freeCam(){ return freeCam; }, set freeCam(v){ freeCam = v; }, get camPos(){ return camPos; }, get yaw(){ return yaw; }, set yaw(v){ yaw=v; }, get pitch(){ return pitch; }, set pitch(v){ pitch=v; },
     get carryMob(){ return carryMob; }, set carryMob(v){ carryMob = v; }, handleCarryEnterDown, handleCarryEnterUp, pickMob, get carryGrappleActive(){ return carryGrappleActive; }, get carryGrapplePulling(){ return carryGrapplePulling; }, get carryGrappleMob(){ return carryGrappleMob; }, get carryGrappleBlock(){ return carryGrappleBlock; }, get carryGrappleHookPos(){ return carryGrappleHookPos; }, get carryGrappleOffset(){ return carryGrappleOffset; }, get carryGrappleMode(){ return carryGrappleMode; }, get isMobFrozenByGrapple(){ return isMobFrozenByGrapple; }, isChained, isChainCarrier, chainRootOf, chainTailOf, linkChain, dropChainFrom, chainTakeForCarry, severChainMob, groundChainFrom, insertChainBefore, insertChainBehind, insertBehindRide, prependChainLead, clearChains, pruneChains, updateChains, syncChainLinkColor, syncChainLinkColors, syncGrappleColor, stampSpawn, get mobById(){ return mobById; }, chainAttachTarget, startCarryAttachGrapple, killChainMob, respawnChainMob, unchainMob, severGroundedChainVictim, isGroundedChainVictim, get chainLinks(){ return chainLinks; }, get chainParent(){ return chainParent; }, get chainChild(){ return chainChild; }, playerChainAvatar, playerInChain, PLAYER_CHAIN_ID, spliceChainLink, chainHasJumping, chainPushCrumb, chainTrailTarget, latchPlayerTo, latchPlayerInMiddle, playerInsertCutAndLink, insertChainAheadOfPlayer, insertChainBehindPlayer, playerLeadLink, dropPlayerLeadEntry, readyLeadForLatch, leadAwareLatchInsert, appendCutFollowerBehindLeadTail, grabRideForCarry, fireGrapple, detachDisplacementGrapple, get grappleActive(){ return grappleActive; }, get grappleHooked(){ return grappleHooked; }, get grappleRetracting(){ return grappleRetracting; }, get grappleMob(){ return grappleMob; }, get grappleMobOffset(){ return grappleMobOffset; }, get grappleHookPos(){ return grappleHookPos; }, get grappleTarget(){ return grappleTarget; }, updateCarryGrapple, updateCarry, get currentBlock(){ return currentBlock; }, updateTarget, hotbarList, placeBlock, breakBlock, get selected(){ return selected; }, set selected(v){ selected=v; }, toggleCarry: handleCarryEnterDown, findNearestMobForGrab: (...a)=>{ const d=new THREE.Vector3(); camera.getWorldDirection(d); return pickMob(d); }, get playerArms(){ return playerArms; }, get started(){ return started; }, set started(v){ started=v; }, get loading(){ return loading; }, get freeCam(){ return freeCam; }, set freeCam(v){ freeCam=v; }, get helpOpen(){ return helpOpen; },
     get WOLF_COUNT(){ return WOLF_COUNT; }, get GOLEM_COUNT(){ return GOLEM_COUNT; }, get GOLEM_HW(){ return GOLEM_HW; }, get GOLEM_HH(){ return GOLEM_HH; }, get CAT_COUNT(){ return CAT_COUNT; }, get CAT_HW(){ return CAT_HW; }, get CAT_HH(){ return CAT_HH; }, makeWolfMesh, makeCatMesh, pickCatRobe, catParentFor, catTrailSpot, panicCats, makeIronGolemMesh, villagerHW, villagerH, wolfHasMobGround, wolfBlockedAt, wolfProbeFree, wanderGoalForWolf, wolfFindPath, wolfFlatSpot, wolfLeaveTarget, panicLeaveDir, panicWolves, wolfInWater, mobInWater, waterSurfaceForMob, mobPhysicsStep, wolfPhysicsStep, updateMobs, obstacleTurnDir, buildMobGrid,     get isPigCow(){ return isPigCow; }, get pigOverlapsFence(){ return pigOverlapsFence; }, pigFenceSlideOut, get MOB_FLOAT_FRAC(){ return MOB_FLOAT_FRAC; }, mobFloatTargetY, mobWaterExitJump, poolExitTarget, penPoolExitTarget, isInsidePenPool, moonLakeExitTarget, isMobInPoolWater, isMobInMoonLake, get BATH_MIN_T(){ return BATH_MIN_T; }, get BATH_MAX_T(){ return BATH_MAX_T; },
-    get BIRD_COUNT(){ return BIRD_COUNT; }, get BIRD_MIN_Y(){ return BIRD_MIN_Y; }, get BIRD_MAX_Y(){ return BIRD_MAX_Y; }, get BIRD_SPEED(){ return BIRD_SPEED; }, get TNT_HOME_SPEED(){ return TNT_HOME_SPEED; }, get BIRD_AIM_DIST(){ return BIRD_AIM_DIST; }, get BIRD_LOCK_TIME(){ return BIRD_LOCK_TIME; }, get birdLock(){ return birdLock; }, get birdLockT(){ return birdLockT; }, set birdLockT(v){ birdLockT = v; }, get birdLockShots(){ return birdLockShots; }, liveBirdLock, tntTargeted, tryFireLockedTNT, tntChainAimMob, aimOnMob, get chainBreaking(){ return chainBreaking; }, set chainBreaking(v){ chainBreaking = v; },     makeBirdMesh, spawnBirds, spawnSingleBird, removeBirds, spawnBirdChain, updateBird, updatePerchedBird, updateToPerchBird, birdTakeoff, birdNextLeg, birdFindPerchSpot, birdCloudTopAt, birdTreeTopAt, birdRoofTopAt, birdPerchBand, birdPerchSupports, killBird, birdSpotOutOfView, birdProbeFree, birdRandomTarget, birdSeparate,     houseInteriorFor, houseMouths, birdCoopTarget,     birdSegmentFree, birdClearance, birdBestSteer, birdMillHop, birdConfinedSteer, birdMoveSlide, bandReturnTarget, birdNoticeBreak, setMobTransparent, birdIsConfined, birdHoleCell, chainSegmentFree, chainThreadRide, chainFindRejoinPath, chainDriveRejoin, chainRejoinSlot, birdTunnelPlan, updateTunnelBird, birdTunnelSeparate, birdSkyClear, birdSidestep, birdUTurn, birdNarrow, birdColHW, birdColH,     get BIRD_NARROW_SCALE(){ return BIRD_NARROW_SCALE; }, get BIRD_SKY_CLEAR(){ return BIRD_SKY_CLEAR; }, get NETHER_BIRD_MIN_Y(){ return NETHER_BIRD_MIN_Y; }, get NETHER_BIRD_MAX_Y(){ return NETHER_BIRD_MAX_Y; }, birdDimOf, birdBandMinFor, birdBandMaxFor, birdBandMin, birdBandMax, birdNetherLegY, netherBirdCeiling, birdLavaAt, get BIRD_TUNNEL_SCALE(){ return BIRD_TUNNEL_SCALE; }, get BIRD_COL_HW(){ return BIRD_COL_HW; }, get BIRD_COL_H(){ return BIRD_COL_H; },     get tntLit(){ return tntLit; }, get explosionQueue(){ return explosionQueue; }, get tntEta(){ return tntEta; }, get pendingTNTBombs(){ return pendingTNTBombs; }, get pendingTNTEta(){ return pendingTNTEta; }, get bursts(){ return bursts; }, get flashes(){ return flashes; }, snapshotLiveFx, replayLiveFx, spawnExplosion, igniteTNT, fireTNTAtBird, purgeLiveTNT, tickTNT, snapshotLiveTNT, restoreLiveTNT, get pendingDragon(){ return pendingDragon; }, get tntEta(){ return tntEta; }, igniteTNT, aimedBird, fireTNTAtBird, explodeBird, spawnBirdBurst, get bursts(){ return bursts; }, get flashes(){ return flashes; }, updateTNTTarget, tickTNT, fireGrapple, updateGrapple, updatePlayer, get grappleActive(){ return grappleActive; }, get grapplePulling(){ return grapplePulling; }, get grappleHooked(){ return grappleHooked; },
+    get BIRD_COUNT(){ return BIRD_COUNT; }, get BIRD_MIN_Y(){ return BIRD_MIN_Y; }, get BIRD_MAX_Y(){ return BIRD_MAX_Y; }, get BIRD_SPEED(){ return BIRD_SPEED; }, get TNT_HOME_SPEED(){ return TNT_HOME_SPEED; }, get BIRD_AIM_DIST(){ return BIRD_AIM_DIST; }, get BIRD_LOCK_TIME(){ return BIRD_LOCK_TIME; }, get birdLock(){ return birdLock; }, get birdLockT(){ return birdLockT; }, set birdLockT(v){ birdLockT = v; }, get birdLockShots(){ return birdLockShots; }, liveBirdLock, tntTargeted, tryFireLockedTNT, tntChainAimMob, aimOnMob, get chainBreaking(){ return chainBreaking; }, set chainBreaking(v){ chainBreaking = v; },     makeBirdMesh, spawnBirds, spawnSingleBird, removeBirds, spawnBirdChain, updateBird, updatePerchedBird, updateToPerchBird, birdTakeoff, birdNextLeg, birdFindPerchSpot, birdCloudTopAt, birdTreeTopAt, birdRoofTopAt, birdPerchBand, birdPerchSupports, killBird, birdSpotOutOfView, birdProbeFree, birdRandomTarget, birdSeparate,     houseInteriorFor, houseMouths, birdCoopTarget,     birdSegmentFree, birdClearance, birdBestSteer, birdMillHop, birdConfinedSteer, birdMoveSlide, bandReturnTarget, birdNoticeBreak, setMobTransparent, birdIsConfined, birdHoleCell, chainSegmentFree, chainThreadRide, chainFindRejoinPath, chainDriveRejoin, chainRejoinSlot, birdTunnelPlan, updateTunnelBird, birdTunnelSeparate, birdSkyClear, birdSidestep, birdUTurn, birdNarrow, birdColHW, birdColH,     get BIRD_NARROW_SCALE(){ return BIRD_NARROW_SCALE; }, get BIRD_SKY_CLEAR(){ return BIRD_SKY_CLEAR; }, get NETHER_BIRD_MIN_Y(){ return NETHER_BIRD_MIN_Y; }, get NETHER_BIRD_MAX_Y(){ return NETHER_BIRD_MAX_Y; }, birdDimOf, birdBandMinFor, birdBandMaxFor, birdBandMin, birdBandMax, birdNetherLegY, netherBirdCeiling, birdLavaAt, get BIRD_TUNNEL_SCALE(){ return BIRD_TUNNEL_SCALE; }, get BIRD_COL_HW(){ return BIRD_COL_HW; }, get BIRD_COL_H(){ return BIRD_COL_H; },     get tntLit(){ return tntLit; }, get explosionQueue(){ return explosionQueue; }, get tntEta(){ return tntEta; }, tickLitMegaTex, getLitMegaTex, getLitMegaTexEff(){ return litMegaTexEff; }, megaWhiteEff, get MEGA_WHITE_TEX_CAP(){ return MEGA_WHITE_TEX_CAP; }, get pendingTNTBombs(){ return pendingTNTBombs; }, get pendingTNTEta(){ return pendingTNTEta; }, get bursts(){ return bursts; }, get flashes(){ return flashes; }, snapshotLiveFx, replayLiveFx, spawnExplosion, igniteTNT, fireTNTAtBird, purgeLiveTNT, tickTNT, snapshotLiveTNT, restoreLiveTNT, get pendingDragon(){ return pendingDragon; }, get tntEta(){ return tntEta; }, igniteTNT, aimedBird, fireTNTAtBird, explodeBird, spawnBirdBurst, get bursts(){ return bursts; }, get flashes(){ return flashes; }, updateTNTTarget, tickTNT, fireGrapple, updateGrapple, updatePlayer, get grappleActive(){ return grappleActive; }, get grapplePulling(){ return grapplePulling; }, get grappleHooked(){ return grappleHooked; },
     get overPortalWin(){ return overPortalWin; }, get overPortalDir(){ return overPortalDir; }, get overPortalSpawn(){ return overPortalSpawn; }, get overPortalFace(){ return overPortalFace; },
     portalWinValid, portalFrameBBox, findReturnSpot, frameTopSpot, facePortalFrom, faceAwayFromPortal, recordOverPortal, recordDimExit, resolveDimArrival, nearestReturnWin, resolveOverworldReturn, nearPortalSpawn, resolveSpawn, collectEndWins, collectNetherWins, collectReturnWins, insideEndInterior, insideNetherInterior, winCenter, windowDist, isSolid,
     get PORTAL(){ return PORTAL; }, get OBSIDIAN(){ return OBSIDIAN; }, get WORLD_RADIUS(){ return WORLD_RADIUS; }, get PLAYER_HW(){ return PLAYER_HW; }, get PLAYER_H(){ return PLAYER_H; },     get MOON(){ return MOON; }, get MOON_WATER(){ return MOON_WATER; }, get MOON_Y(){ return MOON_Y; }, get MOON_R(){ return MOON_R; }, inMoonZone, get CLOUD(){ return CLOUD; }, get GRASS(){ return GRASS; }, get STONE(){ return STONE; }, get ENDSTONE(){ return ENDSTONE; }, get NETHERRACK(){ return NETHERRACK; }, get dim(){ return dim; },
     serialize, deserialize, restoreSave, snapshotOverworldMobs, restoreOverworldMobs, get overworldMobCache(){ return overworldMobCache; }, get pendingOverworldMobs(){ return pendingOverworldMobs; }, get pendingChainLinks(){ return pendingChainLinks; }, get pendingCarriedIdx(){ return pendingCarriedIdx; },
     snapshotMobsForDim, snapshotChainPairsForDim, DRAGON_CHAIN_CARRIER, restoreDimMobs, relinkDimChainsByIds, mobDimOf, suspendLiveDim, placeMobExact, mobRestoreOverlapsPlaced, settleMobSpot, restoreInitialTarget, aabbOverlaps,
-    get endMobCache(){ return endMobCache; }, get netherMobCache(){ return netherMobCache; }, get pendingEndMobs(){ return pendingEndMobs; }, get pendingNetherMobs(){ return pendingNetherMobs; }, get netherExit(){ return netherExit; }, get endExit(){ return endExit; }, get endCleared(){ return endCleared; },
+    get endMobCache(){ return endMobCache; }, get netherMobCache(){ return netherMobCache; }, get pendingEndMobs(){ return pendingEndMobs; }, get pendingNetherMobs(){ return pendingNetherMobs; },     get netherExit(){ return netherExit; }, get endExit(){ return endExit; }, get endCleared(){ return endCleared; }, get megaUnlocked(){ return megaUnlocked; }, set megaUnlocked(v){ megaUnlocked = !!v; }, unlockMegaTNT, spawnUnlockBurst,
     goToDimension, removeVillagers,
     get DEV_START_DIM(){ return DEV_START_DIM; },
     get dragon(){ return dragon; }, spawnDragon, removeDragon, updateDragon, paintDragon, damageDragon, dragonShotsCap, aimedDragon, get DRAGON_FULL_DMG(){ return DRAGON_FULL_DMG; }, get DRAGON_SPEED(){ return DRAGON_SPEED; }, get DRAGON_FOLLOW_DIST(){ return DRAGON_FOLLOW_DIST; },

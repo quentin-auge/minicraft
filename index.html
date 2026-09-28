@@ -51,6 +51,15 @@
       box-shadow: 0 0 10px 2px rgba(255,255,255,0.9), inset 0 0 8px rgba(255,255,255,0.5);
       transform: translateY(-4px);
     }
+    #hotbar .slot.unlock-pop {
+      animation: slotPop 1.2s ease-out;
+      border-color: #ffd75e;
+    }
+    @keyframes slotPop {
+      0% { transform: scale(0.3); box-shadow: 0 0 24px 8px rgba(255,215,94,0.95); }
+      55% { transform: scale(1.25); box-shadow: 0 0 16px 5px rgba(255,215,94,0.8); }
+      100% { transform: scale(1); }
+    }
 
     /* Dimension label */
     #dim {
@@ -236,6 +245,21 @@
       background: radial-gradient(circle, transparent 45%, rgba(0,0,0,0.6) 100%);
     }
     @keyframes spiralSpin { to { transform: rotate(360deg); } }
+
+    /* Lit Mega TNT danger vignette (red screen edges while close to a fuse) */
+    #danger {
+      position: fixed; inset: 0; z-index: 40;
+      background: radial-gradient(circle, transparent 55%, rgba(255,20,10,0.55) 100%);
+      opacity: 0; pointer-events: none;
+      transition: opacity 0.3s ease;
+    }
+
+    /* Mega TNT unlock flash (gold-white fullscreen bloom on dragon kill) */
+    #unlockFlash {
+      position: fixed; inset: 0; z-index: 45;
+      background: radial-gradient(circle, rgba(255,250,230,0.95) 0%, rgba(255,210,90,0.55) 45%, transparent 75%);
+      opacity: 0; pointer-events: none;
+    }
   </style>
 </head>
 <body>
@@ -250,6 +274,8 @@
     <div class="swirl-wrap back"><svg id="portalSpiralBack" viewBox="-100 -100 200 200"></svg></div>
     <div class="swirl-wrap front"><svg id="portalSpiralFront" viewBox="-100 -100 200 200"></svg></div>
   </div>
+  <div id="danger"></div>
+  <div id="unlockFlash"></div>
   <div id="help">
     <div class="panel">
       <h2>Help</h2>

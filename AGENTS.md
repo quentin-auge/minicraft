@@ -291,7 +291,15 @@ stays bright at distance, `placeable: true` so it
   LAVA, while the Overworld keeps flowers and water; once the Moon starts to
   appear (`onMoon`, `pos.y >= MOON_FADE_START`, tracked by `hotbarMoon`) the
   Water slot holds MOON_WATER and the Flower slot holds GLOWSTONE; the hotbar
-  is rebuilt on every dimension change, load and new world.)
+  is rebuilt on every dimension change, load and new world. The MEGA_TNT slot is
+  locked until the first Ender Dragon kill (`megaUnlocked`, set once by
+  `unlockMegaTNT()` in the death sequence — idempotent, so re-kills never rebuild
+  or replay; cache key carries a U bit): the kill rebuilds the hotbar with a popping
+  gold slot (`.unlock-pop`, class removed on `animationend` with a 1.5s `setTimeout`
+  fallback — headless CSS clocks never fire `animationend` — so no gold frame lingers),
+  a gold-white fullscreen flash (`#unlockFlash`,
+  `UNLOCK_FLASH_TIME` 1.5s), a gold burst on the player (`spawnUnlockBurst`) while the
+  death toast ("Ender Dragon is defeated") stays the only message.)
 - **Player**: AABB collision, gravity (`GRAVITY = 37.44`, +20% twice; halved
   in the Overworld once the player rises to the bottom of the Moon sphere,
   `pos.y >= MOON_Y - MOON_R`), jump (Shift/Space), walk/sprint (/), fly mode, swimming,
@@ -341,7 +349,7 @@ stays bright at distance, `placeable: true` so it
   so aiming at water/lava/moon water targets the solid block behind it, and placing
   replaces the liquid cell in front of that block (any placeable block; a solid is
   refused inside the player's or a mob's body, while non-solids — water, lava,
-  moon water, flowers — place freely there). Left click places, right click breaks (both work while flying — build anchor tracks camera). Holding left click is two-phase: while the mouse moves, it paints — each movement event places one block where the cursor aims, but only onto a block of a different kind than the selected one, and only within `CHAIN_RANGE` (4) blocks of any block already placed during this hold (`clickAnchors`, reset per press). If the mouse never moved during the hold, after 1s without moving (`leftTimer`) the hold latches into bridge mode (`leftStairs`): the staircase builder below starts immediately and keeps building until release — mouse movement mid-bridge is ignored, and once the mouse has moved during a hold (`leftEverMoved`) the bridge can never engage for that hold. Placing or breaking any block while the crosshair is on a mob does nothing: `placeBlock`, `breakBlock` (including TNT ignition) and the paint phase refuse via `aimOnMob` (any mob including flying pigeons and the dragon, mob hit must be nearer than the targeted block; bridge stairs and homing-TNT fire exempt). Holding right
+  moon water, flowers — place freely there). Left click places, right click breaks (both work while flying — build anchor tracks camera). Holding left click is two-phase: while the mouse moves, it paints — each movement event places one block where the cursor aims, but only onto a block of a different kind than the selected one, and only within `CHAIN_RANGE` (4) blocks of any block already placed during this hold (`clickAnchors`, reset per press). If the mouse never moved during the hold, after 1s without moving (`leftTimer`)   the hold latches into bridge mode (`leftStairs`): the staircase builder below starts immediately and keeps building until release — mouse movement mid-bridge is ignored, and once the mouse has moved during a hold (`leftEverMoved`) the bridge can never engage for that hold. With Mega TNT selected the bridge never engages, so held-click + mouse move keeps painting with no time limit. Placing or breaking any block while the crosshair is on a mob does nothing: `placeBlock`, `breakBlock` (including TNT ignition) and the paint phase refuse via `aimOnMob` (any mob including flying pigeons and the dragon, mob hit must be nearer than the targeted block; bridge stairs and homing-TNT fire exempt). Holding right
   digs a straight tunnel: each repeat breaks the live raycast `currentBlock`, so
   removing one block exposes the next one behind it; the dig starts only after holding still 1s or after ~15px of deliberate mouse travel (`rightMoveAcc`/`RIGHT_MOVE_PX`, so jitter never skips the `CHAIN_HOLD` gate), and chained breaks are limited to `CHAIN_RANGE` (4) blocks of any block already removed during this hold (`clickAnchors`). Holding either button chains the action after 1s
   (`CHAIN_HOLD`) at `CHAIN_RATE` (10/s):
@@ -359,11 +367,13 @@ stays bright at distance, `placeable: true` so it
   auto-step, solid wedged (ascending fills at new pos at old height, descending fills at old pos at new height, via `oldX`/`oldY`/`oldZ` tracking, so the wedge is solid with no gap at the cliff edge) and diagonal moves fill the corner. The cursor always
   reaches the feet cell — when within 1 block horizontally and vertically,
   the final block snaps directly to the feet position — even when a cell along
-  the way is blocked (the cursor skips on and the stairs re-form); every placed
+  the way is blocked (  the cursor skips on and the stairs re-form); every placed
   cell lays its whole 2x2 `chainPad` (the cell plus its
   `+x`/`+z` neighbours, with the trailing corner also filled on the diagonal
   arrival cell), so the staircase is a solid 2x2 footprint with no holes
-  anywhere; when the vertical is steeper than horizontal (`horiz/vert <1`), the
+  anywhere; the staircase builder is disabled for Mega TNT (`chainStep` returns
+  immediately when MEGA_TNT is selected — no blocks, no toast; discrete clicks
+  and paint still place it); when the vertical is steeper than horizontal (`horiz/vert <1`), the
   stairs become a spiral (`chainSpiral`): central 1-block column with 2×3 pinwheel tread (2 deep radial ×3 wide tangential, `dirs`/`perps` rotated 90°, `chainSpin` clockwise) winding clockwise, each tread with 2-high railings in the same material as the stairs (5 outer cells beyond the tread at `ny` and `ny+1` via `wallOffs`), dropping one block per turn, until the slope flattens and `chainStep` resumes. The
   chain rate is not constant: after
   `CHAIN_HOLD` elapses it fires at `CHAIN_RATE` and accelerates smoothly by
@@ -400,7 +410,161 @@ stays bright at distance, `placeable: true` so it
   dragon damage only (full 1/8 HP per stuck blast) —
   it never destroys terrain, so no crater is left where the TNT launched; a
   homing bomb that never sticks fizzles in air after `life` (3s fuse + 2s chase)
-  with no dragon damage.
+  with no dragon damage. A second **Mega TNT** block (`MEGA_TNT` id 22,
+  giant high-contrast skull `TEX.mega_side` texture with glowing eyes on a
+  vivid-red block) sits in the hotbar right after regular TNT in every
+  dimension — locked until the first dragon kill (see hotbar): single cell, unlit full-bright (`getSingleMat`, 1 draw call
+  instead of 6) with a lava-style per-frame red throb, so it menaces at
+  render distance. No cooldown, no placement limit: the hotbar slot is a plain
+  slot. Breaking one lights a slow 8s fuse (`MEGA_FUSE_TIME`, regular TNT stays
+  3s) so the pressure has time to build — lit TNT blinks red on a deterministic
+  `blinkPhase`/`blinkSmooth` choreography (1 Hz → 14 Hz exponential over the fuse,
+  sine-faded not strobed, pause/save-safe, phase-identical after reload), whitening via `blinkWhite`
+  over the last 5s (`megaWhiteEff` pulses the white with the blink: `w*(f+(1-f)*b)`
+  with the floor `f` rising smoothly 0.3→1, so block and emitted light whiten on one
+  shared smooth factor; tinting alone can't whiten the saturated-red skull texture,
+  so the lit material uses an animated 64×64 clone (`getLitMegaTex`/`tickLitMegaTex`,
+  same filters/sRGB as `canvasTex`) alpha-blended toward white by the same factor,
+  capped at `MEGA_WHITE_TEX_CAP` 0.9 — the skull stays a slight ghost;
+  shared mats unlit `toneMapped: false` to pure
+  `0xffffff`); the lit shell stays opaque
+  (skull always readable, tinted red→white) under a breathing additive glow,
+  pooled lights breathe intensity, regular fuse sprites
+  breathe opacity (numbers kept), and the `#danger` vignette throbs on the same
+   blink (beat/distance edge detection kept on blink crossings). No countdown numbers on mega fuses, only the light. Breaking a placed TNT
+  lights only that block — regulars and megas fuse identically (own 3s/8s fuse,
+  own visuals and ticking, same save/portal-cross behaviour); each mega blinks
+  on its own fuse timeline — lit megas leave the normal chunk bucket for a dedicated
+  `megatit` mesh (`getLitMegaMat`: opaque skull-textured unit boxes, no relief
+  shell) whose shared material tints red→white with the light timeline so the
+  skull stays readable, plus a 1.06-shell additive `megaveil` glow
+  (`getLitMegaVeilMat`, same boxes, polygonOffset, opacity 0.05–0.6 white-gated
+  red→white in phase) shining over the skull without ever hiding it, so the
+  block itself reads white-hot at distance. Breaking one panics everything at fuse-light   (`panicMegaIgnite`: every mob within
+  one crater radius of the lit-mega cluster's edge flees away from the whole
+  cluster — ground and flying kinds alike, held/chained/grappled ones tagged too
+  so the flight applies on release, dragon/endermen/golem excluded; birds get a
+  global `megaNoPerchUntil` no-sit window covering fuse+blast, and endermen keep
+  their blast-time teleport instead of fleeing; when any lit mega sits in the
+  village square (`litMegaTouch`) the standard square rally fires already at
+  fuse time, and square mobs keep it instead of the outside-flee), and a lit mega carries a
+  flickering red pool (`recomputeMegaLightClusters`/`syncMegaLights`/
+  `tickMegaLights`, mirroring the glowstone system: lit megas bucketed into
+  5-block cells, a fixed pool of 8 red `PointLight`s assigned nearest-first
+  with keep-phase stability, throttled re-slots, quality-governor cap, and
+  per-cluster beat/distance/white-hot flicker — never one light per block),
+  disposed in `clearTNTVisual` (shells; lights are pooled)
+  `#danger` vignette + beat-synced shake when within ~8-10 blocks (`updateMegaDanger`,
+  fuse-weighted, pause-gated). It detonates at 5x the regular radius
+  (`MEGA_BLAST_RADIUS` 15, spherical) with a dense lingering
+  fire cloud (384 slow `NormalBlending` core at size 2.2 + `megaFire`: 350
+  saturated red/orange ground-fire + 180 embers + 220 column particles,
+  per-burst `grav` in `tickEffects`, all scaled up to 2.5x for pooled cluster
+  blasts, all fx lifetimes halved via `MEGA_FX_T` 0.5) and a tall classic mushroom cloud (`megaMushroom`: 350 grey
+  `NormalBlending` cap particles at +15-23 blocks,
+  all fx tag 4 with `frustumCulled: false`, save-persisted) plus a violent
+  distance-scaled camera shake (`camTrauma` cap 1.5, sqrt falloff to 150
+  blocks, trauma^1.5 rotational + full XYZ positional kick decayed at 1.4/s
+  in the main loop, camera-only so saved yaw/pitch are untouched).
+  Panic/knockback run after the carve (post-blast terrain, never pre-blast).
+  It ejects at detonation from the megas' crater union only (`applyMegaKnockback`
+  over mega members — regular TNTs carve but never eject): every same-dimension
+  mob strictly inside the union (3D body-center distance via
+  `distToMegaUnion3D` against the megas' blast spheres — nothing above, below
+  or beside the crater flies), plus the player, is thrown out to 0.5×R past
+  the union's edge, always onto an on-map/platform spot
+  (`spotOutsideMegaUnion`: radial march with angle sweep, ground-validated or
+  free-air, margin yielded before ever leaving the level; held and
+  grapple-frozen ones are never ripped out, chained victims severed first
+  (`severChainMob`)). Ejected ground mobs drop their stale pre-blast target/path
+  (`target`/`path`/`pathKey` cleared, rally modes reset to wander) and all fuse
+  panic state (fresh standard panic comes only at landing), carry `_noClamp`
+  past landing
+  (the `villageBound` hard clamp in `mobPhysicsStep`/`wolfPhysicsStep` is
+  skipped while fleeing or `_noClamp`, re-armed once back inside the rect — no
+  snap-back teleports, the mob walks home), and panic on landing with the
+  standard dispatch (`panicMegaLanding` → forced `panicSingleMob`: square
+  landers rally-or-flee by the normal rules, outsiders flee `PANIC_TIME`,
+  birds 3 s)
+  — except the iron golem, ejected like the rest but never panicking. Outside the
+  village every bound mob just mills locally (`wanderGoalFor` returns
+  `wanderNear` past the village rect via `soilOutsideClamp`, `goHome` is gated
+  inside, anti-stuck targets stay position-local, cats take village goals
+  instead of wolf legs, and babies/cats only follow a parent within ~15 blocks).
+  Blast-displaced homed mobs (`_returnHome`, set at ejection) walk back when
+  walkable: `updateHomeReturn` tries the house door / pen gap only through a
+  validated BFS (`homeReachable`: `findPlantPath` for ground kinds,
+  `wolfFindPath` for steppers — the same map-wide finder the steering uses for
+  `_penReturn`/`goHome` return walks, since village-bounded `findVillagePath`
+  can't route from outside), else mills locally with a ~12-20 s retry; destroyed
+  homes/pens (`homeIntactFor`/`penDestroyed`) never seed a return. Ground mobs and the walking player ride tall parabolas
+  (Vup 22-30, V0 sized to the target distance, cap 40, sub-stepped ≤0.4 so
+  nothing tunnels) under a `_ballisticUntil` flag (`tickBallisticMob` via
+  `chainMoveAxis`, XZ-clamped so nothing leaves the map mid-flight); flying
+  mobs and the flying player ride a constant-velocity straight line instead
+  (`_megaStraight`, per-axis slide, stuck is arrival, no gravity, no perch —
+  `megaRide` for the player); endermen are never launched — each one inside the
+  union (strict 3D too, no more +0.5R trigger ring) is severed if chained then teleported to the nearest valid
+  spot outside it (`megaTeleportEnderman`/`endermanMegaSpot`, always on-map /
+  on-platform, overworld and End); landings never relocate (no slide retries:
+  `megaFlyLand`/`tickMegaEject` just drop the entry, damp velocity and stay —
+  full stop for the golem so no launch momentum survives into its calm wander —
+  the only post-blast move left is the out-of-level backstop); a mega-ejected
+  mob found out-of-level is respawned inside the crater (`megaCraterRespawn`,
+  downward-only scan from blast height — never a MAX_Y scan, so never the moon
+  — birds to crater airspace); entries and tags (`_megaStraight`/`_megaCrater`)
+  purged in `purgeLiveTNT`).   Post-blast panic is the regular `PANIC_TIME` (3 s,
+  assigned not maxed for stragglers in union+R; village-square mobs keep their
+  standard rally via `handleMobExplosion` instead of the mega outside-flee —
+  fired on the first in-square cluster member (`megaTouchesVillage`, not the
+  centroid, so straddling clusters still rally) — or fall back to outside-flee when their house was cratered
+  (`panicVillagers`/`panicCats` check the house centre column, `wanderT = 99`
+  push only into standing houses; cratered pen likewise falls back via
+  `penDestroyed`) and the no-perch window ends at blast+3 too. No mob ever
+  walks off a cliff, panicking or not (`wolfMoveAxisX/Z` mirror the
+  `moveMobAxis` no-ground revert with a 1-block step-down allowance, so wolves
+  and cats keep normal locomotion; `separateMobs`/`pushMobsFromPlayer` only
+  push onto ground; `pigFenceSlideOut` slides with a ground check and never
+  teleports to the pen centre anymore). Observation mode:
+  the `MEGA_QUIET` flag silences mega blast visuals
+  (`spawnMegaUnion`/`spawnMegaExplosion`, incl. load replay) and every mega
+  camera shake (blast + fuse-proximity beats) — carve, knockback, panic and
+  ejection stay live; flip to `true` to watch mob behavior undisturbed. Mega blasts additionally
+  panic everything within one crater radius of the union edge with a 20-35 block throw away from the whole cluster (`panicMegaBlast` /
+  `megaFleePointUnion`, held/chained included) and record a 10s crater-avoid disc (`recordCraterAvoid` /
+  `inCraterAvoid`, honoured by `fleePointAway`, `wanderNear` and
+  `wanderGoalFor`), on top of the regular panic (`handleMobExplosion`).
+  Placed-only: breaking one never converts to a homing bomb, and aimed
+  clicks never fire it. Breaking or re-breaking a mega while aiming at any mob
+  (chained or not, same generous `mobT <= blockT + 0.5` window as the regular
+  homing conversion, `megaAimOnMob`) does nothing — the block stays in place
+  with no fuse and no blast. Any due mega dequeued seeds one atomic blast
+  (`processMegaPool`): transitively-close TNT/MEGA_TNT are discovered live over
+  the TNT index (`worldTntSets`, 15-block steps, so blocks placed after lighting
+  join in) —
+  lit placed fuses cleared, queued placed entries swept — then union-carves
+  once sharing `batchKeys`/`refreshDefer` (extracted `carveBlastSphere`, also
+  used by the single path; consumed cells skip re-enqueue via `poolConsumed`
+  and carve normally; every consumed member holds `chainPending` so the same
+  drain never double-enqueues it, cleared once the pool owns it; the drain
+  resets its globals in a `finally` and extra mega pools defer past the frame
+  budget instead of blowing it, pools always completing atomically;
+  mob-pillar guards read a per-drain precomputed column
+  set instead of per-cell grid queries), with a union visual (`spawnMegaUnion`:
+  one centroid flash + one cylindrical radial shockwave + one crater-sized
+  radial fireball shell per member — R = its own blast radius, merged by
+  overlap — sharing a ~3000-point shell budget plus the fire/smoke
+  distribution) and one mob pass with per-victim nearest-member
+  directions (`applyMegaKnockback` members arg) and one union avoid disc. Any
+  mega blast — pooled or single — detonates every regular TNT in radius
+  instantly too (no more 50ms stagger under mega fire). Re-breaking a lit
+  mega or catching one in any blast
+  detonates it at once (consumed with `chainPending` held only by the single
+  enqueued seed, so no keys leak into future blasts — the pool then unionises
+  every transitively-close mega live); lit mega state persists in save v39
+  (1 mega byte per bomb
+  + queue entry, pre-v39 loads as regular; restored megas keep their own
+  saved fuses).
 - **Portals / dimensions**: portal frames are detected in either orientation —
   upright (vertical frames standing on edge) or flat (laid on the ground —
   `winOk`/`vWinOk` for End frames, `nWinOk`/`nFlatWinOk` for Nether obsidian,
@@ -682,7 +846,8 @@ stays bright at distance, `placeable: true` so it
   `paintDragonPalette`; `damageDragon` now only starts the countdown instead of
    killing outright, and clears any live breath cubes at kill time), then death triggers a huge multicolor explosion (420
   spectrum-hued particles plus a white second layer via `spawnDragonDeath`,
-  no flash sphere), opens the return portal and removes the dragon. Resources are
+  no flash sphere), opens the return portal, unlocks Mega TNT in the hotbar
+  (`unlockMegaTNT`, first kill only) and removes the dragon. Resources are
   disposed when leaving the End. The dragon is a flying mob (`kind: "dragon"`
   in `mobs[]`, `hw` 1.5 `h` 3, `dim: "end"`, created in `spawnDragon` as
   `dragon.mob` and removed in `removeDragon`): `updateDragon` syncs `pos`/`vel`
@@ -705,7 +870,7 @@ stays bright at distance, `placeable: true` so it
 - **Villager pine planting** (Overworld, anywhere including the Moon): pouring WATER or MOON_WATER directly on top of any DIRT block arms a 0.5 s soak (`SOIL_SOAK_TIME`, armed in `tryPlace` via `armSoak` only when the water is placed after the dirt — pre-existing water from level gen or dirt placed under water never soaks; water block consumed at once) after which the water is absorbed and the soil turns permanently wet (`absorbSoak`, `wetSoilSet`, survives until planted or broken; entry dropped when the soil is broken/replaced via the `setBlock` hook + `releaseGrowable`). Only wet soil amid 8 solid neighbours at the same y (incl. diagonals and DIRT itself, `isSoilHole`) or sitting on solid ground (solid block below plus 8 solid neighbours at y-1, `isSoilFloor`) is claimable, with eligibility checked live at claim time. Wet dirt renders darker (`TEX.dirtWet`, separate per-chunk `InstancedMesh` like glowstone variants) inside a breathing translucent 1.06-cube shell (blue for WATER, near-white glow for MOON_WATER, one extra `InstancedMesh` per chunk per color); soaking always shows a sinking water mesh plus drip bursts (blue for WATER, grey for MOON_WATER) (`spawnSoakDrips`, tag-4 visual-only) while the water goes in. Any adult villager (wandering or inside its house) anywhere at the same level (no distance cap — the nearest wet soil at the villager's feet level, one block above or one below via `soilSameY`, discrete — same y, y-1, y+1 and nothing else) with a valid village-agnostic path (map-wide `findPlantPath` BFS bounded only by the map edge, no village clamp — `findVillagePath`/`wolfFindPath` can't leave the village; house/pool/pen avoidances apply near village floor only, so pads/clouds/Moon stay walkable) claims it (`plantClaims`, nearest capable villager wins: a live walking holder loses the claim to a rival 2+ blocks closer via steal with `PLANT_STEAL_D` hysteresis, a bending holder always finishes; the walk goal is the soil center when standable at feet level else the nearest standable orthogonal neighbour (`plantWalkGoal`, stored as `plantGoal`), and reachability is re-validated every second so a holder that fell or got walled in releases instead of squatting the claim; steering uses the same goal while `mode="goPlant"`) and walks over in `mode="goPlant"` at `WALK*2` with no delay (soils re-scanned every frame, TNT panic preempts and pauses nothing — a started timer always runs to the end; inside 2.2 blocks with a clear same-y line it drops to `WALK/2` and homes straight at the soil center (`_plantMile`, no BFS/deflection), so the last mile never paces — any touch within 1.15 bends). On arrival it bows only the neck toward the soil for 1.5 s (neck/head/nose rotated 40 deg around `PLANT_NECK_Y` via `setVillagerNeck`, legs frozen straight, velocity frozen) while the 2.5 s TNT-style countdown ticks above the block (`SOIL_TIMER`, `soilTimerSprites` via `makeFuseSprite`/`drawFuseSprite`, driven by `tickSoilTimers` with no claimant required); after 1.5 s the villager stands back up at `WALK/2` and leaves opposite the dirt block (`plantLeaveTarget`, 8 blocks away validated, `wanderNear`/`wanderGoalFor` fallback), at zero — 1 s after the departure — the sprite vanishes, the dirt block itself turns to wood (`LOG`) and a pine grows at a per-thickness rate (a refusal keeps the dirt and blinks red instead: trunk `LOG` at `PINE_RATE` (40 cells/s) from the soil to `soil+e`, passing through anything (trunk collisions ignored, only `protectedBlocks` spared), then each foliage thickness (core ≤3, rings 5,7,…) placed in the same `PINE_PHASE_TIME` (0.5 s, rate = phase cells / 0.5 s, so wide rings file out proportionally faster; a foliage cell whose spot got occupied mid-growth is skipped while trunks keep overwriting everything but `protectedBlocks`), then the `1×1+3×3` foliage core bottom-up (apex last), then the `5×5` ring top-down, then alternating (`7×7` bottom-up, `9×9` top-down…). Only foliage needs free air, with zero tolerance (`pineFits` checks foliage cells only — every foliage cell must be `AIR`, and placed leaves never override: occupied cells are skipped at growth time): `pickPineDims` tries a small fitting pine before any extension, in two passes via `fitTrunkRange`: pass 1 draws `m` 2…6 in random order (`m` = 1 excluded when there is space) and tries every size at its natural trunk `e0`, then squats `e0−1 … 1`, then lifts up to `e0+PINE_LIFT_MAX` (24, systematic +2 clearance margin on the first lifted fit); pass 2 retries `m` 1…6 ascending (the minimum is trunk 2 + two 3×3 levels + apex) with the trunk extended up to `MAX_Y`, so the smallest fitting pine wins and tall trunks only serve as last resort — refusal only when both passes fail. There is no trunk exclusion zone: spacing emerges from the fit constraints (a crown overlapping or face-touching a trunk is refused, a crown lifted above is accepted). Zero collision with separation: `pineFits` requires every foliage cell `AIR`, unreserved, and all 6 face-neighbours `AIR`/unreserved-or-own (crowns never overlap nor touch; diagonals may), so touching fits are refused and the pine shrinks or lifts instead. Concurrent growths never share crown cells: every watering and every growth reserves its full footprint in `reservedPineCells` under the soil key (cells tagged trunk vs foliage) — reserved at `armSoak`, released and re-reserved with fresh dims at `startPineGrowth`, released on completion (`tickPineGrowths`), on soil removal (`releaseGrowable`) and on world regen/load (rebuilt from live growths plus a best-effort re-pick per wet soil at the end of `deserialize`) — and `pineFits` refuses any foliage cell reserved by another owner, so the second pine lifts its crown above, shrinks, or is refused instead of merging crowns. Trunks never traverse foliage (but still cross rock/soil): a trunk cell is refused on live `LEAVES` or foliage reserved by another owner (`pineFolReserved`), and `tickPineGrowths` skips both cases at growth time, so no crown is ever destroyed by a trunk. Growing cells never trap the player or mobs: every growth tick ends with `pushOutOfGrowth` (`GROWTH_PUSH_SPEED` 8), which slides any overlapped player (in fly mode the camera itself, pushed as a 0.3-radius box since the ground body stays frozen)/free ground mob/enderman out along the smallest free exit (horizontal first, then up) with per-tick capped steps, else radially away from the trunk axis (squeezing through rubble along the push ray as a last resort so nobody stays embedded); pigeons (self-resolving), the dragon, held/chained/grapple-frozen mobs are skipped, and a bounded settle loop (40 passes) extrudes leftovers when a growth completes. `pineSpotBlocked` only vetoes spots within 1 block of another wet soil or in-flight growth origin — a `LOG` column carrying `LEAVES` directly on top, read from live blocks with no coordinate registry, so lone fence/build `LOG`s don't count — enforced both when watering (`armSoak`) and when growth starts (`startPineGrowth`). Either refusal consumes the water, keeps the dirt and flashes a red 1.06-box 3× (`startPineFailBlink` via `tickPineFailBlinks`; re-watering mid-blink just consumes the water). Each foliage level is a checkerboard (`(x+z)` parity alternating per level — odd levels hold `(s²−1)/2` leaves with an empty center, even levels hold `(s²+1)/2` with a center block laid first — so no two leaves touch orthogonally within a level and no two stack vertically across consecutive levels) laid in a center-out square spiral (`pineSpiralOrder` starts at `(0,0)` with the same rotational sense everywhere, so the builder circles the tree then shifts vertically); the crown is always a cone (no selection key — the G choice is retired): each layer a Euclidean disc in `(x+z)` checkerboard parity, crowned with a two-block tip (apex + one block above; `pineSummit = y+e+len+1`); `pineLayerWidths` returns apex `1` plus widths with paired runs growing bottom-up from an always-triple base (`…,13×3,11×3,9×4,7×4,5×5,3×5`, crown pairs ×3,×3,×4,×4,… from the base, except `m=1` which is just apex `1` plus two `3×3` levels; trunk `y+1…y+e`, foliage `y+e+1…summit`; default trunk `e0 = pineTrunkE0(m)` = quarter the foliage rounded up (`2` for `m=1`), fitted `e` varies with lift/squat); trunk passes through anything, only `protectedBlocks` spared (`pineFits` checks foliage only). Persisted in save v26 (soil timers as remain-or--1; in-flight growths as soil+`m`/`e`/`idx`/`acc` with cells rebuilt via `pineCellsFor`; v23/v24/v25 growths skipped, claims/plant state re-derive live).
 - **Pine garlands**: every finished villager-planted pine on the Moon gets the fixed glowing 4-strand spirale (ground pines grow bare, no garlands — `rebuildGarlands` skips any `plantedPines` entry outside `moonZoneGeo`); two clockwise strands (blue, red) crossed by two counter-clockwise ones (green, yellow), B toggles garlands + stars live (immediate rebuild, `#pine` label shows `(bare)`, choice persisted in save v37); each strand is resampled at a constant 0.22-block arc step (even spacing, foliage only from its base up) floating ~0.6 outside the foliage (helix radius = layer half-width + 0.6, smoothly interpolated between adjacent layer widths, so it hugs the cone slope instead of stepping — strict touches only happen at edge/corner grazes, keeping chunks long); each strand starts tucked inside the bottom foliage (inward march to strict containment, deepest bulb first, floating start as fallback); bulbs overlapping within a bulb-size are merged at rebuild (grid hash, no inter-bulb z-fighting flicker); garlands render complete by default on every planted pine, ground and moon alike (`rebuildGarlands` iterates all of `plantedPines`); breaking a pine cell by hand (`breakBlock`) or blast (`processExplosionQueue`) records it in the session-only `brokenPineCells` set (keyed by owning soil, with a `brokenTime` timestamp, pruned when the cell goes solid again or the pine is removed) and `garlandTrimSet` works off strict intersection (a 0.14 bulb fully inside a live `LEAVES` block, per-axis ≤ 0.43, broken cells counting as candidates so spans keyed on the removed block still match): strictly-contained bulbs are chunk extremities — removing a touched block drops every bulb strictly inside it plus the non-contained bulbs left and right up to (excluding) the next strictly-contained bulb, dropping at once while breaking an untouched block has no garland effect at all (floating bulbs anchored to it stay floating); a final closure pass then hides any null-touch bulb next to a hidden one on its run (both directions, strict bulbs stop the flood — no removed bulb borders a surviving non-intersecting neighbour; float kills don't seed it) — other dangling orphan groups (cells the growth skipped) hide only at ≤5 connected bulbs while bigger sections float (`garlandTrimSet`, live every rebuild); a twisted 4-strand spire (2 tight turns over 4 blocks, radius shrinking to 0.2, each strand keeping its color) rises above the summit so it reads clearly; each strand's spire tail (bulbs above `summit+0.2`) is its terminal chunk — from its last strictly-contained bulb up to the very top, inseverable (no anchor-loss/float/closure inside it) and dropped atomically only by breaking that anchor block; persisted in save v33 (style byte, always spirale, + `plantedPines` xyz + `m`/`e`/`seed`, 8 bytes each).
 - **Moon pines ×2 + tree-top stars**: on moon soils (`moonZoneGeo`) `pickPineDims` draws crown levels `m` in 3..8 (`MOON_PINE_MAX_M`, ground 3..6; `m=2` is the cramped-spot fallback, `m=1` the last resort) with the trunk (`pineTrunkE0`) following naturally. Each finished planted pine on the Moon (ground pines stay bare) wears a single Diamant voxel star (`buildStarShape`: Classic 5-branch 2D base in fine cubes, stepped 3D pyramids symmetric ±z up to ±3 + per-cube shade among 6 glowing yellows (`STAR_YELLOW`: white core, bright ridge, lit/shaded slope pair, deep rim, bronze stem), unlit `fog:false` with a garland-synced pulse, floating above the spire at `summit+5.0` in one global `InstancedMesh` (rebuilt with the garlands). No selection key, no HUD readout. Each star spins slowly on itself (`STAR_SPIN` 0.5 rad/s, per-star phase, frozen in pause) and doubles as a rotating platform (`starPlatforms`, disc R 0.75 at centre+0.65): a player standing on it orbits with yaw following (jump keeps the tangential kick, walking past the rim detaches), and any released ground mob whose feet land on it sticks and twirls (`starRideMob`, panic/flee walks it off; held/chained/frozen/flying/endermen never pin). A star vanishes with the soil, and it hangs only on the 4 top spire chunks: it stays while at least one strand run keeps a visible spire bulb above `summit+0.2`, and drops only once all 4 terminal chunks are broken — masks sourced from tip/apex breaks never seed the closure flood, so killing the summit can't strip the upper spirals nor drop the star by itself. Breaking a planted pine's LOG/LEAVES by hand (`breakBlock`) or blast (`processExplosionQueue`) also despawns nearby small orphan chains (`cullSmallChainsNear`: live components of ≤3 members within 8 blocks, never touching the player/held/dragon). Garland bulbs are deduped at rebuild (quantized positions, no overlapping z-fighting jitter).
-- **Universal TNT panic** (`VILLAGER_PANIC_TIME = 8` for villagers in the village square, `VILLAGE_PANIC_TIME = 5` for other village mobs, `PANIC_TIME = 3` outside): every mob panics except the dragon and the iron golem — villagers/babies (any `homeId`), cats, pigs, cows, wolves, pigeons (incl. confined/cooped, steered slide-safe at 2x), all covered. A blast inside the village square (`blastInVillageSq`: village XZ bounds + 10 margin, blast-height gate kept) panics only mobs inside the square — villagers rally 8s (`panicVillagers`), cats rally 8s to their baby's house (`panicCats`, staggered like villagers), pen mobs rally 5s (`panicPenMobs`), wolves leave the village (`panicWolves` + `wolfLeaveTarget`, 5s), pigeons within 20 vertical of village ground unperch and leave the village back to sky (`panicPigeonLeaveTarget`, 3s flight bursts chained for the window), endermen blink exactly once per blast (single teleport, never walk); nothing outside the square is affected. Outside the square one 10-block 3D sphere (`OUTSIDE_PANIC_DIST`) applies per mob, run/fly from the epicenter at x2 for exactly 3s. Flee overrides last `PANIC_TIME` so no mob wanders back into the zone for 5s; pigeons additionally carry `_panicUntil`, which blocks perch rolls/hops in `pigeonNextLeg`/`pigeonTakeoff` (cleared in `resumeChainedMob`). A village-square blast also raises a global `villagePanicUntil` window: `pigeonNextLeg` refuses perch spots inside the square, and `updatePerchedPigeon`/`updateToPerchPigeon` abort square-bound sits/approaches into takeoff, so no bird lands in the zone for `PANIC_TIME`. Chain-sever `panicSingleMob` fires on every TNT cut (victim + freed roots + surviving carrier, gravity-safe); dragon death keeps its chain like a bombed Overworld lead (`removeDragon` unlinks only the dragon and `freeChainRoot`s the first follower, so the tail survives under a new root — flying lead keeps flying, grounded lead falls — and force-panics the survivors at the death spot, no radius gate).
+- **Universal TNT panic** (`VILLAGER_PANIC_TIME = 8` for villagers in the village square, `VILLAGE_PANIC_TIME = 5` for other village mobs, `PANIC_TIME = 3` outside): every mob panics except the dragon and the iron golem — villagers/babies (any `homeId`), cats, pigs, cows, wolves, pigeons (incl. confined/cooped, steered slide-safe at 2x), all covered. A blast inside the village square (`blastInVillageSq`: village XZ bounds + 10 margin, blast-height gate kept) panics only mobs inside the square — villagers rally 8s (`panicVillagers`), cats rally 8s to their baby's house (`panicCats`, staggered like villagers), pen mobs rally 5s (`panicPenMobs`), wolves leave the village (`panicWolves` + `wolfLeaveTarget`, 5s), pigeons within 20 vertical of village ground unperch and leave the village back to sky (`panicPigeonLeaveTarget`, 3s flight bursts chained for the window), endermen blink exactly once per blast (single teleport, never walk); nothing outside the square is affected. Outside the square one 10-block 3D sphere (`OUTSIDE_PANIC_DIST`) applies per mob, run/fly from the epicenter at x2 for exactly 3s. Flee overrides last `PANIC_TIME` so no mob wanders back into the zone for 5s;   pigeons additionally carry `_panicUntil`, which blocks perch rolls/hops in `pigeonNextLeg`/`pigeonTakeoff` (cleared in `resumeChainedMob`). Panicked birds flee radially outward in 3D (`panicBirdTarget` takes the blast height: 20–30-block legs with climb bias, outward-only acceptance, climbing fallback; arrival re-picks stay outward via the stored `_panicSrcY`, and expiry near the blast grants one short outward extension instead of cruising back). A village-square blast also raises a global `villagePanicUntil` window: `pigeonNextLeg` refuses perch spots inside the square, and `updatePerchedPigeon`/`updateToPerchPigeon` abort square-bound sits/approaches into takeoff, so no bird lands in the zone for `PANIC_TIME`. Chain-sever `panicSingleMob` fires on every TNT cut (victim + freed roots + surviving carrier, gravity-safe); dragon death keeps its chain like a bombed Overworld lead (`removeDragon` unlinks only the dragon and `freeChainRoot`s the first follower, so the tail survives under a new root — flying lead keeps flying, grounded lead falls — and force-panics the survivors at the death spot, no radius gate).
 - **Pig/cow pen**: village extension (`VILLAGE_PEN_W 14×VILLAGE_PEN_D 12`, `villagePen:{minX,maxX,minZ,maxZ,cx,cz,vy,gateSide}` placed **before** houses in `computeVillageLayout` (1200 tries `hash2` `seed+7250/7251`, `+R` inside, houses avoid `+2`), `placeVillagePen` spreads `GRASS` inside and `LOG` **1 block high** closed fence, plus a 2×2 1-deep corner wading pool 1 block above the ground (`VILLAGE_PEN_POOL_W 2×VILLAGE_PEN_POOL_D 2×VILLAGE_PEN_POOL_DEPTH 1`, `villagePen.pool` flush in the pen corner at `minX+1/minZ+1`, `placeVillagePenPool` sets a STONE floor at `vy` with WATER at `vy+1` plus a STONE L rim on the two inner sides at `vy+1` — the pen's own LOG fence frames the two corner sides, called in `generateWorld` right after `placeVillagePen`; no mob ever spawns inside it — `isInsidePenPool` (half-open `x < maxX+1` bounds so `floor+0.5` centers on the east/south pool cells test inside, same fix applied to `isInsidePen`/`isInsidePool`) skips in villager/pig/cow/wolf spawns (plus re-checked post-loop fallback guards), V-chain (`spawnPigeonChain`) spots and save restores (`restoreOverworldMobs`, looped `+2.5` nudge) as well as in the village-pool wander/spawn/path avoidance, and `penPoolExitTarget` mirrors the water-exit steering for pen targets) — physics blocks via `aabbCollidesWorld`/`hasMobGround` (excludes `LOG` fence top as ground) plus explicit `pigOverlapsFence` (`isPigCow`/`pigOverlapsFence`) in `separateMobs`/`pushMobsFromPlayer`/`moveMobAxisX/Z` that forbids any `pig`/`cow` move onto a solid `LOG` fence cell (corner jam via collisions can no longer push onto rim; wolves still allowed, `AIR` gap lets them through)   and `mobPhysicsStep`/`updateMobs` slide a fence-touching animal back inside
   (`pigFenceSlideOut`: steps toward the pen center until free, same height —
   the pen-center teleport is only the last resort when no free cell is found
@@ -1158,7 +1323,7 @@ or phase. Step-up is root-gated by jumping leadership: when the chain root is a 
   (perch roll `PIGEON_PERCH_CHANCE` 0.65, `PIGEON_END_PERCH_CHANCE` 0.1 in the End
   for ~10% sitting time, min 1.2 s between full decisions via `_decideT`),
   so flight legs stay short and duty cycle holds across worlds.
-- **Save/load**: binary format (`SAVE_MAGIC`, version 38) capturing world
+- **Save/load**: binary format (`SAVE_MAGIC`, version 40) capturing world
   blocks (over/end/nether), dim, seeds (over/end/nether), player pos/yaw/pitch,
   player velocity (`vel`, so a save made mid-air resumes at the exact spot still
   falling),
@@ -1264,7 +1429,8 @@ or phase. Step-up is root-gated by jumping leadership: when the chain root is a 
   mobs on the load/dimension-return paths);
   pre-v16 saves load with End/Nether mobs, chains, held mob (outside Overworld),
   `endCleared` and portal exits empty (End loads sealed with a fresh dragon,
-  like before); pre-v17 saves load with a fresh full-HP dragon (sealed unless
+  like before); pre-v40 saves load with Mega TNT locked unless their End is
+  cleared (backfilled from `endCleared`); pre-v17 saves load with a fresh full-HP dragon (sealed unless
   cleared) and no live TNT; pre-v15 saves load with velocity untouched, no chains and no held mob; pre-v18
   saves load with velocity-correct volleys only for the first bomb per target (no `tntEta` sync)
   and v17 `hitCount` read as u8; pre-v19 saves load with a fresh dragon unless
