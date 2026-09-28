@@ -7223,7 +7223,7 @@ function startCarryGrabGrapple() {
   if (!started || loading || helpOpen) return false;
   const dir = new THREE.Vector3();
   camera.getWorldDirection(dir);
-  const mob = pickMob(dir);
+  const mob = pickMob(dir, Infinity);
   if (!mob) return false;
   if (mob.kind === "dragon") { showMsg("The dragon is too powerful to grab"); return false; }
   if (mob.kind === "iron_golem") { showMsg("The iron golem refuses to be carried"); return false; }
@@ -7550,7 +7550,7 @@ function chainAttachTarget() {
   if ((dim !== "over" && dim !== "end" && dim !== "nether") || !started || loading || helpOpen) return null;
   const dir = new THREE.Vector3();
   camera.getWorldDirection(dir);
-  const mob = pickMob(dir);
+  const mob = pickMob(dir, Infinity);
   if (!mob || mob === carryMob || mob === carryGrappleMob) return null;
   if ((mob.dim || "over") !== dim) return null;
   const ck = (carryMob && carryMob.kind) || null;
@@ -14607,11 +14607,8 @@ function fireGrapple() {
   const sx = pos.x, sy = pos.y + 0.3, sz = pos.z;
   let blockDist = Infinity, tx = 0, ty = 0, tz = 0;
   if (b) {
-    if ((b.id === MOON || b.id === MOON_WATER) && eye.y < MOON_FADE_START) {
-    } else {
-      tx = b.x + 0.5; ty = b.y + 1.001; tz = b.z + 0.5;
-      blockDist = Math.hypot(tx - sx, ty - sy, tz - sz);
-    }
+    tx = b.x + 0.5; ty = b.y + 1.001; tz = b.z + 0.5;
+    blockDist = Math.hypot(tx - sx, ty - sy, tz - sz);
   }
   let fillDist = Infinity;
   if (f) fillDist = Math.hypot(f.x + 0.5 - sx, f.y + 0.5 - sy, f.z + 0.5 - sz);
@@ -14684,7 +14681,6 @@ function fireGrapple() {
     return;
   }
   if (!b) return;
-  if ((b.id === MOON || b.id === MOON_WATER) && eye.y < MOON_FADE_START) return;
   if (blockDist < 0.3) return;
   grapplePendingInsert = null;
   grappleMob = null;
@@ -15692,7 +15688,6 @@ function pickBlock(origin, dir, skipLiquid) {
   let tMaxY = dir.y !== 0 ? ((stepY > 0 ? Math.floor(origin.y) + 1 - origin.y : origin.y - Math.floor(origin.y)) / Math.abs(dir.y)) : Infinity;
   let tMaxZ = dir.z !== 0 ? ((stepZ > 0 ? Math.floor(origin.z) + 1 - origin.z : origin.z - Math.floor(origin.z)) / Math.abs(dir.z)) : Infinity;
   let face = [0, 0, 0];
-  const maxDist = Number.isFinite(REACH) ? REACH : 128;
 
   for (let i = 0; i < 1024; i++) {
     const outOfBounds = x < -WORLD_RADIUS || x > WORLD_RADIUS || z < -WORLD_RADIUS || z > WORLD_RADIUS || y < 0 || y > MAX_Y;
@@ -15707,7 +15702,7 @@ function pickBlock(origin, dir, skipLiquid) {
     } else {
       z += stepZ; tMaxZ += tDeltaZ; face = [0, 0, -stepZ];
     }
-    if (Math.min(tMaxX, tMaxY, tMaxZ) > maxDist) break;
+    if (Math.min(tMaxX, tMaxY, tMaxZ) > REACH) break;
   }
   return null;
 }
