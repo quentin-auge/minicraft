@@ -16529,6 +16529,9 @@ let chainBreaking = false;
 let chainHome = null;
 let chainPlat = null;
 let chainSpin = 0;
+// Block id latched at left press: every chained placement (bridge stairs and
+// paint) uses it until release, so switching hotbar slot mid-hold is a no-op.
+let chainId = null;
 // Hold-left-click phases: moving the mouse paints blocks where aimed; after
 // 1s without moving, the hold latches into bridge (staircase) mode.
 let leftMoved = false;
@@ -16595,7 +16598,8 @@ function lineStep(fx, fy, fz, dx, dy, dz) {
 // clockwise, dropping one block per turn, until the slope to the feet
 // flattens and chainStep resumes normal plateauing.
 function chainStep() {
-  if (hotbarList()[selected] === MEGA_TNT) return;
+  const liveId = chainId ?? hotbarList()[selected];
+  if (liveId === MEGA_TNT) return;
   if (!chainHome) return;
   const dest = feetDest();
   if (!dest) return;
@@ -16603,7 +16607,7 @@ function chainStep() {
   const dx = dest[0] - nx, dy = dest[1] - ny, dz = dest[2] - nz;
   const horiz = Math.hypot(dx, dz);
   const vert = Math.abs(dy);
-  const id = hotbarList()[selected];
+  const id = liveId;
   if (horiz <= 1 && vert <= 1) {
     chainPad(id, nx, ny, nz);
     if (ny > dest[1]) for (let y = ny - 1; y >= dest[1]; y--) chainPad(id, dest[0], y, dest[2]);
@@ -16675,7 +16679,7 @@ function chainSpiral(dest, nx, ny, nz) {
   if (ny < 0 || ny > MAX_Y) return;
   if (nx < -WORLD_RADIUS || nx > WORLD_RADIUS || nz < -WORLD_RADIUS || nz > WORLD_RADIUS) return;
   chainHome = [nx, ny, nz];
-  const id = hotbarList()[selected];
+  const id = chainId ?? hotbarList()[selected];
   tryPlace(id, nx, ny, nz);
   const offs = [[d[0], d[1]], [d[0] * 2, d[1] * 2], [d[0] + p[0], d[1] + p[1]], [d[0] * 2 + p[0], d[1] * 2 + p[1]], [d[0] + p[0] * 2, d[1] + p[1] * 2], [d[0] * 2 + p[0] * 2, d[1] * 2 + p[1] * 2]];
   for (const o of offs) {
@@ -23050,6 +23054,7 @@ document.addEventListener("mousedown", (e) => {
     h.acc = 0;
     if (e.button === 0) {
       leftMoved = false; leftTimer = 0; leftStairs = false; leftEverMoved = false; leftNoPlace = false; clickAnchors = [];
+      chainId = hotbarList()[selected];
       const sel = hotbarList()[selected];
       if (sel === TNT) {
         const fired = tryFireLockedTNT();
@@ -23070,7 +23075,7 @@ document.addEventListener("mouseup", (e) => {
     h.down = false;
     h.t = 0;
     h.acc = 0;
-    if (e.button === 0) { chainHome = null; chainPlat = null; chainSpin = 0; leftStairs = false; leftTimer = 0; leftNoPlace = false; clickAnchors = []; }
+    if (e.button === 0) { chainHome = null; chainPlat = null; chainSpin = 0; chainId = null; leftStairs = false; leftTimer = 0; leftNoPlace = false; clickAnchors = []; }
     else { rightMoved = false; rightMoveAcc = 0; clickAnchors = []; }
   }
   if (e.button !== 1 || loading) return;
@@ -23353,7 +23358,7 @@ function loop(now) {
     if (simActive) updateCarryGrapple(dt);
     if (locked) {
       if (editHold[0].down) {
-        if (!leftStairs && !leftEverMoved && hotbarList()[selected] !== MEGA_TNT) {
+        if (!leftStairs && !leftEverMoved && (chainId ?? hotbarList()[selected]) !== MEGA_TNT) {
           if (!leftMoved) {
             leftTimer += dt;
             if (leftTimer >= 1) {
@@ -23380,7 +23385,7 @@ function loop(now) {
             }
           }
           if (didChain) endPlaceBatch();
-        } else if (!leftNoPlace && leftMoved && currentBlock && currentBlock.id !== hotbarList()[selected]) {
+        } else if (!leftNoPlace && leftMoved && currentBlock && currentBlock.id !== (chainId ?? hotbarList()[selected])) {
           // Paint phase: place where aimed, only onto a block of a different
           // kind, within CHAIN_RANGE of the last block placed on this click.
           const wx = currentBlock.x + currentBlock.face[0];
@@ -23388,7 +23393,7 @@ function loop(now) {
           const wz = currentBlock.z + currentBlock.face[2];
           const near = !clickAnchors.length || clickAnchors.some(([ax, ay, az]) =>
             (wx - ax) ** 2 + (wy - ay) ** 2 + (wz - az) ** 2 <= CHAIN_RANGE * CHAIN_RANGE);
-          if (near && !aimOnMob() && tryPlace(hotbarList()[selected], wx, wy, wz)) {
+          if (near && !aimOnMob() && tryPlace(chainId ?? hotbarList()[selected], wx, wy, wz)) {
             clickAnchors.push([wx, wy, wz]);
             if (!chainHome) chainHome = [wx, wy, wz];
           }
@@ -23432,6 +23437,7 @@ function loop(now) {
       chainHome = null;
       chainPlat = null;
       chainSpin = 0;
+      chainId = null;
       leftStairs = false;
       leftTimer = 0;
       rightMoved = false;
