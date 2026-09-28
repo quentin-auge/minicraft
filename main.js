@@ -30,6 +30,63 @@ const BLOCK_INFO = {
   [GLOWSTONE]:{ name: "Glowstone",  solid: true, opaque: true, placeable: true },
 };
 function isLiquid(id) { return id === WATER || id === LAVA || id === MOON_WATER; }
+// No free-floating liquid: every 6-connected group of the same liquid must
+// touch at least one solid block (any BLOCK_INFO.solid, 6 faces). Live edits
+// never refuse — orphaned groups are purged (set to AIR) instead.
+const LIQUID_NB = [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]];
+const FLOAT_PURGE_MAX = 60000;
+function liquidTouchesSolid(x, y, z) {
+  for (const [dx, dy, dz] of LIQUID_NB) {
+    if (isSolidId(getBlock(x + dx, y + dy, z + dz))) return true;
+  }
+  return false;
+}
+function purgeFloatingLiquidsAround(coords) {
+  const seen = new Set();
+  const purged = [];
+  const seeds = [];
+  for (const [x, y, z] of coords) {
+    if (isLiquid(getBlock(x, y, z))) seeds.push([x, y, z]);
+    for (const [dx, dy, dz] of LIQUID_NB) {
+      const nx = x + dx, ny = y + dy, nz = z + dz;
+      if (ny < 0 || ny > MAX_Y) continue;
+      if (isLiquid(getBlock(nx, ny, nz))) seeds.push([nx, ny, nz]);
+    }
+  }
+  for (const [sx, sy, sz] of seeds) {
+    const lid = getBlock(sx, sy, sz);
+    if (!isLiquid(lid)) continue;
+    const sk = key(sx, sy, sz);
+    if (seen.has(sk)) continue;
+    const cells = [];
+    const stack = [[sx, sy, sz]];
+    seen.add(sk);
+    let grounded = false;
+    let guard = 0;
+    while (stack.length) {
+      if (++guard > FLOAT_PURGE_MAX) { grounded = true; break; }
+      const [x, y, z] = stack.pop();
+      cells.push([x, y, z]);
+      if (liquidTouchesSolid(x, y, z)) { grounded = true; break; }
+      for (const [dx, dy, dz] of LIQUID_NB) {
+        const nx = x + dx, ny = y + dy, nz = z + dz;
+        if (ny < 0 || ny > MAX_Y) continue;
+        if (getBlock(nx, ny, nz) !== lid) continue;
+        const nk = key(nx, ny, nz);
+        if (seen.has(nk)) continue;
+        seen.add(nk);
+        stack.push([nx, ny, nz]);
+      }
+    }
+    if (grounded) continue;
+    for (const [x, y, z] of cells) {
+      if (getBlock(x, y, z) !== lid) continue;
+      setBlock(x, y, z, AIR);
+      purged.push([x, y, z]);
+    }
+  }
+  return purged;
+}
 
 // Glowstone comes in six colours (green, red, blue, yellow, purple,
 // turquoise). Each
@@ -781,13 +838,13 @@ function armSoak(x, y, z, liq) {
   const k = key(x, y, z);
   if (pineFailBlinks.has(k)) {
     setBlock(x, y + 1, z, AIR);
-    refreshBlocks([[x, y + 1, z]]);
+    refreshBlocks([[x, y + 1, z], ...purgeFloatingLiquidsAround([[x, y + 1, z]])]);
     queueSave();
     return false;
   }
   if (pineSpotBlocked(x, y, z)) {
     setBlock(x, y + 1, z, AIR);
-    refreshBlocks([[x, y + 1, z]]);
+    refreshBlocks([[x, y + 1, z], ...purgeFloatingLiquidsAround([[x, y + 1, z]])]);
     startPineFailBlink(x, y, z);
     queueSave();
     return false;
@@ -795,7 +852,7 @@ function armSoak(x, y, z, liq) {
   const soakDims = pickPineDims(x, y, z, k);
   if (!soakDims) {
     setBlock(x, y + 1, z, AIR);
-    refreshBlocks([[x, y + 1, z]]);
+    refreshBlocks([[x, y + 1, z], ...purgeFloatingLiquidsAround([[x, y + 1, z]])]);
     startPineFailBlink(x, y, z);
     queueSave();
     return false;
@@ -807,7 +864,8 @@ function armSoak(x, y, z, liq) {
   g.soak = SOIL_SOAK_TIME;
   g.liq = liq;
   setBlock(x, y + 1, z, AIR);
-  refreshBlocks([[x, y + 1, z]]);
+  const soakPurged = purgeFloatingLiquidsAround([[x, y + 1, z]]);
+  refreshBlocks([[x, y + 1, z], ...soakPurged]);
   spawnSoakDrips(x + 0.5, y + 1.5, z + 0.5, liq);
   syncSoakMesh(k, g);
   queueSave();
@@ -820,8 +878,9 @@ function absorbSoak(k, g) {
   clearSoakMesh(k);
   const above = getBlock(g.x, g.y + 1, g.z);
   if (above === WATER || above === MOON_WATER) setBlock(g.x, g.y + 1, g.z, AIR);
+  const absorbPurged = purgeFloatingLiquidsAround([[g.x, g.y + 1, g.z]]);
   spawnSoakDrips(g.x + 0.5, g.y + 1.2, g.z + 0.5, g.liq);
-  refreshBlocks([[g.x, g.y, g.z], [g.x, g.y + 1, g.z]]);
+  refreshBlocks([[g.x, g.y, g.z], [g.x, g.y + 1, g.z], ...absorbPurged]);
   queueSave();
 }
 const PINE_FAIL_BLINKS = 3;
@@ -16407,6 +16466,7 @@ function breakBlock() {
   const wasPine = pineOwner !== null;
   setBlock(x, y, z, AIR);
   birdNoticeBreak(x, y, z);
+  const purged = purgeFloatingLiquidsAround([[x, y, z]]);
   if (pineOwner) {
     const bk = key(pineOwner.x, pineOwner.y, pineOwner.z) + "|" + x + "," + y + "," + z;
     brokenPineCells.add(bk);
@@ -16414,8 +16474,8 @@ function breakBlock() {
   birdNoticeBreak(x, y, z);
   if (plantedPines.size) garlandDirty = true;
   if (wasPine) cullSmallChainsNear(x, y, z, 3, 8);
-  if (placeBatch) placeBatch.push([x, y, z]);
-  else { refreshBlocks([[x, y, z]]); queueSave(); }
+  if (placeBatch) { placeBatch.push([x, y, z]); for (const c of purged) placeBatch.push(c); }
+  else { refreshBlocks([[x, y, z], ...purged]); queueSave(); }
 }
 function placeBlock(id) {
   if (!currentBlock) return false;
@@ -16439,9 +16499,10 @@ function tryPlace(id, px, py, pz) {
   if (id === FLOWER) placedFlowers.set(key(px, py, pz), { v: randomFlowerVariant(), a: Math.random() * Math.PI * 2 });
   if (id === GLOWSTONE) worldGlowVariants.get(world).set(key(px, py, pz), glowVariantNear(px, py, pz));
   setBlock(px, py, pz, id);
+  const purged = purgeFloatingLiquidsAround([[px, py, pz]]);
   if ((id === WATER || id === MOON_WATER) && getBlock(px, py - 1, pz) === DIRT) armSoak(px, py - 1, pz, id);
-  if (placeBatch) placeBatch.push([px, py, pz]);
-  else { refreshBlocks([[px, py, pz]]); queueSave(); }
+  if (placeBatch) { placeBatch.push([px, py, pz]); for (const c of purged) placeBatch.push(c); }
+  else { refreshBlocks([[px, py, pz], ...purged]); queueSave(); }
   return true;
 }
 function beginPlaceBatch() { placeBatch = []; glowDefer++; }
@@ -17847,6 +17908,11 @@ function processExplosionQueue() {
   poolConsumed = null;
   glowDefer--;
   if (glowDefer === 0 && glowDirtyDeferred) { glowDirtyDeferred = false; recomputeGlowClusters(); syncGlowLights(); }
+  if (batchKeys.size) {
+    const seeds = [];
+    for (const k of batchKeys) seeds.push(keyXYZ(k));
+    for (const c of purgeFloatingLiquidsAround(seeds)) refreshDefer.push(c);
+  }
   const toRefresh = refreshDefer;
   refreshDefer = null;
   if (toRefresh.length) {

@@ -189,7 +189,14 @@ small Python server for saving/loading worlds.
   onto a cell already holding the same liquid — water on water, lava
   on lava — and nothing else can be placed into a liquid cell
   (but any block may be stacked directly on a liquid surface);
-  they cannot be removed — breaking one does nothing), TNT, FLOWER (decorative non-solid, built from
+  they cannot be removed — breaking one does nothing). No free-floating liquid:
+  every 6-connected group of the same liquid (water, lava and moon water each
+  separate) must touch at least one solid block on one of its 6 faces — live
+  edits never refuse, orphaned groups are purged to AIR instead
+  (`liquidTouchesSolid`/`purgeFloatingLiquidsAround` with early exit on first
+  contact, hooked into `tryPlace`, `breakBlock`, `armSoak`/`absorbSoak` and the
+  TNT batch in `processExplosionQueue`; world gen and save loads untouched).
+  TNT, FLOWER (decorative non-solid, built from
   1/30-size cubes in a 30×30×30 grid filling exactly one block cell, geometry
   centered on the cell so it sits on the ground — a thin green stem with two
   leaves hugging it (raised mid-stem, overlapping the stem cells and merged into
