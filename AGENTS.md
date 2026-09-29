@@ -23,7 +23,14 @@ small Python server for saving/loading worlds.
   (60→15→8 Hz) when FPS stays <45, and steps back up above 58. Bird steering
   uses a 0.2s clearance cache (`birdCachedClearance`) plus reduced
   `birdBestSteer` candidates beyond 40 blocks; `separateMobs` runs 2 iterations
-  with a cached `mobNowS`; BFS queues use index pointers; `rebuildChunk`
+  with a cached `mobNowS`; BFS queues use index pointers; blast carves walk
+  integer `scanBlastSphere` scanlines clamped per column to `colTops` (exact
+  in-sphere set only, no fractional lattice, no above-terrain air), and pool
+  blasts enqueue their chunk keys into `poolRefreshQueue` (deduped Set,
+  `CHUNK_BUDGET_MS` drain next to `drainChunkQueue` — a max pool remeshes over
+  ~9 frames behind its own flash instead of one hitch, so scan cost is
+  independent of member count AND frame cost stays flat);
+  `rebuildChunk`
   buckets block types in a single pass. Single-texture solids use one shared
   material (`getSingleMat`, 1 draw call instead of 6); lava sides share one
   merged geometry and lava tops collapse to one bucket pair (opaque, so hidden
@@ -189,7 +196,10 @@ small Python server for saving/loading worlds.
   onto a cell already holding the same liquid — water on water, lava
   on lava — and nothing else can be placed into a liquid cell
   (but any block may be stacked directly on a liquid surface);
-  they cannot be removed — breaking one does nothing). No free-floating liquid:
+  they cannot be removed by hand — breaking one does nothing. Regular TNT
+  blasts spare WATER/LAVA; Mega TNT blasts delete every liquid cell in radius
+  (WATER/LAVA/MOON_WATER alike, irreversibly — pools, rivers, moon lakes and
+  the lava sea). No free-floating liquid:
   every 6-connected group of the same liquid (water, lava and moon water each
   separate) must touch at least one solid block on one of its 6 faces — live
   edits never refuse, orphaned groups are purged to AIR instead
@@ -299,14 +309,9 @@ stays bright at distance, `placeable: true` so it
   appear (`onMoon`, `pos.y >= MOON_FADE_START`, tracked by `hotbarMoon`) the
   Water slot holds MOON_WATER and the Flower slot holds GLOWSTONE; the hotbar
   is rebuilt on every dimension change, load and new world. The MEGA_TNT slot is
-  locked until the first Ender Dragon kill (`megaUnlocked`, set once by
-  `unlockMegaTNT()` in the death sequence — idempotent, so re-kills never rebuild
-  or replay; cache key carries a U bit): the kill rebuilds the hotbar with a popping
-  gold slot (`.unlock-pop`, class removed on `animationend` with a 1.5s `setTimeout`
-  fallback — headless CSS clocks never fire `animationend` — so no gold frame lingers),
-  a gold-white fullscreen flash (`#unlockFlash`,
-  `UNLOCK_FLASH_TIME` 1.5s), a gold burst on the player (`spawnUnlockBurst`) while the
-  death toast ("Ender Dragon is defeated") stays the only message.)
+  dragon-gated: it appears only after the Ender Dragon is defeated
+  (`unlockMegaTNT()` on dragon kill; `MEGA_DEBUG_UNLOCKED = false` by default —
+  flip it to `true` to force-unlock everywhere for debugging).
 - **Player**: AABB collision, gravity (`GRAVITY = 37.44`, +20% twice; halved
   in the Overworld once the player rises to the bottom of the Moon sphere,
   `pos.y >= MOON_Y - MOON_R`), jump (Shift/Space), walk/sprint (/), fly mode, swimming,
@@ -420,7 +425,7 @@ stays bright at distance, `placeable: true` so it
   with no dragon damage. A second **Mega TNT** block (`MEGA_TNT` id 22,
   giant high-contrast skull `TEX.mega_side` texture with glowing eyes on a
   vivid-red block) sits in the hotbar right after regular TNT in every
-  dimension — locked until the first dragon kill (see hotbar): single cell, unlit full-bright (`getSingleMat`, 1 draw call
+  dimension — always present from the start (see hotbar): single cell, unlit full-bright (`getSingleMat`, 1 draw call
   instead of 6) with a lava-style per-frame red throb, so it menaces at
   render distance. No cooldown, no placement limit: the hotbar slot is a plain
   slot. Breaking one lights a slow 8s fuse (`MEGA_FUSE_TIME`, regular TNT stays
@@ -463,13 +468,10 @@ stays bright at distance, `placeable: true` so it
   disposed in `clearTNTVisual` (shells; lights are pooled)
   `#danger` vignette + beat-synced shake when within ~8-10 blocks (`updateMegaDanger`,
   fuse-weighted, pause-gated). It detonates at 5x the regular radius
-  (`MEGA_BLAST_RADIUS` 15, spherical) with a dense lingering
-  fire cloud (384 slow `NormalBlending` core at size 2.2 + `megaFire`: 350
-  saturated red/orange ground-fire + 180 embers + 220 column particles,
-  per-burst `grav` in `tickEffects`, all scaled up to 2.5x for pooled cluster
-  blasts, all fx lifetimes halved via `MEGA_FX_T` 0.5) and a tall classic mushroom cloud (`megaMushroom`: 350 grey
-  `NormalBlending` cap particles at +15-23 blocks,
-  all fx tag 4 with `frustumCulled: false`, save-persisted) plus a violent
+  (`MEGA_BLAST_RADIUS` 15, spherical) with a dense spherical fireball
+  (`megaFxSingle` at Single Dense: ~1400-pt fire core + 400-pt white-hot heart + 400-pt smoke
+  shell + 250-pt sparks, all fx tag 4 with `frustumCulled: false`,
+  save-persisted, lifetimes halved via `MEGA_FX_T` 0.5) plus a violent
   distance-scaled camera shake (`camTrauma` cap 1.5, sqrt falloff to 150
   blocks, trauma^1.5 rotational + full XYZ positional kick decayed at 1.4/s
   in the main loop, camera-only so saved yaw/pitch are untouched).
@@ -536,7 +538,42 @@ stays bright at distance, `placeable: true` so it
   the `MEGA_QUIET` flag silences mega blast visuals
   (`spawnMegaUnion`/`spawnMegaExplosion`, incl. load replay) and every mega
   camera shake (blast + fuse-proximity beats) — carve, knockback, panic and
-  ejection stay live; flip to `true` to watch mob behavior undisturbed. Mega blasts additionally
+  ejection stay live; flip to `true` to watch mob behavior undisturbed. Every mega
+  blast draws one synchronized dense fireball (`megaFxSingle`: core + heart +
+  shell + sparks sharing one life); pooled cluster blasts draw it once at the
+  centroid with radius `clusterRadius(n)` = 1 + (min(n,10)−1)·(max−1)/9 where
+  `MEGA_CLUSTER_MAX` = 28·√2/15 ≈ 2.64: ×1 for 1 mega (R15) up to ×2.64 for
+  10 (R39.6, the village half-diagonal — linear, +2.7 blocks per mega:
+  15/17.7/20.5/23.2/25.9/28.6/31.4/34.1/36.8/39.6), n counting mega members
+  only (regulars carve ×1 and never inflate n); a mega joins the cluster from
+  ≤ the live multiplied radius (fixed-point drain + queue threshold), not just
+  adjacency; chained hordes collapse into the first pool — replays finding no
+  live members return early instead of firing NaN visuals;
+  the fireball itself is sized to the crater exactly — `megaFxSingle` derives
+  `CR = MEGA_BLAST_RADIUS × r` and fills every element to it: two translucent
+  `megaFlashBall` spheres (orange at `CR`, white core at `0.62·CR`, depthWrite
+  off) plus the fire/heart/smoke/spark clouds spawned out to `CR`, so the
+  visible explosion equals the crater, and
+  spawn radii, radial velocities, flash sizes and point sizes all scale with
+  the radius factor, so the ball reads crater-sized at every step). Compact
+  mega pools (members within R of the mega centroid) carve one centroid sphere
+  at exactly that radius via integer `scanBlastSphere` scanlines clamped per
+  column to `colTops` — crater and fireball match perfectly and scan cost is
+  independent of member count (spread clusters and solos keep per-member
+  carves, same scan); the integer lattice also fixes fractional radii carving
+  almost nothing. The pool
+  carve scales with the same factor (compact pools: the one centroid sphere;
+  spread/solo: `carveBlastSphere` member spheres at `MEGA_BLAST_RADIUS × r`,
+  so a max cluster craters the village; single blasts stay at ×1; regular
+  TNTs pooled in carve at their own base radius and never inflate n).
+  Megas wipe everything in radius except y=0 and `protectedBlocks` (mob
+  pillars and WATER/LAVA included — pools, rivers, moon lakes and the lava
+  sea are deleted, irreversibly); regular TNT spares mob pillars and
+  WATER/LAVA, and no blast or hand edit can ever delete y=0. The eject/knockback union follows it, while panic and the TNT
+  chaining radii are untouched. Camera shake is full inside the crater and
+  tamed with distance outside (sqrt falloff to `MEGA_SHAKE_DIST × r`, so bigger
+  clusters shake farther); `MEGA_QUIET` still silences every mega shake.
+  Mega blasts additionally
   panic everything within one crater radius of the union edge with a 20-35 block throw away from the whole cluster (`panicMegaBlast` /
   `megaFleePointUnion`, held/chained included) and record a 10s crater-avoid disc (`recordCraterAvoid` /
   `inCraterAvoid`, honoured by `fleePointAway`, `wanderNear` and
@@ -796,15 +833,17 @@ stays bright at distance, `placeable: true` so it
   to the
    surface (`headInWater` full-AABB WATER/LAVA, non-solid so you can wade from any direction; damped entry `vel.y*=0.3`, barely dips; deep ascent `SWIM_ACCEL` 8 blocks/s² capped at `SWIM_MAX` 64 via `waterSurfaceTop`; shallow hold at 65% immersed (`targetY = surface-1.17`, `err*4` spring with `SWIM_BRAKE*2`, `SWIM_AREA` 10) — floats waist-chest deep, not feet-on-surface; / sprints at `SPRINT`), LAVA
   is placeable only onto another LAVA cell or directly on the fire above one,
-  can't be removed, and TNT blasts never destroy
-  LAVA. The Nether's auto-built return portal (`buildNetherPortal`, an obsidian
+  can't be removed by hand, and regular TNT blasts never destroy
+  LAVA — Mega TNT blasts do (lava sea included, irreversibly). The Nether's auto-built return portal (`buildNetherPortal`, an obsidian
   frame standing on a 11×9 netherrack pad at spawn (x −5…5, z −4…4, 3 blocks past
   each frame edge along X and 4 each side along Z, cleared 5 high), frame + pad
   indestructible (`protectedBlocks`, re-protected in `ensureNetherPortal`), or any Nether-frame
   you build in the Nether) brings you
   back to the Overworld's last portal entry point. The Nether floor is sealed
-  like the Overworld: NETHERRACK at y=0 is unbreakable (`breakBlock` + TNT blast
-  guards, mirroring STONE at y=0).
+  like the Overworld: any block at y=0 is unbreakable (`breakBlock` refuses,
+  `carveBlastSphere` skips the seed cell and every y=0 cell, and
+  `purgeFloatingLiquidsAround` never purges y=0 — no blast or hand edit,
+  however repeated, can ever delete the floor).
 - **Ender Dragon**: ambient dragon that spawns in the End and flies along a
   random closed aerial path (arc-length-sampled Catmull-Rom spline through
   random waypoints 7–22 above the platform (`DRAGON_MIN_Y`/
@@ -853,8 +892,7 @@ stays bright at distance, `placeable: true` so it
   `paintDragonPalette`; `damageDragon` now only starts the countdown instead of
    killing outright, and clears any live breath cubes at kill time), then death triggers a huge multicolor explosion (420
   spectrum-hued particles plus a white second layer via `spawnDragonDeath`,
-  no flash sphere), opens the return portal, unlocks Mega TNT in the hotbar
-  (`unlockMegaTNT`, first kill only) and removes the dragon. Resources are
+  no flash sphere), opens the return portal and removes the dragon. Resources are
   disposed when leaving the End. The dragon is a flying mob (`kind: "dragon"`
   in `mobs[]`, `hw` 1.5 `h` 3, `dim: "end"`, created in `spawnDragon` as
   `dragon.mob` and removed in `removeDragon`): `updateDragon` syncs `pos`/`vel`
@@ -1436,8 +1474,8 @@ or phase. Step-up is root-gated by jumping leadership: when the chain root is a 
   mobs on the load/dimension-return paths);
   pre-v16 saves load with End/Nether mobs, chains, held mob (outside Overworld),
   `endCleared` and portal exits empty (End loads sealed with a fresh dragon,
-  like before); pre-v40 saves load with Mega TNT locked unless their End is
-  cleared (backfilled from `endCleared`); pre-v17 saves load with a fresh full-HP dragon (sealed unless
+  like before); Mega TNT stays locked until the dragon is defeated (loads honor
+  the saved unlock byte, or a cleared End for old saves); pre-v17 saves load with a fresh full-HP dragon (sealed unless
   cleared) and no live TNT; pre-v15 saves load with velocity untouched, no chains and no held mob; pre-v18
   saves load with velocity-correct volleys only for the first bomb per target (no `tntEta` sync)
   and v17 `hitCount` read as u8; pre-v19 saves load with a fresh dragon unless

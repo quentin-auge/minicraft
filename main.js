@@ -80,6 +80,7 @@ function purgeFloatingLiquidsAround(coords) {
     }
     if (grounded) continue;
     for (const [x, y, z] of cells) {
+      if (y === 0) continue;
       if (getBlock(x, y, z) !== lid) continue;
       setBlock(x, y, z, AIR);
       purged.push([x, y, z]);
@@ -8492,10 +8493,10 @@ function distToMegaUnion(x, z, union) {
   }
   return d;
 }
-function distToMegaUnion3D(x, y, z, union3) {
+function distToMegaUnion3D(x, y, z, union3, R = MEGA_BLAST_RADIUS) {
   let d = Infinity;
   for (const mm of union3) {
-    const dd = Math.hypot(x - mm[0], y - mm[1], z - mm[2]) - MEGA_BLAST_RADIUS;
+    const dd = Math.hypot(x - mm[0], y - mm[1], z - mm[2]) - R;
     if (dd < d) d = dd;
   }
   return d;
@@ -14513,6 +14514,7 @@ function rebuildMeshes() {
   for (const meshes of chunkMeshes.values()) disposeChunkMeshes(meshes);
   chunkMeshes.clear();
   chunkQueue.length = 0;
+  poolRefreshQueue.clear();
   streamChunks();
   drainChunkQueue(true);
 }
@@ -14520,9 +14522,7 @@ function rebuildMeshes() {
 // Rebuild just the chunk(s) holding the given blocks (plus neighbours across
 // a chunk border), so editing cost stays tiny even in a 2x world.
 let refreshDefer = null;
-function refreshBlocks(coords) {
-  if (refreshDefer) { for (const c of coords) refreshDefer.push(c); return; }
-  if (placeBatch) { for (const c of coords) placeBatch.push(c); return; }
+function refreshChunkKeys(coords) {
   const keys = new Set();
   for (const [x, , z] of coords) {
     const cx = chunkOf(x), cz = chunkOf(z);
@@ -14534,10 +14534,28 @@ function refreshBlocks(coords) {
     if (rz === 0) keys.add(cx + "_" + (cz - 1));
     if (rz === CHUNK - 1) keys.add(cx + "_" + (cz + 1));
   }
-  for (const ck of keys) {
+  return keys;
+}
+function refreshBlocks(coords) {
+  if (refreshDefer) { for (const c of coords) refreshDefer.push(c); return; }
+  if (placeBatch) { for (const c of coords) placeBatch.push(c); return; }
+  for (const ck of refreshChunkKeys(coords)) {
+    poolRefreshQueue.delete(ck);
     if (!chunkMeshes.has(ck)) continue;
     const [cx, cz] = ck.split("_");
     rebuildChunk(+cx, +cz);
+  }
+}
+const poolRefreshQueue = new Set();
+function drainPoolRefresh() {
+  if (!poolRefreshQueue.size) return;
+  const deadline = performance.now() + CHUNK_BUDGET_MS;
+  for (const ck of poolRefreshQueue) {
+    poolRefreshQueue.delete(ck);
+    if (!chunkMeshes.has(ck)) continue;
+    const [cx, cz] = ck.split("_");
+    rebuildChunk(+cx, +cz);
+    if (performance.now() >= deadline) break;
   }
 }
 
@@ -16456,7 +16474,7 @@ function breakBlock() {
   if (aimOnMob()) return;
   const { x, y, z } = currentBlock;
   if (protectedBlocks.has(protKey(x, y, z))) return;
-  if ((getBlock(x, y, z) === STONE || getBlock(x, y, z) === NETHERRACK) && y === 0) return;
+  if (y === 0) return;
   if (isMobStandingOn(x, y, z, true) || intersectsMob(x, y, z, true)) return;
   if (getBlock(x, y, z) === TNT) { igniteTNT(x, y, z); return; }
   if (getBlock(x, y, z) === MEGA_TNT) { igniteTNT(x, y, z, MEGA_FUSE_TIME); return; }
@@ -16716,6 +16734,7 @@ const MEGA_KNOCK_RADIUS = MEGA_BLAST_RADIUS * 2;
 const MEGA_KNOCK_SPEED = 30;
 const MEGA_SHAKE_DIST = 150;
 const MEGA_QUIET = false;
+const MEGA_DEBUG_UNLOCKED = false;
 const MEGA_FX_T = 0.5;
 let camTrauma = 0;
 function addCamShake(a) { camTrauma = Math.min(1.5, camTrauma + a); }
@@ -17673,13 +17692,73 @@ function explodeTNT(x, y, z, pointBlank, homing = false, mega = false) {
 function explodeBird(x, y, z, pointBlank) {
   explosionQueue.push({ x, y, z, pointBlank, homing: true, due: 0, bird: true });
 }
-function carveBlastSphere(bx, by, bz, mega, batchKeys) {
+function scanBlastSphere(cx, cy, cz, R, fn) {
+  const R2 = R * R;
+  const ct = colTops[dim];
+  const yLoBase = Math.max(0, Math.ceil(cy - R)), yHiBase = Math.min(MAX_Y, Math.floor(cy + R));
+  const xLo = Math.max(-WORLD_RADIUS, Math.ceil(cx - R)), xHi = Math.min(WORLD_RADIUS, Math.floor(cx + R));
+  const zLo = Math.max(-WORLD_RADIUS, Math.ceil(cz - R)), zHi = Math.min(WORLD_RADIUS, Math.floor(cz + R));
+  for (let gx = xLo; gx <= xHi; gx++) {
+    const dx = gx - cx;
+    for (let gz = zLo; gz <= zHi; gz++) {
+      const dz = gz - cz;
+      const r2xz = dx * dx + dz * dz;
+      if (r2xz > R2) continue;
+      const dyMax = Math.sqrt(R2 - r2xz);
+      const yLo = Math.max(yLoBase, Math.ceil(cy - dyMax));
+      let yHi = Math.min(yHiBase, Math.floor(cy + dyMax));
+      const top = ct[colTopIdx(gx, gz)];
+      if (top < yHi) yHi = top;
+      for (let gy = yLo; gy <= yHi; gy++) fn(gx, gy, gz);
+    }
+  }
+}
+function carveBlastCell(gx, gy, gz, mega, batchKeys) {
+  const kk = key(gx, gy, gz);
+  if (batchKeys.has(kk)) return false;
+  const id = getBlock(gx, gy, gz);
+  if (id !== TNT && id !== MEGA_TNT && !mega && (mobPillarCache ? mobPillarCache.has(kk) : (isMobStandingOn(gx, gy, gz) || intersectsMob(gx, gy, gz)))) return false;
+  if (id === AIR || (!mega && (id === WATER || id === LAVA))) return false;
+  if (gy === 0) return false;
+  if (protectedBlocks.has(dim + ":" + kk)) return false;
+  if ((id === TNT || id === MEGA_TNT) && !(poolConsumed && poolConsumed.has(kk))) {
+    const isMega = id === MEGA_TNT;
+    const instant = mega || isMega;
+    if (tntLit.has(kk)) {
+      const lt = tntLit.get(kk);
+      if (!lt.mesh) {
+        if (chainPending.has(kk)) return false;
+        clearTNTVisual(lt);
+        tntLit.delete(kk);
+        chainPending.add(kk);
+        if (isMega) enqueueExplosion(gx, gy, gz, lt.stuck, false, 0, true, true);
+        else enqueueExplosion(gx, gy, gz, lt.stuck, false, instant ? 0 : CHAIN_DELAY, false, instant);
+      }
+    } else {
+      if (chainPending.has(kk)) return false;
+      chainPending.add(kk);
+      if (isMega) enqueueExplosion(gx, gy, gz, false, false, 0, true, true);
+      else enqueueExplosion(gx, gy, gz, false, false, instant ? 0 : CHAIN_DELAY, false, instant);
+    }
+    return false;
+  }
+  batchKeys.add(kk);
+  const blastPineOwner = (id === LOG || id === LEAVES) && plantedPines.size ? pineAt(gx, gy, gz) : null;
+  if (blastPineOwner) {
+    const bk = key(blastPineOwner.x, blastPineOwner.y, blastPineOwner.z) + "|" + gx + "," + gy + "," + gz;
+    brokenPineCells.add(bk);
+  }
+  setBlock(gx, gy, gz, AIR);
+  refreshDefer.push([gx, gy, gz]);
+  return blastPineOwner ? true : false;
+}
+function carveBlastSphere(bx, by, bz, mega, batchKeys, radiusMul = 1) {
   let brokePine = false;
   const k0 = key(bx, by, bz);
   if (!protectedBlocks.has(dim + ":" + k0) && !batchKeys.has(k0)) {
     const id0 = getBlock(bx, by, bz);
-    if (id0 === TNT || id0 === MEGA_TNT || (mobPillarCache ? !mobPillarCache.has(k0) : (!isMobStandingOn(bx, by, bz) && !intersectsMob(bx, by, bz)))) {
-      if (id0 !== WATER && id0 !== LAVA && !((id0 === STONE || id0 === NETHERRACK) && by === 0)) {
+    if (id0 === TNT || id0 === MEGA_TNT || (!mega && (mobPillarCache ? !mobPillarCache.has(k0) : (!isMobStandingOn(bx, by, bz) && !intersectsMob(bx, by, bz))))) {
+      if ((mega || (id0 !== WATER && id0 !== LAVA)) && by !== 0) {
         if ((id0 === LOG || id0 === LEAVES) && plantedPines.size && pineCellAt(bx, by, bz)) brokePine = true;
         batchKeys.add(k0);
         setBlock(bx, by, bz, AIR);
@@ -17687,50 +17766,8 @@ function carveBlastSphere(bx, by, bz, mega, batchKeys) {
       }
     }
   }
-  const R = mega ? MEGA_BLAST_RADIUS : BLAST_RADIUS, R2 = R * R;
-  for (let dx = -R; dx <= R; dx++) for (let dy = -R; dy <= R; dy++) for (let dz = -R; dz <= R; dz++) {
-    if (dx * dx + dy * dy + dz * dz > R2) continue;
-    const gx = bx + dx, gy = by + dy, gz = bz + dz;
-    if (gy < 0 || gy > MAX_Y) continue;
-    if (gx < -WORLD_RADIUS || gx > WORLD_RADIUS || gz < -WORLD_RADIUS || gz > WORLD_RADIUS) continue;
-    const kk = key(gx, gy, gz);
-    if (batchKeys.has(kk)) continue;
-    const id = getBlock(gx, gy, gz);
-    if (id !== TNT && id !== MEGA_TNT && (mobPillarCache ? mobPillarCache.has(kk) : (isMobStandingOn(gx, gy, gz) || intersectsMob(gx, gy, gz)))) continue;
-    if (id === AIR || id === WATER || id === LAVA) continue;
-    if ((id === STONE || id === NETHERRACK) && gy === 0) continue;
-    if (protectedBlocks.has(dim + ":" + kk)) continue;
-    if ((id === TNT || id === MEGA_TNT) && !(poolConsumed && poolConsumed.has(kk))) {
-      const isMega = id === MEGA_TNT;
-      const instant = mega || isMega;
-      if (tntLit.has(kk)) {
-        const lt = tntLit.get(kk);
-        if (!lt.mesh) {
-          if (chainPending.has(kk)) continue;
-          clearTNTVisual(lt);
-          tntLit.delete(kk);
-          chainPending.add(kk);
-          if (isMega) enqueueExplosion(gx, gy, gz, lt.stuck, false, 0, true, true);
-          else enqueueExplosion(gx, gy, gz, lt.stuck, false, instant ? 0 : CHAIN_DELAY, false, instant);
-        }
-      } else {
-        if (chainPending.has(kk)) continue;
-        chainPending.add(kk);
-        if (isMega) enqueueExplosion(gx, gy, gz, false, false, 0, true, true);
-        else enqueueExplosion(gx, gy, gz, false, false, instant ? 0 : CHAIN_DELAY, false, instant);
-      }
-      continue;
-    }
-    batchKeys.add(kk);
-    const blastPineOwner = (id === LOG || id === LEAVES) && plantedPines.size ? pineAt(gx, gy, gz) : null;
-    if (blastPineOwner) {
-      brokePine = true;
-      const bk = key(blastPineOwner.x, blastPineOwner.y, blastPineOwner.z) + "|" + gx + "," + gy + "," + gz;
-      brokenPineCells.add(bk);
-    }
-    setBlock(gx, gy, gz, AIR);
-    refreshDefer.push([gx, gy, gz]);
-  }
+  const R = (mega ? MEGA_BLAST_RADIUS : BLAST_RADIUS) * radiusMul;
+  scanBlastSphere(bx, by, bz, R, (gx, gy, gz) => { if (carveBlastCell(gx, gy, gz, mega, batchKeys)) brokePine = true; });
   return brokePine;
 }
 function processMegaPool(seeds, batchKeys) {
@@ -17765,25 +17802,32 @@ function processMegaPool(seeds, batchKeys) {
       const [x, y, z] = keyXYZ(k);
       cells.push({ k, x, y, z });
     }
-    for (let i = 0; i < members.length; i++) {
-      const m = members[i];
-      const R = m.mega ? MEGA_BLAST_RADIUS : BLAST_RADIUS, R2 = R * R;
-      for (let j = cells.length - 1; j >= 0; j--) {
-        const cell = cells[j];
-        const dx = cell.x - m.x, dy = cell.y - m.y, dz = cell.z - m.z;
-        if (dx * dx + dy * dy + dz * dz > R2) continue;
-        const id = getBlock(cell.x, cell.y, cell.z);
-        if (id !== TNT && id !== MEGA_TNT) { cells.splice(j, 1); continue; }
-        if (protectedBlocks.has(dim + ":" + cell.k)) { cells.splice(j, 1); continue; }
-        cells.splice(j, 1);
-        const lt = tntLit.get(cell.k);
-        if (lt) {
-          if (lt.mesh) continue;
-          clearTNTVisual(lt);
-          tntLit.delete(cell.k);
+    const megaCount = () => { let n = 0; for (const m of members) if (m.mega) n++; return n; };
+    let grew = true;
+    while (grew) {
+      grew = false;
+      const liveMegaR = MEGA_BLAST_RADIUS * clusterRadius(Math.max(1, megaCount()));
+      for (let i = 0; i < members.length; i++) {
+        const m = members[i];
+        const R = m.mega ? liveMegaR : BLAST_RADIUS, R2 = R * R;
+        for (let j = cells.length - 1; j >= 0; j--) {
+          const cell = cells[j];
+          const dx = cell.x - m.x, dy = cell.y - m.y, dz = cell.z - m.z;
+          if (dx * dx + dy * dy + dz * dz > R2) continue;
+          const id = getBlock(cell.x, cell.y, cell.z);
+          if (id !== TNT && id !== MEGA_TNT) { cells.splice(j, 1); continue; }
+          if (protectedBlocks.has(dim + ":" + cell.k)) { cells.splice(j, 1); continue; }
+          cells.splice(j, 1);
+          const lt = tntLit.get(cell.k);
+          if (lt) {
+            if (lt.mesh) continue;
+            clearTNTVisual(lt);
+            tntLit.delete(cell.k);
+          }
+          memberSet.add(cell.k);
+          members.push({ x: cell.x, y: cell.y, z: cell.z, mega: id === MEGA_TNT });
+          grew = true;
         }
-        memberSet.add(cell.k);
-        members.push({ x: cell.x, y: cell.y, z: cell.z, mega: id === MEGA_TNT });
       }
     }
   }
@@ -17797,6 +17841,7 @@ function processMegaPool(seeds, batchKeys) {
     }
   }
   for (const k of memberSet) if (chainPending.has(k)) chainPending.delete(k);
+  if (!members.length) return false;
   let brokePine = false;
   let ccx = 0, ccy = 0, ccz = 0;
   for (const m of members) { ccx += m.x + 0.5; ccy += m.y + 0.5; ccz += m.z + 0.5; }
@@ -17807,15 +17852,33 @@ function processMegaPool(seeds, batchKeys) {
     maxDist = Math.max(maxDist, Math.hypot(mx - ccx, my - ccy, mz - ccz));
   }
   poolConsumed = memberSet;
+  let megaCount = 0;
+  for (const m of members) if (m.mega) megaCount++;
+  const poolR = clusterRadius(Math.max(1, megaCount));
   try {
-    for (const m of members) {
-      if (carveBlastSphere(m.x, m.y, m.z, m.mega, batchKeys)) brokePine = true;
+    const megas = [];
+    for (const m of members) if (m.mega) megas.push(m);
+    let mccx = 0, mccy = 0, mccz = 0;
+    for (const m of megas) { mccx += m.x + 0.5; mccy += m.y + 0.5; mccz += m.z + 0.5; }
+    if (megas.length) { mccx /= megas.length; mccy /= megas.length; mccz /= megas.length; }
+    let maxMegaDist = 0;
+    for (const m of megas) maxMegaDist = Math.max(maxMegaDist, Math.hypot(m.x + 0.5 - mccx, m.y + 0.5 - mccy, m.z + 0.5 - mccz));
+    const R = MEGA_BLAST_RADIUS * poolR;
+    if (megas.length > 1 && maxMegaDist <= R) {
+      scanBlastSphere(mccx, mccy, mccz, R, (gx, gy, gz) => { if (carveBlastCell(gx, gy, gz, true, batchKeys)) brokePine = true; });
+      for (const m of members) {
+        if (!m.mega && carveBlastSphere(m.x, m.y, m.z, false, batchKeys, 1)) brokePine = true;
+      }
+    } else {
+      for (const m of members) {
+        if (carveBlastSphere(m.x, m.y, m.z, m.mega, batchKeys, m.mega ? poolR : 1)) brokePine = true;
+      }
     }
   } finally {
     poolConsumed = null;
   }
-  if (!MEGA_QUIET) spawnMegaUnion(members, ccx, ccy, ccz, maxDist);
-  recordCraterAvoid(ccx, ccz, maxDist + MEGA_BLAST_RADIUS + 2);
+  if (!MEGA_QUIET) spawnMegaUnion(members, ccx, ccy, ccz, poolR);
+  recordCraterAvoid(ccx, ccz, maxDist + MEGA_BLAST_RADIUS * poolR + 2);
   const megaUnion = [];
   const megaMembers3 = [];
   for (const m of members) if (m.mega) { megaUnion.push([m.x + 0.5, m.z + 0.5]); megaMembers3.push([m.x + 0.5, m.y + 0.5, m.z + 0.5]); }
@@ -17823,7 +17886,7 @@ function processMegaPool(seeds, batchKeys) {
   const touchXYZ = megaTouchesVillage(megaMembers3);
   if (mobs.length) handleMobExplosion(touchXYZ ? touchXYZ[0] : ccx, touchXYZ ? touchXYZ[1] : ccy, touchXYZ ? touchXYZ[2] : ccz);
   megaNoPerchUntil = Math.max(megaNoPerchUntil, performance.now() / 1000 + PANIC_TIME);
-  applyMegaKnockback(ccx, ccy, ccz, megaMembers3.length ? megaMembers3 : null);
+  applyMegaKnockback(ccx, ccy, ccz, megaMembers3.length ? megaMembers3 : null, poolR);
   panicMegaBlast(ccx, ccy, ccz, 0, megaUnion, touchXYZ);
   return brokePine;
 }
@@ -17862,10 +17925,11 @@ function processExplosionQueue() {
       while (members.length < 12 && explosionQueue.length) {
         const q = explosionQueue[0];
         if (!(q.mega && !q.due && !q.homing && !q.bird)) break;
+        const thr = MEGA_BLAST_RADIUS * clusterRadius(members.length);
         let near = false;
         for (const m of members) {
           const ddx = q.x - m.x, ddy = q.y - m.y, ddz = q.z - m.z;
-          if (ddx * ddx + ddy * ddy + ddz * ddz <= MEGA_BLAST_RADIUS * MEGA_BLAST_RADIUS) { near = true; break; }
+          if (ddx * ddx + ddy * ddy + ddz * ddz <= thr * thr) { near = true; break; }
         }
         if (!near) break;
         members.push({ x: q.x, y: q.y, z: q.z });
@@ -17920,7 +17984,9 @@ function processExplosionQueue() {
   const toRefresh = refreshDefer;
   refreshDefer = null;
   if (toRefresh.length) {
-    refreshBlocks(toRefresh);
+    for (const ck of refreshChunkKeys(toRefresh)) {
+      if (chunkMeshes.has(ck)) poolRefreshQueue.add(ck);
+    }
     if (plantedPines.size) garlandDirty = true;
     queueSave();
   }
@@ -18102,120 +18168,101 @@ function spawnExplosion(cx, cy, cz) {
   bursts.push({ pts, geo, mat, vel, life: 0.8, max: 0.8, tag: 0, fx: cx, fy: cy, fz: cz });
 }
 
-function spawnMegaExplosion(cx, cy, cz, scale = 1) {
-  const flash = new THREE.Mesh(
-    new THREE.SphereGeometry(3.5 * Math.cbrt(scale), 14, 10),
-    new THREE.MeshBasicMaterial({ color: 0xfff2cc, transparent: true, opacity: 1 })
+function megaFlashBall(cx, cy, cz, color, r, life, opacity = 1) {
+  const m = new THREE.Mesh(
+    new THREE.SphereGeometry(r, 24, 16),
+    new THREE.MeshBasicMaterial({ color, transparent: true, opacity, depthWrite: false })
   );
-  flash.position.set(cx, cy, cz);
-  scene.add(flash);
-  flashes.push({ mesh: flash, born: performance.now(), life: 0.6 * MEGA_FX_T });
-
-  const N = Math.round(384 * scale);
-  const posA = new Float32Array(N * 3);
-  const colA = new Float32Array(N * 3);
-  const vel = new Float32Array(N * 3);
-  for (let i = 0; i < N; i++) {
-    posA[i * 3] = cx + (Math.random() - 0.5) * 6; posA[i * 3 + 1] = cy + (Math.random() - 0.5) * 6; posA[i * 3 + 2] = cz + (Math.random() - 0.5) * 6;
-    const r = Math.random();
-    if (r < 0.3) { colA[i * 3] = 1; colA[i * 3 + 1] = 0.9; colA[i * 3 + 2] = 0.7; }
-    else if (r < 0.65) { colA[i * 3] = 1; colA[i * 3 + 1] = 0.45 + Math.random() * 0.2; colA[i * 3 + 2] = 0.08; }
-    else { colA[i * 3] = 0.8; colA[i * 3 + 1] = 0.15 + Math.random() * 0.1; colA[i * 3 + 2] = 0.04; }
-    const th = Math.random() * Math.PI * 2;
-    const ph = Math.acos(2 * Math.random() - 1);
-    const s = 4 + Math.random() * 6;
-    vel[i * 3] = s * Math.sin(ph) * Math.cos(th);
-    vel[i * 3 + 1] = s * Math.cos(ph) + 3;
-    vel[i * 3 + 2] = s * Math.sin(ph) * Math.sin(th);
-  }
-  const geo = new THREE.BufferGeometry();
-  geo.setAttribute("position", new THREE.BufferAttribute(posA, 3));
-  geo.setAttribute("color", new THREE.BufferAttribute(colA, 3));
-  const mat = new THREE.PointsMaterial({
-    size: 2.2, vertexColors: true, transparent: true, opacity: 1,
-    depthWrite: false,
-  });
-  const pts = new THREE.Points(geo, mat);
-  pts.frustumCulled = false;
-  scene.add(pts);
-  bursts.push({ pts, geo, mat, vel, life: 3 * MEGA_FX_T, max: 3 * MEGA_FX_T, grav: -6, tag: 4, fx: cx, fy: cy, fz: cz });
-  megaFire(cx, cy, cz, scale);
-  megaMushroom(cx, cy, cz, scale);
+  m.position.set(cx, cy, cz);
+  scene.add(m);
+  flashes.push({ mesh: m, born: performance.now(), life });
+}
+const MEGA_CLUSTER_MAX = 28 * Math.SQRT2 / MEGA_BLAST_RADIUS;
+function clusterRadius(n) {
+  return 1 + (Math.min(Math.max(n, 1), 10) - 1) * (MEGA_CLUSTER_MAX - 1) / 9;
+}
+function megaFxSingle(cx, cy, cz, radiusMul = 1, density = 1.6) {
+  const LIFE = 3 * MEGA_FX_T;
+  const CR = MEGA_BLAST_RADIUS * radiusMul;
+  megaFlashBall(cx, cy, cz, 0xffd9a0, CR, 0.6 * MEGA_FX_T, 0.55);
+  megaFlashBall(cx, cy, cz, 0xffffff, CR * 0.62, 0.4 * MEGA_FX_T, 0.8);
+  megaCloud(cx, cy, cz, Math.round(1400 * density), 2.8 * radiusMul, LIFE, 0, false,
+    () => {
+      const r = Math.random();
+      if (r < 0.3) return [0.7, 0.07 + Math.random() * 0.05, 0.02];
+      if (r < 0.7) return [1, 0.3 + Math.random() * 0.15, 0.04];
+      return [1, 0.7 + Math.random() * 0.2, 0.12];
+    },
+    () => {
+      const th = Math.random() * Math.PI * 2, ph = Math.acos(2 * Math.random() - 1);
+      const R = CR * Math.cbrt(Math.random());
+      return [cx + R * Math.sin(ph) * Math.cos(th), cy + R * Math.cos(ph), cz + R * Math.sin(ph) * Math.sin(th)];
+    },
+    (i, p) => {
+      const dx = p[0] - cx, dy = p[1] - cy, dz = p[2] - cz;
+      const dl = Math.hypot(dx, dy, dz) || 1;
+      const s = (1 + Math.random() * 2) * radiusMul;
+      return [dx / dl * s, dy / dl * s, dz / dl * s];
+    });
+  megaCloud(cx, cy, cz, Math.round(400 * density), 2.2 * radiusMul, LIFE, 0, true,
+    () => {
+      const r = Math.random();
+      if (r < 0.5) return [1, 1, 1];
+      if (r < 0.8) return [1, 0.95, 0.8];
+      return [1, 0.8, 0.5];
+    },
+    () => {
+      const th = Math.random() * Math.PI * 2, ph = Math.acos(2 * Math.random() - 1);
+      const R = CR * 0.5 * Math.cbrt(Math.random());
+      return [cx + R * Math.sin(ph) * Math.cos(th), cy + R * Math.cos(ph), cz + R * Math.sin(ph) * Math.sin(th)];
+    },
+    (i, p) => {
+      const dx = p[0] - cx, dy = p[1] - cy, dz = p[2] - cz;
+      const dl = Math.hypot(dx, dy, dz) || 1;
+      const s = (3 + Math.random() * 3) * radiusMul;
+      return [dx / dl * s, dy / dl * s, dz / dl * s];
+    });
+  megaCloud(cx, cy, cz, Math.round(400 * density), 2.4 * radiusMul, LIFE, -1, false,
+    () => {
+      const g = 0.22 + Math.random() * 0.16;
+      return [g + 0.12, g * 0.9, g * 0.7];
+    },
+    () => {
+      const th = Math.random() * Math.PI * 2, ph = Math.acos(2 * Math.random() - 1);
+      const R = CR * (0.6 + 0.4 * Math.random());
+      return [cx + R * Math.sin(ph) * Math.cos(th), cy + R * Math.cos(ph), cz + R * Math.sin(ph) * Math.sin(th)];
+    },
+    (i, p) => {
+      const dx = p[0] - cx, dy = p[1] - cy, dz = p[2] - cz;
+      const dl = Math.hypot(dx, dy, dz) || 1;
+      const s = (0.5 + Math.random()) * radiusMul;
+      return [dx / dl * s, dy / dl * s, dz / dl * s];
+    });
+  megaCloud(cx, cy, cz, Math.round(250 * density), 1.4 * radiusMul, LIFE, -3, true,
+    () => [1, 0.4 + Math.random() * 0.2, 0.12],
+    () => {
+      const th = Math.random() * Math.PI * 2, ph = Math.acos(2 * Math.random() - 1);
+      const R = CR * Math.cbrt(Math.random());
+      return [cx + R * Math.sin(ph) * Math.cos(th), cy + R * Math.cos(ph), cz + R * Math.sin(ph) * Math.sin(th)];
+    },
+    (i, p) => {
+      const dx = p[0] - cx, dy = p[1] - cy, dz = p[2] - cz;
+      const dl = Math.hypot(dx, dy, dz) || 1;
+      const s = (2 + Math.random() * 3) * radiusMul;
+      return [dx / dl * s, dy / dl * s + 2 * radiusMul, dz / dl * s];
+    });
+}
+function spawnMegaExplosion(cx, cy, cz) {
+  megaFxSingle(cx, cy, cz, 1, 1.6);
 }
 
-function spawnMegaUnion(members, ccx, ccy, ccz, maxDist) {
-  // The union of all member explosions: one flash + one cylindrical shockwave
-  // at the centroid, one crater-sized radial fireball shell per member (R = its
-  // own blast radius, merged by overlap), plus small fire/smoke per member —
-  // all sharing bounded total budgets.
-  const n = members.length;
-  const flash = new THREE.Mesh(
-    new THREE.SphereGeometry(3.5 * Math.cbrt(Math.min(2.5, 1 + 0.25 * (n - 1))), 14, 10),
-    new THREE.MeshBasicMaterial({ color: 0xfff2cc, transparent: true, opacity: 1 })
-  );
-  flash.position.set(ccx, ccy, ccz);
-  scene.add(flash);
-  flashes.push({ mesh: flash, born: performance.now(), life: 0.6 * MEGA_FX_T });
-  const shock = new THREE.Mesh(
-    new THREE.CylinderGeometry(1, 1, 2.5, 48, 1, true),
-    new THREE.MeshBasicMaterial({ color: 0xffd9a0, transparent: true, opacity: 0.55, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide, fog: false })
-  );
-  shock.position.set(ccx, ccy, ccz);
-  scene.add(shock);
-  flashes.push({ mesh: shock, born: performance.now(), life: 0.7 * MEGA_FX_T, shock: true, rMax: maxDist + MEGA_BLAST_RADIUS });
-  const per = Math.max(40, Math.floor(2400 / Math.max(1, n)));
-  let budget = Math.min(3000, per * n);
-  let shellBudget = 3000;
-  for (const m of members) {
-    const mx = m.x + 0.5, my = m.y + 0.5, mz = m.z + 0.5;
-    if (budget > 0) {
-      const Ni = Math.min(per, budget);
-      budget -= Ni;
-      const Nf = Math.round(Ni * 0.65), Ns = Ni - Nf;
-    if (Nf > 0) megaCloud(mx, my, mz, Nf, 2.6, 3.6 * MEGA_FX_T, 2, false,
-      () => {
-        const r = Math.random();
-        if (r < 0.3) return [0.7, 0.07 + Math.random() * 0.05, 0.02];
-        if (r < 0.7) return [1, 0.3 + Math.random() * 0.15, 0.04];
-        return [1, 0.7 + Math.random() * 0.2, 0.12];
-      },
-      () => [mx + (Math.random() - 0.5) * 8, my + Math.random() * 5, mz + (Math.random() - 0.5) * 8],
-      () => {
-        const th = Math.random() * Math.PI * 2;
-        const s = 1 + Math.random() * 2.5;
-        return [s * Math.cos(th), 3 + Math.random() * 5, s * Math.sin(th)];
-      });
-    if (Ns > 0) megaCloud(mx, my, mz, Ns, 2.2, 4 * MEGA_FX_T, -1, false,
-      () => {
-        const g = 0.25 + Math.random() * 0.18;
-        return [g + 0.1, g, Math.max(0, g - 0.03)];
-      },
-      () => [mx + (Math.random() - 0.5) * 5, my + Math.random() * 6, mz + (Math.random() - 0.5) * 5],
-      () => [(Math.random() - 0.5) * 2, 9 + Math.random() * 7, (Math.random() - 0.5) * 2]);
-    }
-    if (shellBudget > 0) {
-      const R = m.mega ? MEGA_BLAST_RADIUS : BLAST_RADIUS;
-      const Nsh = Math.min(shellBudget, Math.min(m.mega ? 2000 : 120, Math.max(m.mega ? 150 : 60, Math.floor(3000 / Math.max(1, n)))));
-      shellBudget -= Nsh;
-      if (Nsh > 0) megaCloud(mx, my, mz, Nsh, m.mega ? 2.2 : 0.8, 1.0 * MEGA_FX_T, -4, true,
-        () => {
-          const r = Math.random();
-          if (r < 0.3) return [1, 0.9, 0.7];
-          if (r < 0.65) return [1, 0.45 + Math.random() * 0.2, 0.08];
-          return [0.8, 0.15 + Math.random() * 0.1, 0.04];
-        },
-        () => {
-          const th = Math.random() * Math.PI * 2, ph = Math.acos(2 * Math.random() - 1);
-          return [mx + R * Math.sin(ph) * Math.cos(th) + (Math.random() - 0.5), my + R * Math.cos(ph) + (Math.random() - 0.5), mz + R * Math.sin(ph) * Math.sin(th) + (Math.random() - 0.5)];
-        },
-        (i, p) => {
-          const dx = p[0] - mx, dy = p[1] - my, dz = p[2] - mz;
-          const dl = Math.hypot(dx, dy, dz) || 1;
-          const s = 10 + Math.random() * 8;
-          return [dx / dl * s, dy / dl * s + 2, dz / dl * s];
-        });
-    }
-  }
+function spawnMegaUnion(members, ccx, ccy, ccz, r = 1) {
+  // One synchronized fireball at the centroid. Cluster radius follows the
+  // linear series 1 + (min(n,10)-1)*(MAX-1)/9: x1 for 1 mega (R15) up to
+  // MAX for 10 megas (R39.6, the village half-diagonal), where n counts
+  // mega members only. Compact pools carve one centroid sphere at this
+  // radius, so crater and fireball match exactly at any cluster size.
+  megaFxSingle(ccx, ccy, ccz, r, 1.6 * r);
 }
 
 function megaCloud(cx, cy, cz, N, size, life, grav, additive, colFn, posFn, velFn) {
@@ -18241,52 +18288,6 @@ function megaCloud(cx, cy, cz, N, size, life, grav, additive, colFn, posFn, velF
   pts.frustumCulled = false;
   scene.add(pts);
   bursts.push({ pts, geo, mat, vel, life, max: life, grav, tag: 4, fx: cx, fy: cy, fz: cz });
-}
-
-function megaFire(cx, cy, cz, scale = 1) {
-  megaCloud(cx, cy, cz, Math.round(350 * scale), 2.6, 3.6 * MEGA_FX_T, 2, false,
-    () => {
-      const r = Math.random();
-      if (r < 0.3) return [0.7, 0.07 + Math.random() * 0.05, 0.02];
-      if (r < 0.7) return [1, 0.3 + Math.random() * 0.15, 0.04];
-      return [1, 0.7 + Math.random() * 0.2, 0.12];
-    },
-    () => [cx + (Math.random() - 0.5) * 12, cy + Math.random() * 7, cz + (Math.random() - 0.5) * 12],
-    () => {
-      const th = Math.random() * Math.PI * 2;
-      const s = 1 + Math.random() * 2.5;
-      return [s * Math.cos(th), 3 + Math.random() * 5, s * Math.sin(th)];
-    });
-  megaCloud(cx, cy, cz, Math.round(180 * scale), 1.4, 2.6 * MEGA_FX_T, -3, false,
-    () => [0.9, 0.32 + Math.random() * 0.12, 0.1],
-    () => [cx + (Math.random() - 0.5) * 6, cy + Math.random() * 5, cz + (Math.random() - 0.5) * 6],
-    () => [(Math.random() - 0.5) * 4, 10 + Math.random() * 8, (Math.random() - 0.5) * 4]);
-  megaCloud(cx, cy, cz, Math.round(220 * scale), 2.2, 4 * MEGA_FX_T, -1, false,
-    () => {
-      const g = 0.25 + Math.random() * 0.18;
-      return [g + 0.1, g, Math.max(0, g - 0.03)];
-    },
-    () => [cx + (Math.random() - 0.5) * 7, cy + Math.random() * 15, cz + (Math.random() - 0.5) * 7],
-    () => [(Math.random() - 0.5) * 2, 9 + Math.random() * 7, (Math.random() - 0.5) * 2]);
-}
-
-function megaMushroom(cx, cy, cz, scale = 1) {
-  megaCloud(cx, cy, cz, Math.round(350 * scale), 2.6, 4.2 * MEGA_FX_T, -1.5, false,
-    () => {
-      const g = 0.32 + Math.random() * 0.2;
-      return [Math.min(1, g + 0.12), g, Math.max(0, g - 0.04)];
-    },
-    () => {
-      const th = Math.random() * Math.PI * 2;
-      const r = 3 + Math.random() * 9;
-      return [cx + r * Math.cos(th), cy + 15 + Math.random() * 8, cz + r * Math.sin(th)];
-    },
-    (i, p) => {
-      const dx = p[0] - cx, dz = p[2] - cz;
-      const dl = Math.hypot(dx, dz) || 1;
-      const s = 2 + Math.random() * 4;
-      return [dx / dl * s, Math.random() * 1.5, dz / dl * s];
-    });
 }
 
 const megaEject = [];
@@ -18323,13 +18324,13 @@ function resolveEmbedded(p, hw, h) {
   }
   return false;
 }
-function applyMegaKnockback(cx, cy, cz, members = null) {
-  const R = MEGA_BLAST_RADIUS;
+function applyMegaKnockback(cx, cy, cz, members = null, radiusMul = 1) {
+  const R = MEGA_BLAST_RADIUS * radiusMul;
   const now = performance.now() / 1000;
   const union3 = members && members.length ? members : [[cx, cy, cz]];
   const union = union3.map((mm) => [mm[0], mm[2]]);
   const crater = { members: union, cx, cz, cy };
-  if (distToMegaUnion3D(pos.x, pos.y + 0.9, pos.z, union3) < 0) {
+  if (distToMegaUnion3D(pos.x, pos.y + 0.9, pos.z, union3, R) < 0) {
     let dx = pos.x - cx, dz = pos.z - cz;
     const d0 = Math.hypot(dx, dz);
     if (d0 < 0.001) { dx = 1; dz = 0; } else { dx /= d0; dz /= d0; }
@@ -18367,10 +18368,10 @@ function applyMegaKnockback(cx, cy, cz, members = null) {
     if (mobDimOf(m) !== dim) continue;
     if (!m.vel) m.vel = new THREE.Vector3();
     if (m.kind === "enderman") {
-      if (distToMegaUnion3D(m.pos.x, m.pos.y + m.h * 0.5, m.pos.z, union3) >= 0) continue;
+      if (distToMegaUnion3D(m.pos.x, m.pos.y + m.h * 0.5, m.pos.z, union3, R) >= 0) continue;
       megaTeleportEnderman(m, union); continue;
     }
-    if (distToMegaUnion3D(m.pos.x, m.pos.y + m.h * 0.5, m.pos.z, union3) >= 0) continue;
+    if (distToMegaUnion3D(m.pos.x, m.pos.y + m.h * 0.5, m.pos.z, union3, R) >= 0) continue;
     if (isChained(m)) severChainMob(m);
     if (!resolveEmbedded(m.pos, m.hw, m.h)) continue;
     const [nx, nz] = nearestMegaOf(union, m.pos.x, m.pos.z);
@@ -18427,7 +18428,7 @@ function applyMegaKnockback(cx, cy, cz, members = null) {
     }
   }
   const dc = Math.max(0, distToMegaUnion(camera.position.x, camera.position.z, union));
-  if (!MEGA_QUIET) addCamShake(dc < R ? 1.5 : Math.max(0, 1.5 * Math.sqrt(Math.max(0, 1 - dc / MEGA_SHAKE_DIST))));
+  if (!MEGA_QUIET) addCamShake(dc < R ? 1.5 : Math.max(0, 1.5 * Math.sqrt(Math.max(0, 1 - dc / (MEGA_SHAKE_DIST * radiusMul)))));
 }
 function clampMegaMob(m) {
   if (dim === "end") {
@@ -19002,7 +19003,7 @@ const END_RETURN_BASE_Y = END_PLATFORM_TOP + 1;
 const protectedBlocks = new Set();
 const protKey = (x, y, z) => dim + ":" + key(x, y, z);
 let endCleared = false;
-let megaUnlocked = false;
+let megaUnlocked = MEGA_DEBUG_UNLOCKED;
 function unlockMegaTNT() {
   if (megaUnlocked) return false;
   megaUnlocked = true;
@@ -21704,7 +21705,7 @@ function deserialize(buf) {
   netherExit = null;
   endExit = null;
   endCleared = false;
-  megaUnlocked = false;
+  megaUnlocked = MEGA_DEBUG_UNLOCKED;
   pendingDragon = null;
   pendingTNTBombs = null;
   pendingTNTQueue = null;
@@ -22032,8 +22033,8 @@ function deserialize(buf) {
     const cd = dv.getUint8(o++);
     pendingCarriedDim = cd === 1 ? 1 : cd === 2 ? 2 : 0;
     endCleared = dv.getUint8(o++) === 1;
-    megaUnlocked = ver >= 40 ? dv.getUint8(o++) === 1 : false;
-    megaUnlocked = megaUnlocked || endCleared;
+    const savedMega = ver >= 40 ? dv.getUint8(o++) === 1 : false;
+    megaUnlocked = MEGA_DEBUG_UNLOCKED ? true : (savedMega || endCleared);
     if (ver >= 21) {
       const vp = dv.getFloat32(o, true); o += 4;
       pendingVillagePanic = isFinite(vp) ? Math.min(Math.max(0, vp), VILLAGE_PANIC_TIME) : 0;
@@ -22726,7 +22727,7 @@ function resetDims() {
   overPortalWin = null;
   overPortalDir = null;
   endCleared = false;
-  megaUnlocked = false;
+  megaUnlocked = MEGA_DEBUG_UNLOCKED;
   netReturnWin = null;
   endReturnWin = null;
   netherExit = null;
@@ -23711,6 +23712,7 @@ function loop(now) {
     const pcz = chunkOf(freeCam ? camPos.z : pos.z);
     if (pcx !== meshCx || pcz !== meshCz) streamChunks();
     drainChunkQueue();
+    drainPoolRefresh();
   }
 
   if (skyDome.visible) {
