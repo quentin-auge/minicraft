@@ -16472,7 +16472,9 @@ function updateTarget() {
 function breakBlock() {
   if (!currentBlock) return;
   if (aimOnMob()) return;
-  const { x, y, z } = currentBlock;
+  breakBlockAt(currentBlock.x, currentBlock.y, currentBlock.z);
+}
+function breakBlockAt(x, y, z) {
   if (protectedBlocks.has(protKey(x, y, z))) return;
   if (y === 0) return;
   if (isMobStandingOn(x, y, z, true) || intersectsMob(x, y, z, true)) return;
@@ -16562,10 +16564,169 @@ let rightMoved = false;
 // 1s gate once this passes RIGHT_MOVE_PX, so tiny jitter never starts a dig.
 let rightMoveAcc = 0;
 const RIGHT_MOVE_PX = 15;
-// Positions of every block placed/removed during the current click hold:
-// chained edits are only allowed within CHAIN_RANGE blocks of any of them.
-let clickAnchors = [];
+// Positions of every block placed/removed during the current click hold
+// (paint sweep attempts count too, so the stroke stays continuous across cells
+// tryPlace refuses): chained edits are only allowed within CHAIN_RANGE of any
+// of them, so a paused stroke resumes around any block placed during the hold,
+// from anywhere. Anchors clear on press/release only, never mid-hold.
 const CHAIN_RANGE = 4;
+const anchorBuckets = new Map();
+function anchorBucketKey(x, y, z) {
+  return Math.floor(x / CHAIN_RANGE) + "," + Math.floor(y / CHAIN_RANGE) + "," + Math.floor(z / CHAIN_RANGE);
+}
+function anchorClear() { anchorBuckets.clear(); }
+function anchorPush(x, y, z) {
+  const k = anchorBucketKey(x, y, z);
+  let b = anchorBuckets.get(k);
+  if (!b) { b = []; anchorBuckets.set(k, b); }
+  b.push([x, y, z]);
+}
+function anchorNear(x, y, z) {
+  if (anchorBuckets.size === 0) return true;
+  const bx = Math.floor(x / CHAIN_RANGE), by = Math.floor(y / CHAIN_RANGE), bz = Math.floor(z / CHAIN_RANGE);
+  const r2 = CHAIN_RANGE * CHAIN_RANGE;
+  for (let dx = -1; dx <= 1; dx++) for (let dy = -1; dy <= 1; dy++) for (let dz = -1; dz <= 1; dz++) {
+    const b = anchorBuckets.get((bx + dx) + "," + (by + dy) + "," + (bz + dz));
+    if (!b) continue;
+    for (const [ax, ay, az] of b) {
+      if ((x - ax) ** 2 + (y - ay) ** 2 + (z - az) ** 2 <= r2) return true;
+    }
+  }
+  return false;
+}
+// Hold-left paint stroke state: the previous frame's look ray, so each paint
+// tick can fill the swept path with distance-independent sampling.
+let paintHasPrev = false;
+const paintPrevDir = new THREE.Vector3(0, 0, -1);
+const paintPrevEye = new THREE.Vector3();
+const PAINT_SAMPLE_STEP = 0.5;
+const PAINT_SAMPLE_MAX = 64;
+const _paintDir = new THREE.Vector3();
+const _paintEye = new THREE.Vector3();
+const _paintSDir = new THREE.Vector3();
+const _paintSEye = new THREE.Vector3();
+function paintSaveRay() {
+  camera.getWorldDirection(paintPrevDir);
+  paintPrevEye.copy(camera.position);
+  paintHasPrev = true;
+}
+// Hold-right dig sweep state: the look ray at the last dig repeat, so each
+// repeat breaks the whole path swept since — continuous trenches at any
+// distance instead of one block per repeat.
+let digHasPrev = false;
+const digPrevDir = new THREE.Vector3(0, 0, -1);
+const digPrevEye = new THREE.Vector3();
+function digSaveRay() {
+  camera.getWorldDirection(digPrevDir);
+  digPrevEye.copy(camera.position);
+  digHasPrev = true;
+}
+// Break the look path swept since the last dig repeat: every cell comes from
+// a live raycast, so the dig always hugs surfaces. A cell breaks when near any
+// anchor of this hold or adjacent to the previous cell of this repeat (lastOk,
+// reset every repeat so cross-repeat continuity goes through anchors only).
+// Sky samples break nothing — aiming into the air just pauses the dig, which
+// resumes around any removed block as soon as it is re-aimed. Holding still
+// falls back to the live currentBlock, so tunnel deepening is unchanged.
+function digSweep() {
+  if (aimOnMob()) { digSaveRay(); return; }
+  camera.getWorldDirection(_paintDir);
+  _paintEye.copy(camera.position);
+  const sel = hotbarList()[selected];
+  const skipLiquid = sel !== WATER && sel !== LAVA && sel !== MOON_WATER;
+  let n = 1;
+  if (digHasPrev && currentBlock) {
+    const ang = digPrevDir.angleTo(_paintDir);
+    if (ang <= Math.PI / 2) {
+      const d = Math.hypot(currentBlock.x + 0.5 - _paintEye.x, currentBlock.y + 0.5 - _paintEye.y, currentBlock.z + 0.5 - _paintEye.z);
+      n = Math.min(PAINT_SAMPLE_MAX, Math.max(1, Math.ceil(d * ang / PAINT_SAMPLE_STEP)));
+    }
+  }
+  if (n <= 1) {
+    if (currentBlock && anchorNear(currentBlock.x, currentBlock.y, currentBlock.z)) {
+      chainBreaking = true;
+      try { breakBlockAt(currentBlock.x, currentBlock.y, currentBlock.z); } finally { chainBreaking = false; }
+      anchorPush(currentBlock.x, currentBlock.y, currentBlock.z);
+    }
+    digSaveRay();
+    return;
+  }
+  const seen = new Set();
+  let lastOk = null;
+  chainBreaking = true;
+  try {
+    for (let i = 1; i <= n; i++) {
+      const t = i / n;
+      _paintSDir.copy(digPrevDir).lerp(_paintDir, t).normalize();
+      _paintSEye.copy(digPrevEye).lerp(_paintEye, t);
+      const hit = pickBlock(_paintSEye, _paintSDir, skipLiquid);
+      if (!hit) { lastOk = null; continue; }
+      const adjacent = lastOk && Math.max(Math.abs(hit.x - lastOk[0]), Math.abs(hit.y - lastOk[1]), Math.abs(hit.z - lastOk[2])) <= 1;
+      if (!anchorNear(hit.x, hit.y, hit.z) && !adjacent) continue;
+      lastOk = [hit.x, hit.y, hit.z];
+      const k = hit.x + "," + hit.y + "," + hit.z;
+      if (seen.has(k)) continue;
+      seen.add(k);
+      breakBlockAt(hit.x, hit.y, hit.z);
+      anchorPush(hit.x, hit.y, hit.z);
+    }
+  } finally { chainBreaking = false; }
+  digSaveRay();
+}
+function paintPlace(id, wx, wy, wz) {
+  if (tryPlace(id, wx, wy, wz) && !chainHome) chainHome = [wx, wy, wz];
+  anchorPush(wx, wy, wz);
+}
+// Hold-left paint stroke: fills the look path swept since the previous frame,
+// so fast sweeps lay a continuous distance-independent line. Every placed cell
+// comes from a live raycast, so the stroke always hugs surfaces. A cell passes
+// when near any anchor of this hold or adjacent to the previous cell of this
+// tick (lastOk, reset every tick so cross-frame continuity goes through anchors
+// only). Sky samples place nothing — a violent jump into the air just stops the
+// stroke, which resumes around any placed block as soon as it is re-aimed.
+function paintSweep(id) {
+  if (aimOnMob()) return;
+  const skipLiquid = id !== WATER && id !== LAVA && id !== MOON_WATER;
+  camera.getWorldDirection(_paintDir);
+  _paintEye.copy(camera.position);
+  let n = 1;
+  if (paintHasPrev && currentBlock) {
+    const ang = paintPrevDir.angleTo(_paintDir);
+    if (ang <= Math.PI / 2) {
+      const d = Math.hypot(currentBlock.x + 0.5 - _paintEye.x, currentBlock.y + 0.5 - _paintEye.y, currentBlock.z + 0.5 - _paintEye.z);
+      n = Math.min(PAINT_SAMPLE_MAX, Math.max(1, Math.ceil(d * ang / PAINT_SAMPLE_STEP)));
+    }
+  }
+  if (n <= 1) {
+    if (!currentBlock || currentBlock.id === id) return;
+    const wx = currentBlock.x + currentBlock.face[0];
+    const wy = currentBlock.y + currentBlock.face[1];
+    const wz = currentBlock.z + currentBlock.face[2];
+    if (anchorNear(wx, wy, wz)) paintPlace(id, wx, wy, wz);
+    return;
+  }
+  const seen = new Set();
+  let lastOk = null;
+  beginPlaceBatch();
+  try {
+    for (let i = 1; i <= n; i++) {
+      const t = i / n;
+      _paintSDir.copy(paintPrevDir).lerp(_paintDir, t).normalize();
+      _paintSEye.copy(paintPrevEye).lerp(_paintEye, t);
+      const hit = pickBlock(_paintSEye, _paintSDir, skipLiquid);
+      if (!hit) { lastOk = null; continue; }
+      const cx = hit.x + hit.face[0], cy = hit.y + hit.face[1], cz = hit.z + hit.face[2];
+      const adjacent = lastOk && Math.max(Math.abs(cx - lastOk[0]), Math.abs(cy - lastOk[1]), Math.abs(cz - lastOk[2])) <= 1;
+      if (!anchorNear(cx, cy, cz) && !adjacent) continue;
+      lastOk = [cx, cy, cz];
+      if (hit.id === id) continue;
+      const k = cx + "," + cy + "," + cz;
+      if (seen.has(k)) continue;
+      seen.add(k);
+      paintPlace(id, cx, cy, cz);
+    }
+  } finally { endPlaceBatch(); }
+}
 // The landing cell for the chain staircase: the grid cell exactly one step
 // ahead of the player at feet level. Over a cliff edge that prolongs the
 // terrain straight out at foot level instead of diving after the ground below.
@@ -16675,12 +16836,12 @@ function chainStep() {
 // into a hole-free staircase.
 function chainPad(id, nx, ny, nz) {
   if (nx >= -WORLD_RADIUS && nx <= WORLD_RADIUS) {
-    if (nz >= -WORLD_RADIUS && nz <= WORLD_RADIUS) tryPlace(id, nx, ny, nz);
-    if (nz + 1 <= WORLD_RADIUS) tryPlace(id, nx, ny, nz + 1);
+    if (nz >= -WORLD_RADIUS && nz <= WORLD_RADIUS && tryPlace(id, nx, ny, nz)) anchorPush(nx, ny, nz);
+    if (nz + 1 <= WORLD_RADIUS && tryPlace(id, nx, ny, nz + 1)) anchorPush(nx, ny, nz + 1);
   }
   if (nx + 1 <= WORLD_RADIUS) {
-    if (nz >= -WORLD_RADIUS && nz <= WORLD_RADIUS) tryPlace(id, nx + 1, ny, nz);
-    if (nz + 1 <= WORLD_RADIUS) tryPlace(id, nx + 1, ny, nz + 1);
+    if (nz >= -WORLD_RADIUS && nz <= WORLD_RADIUS && tryPlace(id, nx + 1, ny, nz)) anchorPush(nx + 1, ny, nz);
+    if (nz + 1 <= WORLD_RADIUS && tryPlace(id, nx + 1, ny, nz + 1)) anchorPush(nx + 1, ny, nz + 1);
   }
 }
 // Spiral staircase fallback: circle the anchor column clockwise, dropping one
@@ -16698,19 +16859,19 @@ function chainSpiral(dest, nx, ny, nz) {
   if (nx < -WORLD_RADIUS || nx > WORLD_RADIUS || nz < -WORLD_RADIUS || nz > WORLD_RADIUS) return;
   chainHome = [nx, ny, nz];
   const id = chainId ?? hotbarList()[selected];
-  tryPlace(id, nx, ny, nz);
+  if (tryPlace(id, nx, ny, nz)) anchorPush(nx, ny, nz);
   const offs = [[d[0], d[1]], [d[0] * 2, d[1] * 2], [d[0] + p[0], d[1] + p[1]], [d[0] * 2 + p[0], d[1] * 2 + p[1]], [d[0] + p[0] * 2, d[1] + p[1] * 2], [d[0] * 2 + p[0] * 2, d[1] * 2 + p[1] * 2]];
   for (const o of offs) {
     const x = nx + o[0], z = nz + o[1];
     if (x < -WORLD_RADIUS || x > WORLD_RADIUS || z < -WORLD_RADIUS || z > WORLD_RADIUS) continue;
-    tryPlace(id, x, ny, z);
+    if (tryPlace(id, x, ny, z)) anchorPush(x, ny, z);
   }
   const wallOffs = [[d[0] * 3, d[1] * 3], [d[0] * 3 + p[0], d[1] * 3 + p[1]], [d[0] * 3 + p[0] * 2, d[1] * 3 + p[1] * 2], [d[0] + p[0] * 3, d[1] + p[1] * 3], [d[0] * 2 + p[0] * 3, d[1] * 2 + p[1] * 3]];
   for (const o of wallOffs) {
     const x = nx + o[0], z = nz + o[1];
     if (x < -WORLD_RADIUS || x > WORLD_RADIUS || z < -WORLD_RADIUS || z > WORLD_RADIUS) continue;
-    if (ny <= MAX_Y) tryPlace(id, x, ny, z);
-    if (ny + 1 <= MAX_Y) tryPlace(id, x, ny + 1, z);
+    if (ny <= MAX_Y && tryPlace(id, x, ny, z)) anchorPush(x, ny, z);
+    if (ny + 1 <= MAX_Y && tryPlace(id, x, ny + 1, z)) anchorPush(x, ny + 1, z);
   }
 }
 function intersectsPlayer(bx, by, bz) {
@@ -23054,17 +23215,18 @@ document.addEventListener("mousedown", (e) => {
     h.t = 0;
     h.acc = 0;
     if (e.button === 0) {
-      leftMoved = false; leftTimer = 0; leftStairs = false; leftEverMoved = false; leftNoPlace = false; clickAnchors = [];
+      leftMoved = false; leftTimer = 0; leftStairs = false; leftEverMoved = false; leftNoPlace = false; anchorClear();
       chainId = hotbarList()[selected];
+      paintSaveRay();
       const sel = hotbarList()[selected];
       if (sel === TNT) {
         const fired = tryFireLockedTNT();
         leftNoPlace = fired || !!tntChainAimMob();
-        if (!fired && !leftNoPlace && placeBlock(sel)) clickAnchors.push([currentBlock.x + currentBlock.face[0], currentBlock.y + currentBlock.face[1], currentBlock.z + currentBlock.face[2]]);
-      } else if (placeBlock(sel)) clickAnchors.push([currentBlock.x + currentBlock.face[0], currentBlock.y + currentBlock.face[1], currentBlock.z + currentBlock.face[2]]);
+        if (!fired && !leftNoPlace && placeBlock(sel)) anchorPush(currentBlock.x + currentBlock.face[0], currentBlock.y + currentBlock.face[1], currentBlock.z + currentBlock.face[2]);
+      } else if (placeBlock(sel)) anchorPush(currentBlock.x + currentBlock.face[0], currentBlock.y + currentBlock.face[1], currentBlock.z + currentBlock.face[2]);
     } else {
-      rightMoved = false; rightMoveAcc = 0; clickAnchors = [];
-      if (currentBlock) { const b = [currentBlock.x, currentBlock.y, currentBlock.z]; breakBlock(); clickAnchors.push(b); }
+      rightMoved = false; rightMoveAcc = 0; anchorClear(); digSaveRay();
+      if (currentBlock) { const b = [currentBlock.x, currentBlock.y, currentBlock.z]; breakBlock(); anchorPush(b[0], b[1], b[2]); }
       else if (hotbarList()[selected] === TNT) tryFireLockedTNT();
     }
   }
@@ -23076,8 +23238,8 @@ document.addEventListener("mouseup", (e) => {
     h.down = false;
     h.t = 0;
     h.acc = 0;
-    if (e.button === 0) { chainHome = null; chainPlat = null; chainSpin = 0; chainId = null; leftStairs = false; leftTimer = 0; leftNoPlace = false; clickAnchors = []; }
-    else { rightMoved = false; rightMoveAcc = 0; clickAnchors = []; }
+    if (e.button === 0) { chainHome = null; chainPlat = null; chainSpin = 0; chainId = null; leftStairs = false; leftTimer = 0; leftNoPlace = false; anchorClear(); paintHasPrev = false; }
+    else { rightMoved = false; rightMoveAcc = 0; anchorClear(); digHasPrev = false; }
   }
   if (e.button !== 1 || loading) return;
   if (!grappleActive) return;
@@ -23387,21 +23549,15 @@ function loop(now) {
           }
           if (didChain) endPlaceBatch();
         } else if (!leftNoPlace && leftMoved && currentBlock && currentBlock.id !== (chainId ?? hotbarList()[selected])) {
-          // Paint phase: place where aimed, only onto a block of a different
-          // kind, within CHAIN_RANGE of the last block placed on this click.
-          const wx = currentBlock.x + currentBlock.face[0];
-          const wy = currentBlock.y + currentBlock.face[1];
-          const wz = currentBlock.z + currentBlock.face[2];
-          const near = !clickAnchors.length || clickAnchors.some(([ax, ay, az]) =>
-            (wx - ax) ** 2 + (wy - ay) ** 2 + (wz - az) ** 2 <= CHAIN_RANGE * CHAIN_RANGE);
-          if (near && !aimOnMob() && tryPlace(chainId ?? hotbarList()[selected], wx, wy, wz)) {
-            clickAnchors.push([wx, wy, wz]);
-            if (!chainHome) chainHome = [wx, wy, wz];
-          }
-          leftMoved = false; // one block per movement event
+          // Paint phase: fill the look path swept since the previous frame so
+          // fast sweeps lay a continuous surface-hugging line at any distance;
+          // aiming into the air just pauses the stroke until it is re-aimed.
+          paintSweep(chainId ?? hotbarList()[selected]);
+          leftMoved = false; // one stroke per movement event
         } else {
           leftMoved = false;
         }
+        if (editHold[0].down) paintSaveRay();
       }
       // Holding right click chains digging: only after 1s still held, or once
       // ~15px of deliberate mouse travel skipped the wait (rightMoved).
@@ -23417,16 +23573,9 @@ function loop(now) {
           while (h.acc >= step) {
             h.acc -= step;
             if (!didChain) { beginPlaceBatch(); didChain = true; }
-            if (currentBlock) {
-              const { x, y, z } = currentBlock;
-              const near = !clickAnchors.length || clickAnchors.some(([ax, ay, az]) =>
-                (x - ax) ** 2 + (y - ay) ** 2 + (z - az) ** 2 <= CHAIN_RANGE * CHAIN_RANGE);
-              if (near) {
-                chainBreaking = true;
-                try { breakBlock(); } finally { chainBreaking = false; }
-                clickAnchors.push([x, y, z]);
-              }
-            }
+            // Dig sweep: break the whole look path swept since the last
+            // repeat, so fast sweeps dig continuous trenches at any distance.
+            if (currentBlock) digSweep();
           }
           if (didChain) endPlaceBatch();
         }
@@ -23443,7 +23592,9 @@ function loop(now) {
       leftTimer = 0;
       rightMoved = false;
       rightMoveAcc = 0;
-      clickAnchors = [];
+      anchorClear();
+      paintHasPrev = false;
+      digHasPrev = false;
     }
     let showRope = false;
     if (grappleActive) {
