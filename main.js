@@ -16904,7 +16904,6 @@ const MEGA_BLAST_RADIUS = BLAST_RADIUS * 5;
 const MEGA_FUSE_TIME = 8;
 const MEGA_KNOCK_RADIUS = MEGA_BLAST_RADIUS * 2;
 const MEGA_KNOCK_SPEED = 30;
-const MEGA_SHAKE_DIST = 150;
 const MEGA_QUIET = false;
 const MEGA_DEBUG_UNLOCKED = false;
 const MEGA_FX_T = 0.5;
@@ -18745,7 +18744,8 @@ function applyMegaKnockback(cx, cy, cz, members = null, radiusMul = 1) {
     }
   }
   const dc = Math.max(0, distToMegaUnion(camera.position.x, camera.position.z, union));
-  if (!MEGA_QUIET) addCamShake(dc < R ? 1.5 : Math.max(0, 1.5 * Math.sqrt(Math.max(0, 1 - dc / (MEGA_SHAKE_DIST * radiusMul)))));
+  const amp = dc > 5 * R ? 0 : (1.5 * R) / Math.max(dc, R);
+  if (!MEGA_QUIET) addCamShake(amp);
 }
 function clampMegaMob(m) {
   if (dim === "end") {

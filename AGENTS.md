@@ -477,8 +477,10 @@ stays bright at distance, `placeable: true` so it
   (`megaFxSingle` at Single Dense: ~1400-pt fire core + 400-pt white-hot heart + 400-pt smoke
   shell + 250-pt sparks, all fx tag 4 with `frustumCulled: false`,
   save-persisted, lifetimes halved via `MEGA_FX_T` 0.5) plus a violent
-  distance-scaled camera shake (`camTrauma` cap 1.5, sqrt falloff to 150
-  blocks, trauma^1.5 rotational + full XYZ positional kick decayed at 1.4/s
+  distance-scaled camera shake (`camTrauma` peak 1.5, full within one crater radius of
+  the union edge then `1/d` falloff scaled by crater radius (`1.5·R/d`, so bigger
+  clusters shake proportionally more) with a hard zero beyond 5x crater radius,
+  + full XYZ positional kick decayed at 1.4/s
   in the main loop, camera-only so saved yaw/pitch are untouched).
   Panic/knockback run after the carve (post-blast terrain, never pre-blast).
   It ejects at detonation from the megas' crater union only (`applyMegaKnockback`
@@ -582,9 +584,10 @@ stays bright at distance, `placeable: true` so it
   pillars and WATER/LAVA included — pools, rivers, moon lakes and the lava
   sea are deleted, irreversibly); regular TNT spares mob pillars and
   WATER/LAVA, and no blast or hand edit can ever delete y=0. The eject/knockback union follows it, while panic and the TNT
-  chaining radii are untouched. Camera shake is full inside the crater and
-  tamed with distance outside (sqrt falloff to `MEGA_SHAKE_DIST × r`, so bigger
-  clusters shake farther); `MEGA_QUIET` still silences every mega shake.
+  chaining radii are untouched. Camera shake is full within one crater radius of the edge
+  and falls as `1/d` scaled by crater radius (`1.5·R/d`, so bigger
+  clusters shake proportionally more) with a hard zero beyond 5x crater radius;
+  `MEGA_QUIET` still silences every mega shake.
   Mega blasts additionally
   panic everything within one crater radius of the union edge with a 20-35 block throw away from the whole cluster (`panicMegaBlast` /
   `megaFleePointUnion`, held/chained included) and record a 10s crater-avoid disc (`recordCraterAvoid` /
