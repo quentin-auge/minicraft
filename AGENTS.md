@@ -202,8 +202,8 @@ small Python server for saving/loading worlds.
   onto a cell already holding the same liquid — water on water, lava
   on lava — and nothing else can be placed into a liquid cell
   (but any block may be stacked directly on a liquid surface);
-  they cannot be removed by hand — breaking one does nothing. Regular TNT
-  blasts spare WATER/LAVA; Mega TNT blasts delete every liquid cell in radius
+  they cannot be removed by hand — breaking one does nothing. TNT blasts (regular
+  and Mega alike) delete every liquid cell in radius
   (WATER/LAVA/MOON_WATER alike, irreversibly — pools, rivers, moon lakes and
   the lava sea). No free-floating liquid:
   every 6-connected group of the same liquid (water, lava and moon water each
@@ -581,9 +581,9 @@ stays bright at distance, `placeable: true` so it
   so a max cluster craters the village; single blasts stay at ×1; regular
   TNTs pooled in carve at their own base radius and never inflate n).
   Megas wipe everything in radius except y=0 and `protectedBlocks` (mob
-  pillars and WATER/LAVA included — pools, rivers, moon lakes and the lava
-  sea are deleted, irreversibly); regular TNT spares mob pillars and
-  WATER/LAVA, and no blast or hand edit can ever delete y=0. The eject/knockback union follows it, while panic and the TNT
+  pillars included — pools, rivers, moon lakes and the lava
+  sea are deleted, irreversibly); regular TNT spares mob pillars but deletes
+  liquids like mega, and no blast or hand edit can ever delete y=0. The eject/knockback union follows it, while panic and the TNT
   chaining radii are untouched. Camera shake is full within one crater radius of the edge
   and falls as `1/d` scaled by crater radius (`1.5·R/d`, so bigger
   clusters shake proportionally more) with a hard zero beyond 5x crater radius;
@@ -848,8 +848,8 @@ stays bright at distance, `placeable: true` so it
   to the
    surface (`headInWater` full-AABB WATER/LAVA, non-solid so you can wade from any direction; damped entry `vel.y*=0.3`, barely dips; deep ascent `SWIM_ACCEL` 8 blocks/s² capped at `SWIM_MAX` 64 via `waterSurfaceTop`; shallow hold at 65% immersed (`targetY = surface-1.17`, `err*4` spring with `SWIM_BRAKE*2`, `SWIM_AREA` 10) — floats waist-chest deep, not feet-on-surface; / sprints at `SPRINT`), LAVA
   is placeable only onto another LAVA cell or directly on the fire above one,
-  can't be removed by hand, and regular TNT blasts never destroy
-  LAVA — Mega TNT blasts do (lava sea included, irreversibly). The Nether's auto-built return portal (`buildNetherPortal`, an obsidian
+  can't be removed by hand, and TNT blasts (regular and Mega alike) destroy
+  LAVA (lava sea included, irreversibly). The Nether's auto-built return portal (`buildNetherPortal`, an obsidian
   frame standing on a 11×9 netherrack pad at spawn (x −5…5, z −4…4, 3 blocks past
   each frame edge along X and 4 each side along Z, cleared 5 high), frame + pad
   indestructible (`protectedBlocks`, re-protected in `ensureNetherPortal`), or any Nether-frame

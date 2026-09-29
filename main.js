@@ -17890,7 +17890,7 @@ function carveBlastCell(gx, gy, gz, mega, batchKeys) {
   if (batchKeys.has(kk)) return false;
   const id = getBlock(gx, gy, gz);
   if (id !== TNT && id !== MEGA_TNT && !mega && (mobPillarCache ? mobPillarCache.has(kk) : (isMobStandingOn(gx, gy, gz) || intersectsMob(gx, gy, gz)))) return false;
-  if (id === AIR || (!mega && (id === WATER || id === LAVA))) return false;
+  if (id === AIR) return false;
   if (gy === 0) return false;
   if (protectedBlocks.has(dim + ":" + kk)) return false;
   if ((id === TNT || id === MEGA_TNT) && !(poolConsumed && poolConsumed.has(kk))) {
@@ -17930,7 +17930,7 @@ function carveBlastSphere(bx, by, bz, mega, batchKeys, radiusMul = 1) {
   if (!protectedBlocks.has(dim + ":" + k0) && !batchKeys.has(k0)) {
     const id0 = getBlock(bx, by, bz);
     if (id0 === TNT || id0 === MEGA_TNT || (!mega && (mobPillarCache ? !mobPillarCache.has(k0) : (!isMobStandingOn(bx, by, bz) && !intersectsMob(bx, by, bz))))) {
-      if ((mega || (id0 !== WATER && id0 !== LAVA)) && by !== 0) {
+      if (by !== 0) {
         if ((id0 === LOG || id0 === LEAVES) && plantedPines.size && pineCellAt(bx, by, bz)) brokePine = true;
         batchKeys.add(k0);
         setBlock(bx, by, bz, AIR);
