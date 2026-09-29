@@ -30,6 +30,12 @@ small Python server for saving/loading worlds.
   `CHUNK_BUDGET_MS` drain next to `drainChunkQueue` — a max pool remeshes over
   ~9 frames behind its own flash instead of one hitch, so scan cost is
   independent of member count AND frame cost stays flat);
+  multi-mega pool carves drain as sliced union jobs (`enqueueMegaCarveJob`/
+  `drainMegaCarveJobs`, `MEGA_CARVE_BUDGET_MS` 6, per-slice purge + refresh +
+  save) with member blocks vanishing the same tick, far/off-screen mega FX
+  degrade to one flash blob (`megaFxLod`, plus a 6-live-burst cap), and the
+  knockback/panic mob passes prefilter by union bbox before any per-member
+  distance probe;
   `rebuildChunk`
   buckets block types in a single pass. Single-texture solids use one shared
   material (`getSingleMat`, 1 draw call instead of 6); lava sides share one
@@ -554,15 +560,22 @@ stays bright at distance, `placeable: true` so it
   off) plus the fire/heart/smoke/spark clouds spawned out to `CR`, so the
   visible explosion equals the crater, and
   spawn radii, radial velocities, flash sizes and point sizes all scale with
-  the radius factor, so the ball reads crater-sized at every step). Compact
+  the radius factor, so the ball reads crater-sized at every step). Multi-mega
+  pools carve as one sliced union job (`enqueueMegaCarveJob`/`drainMegaCarveJobs`,
+  `MEGA_CARVE_BUDGET_MS` 6): member blocks vanish the same tick while the
+  surrounding union (one centroid sphere when compact, the true member-sphere
+  union when spread — single visit per cell via merged per-column y-intervals,
+  same crater as per-member carves) drains over the next frames behind the
+  flash, with per-slice liquid purge + chunk refresh + save; single-mega pools
+  keep the synchronous `carveBlastSphere` sphere. Compact
   mega pools (members within R of the mega centroid) carve one centroid sphere
   at exactly that radius via integer `scanBlastSphere` scanlines clamped per
   column to `colTops` — crater and fireball match perfectly and scan cost is
-  independent of member count (spread clusters and solos keep per-member
-  carves, same scan); the integer lattice also fixes fractional radii carving
+  independent of member count (spread clusters union-carve once instead of one
+  sphere per member; solos keep the single synchronous carve); the integer lattice also fixes fractional radii carving
   almost nothing. The pool
   carve scales with the same factor (compact pools: the one centroid sphere;
-  spread/solo: `carveBlastSphere` member spheres at `MEGA_BLAST_RADIUS × r`,
+  spread: the member-sphere union at `MEGA_BLAST_RADIUS × r`, solos at ×1,
   so a max cluster craters the village; single blasts stay at ×1; regular
   TNTs pooled in carve at their own base radius and never inflate n).
   Megas wipe everything in radius except y=0 and `protectedBlocks` (mob
@@ -597,7 +610,7 @@ stays bright at distance, `placeable: true` so it
   one centroid flash + one cylindrical radial shockwave + one crater-sized
   radial fireball shell per member — R = its own blast radius, merged by
   overlap — sharing a ~3000-point shell budget plus the fire/smoke
-  distribution) and one mob pass with per-victim nearest-member
+  distribution; far/off-screen pools degrade to one flash blob via `megaFxLod`) and one mob pass with per-victim nearest-member
   directions (`applyMegaKnockback` members arg) and one union avoid disc. Any
   mega blast — pooled or single — detonates every regular TNT in radius
   instantly too (no more 50ms stagger under mega fire). Re-breaking a lit
