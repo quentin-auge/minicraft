@@ -596,6 +596,11 @@ function rebuildColTops(only) {
   }
 }
 function key(x, y, z) { return (x + KEY_OFF) * KEY_MY + y * KEY_MZ + (z + KEY_OFF); }
+// Pine-state map key scoped by dimension ("over|12345"), so the same xyz in
+// different dimensions never shares a soil, claim, soak mesh or timer sprite.
+function soilKey(d, x, y, z) { return d + "|" + key(x, y, z); }
+function dimToByte(d) { return d === "end" ? 1 : d === "nether" ? 2 : 0; }
+function dimFromByte(b) { return b === 2 ? "nether" : b === 1 ? "end" : "over"; }
 function keyXYZ(k) {
   const z = (k % KEY_MZ) - KEY_OFF;
   const t = Math.floor(k / KEY_MZ);
@@ -659,14 +664,15 @@ let placeBatch = null;
 let bulkGen = false;
 const heightMemo = new Map();
 
-// Villager-planted pines (Overworld, anywhere including the Moon). Pouring
-// WATER or MOON_WATER directly on top of any DIRT block soaks in over 0.5s: the water is
+// Villager-planted pines (any dimension). Pouring any liquid (WATER, LAVA or
+// MOON_WATER) directly on top of any DIRT block soaks in over 0.5s: the liquid is
 // absorbed and the soil turns wet. Only wet soil amid 8 solid neighbours
 // (same y, incl. diagonals and DIRT itself) or sitting on solid ground
 // (solid block below, 8 solid neighbours at y-1) attracts a nearby adult
 // villager, which walks over, bows the neck 40deg toward it while a 2.5s
 // TNT-style timer ticks above the block, then the timer vanishes and a pine
-// grows at PINE_RATE/s.
+// grows at PINE_RATE/s. Lava reads blue here, so lava soils reuse the
+// water-blue soak mesh, drips and shell.
 const growableSoils = new Map();
 const wetSoilSet = new Set(); // keys of growableSoils entries with wet=true
 const plantClaims = new Map();
@@ -754,6 +760,7 @@ function clearAllSoilTimerSprites() {
   for (const k of [...soilTimerSprites.keys()]) clearSoilTimerSprite(k);
 }
 function releaseGrowable(k) {
+  if (typeof k === "number") { const [rx, ry, rz] = keyXYZ(k); k = soilKey(dim, rx, ry, rz); }
   growableSoils.delete(k);
   wetSoilSet.delete(k);
   releasePineCells(k);
@@ -833,11 +840,10 @@ function spawnSoakDrips(cx, cy, cz, liq) {
   bursts.push({ pts, geo, mat, vel, life: 0.5, max: 0.5, tag: 4, fx: cx, fy: cy, fz: cz });
 }
 function armSoak(x, y, z, liq) {
-  if (dim !== "over" || world !== worlds.over) return false;
   if (getBlock(x, y, z) !== DIRT) return false;
-  if (liq !== MOON_WATER && liq !== WATER) liq = WATER;
-  const k = key(x, y, z);
-  if (pineFailBlinks.has(k)) {
+  if (liq !== WATER && liq !== LAVA && liq !== MOON_WATER) liq = WATER;
+  const k = soilKey(dim, x, y, z);
+  if (pineFailBlinks.has(soilKey(dim, x, y, z))) {
     setBlock(x, y + 1, z, AIR);
     refreshBlocks([[x, y + 1, z], ...purgeFloatingLiquidsAround([[x, y + 1, z]])]);
     queueSave();
@@ -860,7 +866,7 @@ function armSoak(x, y, z, liq) {
   }
   reservePineCells(k, pineCellsFor(x, y, z, soakDims.m, soakDims.e));
   let g = growableSoils.get(k);
-  if (!g) { g = { x, y, z, timer: null, wet: false, soak: null, liq }; growableSoils.set(k, g); }
+  if (!g) { g = { x, y, z, timer: null, wet: false, soak: null, liq, dim }; growableSoils.set(k, g); }
   if (g.wet || g.soak != null) return false;
   g.soak = SOIL_SOAK_TIME;
   g.liq = liq;
@@ -878,7 +884,7 @@ function absorbSoak(k, g) {
   wetSoilSet.add(k);
   clearSoakMesh(k);
   const above = getBlock(g.x, g.y + 1, g.z);
-  if (above === WATER || above === MOON_WATER) setBlock(g.x, g.y + 1, g.z, AIR);
+  if (isLiquid(above)) setBlock(g.x, g.y + 1, g.z, AIR);
   const absorbPurged = purgeFloatingLiquidsAround([[g.x, g.y + 1, g.z]]);
   spawnSoakDrips(g.x + 0.5, g.y + 1.2, g.z + 0.5, g.liq);
   refreshBlocks([[g.x, g.y, g.z], [g.x, g.y + 1, g.z], ...absorbPurged]);
@@ -889,14 +895,14 @@ const PINE_FAIL_BLINK_STEP = 0.2;
 const pineFailBlinks = new Map();
 let pineFailGeo = null, pineFailMat = null;
 function startPineFailBlink(x, y, z) {
-  const k = key(x, y, z);
+  const k = soilKey(dim, x, y, z);
   if (pineFailBlinks.has(k)) return;
   if (!pineFailGeo) pineFailGeo = new THREE.BoxGeometry(1.06, 1.06, 1.06);
   if (!pineFailMat) pineFailMat = new THREE.MeshBasicMaterial({ color: 0xff2222, transparent: true, opacity: 0.55, depthWrite: false });
   const mesh = new THREE.Mesh(pineFailGeo, pineFailMat);
   mesh.position.set(x + 0.5, y + 0.5, z + 0.5);
   scene.add(mesh);
-  pineFailBlinks.set(k, { x, y, z, t: 0, mesh });
+  pineFailBlinks.set(k, { x, y, z, dim, t: 0, mesh });
 }
 function clearPineFailBlink(k) {
   const b = pineFailBlinks.get(k);
@@ -904,24 +910,32 @@ function clearPineFailBlink(k) {
 }
 function clearAllPineFailBlinks() { for (const k of [...pineFailBlinks.keys()]) clearPineFailBlink(k); }
 const reservedPineCells = new Map();
+function pineOwnerDim(owner) {
+  const s = String(owner);
+  const i = s.indexOf("|");
+  return i < 0 ? dim : s.slice(0, i);
+}
+function pineCellKey(owner, x, y, z) {
+  return pineOwnerDim(owner) + "|" + key(x, y, z);
+}
 function reservePineCells(owner, cells) {
-  for (const c of cells) reservedPineCells.set(key(c.x, c.y, c.z), { o: owner, f: c.id !== LOG });
+  for (const c of cells) reservedPineCells.set(pineCellKey(owner, c.x, c.y, c.z), { o: owner, f: c.id !== LOG });
 }
 function releasePineCells(owner) {
   for (const [ck, rec] of reservedPineCells) if (rec.o === owner) reservedPineCells.delete(ck);
 }
 function clearAllPineReservations() { reservedPineCells.clear(); }
 function pineCellReserved(x, y, z, owner) {
-  const rec = reservedPineCells.get(key(x, y, z));
+  const rec = reservedPineCells.get(pineCellKey(owner, x, y, z));
   return rec !== undefined && rec.o !== owner;
 }
 function pineFolReserved(x, y, z, owner) {
-  const rec = reservedPineCells.get(key(x, y, z));
+  const rec = reservedPineCells.get(pineCellKey(owner, x, y, z));
   return rec !== undefined && rec.o !== owner && rec.f;
 }
 function tickPineFailBlinks(dt) {
-  if (dim !== "over" || world !== worlds.over) return;
   for (const [k, b] of pineFailBlinks) {
+    if ((b.dim || "over") !== dim) continue;
     if (getBlock(b.x, b.y, b.z) !== DIRT) { clearPineFailBlink(k); continue; }
     b.t += dt;
     if (Math.floor(b.t / (PINE_FAIL_BLINK_STEP * 2)) >= PINE_FAIL_BLINKS) {
@@ -1002,10 +1016,12 @@ function pineFits(x, y, z, m, e, owner) {
 }
 function pineSpotBlocked(x, y, z) {
   for (const g of growableSoils.values()) {
+    if (g.dim !== dim) continue;
     if (g.x === x && g.y === y && g.z === z) continue;
     if (Math.abs(g.x - x) <= 1 && Math.abs(g.z - z) <= 1 && Math.abs(g.y - y) <= 1) return true;
   }
   for (const g of pineGrowths) {
+    if (g.dim !== dim) continue;
     if (Math.abs(g.sx - x) <= 1 && Math.abs(g.sz - z) <= 1 && Math.abs(g.sy - y) <= 1) return true;
   }
   return false;
@@ -1058,7 +1074,7 @@ function fitTrunkRange(x, y, z, m, eFrom, eMax, owner) {
   return null;
 }
 function pickPineDims(x, y, z, owner) {
-  const maxM = moonZoneGeo(x, y, z) ? MOON_PINE_MAX_M : PINE_MAX_M;
+  const maxM = (dim === "over" && moonZoneGeo(x, y, z)) ? MOON_PINE_MAX_M : PINE_MAX_M;
   // Main draw: 3..maxM (2 is reserved for cramped spots, 1 for last resort).
   const ms = [];
   for (let m = PINE_MIN_M + 2; m <= maxM; m++) ms.push(m);
@@ -1111,10 +1127,9 @@ function pickPineDims(x, y, z, owner) {
   return null;
 }
 function startPineGrowth(x, y, z) {
-  if (dim !== "over" || world !== worlds.over) return false;
-  growableSoils.delete(key(x, y, z));
-  wetSoilSet.delete(key(x, y, z));
-  const k = key(x, y, z);
+  const k = soilKey(dim, x, y, z);
+  growableSoils.delete(k);
+  wetSoilSet.delete(k);
   releasePineCells(k);
   const hm = soilClaimant(k);
   if (hm) {
@@ -1135,7 +1150,7 @@ function startPineGrowth(x, y, z) {
   reservePineCells(k, cells);
   setBlock(x, y, z, LOG);
   refreshBlocks([[x, y, z]]);
-  pineGrowths.push({ cells, idx: 0, acc: 0, dims, sx: x, sy: y, sz: z, phaseCounts: pinePhaseCounts(cells) });
+  pineGrowths.push({ cells, idx: 0, acc: 0, dims, sx: x, sy: y, sz: z, dim, phaseCounts: pinePhaseCounts(cells) });
   queueSave();
   return true;
 }
@@ -1147,13 +1162,13 @@ function soilClaimant(k) {
   return hm;
 }
 function tickSoilTimers(dt) {
-  if (dim !== "over" || world !== worlds.over) return;
   if (wetShellMat || wetShellMatMoon) {
     const wetOp = 0.16 + 0.12 * (0.5 + 0.5 * Math.sin(performance.now() / 300));
     if (wetShellMat) wetShellMat.opacity = wetOp;
     if (wetShellMatMoon) wetShellMatMoon.opacity = wetOp;
   }
   for (const [k, g] of growableSoils) {
+    if (g.dim !== dim) continue;
     if (g.soak != null) {
       if (getBlock(g.x, g.y, g.z) !== DIRT) { releaseGrowable(k); continue; }
       g.soak -= dt;
@@ -1238,12 +1253,12 @@ function growthSolidOverlap(px, py, pz, hw, h) {
   return out;
 }
 function pushOutOfGrowth(touched, dt) {
-  if (dim !== "over" || world !== worlds.over) return 0;
   if (!pineGrowths.length && !touched.length) return 0;
   const maxStep = GROWTH_PUSH_SPEED * Math.min(Math.max(dt, 0), 0.1);
   if (maxStep <= 0) return 0;
   const anchors = [];
   for (const g of pineGrowths) {
+    if (g.dim !== dim) continue;
     const a = { sx: g.sx, sz: g.sz, minX: Infinity, maxX: -Infinity, minY: Infinity, maxY: -Infinity, minZ: Infinity, maxZ: -Infinity };
     for (const c of g.cells) {
       if (c.x < a.minX) a.minX = c.x;
@@ -1302,7 +1317,7 @@ function pushOutOfGrowth(touched, dt) {
     if (isFlyingKind(m.kind)) continue;
     if (isMobHeld(m) || isChained(m) || isMobFrozenByGrapple(m)) continue;
     if (isArrivalFrozen(m)) continue;
-    if (mobDimOf(m) !== "over") continue;
+    if (mobDimOf(m) !== dim) continue;
     const hw = m.hw != null ? m.hw : villagerHW(m);
     const h = m.h != null ? m.h : villagerH(m);
     const r = pushOne(m.pos.x, m.pos.y, m.pos.z, hw, h);
@@ -1315,10 +1330,11 @@ function pushOutOfGrowth(touched, dt) {
   return moved;
 }
 function tickPineGrowths(dt) {
-  if (!pineGrowths.length || dim !== "over" || world !== worlds.over) return;
+  if (!pineGrowths.length) return;
   const touched = [];
   for (let gi = pineGrowths.length - 1; gi >= 0; gi--) {
     const g = pineGrowths[gi];
+    if (g.dim !== dim) continue;
     if (!g.phaseCounts) g.phaseCounts = pinePhaseCounts(g.cells);
     const cur = g.cells[g.idx];
     const rate = !cur || cur.s === 0 ? PINE_RATE : (g.phaseCounts[cur.s] || 1) / PINE_PHASE_TIME;
@@ -1331,15 +1347,15 @@ function tickPineGrowths(dt) {
       if (protectedBlocks.has(protKey(c.x, c.y, c.z))) continue;
       if (c.id === LOG) {
         if (getBlock(c.x, c.y, c.z) === LEAVES) continue;
-        if (pineFolReserved(c.x, c.y, c.z, key(g.sx, g.sy, g.sz))) continue;
+        if (pineFolReserved(c.x, c.y, c.z, soilKey(g.dim, g.sx, g.sy, g.sz))) continue;
       } else if (getBlock(c.x, c.y, c.z) !== AIR) continue;
       setBlock(c.x, c.y, c.z, c.id);
       touched.push([c.x, c.y, c.z, g.sx, g.sz]);
     }
     if (g.idx >= g.cells.length) {
-      releasePineCells(key(g.sx, g.sy, g.sz));
+      releasePineCells(soilKey(g.dim, g.sx, g.sy, g.sz));
       for (let k = 0; k < 40 && pushOutOfGrowth([], dt) > 0; k++) growthSettlePasses++;
-      registerPlantedPine(g.sx, g.sy, g.sz, g.dims.m, g.dims.e);
+      registerPlantedPine(g.sx, g.sy, g.sz, g.dims.m, g.dims.e, g.dim);
       pineGrowths.splice(gi, 1);
     }
   }
@@ -1387,7 +1403,7 @@ function setBlock(x, y, z, id) {
     if (id === TNT || id === MEGA_TNT) ts.add(k); else ts.delete(k);
   }
   if (id !== FLOWER) placedFlowers.delete(k);
-  if (dim === "over" && world === worlds.over && id !== DIRT && growableSoils.has(k)) releaseGrowable(k);
+  if (id !== DIRT && growableSoils.has(soilKey(dim, x, y, z))) releaseGrowable(soilKey(dim, x, y, z));
   if (wasG !== gs.has(k)) {
     if (bulkGen || glowDefer > 0) glowDirtyDeferred = true;
     else { recomputeGlowClusters(); syncGlowLights(); }
@@ -6369,6 +6385,7 @@ function pineCellAt(x, y, z) {
 // Owning planted pine whose grown cells contain (x, y, z), or null.
 function pineAt(x, y, z) {
   for (const p of plantedPines.values()) {
+    if ((p.dim || "over") !== dim) continue;
     if (Math.abs(x - p.x) > p.m + 2 || Math.abs(z - p.z) > p.m + 2) continue;
     if (y < p.y || y > pineSummit(p.y, p.m, p.e)) continue;
     for (const c of pineCellsFor(p.x, p.y, p.z, p.m, p.e)) {
@@ -9164,7 +9181,7 @@ function findPlantPath(sx, sz, tx, tz, hw, pyHint) {
   // House/pool/pen avoidances are village-floor features: skip them far above
   // or below the village (pads, clouds, Moon), where the XZ footprints below
   // must not veto walking.
-  const nearVillage = typeof villageCenter !== "undefined" && villageCenter && Math.abs(py - (villageCenter.y + 1)) < 12;
+  const nearVillage = dim === "over" && typeof villageCenter !== "undefined" && villageCenter && Math.abs(py - (villageCenter.y + 1)) < 12;
   const toKey = (x, z) => x + "," + z;
   const s = [Math.floor(sx), Math.floor(sz)], g = [Math.floor(tx), Math.floor(tz)];
   if (s[0] === g[0] && s[1] === g[1]) return [[tx, tz]];
@@ -11099,13 +11116,13 @@ function updateMobs(dt) {
       }
     } else if ((!m.kind || m.kind === "villager" || m.kind === "cat") && m.fleeUntil) { m.fleeUntil = 0; m.speed = WALK / 2; delete m._outsideFlee; delete m._fleeSrcX; delete m._fleeSrcZ; }
 
-    // Pine planting task (Overworld adult villagers only): walk to a claimed
+    // Pine planting task (any dimension, adult villagers only): walk to a claimed
     // growable soil, bow the neck 40deg toward it for 1.5s while the 2.5s
     // TNT-style timer ticks above the block, leave away from the soil, then
     // the timer vanishes and a pine grows (or the dirt is removed when
     // nothing fits).
     const plantFleeing = m.fleeUntil != null && now < m.fleeUntil;
-    if ((!m.kind || m.kind === "villager") && !m.isBaby && m.homeId >= 0 && dim === "over" && mobDimOf(m) === "over" && !isMobHeld(m) && !isChained(m) && !isMobOnRoof(m)) {
+    if ((!m.kind || m.kind === "villager") && !m.isBaby && m.homeId >= 0 && mobDimOf(m) === dim && !isMobHeld(m) && !isChained(m) && !isMobOnRoof(m)) {
       if (m.mode === "goPlant") {
         const g = m.plantKey != null ? growableSoils.get(m.plantKey) : null;
         if (plantFleeing || !g || getBlock(g.x, g.y, g.z) !== DIRT) {
@@ -11183,13 +11200,14 @@ function updateMobs(dt) {
           m._plantScanT = 0;
           let best = null, bestD = Infinity;
           for (const g of growableSoils.values()) {
+            if (g.dim !== dim) continue;
             if (g.timer != null || !g.wet) continue;
             if (!isSoilHole(g.x, g.y, g.z) && !isSoilFloor(g.x, g.y, g.z)) continue;
             const d = Math.hypot(g.x + 0.5 - m.pos.x, (g.y + 1) - m.pos.y, g.z + 0.5 - m.pos.z);
             if (d < bestD) { bestD = d; best = g; }
           }
           if (best && soilSameY(m, best)) {
-            const k = key(best.x, best.y, best.z);
+            const k = soilKey(dim, best.x, best.y, best.z);
             // Nearest capable villager wins: a live holder walking to the soil
             // loses the claim to a strictly closer rival (hysteresis avoids
             // flip-flops); a bending holder always finishes.
@@ -13587,6 +13605,7 @@ function rebuildStars() {
   let n = 0;
   if (dim === "over" && world === worlds.over && starShape && decorVisible) {
     for (const p of plantedPines.values()) {
+      if ((p.dim || "over") !== "over") continue;
       if (!moonZoneGeo(p.x, p.y, p.z)) continue;   // moon pines only: ground pines stay bare
       if (performance.now() / 1000 - (p.bornAt || -1e9) < 1) continue;   // star spawns once garlands are up
       const summit = pineSummit(p.y, p.m, p.e);
@@ -13595,7 +13614,7 @@ function rebuildStars() {
       // drops only once all 4 terminal chunks are broken. Each tail drops
       // atomically via its own anchor block (span rule); nothing else —
       // summit breaks, helix breaks, closure, float — can touch it.
-      const up = pineUpperVis.get(key(p.x, p.y, p.z));
+      const up = pineUpperVis.get(soilKey(p.dim || "over", p.x, p.y, p.z));
       if (!up || !up.some((c) => c > 0)) continue;   // all 4 spire chunks gone: no star
       const cx = p.x + 0.5, cy = summit + STAR_CY, cz = p.z + 0.5;
       starPlatforms.push({ x: cx, top: cy + STAR_TOP, z: cz });
@@ -13873,10 +13892,11 @@ function garlandPathFor(p) {
   }
   return pts;
 }
-function registerPlantedPine(x, y, z, m, e) {
-  const k = key(x, y, z);
+function registerPlantedPine(x, y, z, m, e, dimName) {
+  const dn = dimName || dim;
+  const k = soilKey(dn, x, y, z);
   const nowS = performance.now() / 1000;
-  plantedPines.set(k, { x, y, z, m, e, seed: Math.floor(hash2(x, z, seed + 4242) * 255), bornAt: nowS });
+  plantedPines.set(k, { x, y, z, m, e, seed: Math.floor(hash2(x, z, seed + 4242) * 255), bornAt: nowS, dim: dn });
   garlandDirty = true;
   garlandRevealUntil = nowS + 1.15;
 }
@@ -13891,7 +13911,7 @@ function registerPlantedPine(x, y, z, m, e) {
 // fewer, bigger sections float.
 const GARLAND_TOUCH_D = 0.43;   // strict box containment per axis
 function garlandTrimSet(p, pts, skipFloat) {
-  const soil = key(p.x, p.y, p.z) + "|";
+  const soil = soilKey(p.dim || "over", p.x, p.y, p.z) + "|";
   const nowS = performance.now() / 1000;
   for (const bk of [...brokenPineCells]) {
     if (!bk.startsWith(soil)) continue;
@@ -14089,7 +14109,7 @@ function rebuildGarlands() {
   };
   for (const p of plantedPines.values()) {
     // Garlands dress moon pines only: ground pines grow bare.
-    if (!moonZoneGeo(p.x, p.y, p.z)) { pineUpperVis.set(key(p.x, p.y, p.z), [0, 0, 0, 0]); continue; }
+    if ((p.dim || "over") !== dim || !moonZoneGeo(p.x, p.y, p.z)) { pineUpperVis.set(soilKey(p.dim || "over", p.x, p.y, p.z), [0, 0, 0, 0]); continue; }
     const pts = garlandPathFor(p);
     const hide = garlandTrimSet(p, pts);
     // Birth reveal: garlands wrap bottom-up over 1 s after the foliage lands.
@@ -14099,7 +14119,7 @@ function rebuildGarlands() {
     // Upper spiral presence per run (visible bulbs in the top spire tail above
     // summit + 0.2, the 4 terminal chunks): the star stays while at least one
     // is visible and drops only once all 4 are broken.
-    pineUpperVis.set(key(p.x, p.y, p.z), countUpperVisible(p, pts, hide));
+    pineUpperVis.set(soilKey(p.dim || "over", p.x, p.y, p.z), countUpperVisible(p, pts, hide));
     for (let i = 0; i < pts.length; i++) {
       if (n >= GARLAND_MAX) break;
       if (hide && hide.has(i)) continue;
@@ -14222,7 +14242,7 @@ function rebuildChunk(cx, cz) {
           if (isExposed(x, y, z)) glows.push([x, y, z]);
           continue;
         }
-        if (id === DIRT && wetSoilSet.has(key(x, y, z))) {
+        if (id === DIRT && wetSoilSet.has(soilKey(dim, x, y, z))) {
           if (isExposed(x, y, z)) wetDirts.push([x, y, z]);
           continue;
         }
@@ -14399,7 +14419,7 @@ function rebuildChunk(cx, cz) {
     if (!wetShellGeo) wetShellGeo = new THREE.BoxGeometry(1.06, 1.06, 1.06);
     const wetBlue = [], wetGrey = [];
     for (const [wx, wy, wz] of wetDirts) {
-      const sg = growableSoils.get(key(wx, wy, wz));
+      const sg = growableSoils.get(soilKey(dim, wx, wy, wz));
       if (sg && sg.liq === MOON_WATER) wetGrey.push([wx, wy, wz]);
       else wetBlue.push([wx, wy, wz]);
     }
@@ -16499,7 +16519,7 @@ function breakBlockAt(x, y, z) {
   birdNoticeBreak(x, y, z);
   const purged = purgeFloatingLiquidsAround([[x, y, z]]);
   if (pineOwner) {
-    const bk = key(pineOwner.x, pineOwner.y, pineOwner.z) + "|" + x + "," + y + "," + z;
+    const bk = soilKey(dim, pineOwner.x, pineOwner.y, pineOwner.z) + "|" + x + "," + y + "," + z;
     brokenPineCells.add(bk);
   }
   birdNoticeBreak(x, y, z);
@@ -16531,7 +16551,7 @@ function tryPlace(id, px, py, pz) {
   if (id === GLOWSTONE) worldGlowVariants.get(world).set(key(px, py, pz), glowVariantNear(px, py, pz));
   setBlock(px, py, pz, id);
   const purged = purgeFloatingLiquidsAround([[px, py, pz]]);
-  if ((id === WATER || id === MOON_WATER) && getBlock(px, py - 1, pz) === DIRT) armSoak(px, py - 1, pz, id);
+  if (isLiquid(id) && getBlock(px, py - 1, pz) === DIRT) armSoak(px, py - 1, pz, id);
   if (placeBatch) { placeBatch.push([px, py, pz]); for (const c of purged) placeBatch.push(c); }
   else { refreshBlocks([[px, py, pz], ...purged]); queueSave(); }
   return true;
@@ -17917,7 +17937,7 @@ function carveBlastCell(gx, gy, gz, mega, batchKeys) {
   batchKeys.add(kk);
   const blastPineOwner = (id === LOG || id === LEAVES) && plantedPines.size ? pineAt(gx, gy, gz) : null;
   if (blastPineOwner) {
-    const bk = key(blastPineOwner.x, blastPineOwner.y, blastPineOwner.z) + "|" + gx + "," + gy + "," + gz;
+    const bk = soilKey(dim, blastPineOwner.x, blastPineOwner.y, blastPineOwner.z) + "|" + gx + "," + gy + "," + gz;
     brokenPineCells.add(bk);
   }
   setBlock(gx, gy, gz, AIR);
@@ -19533,6 +19553,9 @@ function goToDimension(name, sx, sy, sz) {
   world = worlds[name];
   clearGlowLights();
   clearMegaLights();
+  clearAllSoakMeshes();
+  clearAllSoilTimerSprites();
+  clearAllPineFailBlinks();
   rebuildHotbar();
   portalDirty = true;
   worldDirty = true;
@@ -21633,6 +21656,7 @@ function countUpperVisible(p, pts, hide) {
 // star drops only once all 4 terminal chunks are broken),
 // dim-safe via a temporary overworld switch (same pattern as deserialize).
 function pineStarOk(p) {
+  if ((p.dim || "over") !== "over") return false;   // moon pines only
   if (!moonZoneGeo(p.x, p.y, p.z)) return false;   // moon pines only
   const liveDim = dim, liveWorld = world;
   dim = "over"; world = worlds.over;
@@ -21696,28 +21720,30 @@ function serialize() {
   const brokenCells = [];
   const brokenBySoil = new Map();
   for (const bk of brokenPineCells) {
-    const bar = bk.indexOf("|");
-    const soil = +bk.slice(0, bar);
-    const [cx, cy, cz] = bk.slice(bar + 1).split(",").map(Number);
+    const parts = bk.split("|");
+    if (parts.length !== 3) continue;
+    const bdim = parts[0];
+    const soil = +parts[1];
+    const [cx, cy, cz] = parts[2].split(",").map(Number);
     if (![cx, cy, cz].every(Number.isFinite)) continue;
-    let arr = brokenBySoil.get(soil);
-    if (!arr) { arr = []; brokenBySoil.set(soil, arr); }
+    let arr = brokenBySoil.get(bdim + "|" + soil);
+    if (!arr) { arr = []; brokenBySoil.set(bdim + "|" + soil, arr); }
     arr.push([cx, cy, cz]);
   }
   for (const p of plantedPines.values()) {
-    const arr = brokenBySoil.get(key(p.x, p.y, p.z));
+    const arr = brokenBySoil.get((p.dim || "over") + "|" + key(p.x, p.y, p.z));
     if (!arr) continue;
     for (const [cx, cy, cz] of arr) {
       if (cx < -128 || cx > 127 || cz < -128 || cz > 127 || cy < 0 || cy > 65535) continue;
-      brokenCells.push([p.x, p.y, p.z, cx, cy, cz]);
+      brokenCells.push([(p.dim || "over"), p.x, p.y, p.z, cx, cy, cz]);
     }
   }
   const brokenN = brokenCells.length;
-  const buf = new ArrayBuffer(117 + 18 + (on + en + nn) * 5 + m * 6 + (gov + gev + gnv) * 5 + 1 + 4 + growN * 14 + 4 + growthN * 16 + 5 + pineN * 10 + winLen + 16 + 4 + (mobN + endMobN + netherMobN) * MOB_SAVE_BYTES + 24 + 4 + (chainPairs.length + chainPairsEnd.length + chainPairsNether.length) * 4 + 4 + 1 + 1 + 1 + 4 + exitBytes + tntBytes + fxBytes + 2 + 4 + brokenN * 8);
+  const buf = new ArrayBuffer(117 + 18 + (on + en + nn) * 5 + m * 6 + (gov + gev + gnv) * 5 + 1 + 4 + growN * 15 + 4 + growthN * 17 + 5 + pineN * 11 + winLen + 16 + 4 + (mobN + endMobN + netherMobN) * MOB_SAVE_BYTES + 24 + 4 + (chainPairs.length + chainPairsEnd.length + chainPairsNether.length) * 4 + 4 + 1 + 1 + 1 + 4 + exitBytes + tntBytes + fxBytes + 2 + 4 + brokenN * 9);
   const dv = new DataView(buf);
   let o = 0;
   new Uint8Array(buf, o, 9).set(SAVE_MAGIC); o += 9;
-  dv.setUint8(o++, 40); // format version
+  dv.setUint8(o++, 41); // format version
   dv.setUint8(o++, dim === "end" ? 1 : dim === "nether" ? 2 : 0);
   dv.setInt32(o, seed, true); o += 4;
   dv.setInt32(o, endSeed, true); o += 4;
@@ -21799,7 +21825,8 @@ function serialize() {
     dv.setFloat32(o, g.timer != null ? g.timer : -1, true); o += 4;
     dv.setUint8(o++, g.wet ? 1 : 0);
     dv.setFloat32(o, g.soak != null ? g.soak : -1, true); o += 4;
-    dv.setUint8(o++, g.liq === MOON_WATER ? 1 : 0);
+    dv.setUint8(o++, g.liq === MOON_WATER ? 1 : g.liq === LAVA ? 2 : 0);
+    dv.setUint8(o++, dimToByte(g.dim || "over"));
   });
   dv.setUint32(o, growthN, true); o += 4;
   for (const pg of pineGrowths) {
@@ -21811,6 +21838,7 @@ function serialize() {
     dv.setUint32(o, pg.idx, true); o += 4;
     dv.setFloat32(o, pg.acc, true); o += 4;
     dv.setUint8(o++, 1);   // retired pine shape, cone only now
+    dv.setUint8(o++, dimToByte(pg.dim || "over"));
   }
   dv.setUint8(o++, 1);   // garland style, fixed spirale
   dv.setUint32(o, pineN, true); o += 4;
@@ -21823,9 +21851,11 @@ function serialize() {
     dv.setUint8(o++, p.seed & 255);
     dv.setUint8(o++, 1);   // retired pine shape, cone only now
     dv.setUint8(o++, pineStarOk(p) ? 1 : 0);   // star shown now (v38)
+    dv.setUint8(o++, dimToByte(p.dim || "over"));
   }
   dv.setUint32(o, brokenN, true); o += 4;
-  for (const [sx, sy, sz, cx, cy, cz] of brokenCells) {
+  for (const [sd, sx, sy, sz, cx, cy, cz] of brokenCells) {
+    dv.setUint8(o++, dimToByte(sd));
     dv.setUint8(o++, sx + 128);
     dv.setUint16(o, sy, true); o += 2;
     dv.setUint8(o++, sz + 128);
@@ -21990,7 +22020,7 @@ function deserialize(buf) {
   for (let i = 0; i < 9; i++) if (new Uint8Array(buf, o, 9)[i] !== SAVE_MAGIC[i]) throw new Error("Not a MiniCraft save");
   o += 9;
   const ver = dv.getUint8(o++);
-  if (ver !== 1 && ver !== 2 && ver !== 3 && ver !== 4 && ver !== 5 && ver !== 6 && ver !== 7 && ver !== 8 && ver !== 9 && ver !== 10 && ver !== 11 && ver !== 12 && ver !== 13 && ver !== 14 && ver !== 15 && ver !== 16 && ver !== 17 && ver !== 18 && ver !== 19 && ver !== 20 && ver !== 21 && ver !== 22 && ver !== 23 && ver !== 24 && ver !== 25 && ver !== 26 && ver !== 27 && ver !== 28 && ver !== 29 && ver !== 30 && ver !== 31 && ver !== 32 && ver !== 33 && ver !== 34 && ver !== 35 && ver !== 36 && ver !== 37 && ver !== 38 && ver !== 39 && ver !== 40) throw new Error("Unsupported save version");
+  if (ver !== 1 && ver !== 2 && ver !== 3 && ver !== 4 && ver !== 5 && ver !== 6 && ver !== 7 && ver !== 8 && ver !== 9 && ver !== 10 && ver !== 11 && ver !== 12 && ver !== 13 && ver !== 14 && ver !== 15 && ver !== 16 && ver !== 17 && ver !== 18 && ver !== 19 && ver !== 20 && ver !== 21 && ver !== 22 && ver !== 23 && ver !== 24 && ver !== 25 && ver !== 26 && ver !== 27 && ver !== 28 && ver !== 29 && ver !== 30 && ver !== 31 && ver !== 32 && ver !== 33 && ver !== 34 && ver !== 35 && ver !== 36 && ver !== 37 && ver !== 38 && ver !== 39 && ver !== 40 && ver !== 41) throw new Error("Unsupported save version");
   const yWidth = ver >= 8 ? 2 : 1;
   const readY = () => { const y = yWidth === 2 ? dv.getUint16(o, true) : dv.getUint8(o); o += yWidth; return y; };
   placedFlowers.clear();
@@ -22174,9 +22204,14 @@ function deserialize(buf) {
         const sr = dv.getFloat32(o, true); o += 4;
         if (isFinite(sr) && sr > 0) soak = sr;
       }
-      if (ver >= 28) liq = dv.getUint8(o++) === 1 ? MOON_WATER : WATER;
-      const gk = key(x, y, z);
-      growableSoils.set(gk, { x, y, z, timer, wet, soak, liq });
+      if (ver >= 28) {
+        const lb = dv.getUint8(o++);
+        liq = lb === 1 ? MOON_WATER : lb === 2 ? LAVA : WATER;
+      }
+      let sdim = "over";
+      if (ver >= 41) sdim = dimFromByte(dv.getUint8(o++));
+      const gk = soilKey(sdim, x, y, z);
+      growableSoils.set(gk, { x, y, z, timer, wet, soak, liq, dim: sdim });
       if (wet) wetSoilSet.add(gk);
       if (soak != null) syncSoakMesh(gk, growableSoils.get(gk));
     }
@@ -22193,10 +22228,12 @@ function deserialize(buf) {
         const idx = dv.getUint32(o, true); o += 4;
         const acc = dv.getFloat32(o, true); o += 4;
         if (ver >= 36) dv.getUint8(o++);   // retired pine shape, cone only now
+        let gdim = "over";
+        if (ver >= 41) gdim = dimFromByte(dv.getUint8(o++));
       if (mm < PINE_MIN_M || mm > MOON_PINE_MAX_M || ee < 1 || y + ee + pineLayerWidths(mm).length + 1 > MAX_Y) continue;
         const cells = pineCellsFor(x, y, z, mm, ee);
         if (!cells.length || idx > cells.length) continue;
-        pineGrowths.push({ cells, idx, acc: isFinite(acc) ? Math.max(0, acc) : 0, dims: { m: mm, e: ee }, sx: x, sy: y, sz: z, phaseCounts: pinePhaseCounts(cells) });
+        pineGrowths.push({ cells, idx, acc: isFinite(acc) ? Math.max(0, acc) : 0, dims: { m: mm, e: ee }, sx: x, sy: y, sz: z, dim: gdim, phaseCounts: pinePhaseCounts(cells) });
       } else if (ver >= 24) {
         o += 1 + 2 + 4 + 4;
       } else {
@@ -22216,24 +22253,30 @@ function deserialize(buf) {
       const sd = dv.getUint8(o++);
       if (ver >= 36) dv.getUint8(o++);   // retired pine shape, cone only now
       const sf = ver >= 38 ? dv.getUint8(o++) : 1;   // star shown (v38)
+      let pdim = "over";
+      if (ver >= 41) pdim = dimFromByte(dv.getUint8(o++));
       if (mm < PINE_MIN_M || mm > MOON_PINE_MAX_M || ee < 1 || y + ee + pineLayerWidths(mm).length + 1 > MAX_Y) continue;
-      const entry = { x, y, z, m: mm, e: ee, seed: sd, bornAt: -1e9 };
-      plantedPines.set(key(x, y, z), entry);
+      const entry = { x, y, z, m: mm, e: ee, seed: sd, bornAt: -1e9, dim: pdim };
+      plantedPines.set(soilKey(pdim, x, y, z), entry);
       if (sf === 0 && pineStarOk(entry)) entry.bornAt = performance.now() / 1000;   // replay birth
     }
   }
   if (ver >= 38) {
     const bn = dv.getUint32(o, true); o += 4;
     for (let i = 0; i < bn; i++) {
+      let bdim = "over";
+      if (ver >= 41) bdim = dimFromByte(dv.getUint8(o++));
       const sx = dv.getUint8(o++) - 128;
       const sy = readY();
       const sz = dv.getUint8(o++) - 128;
       const cx = dv.getUint8(o++) - 128;
       const cy = readY();
       const cz = dv.getUint8(o++) - 128;
-      const sk = key(sx, sy, sz);
-      if (!plantedPines.has(sk)) continue;
-      if (worlds.over.has(key(cx, cy, cz))) continue;   // rebuilt solid: drop
+      const sk = soilKey(bdim, sx, sy, sz);
+      const pe = plantedPines.get(soilKey(bdim, sx, sy, sz));
+      if (!pe || (pe.dim || "over") !== bdim) continue;
+      const bw = worlds[bdim] || worlds.over;
+      if (bw.has(key(cx, cy, cz))) continue;   // rebuilt solid: drop
       brokenPineCells.add(sk + "|" + cx + "," + cy + "," + cz);
     }
   }
@@ -22493,9 +22536,12 @@ function deserialize(buf) {
   rebuildColTops();
   {
     const liveDim = dim, liveWorld = world;
-    dim = "over"; world = worlds.over;
-    for (const g of pineGrowths) reservePineCells(key(g.sx, g.sy, g.sz), g.cells);
+    for (const g of pineGrowths) {
+      dim = g.dim || "over"; world = worlds[dim] || worlds.over;
+      reservePineCells(soilKey(dim, g.sx, g.sy, g.sz), g.cells);
+    }
     for (const [gk, g] of growableSoils) {
+      dim = g.dim || "over"; world = worlds[dim] || worlds.over;
       if (getBlock(g.x, g.y, g.z) !== DIRT) continue;
       const dims = pickPineDims(g.x, g.y, g.z, gk);
       if (dims) reservePineCells(gk, pineCellsFor(g.x, g.y, g.z, dims.m, dims.e));
@@ -24065,7 +24111,7 @@ if (location.search.includes('test')) {
     get DIRT(){ return DIRT; }, get LEAVES(){ return LEAVES; },
     get GROWABLE_DIST(){ return GROWABLE_DIST; }, get PLANT_NECK(){ return PLANT_NECK; }, get PINE_RATE(){ return PINE_RATE; }, get PINE_PHASE_TIME(){ return PINE_PHASE_TIME; }, get SOIL_TIMER(){ return SOIL_TIMER; }, get SOIL_SOAK_TIME(){ return SOIL_SOAK_TIME; }, get PLANT_BEND_TIME(){ return PLANT_BEND_TIME; }, get PLANT_LEAVE_DIST(){ return PLANT_LEAVE_DIST; },     get PINE_MIN_M(){ return PINE_MIN_M; }, get PINE_MAX_M(){ return PINE_MAX_M; },     get PINE_LIFT_MAX(){ return PINE_LIFT_MAX; }, get PLANT_STEAL_D(){ return PLANT_STEAL_D; }, get GROWTH_PUSH_SPEED(){ return GROWTH_PUSH_SPEED; }, get growthSettlePasses(){ return growthSettlePasses; },
     get MOON_PINE_MAX_M(){ return MOON_PINE_MAX_M; }, get STAR_STYLE_COUNT(){ return STAR_STYLE_COUNT; }, get STAR_STYLE_NAMES(){ return STAR_STYLE_NAMES; }, get STAR_STYLES(){ return STAR_STYLES; },     getStarStyleIdx(){ return starStyleIdx; }, getStarAngle(){ return starAngle; }, get STAR_SPIN(){ return STAR_SPIN; }, get STAR_PLATFORM_R(){ return STAR_PLATFORM_R; }, get starPlatforms(){ return starPlatforms; }, getStarRide(){ return starRide; }, starPlatformAt, rotXZ, rebuildStars, starTick, buildStarShape, pineCellAt, chainComponentFrom, despawnChainMob, cullSmallChainsNear,
-    isSoilHole, isSoilFloor, releaseGrowable, armSoak, absorbSoak, spawnSoakDrips, plantWalkGoal, soilSameY, pickPineDims, fitTrunkRange, pineCellsFor, pineFits, pineSpotBlocked, pineLayerWidths, pineSpiralOrder, pineSummit, pineTrunkE0, pineFolReserved, reservePineCells, releasePineCells, clearAllPineReservations, pushOutOfGrowth, growthSolidOverlap, growthExitTarget, growthSlide, startPineGrowth, tickPineGrowths, tickSoilTimers, startPineFailBlink, clearPineFailBlink, clearAllPineFailBlinks, tickPineFailBlinks, setVillagerNeck, findPlantPath, soilClaimant, plantLeaveTarget,
+    isSoilHole, isSoilFloor, releaseGrowable, armSoak, absorbSoak, spawnSoakDrips, plantWalkGoal, soilSameY, pickPineDims, fitTrunkRange, pineCellsFor, pineFits, pineSpotBlocked, pineLayerWidths, pineSpiralOrder, pineSummit, pineTrunkE0, pineFolReserved, pineCellReserved, pineCellKey, pineOwnerDim, reservePineCells, releasePineCells, clearAllPineReservations, pushOutOfGrowth, growthSolidOverlap, growthExitTarget, growthSlide, startPineGrowth, tickPineGrowths, tickSoilTimers, startPineFailBlink, clearPineFailBlink, clearAllPineFailBlinks, tickPineFailBlinks, setVillagerNeck, findPlantPath, soilClaimant, plantLeaveTarget, soilKey, dimToByte, dimFromByte,
     get plantedPines(){ return plantedPines; }, get brokenPineCells(){ return brokenPineCells; }, getGarlandBulbCount(){ return garlandBulbCount; }, garlandPathFor, garlandRadiusAt, garlandAnchor, garlandAnchorStrict, garlandTrimSet, pineAt, registerPlantedPine, rebuildGarlands, garlandTick, getDecorVisible(){ return decorVisible; }, setDecorVisible(v){ decorVisible = !!v; garlandDirty = true; updateDimLabel(); }, pineCellsFor, pineLayerWidths, pineSummit, countUpperVisible,
   });
   Object.assign(window._test, {
