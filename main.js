@@ -18105,6 +18105,11 @@ function updateRopeFog(submerged) {
 
 let currentBlock = null;
 const _targetDir = new THREE.Vector3();
+const _breakDir = new THREE.Vector3();
+function breakTarget() {
+  camera.getWorldDirection(_breakDir);
+  return pickBlock(camera.position, _breakDir, true);
+}
 function updateTarget() {
   camera.getWorldDirection(_targetDir);
   const dir = _targetDir;
@@ -18121,10 +18126,12 @@ function updateTarget() {
 // ---------------------------------------------------------------------------
 // Editing
 // ---------------------------------------------------------------------------
-function breakBlock() {
-  if (!currentBlock) return;
-  if (aimOnMob()) return;
-  breakBlockAt(currentBlock.x, currentBlock.y, currentBlock.z);
+function breakBlock(pre) {
+  const bt = pre || breakTarget();
+  if (!bt) return null;
+  if (aimOnMobFor(bt)) return null;
+  breakBlockAt(bt.x, bt.y, bt.z);
+  return bt;
 }
 function breakBlockAt(x, y, z) {
   if (protectedBlocks.has(protKey(x, y, z))) return;
@@ -18279,26 +18286,26 @@ function digSaveRay() {
 // reset every repeat so cross-repeat continuity goes through anchors only).
 // Sky samples break nothing — aiming into the air just pauses the dig, which
 // resumes around any removed block as soon as it is re-aimed. Holding still
-// falls back to the live currentBlock, so tunnel deepening is unchanged.
+// falls back to the live liquid-skipping break target, so tunnel deepening is
+// unchanged.
 function digSweep() {
-  if (aimOnMob()) { digSaveRay(); return; }
   camera.getWorldDirection(_paintDir);
   _paintEye.copy(camera.position);
-  const sel = hotbarList()[selected];
-  const skipLiquid = sel !== WATER && sel !== LAVA && sel !== MOON_WATER;
+  const bt = pickBlock(_paintEye, _paintDir, true);
+  if (aimOnMobFor(bt)) { digSaveRay(); return; }
   let n = 1;
-  if (digHasPrev && currentBlock) {
+  if (digHasPrev && bt) {
     const ang = digPrevDir.angleTo(_paintDir);
     if (ang <= Math.PI / 2) {
-      const d = Math.hypot(currentBlock.x + 0.5 - _paintEye.x, currentBlock.y + 0.5 - _paintEye.y, currentBlock.z + 0.5 - _paintEye.z);
+      const d = Math.hypot(bt.x + 0.5 - _paintEye.x, bt.y + 0.5 - _paintEye.y, bt.z + 0.5 - _paintEye.z);
       n = Math.min(PAINT_SAMPLE_MAX, Math.max(1, Math.ceil(d * ang / PAINT_SAMPLE_STEP)));
     }
   }
   if (n <= 1) {
-    if (currentBlock && anchorNear(currentBlock.x, currentBlock.y, currentBlock.z)) {
+    if (bt && anchorNear(bt.x, bt.y, bt.z)) {
       chainBreaking = true;
-      try { breakBlockAt(currentBlock.x, currentBlock.y, currentBlock.z); } finally { chainBreaking = false; }
-      anchorPush(currentBlock.x, currentBlock.y, currentBlock.z);
+      try { breakBlockAt(bt.x, bt.y, bt.z); } finally { chainBreaking = false; }
+      anchorPush(bt.x, bt.y, bt.z);
     }
     digSaveRay();
     return;
@@ -18311,7 +18318,7 @@ function digSweep() {
       const t = i / n;
       _paintSDir.copy(digPrevDir).lerp(_paintDir, t).normalize();
       _paintSEye.copy(digPrevEye).lerp(_paintEye, t);
-      const hit = pickBlock(_paintSEye, _paintSDir, skipLiquid);
+      const hit = pickBlock(_paintSEye, _paintSDir, true);
       if (!hit) { lastOk = null; continue; }
       const adjacent = lastOk && Math.max(Math.abs(hit.x - lastOk[0]), Math.abs(hit.y - lastOk[1]), Math.abs(hit.z - lastOk[2])) <= 1;
       if (!anchorNear(hit.x, hit.y, hit.z) && !adjacent) continue;
@@ -19240,6 +19247,10 @@ function tntChainAimMob() {
 }
 function aimOnMob() {
   if (!currentBlock) return null;
+  return aimOnMobFor(currentBlock);
+}
+function aimOnMobFor(block) {
+  if (!block) return null;
   const dir = new THREE.Vector3();
   camera.getWorldDirection(dir);
   const eye = camera.position;
@@ -19248,7 +19259,7 @@ function aimOnMob() {
   const off = getMobHitOffset(eye, dir, mob);
   const hx = off ? mob.pos.x + off.x : mob.pos.x, hy = off ? mob.pos.y + off.y : mob.pos.y + mob.h * 0.5, hz = off ? mob.pos.z + off.z : mob.pos.z;
   const mobT = Math.hypot(hx - eye.x, hy - eye.y, hz - eye.z);
-  const blockT = Math.hypot(currentBlock.x + 0.5 - eye.x, currentBlock.y + 0.5 - eye.y, currentBlock.z + 0.5 - eye.z);
+  const blockT = Math.hypot(block.x + 0.5 - eye.x, block.y + 0.5 - eye.y, block.z + 0.5 - eye.z);
   if (mobT > blockT + 0.5) return null;
   return mob;
 }
@@ -25053,7 +25064,8 @@ document.addEventListener("mousedown", (e) => {
       } else if (placeBlock(sel)) anchorPush(currentBlock.x + currentBlock.face[0], currentBlock.y + currentBlock.face[1], currentBlock.z + currentBlock.face[2]);
     } else {
       rightMoved = false; rightMoveAcc = 0; anchorClear(); digSaveRay();
-      if (currentBlock) { const b = [currentBlock.x, currentBlock.y, currentBlock.z]; breakBlock(); anchorPush(b[0], b[1], b[2]); }
+      const btPeek = breakTarget();
+      if (btPeek) { breakBlock(btPeek); anchorPush(btPeek.x, btPeek.y, btPeek.z); }
       else if (hotbarList()[selected] === TNT) tryFireLockedTNT();
     }
   }
