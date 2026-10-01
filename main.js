@@ -6826,6 +6826,11 @@ function setMobTransparent(m, alpha) {
       if (obj.isMesh && obj.material && !obj.userData.halo) {
         if (Array.isArray(obj.material)) obj.material = obj.material.map((mm) => mm.clone());
         else obj.material = obj.material.clone();
+        if (m._onTop) {
+          const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
+          mats.forEach((mat) => { mat.depthTest = false; mat.needsUpdate = true; });
+          obj.renderOrder = 999;
+        }
       }
     });
   }
@@ -6836,10 +6841,28 @@ function setMobTransparent(m, alpha) {
         mat.transparent = trans;
         mat.opacity = a;
         mat.depthWrite = !trans;
+        if (m._onTop) mat.depthTest = false;
         mat.needsUpdate = true;
       });
+      if (m._onTop) obj.renderOrder = 999;
     }
   });
+}
+
+function setMobOnTop(m, on) {
+  if (!m || !m.mesh) return;
+  m._onTop = on;
+  m.mesh.traverse((obj) => {
+    if (!obj.isMesh || !obj.material || obj.userData.halo) return;
+    obj.renderOrder = on ? 999 : 0;
+    obj.frustumCulled = on ? false : true;
+    const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
+    mats.forEach((mat) => {
+      mat.depthTest = !on;
+      mat.needsUpdate = true;
+    });
+  });
+  m.mesh.frustumCulled = on ? false : true;
 }
 
 function pickMob(dir, maxDist = 1000) {
@@ -8830,7 +8853,18 @@ function releaseCarriedMob() {
   releaseCarriedMobAt(px, py, pz);
 }
 
+let lastOnTopMob = null;
 function updateCarry(dt) {
+  if (lastOnTopMob && lastOnTopMob !== carryMob) {
+    setMobOnTop(lastOnTopMob, false);
+    lastOnTopMob = null;
+  }
+  if (carryMob && !carryMob._onTop) {
+    setMobOnTop(carryMob, true);
+    lastOnTopMob = carryMob;
+  } else if (carryMob) {
+    lastOnTopMob = carryMob;
+  }
   const canHold = started && !loading && !helpOpen;
   const holding = !!carryMob;
   playerArms.visible = holding && canHold;
