@@ -20977,8 +20977,6 @@ function unlockMegaTNT() {
   if (megaUnlocked) return false;
   megaUnlocked = true;
   rebuildHotbar(MEGA_TNT);
-  unlockFlashT = UNLOCK_FLASH_TIME;
-  spawnUnlockBurst(pos.x, pos.y + 1, pos.z);
   queueSave();
   return true;
 }
@@ -22830,37 +22828,6 @@ function spawnEndermanBurst(cx, cy, cz) {
   const pts = new THREE.Points(geo, mat);
   scene.add(pts);
   bursts.push({ pts, geo, mat, vel, life: 0.7, max: 0.7, tag: 4, fx: cx, fy: cy, fz: cz });
-}
-
-function spawnUnlockBurst(cx, cy, cz) {
-  const N = 90;
-  const posA = new Float32Array(N * 3);
-  const colA = new Float32Array(N * 3);
-  const vel = new Float32Array(N * 3);
-  for (let i = 0; i < N; i++) {
-    posA[i * 3] = cx; posA[i * 3 + 1] = cy; posA[i * 3 + 2] = cz;
-    const r = Math.random();
-    if (r < 0.45) { colA[i * 3] = 1; colA[i * 3 + 1] = 0.84 + Math.random() * 0.1; colA[i * 3 + 2] = 0.37; }
-    else if (r < 0.8) { colA[i * 3] = 1; colA[i * 3 + 1] = 0.95; colA[i * 3 + 2] = 0.8; }
-    else { colA[i * 3] = 1; colA[i * 3 + 1] = 1; colA[i * 3 + 2] = 1; }
-    const th = Math.random() * Math.PI * 2;
-    const ph = Math.acos(2 * Math.random() - 1);
-    const s = 3 + Math.random() * 5;
-    vel[i * 3] = s * Math.sin(ph) * Math.cos(th);
-    vel[i * 3 + 1] = s * Math.cos(ph) + 2;
-    vel[i * 3 + 2] = s * Math.sin(ph) * Math.sin(th);
-  }
-  const geo = new THREE.BufferGeometry();
-  geo.setAttribute("position", new THREE.BufferAttribute(posA, 3));
-  geo.setAttribute("color", new THREE.BufferAttribute(colA, 3));
-  const mat = new THREE.PointsMaterial({
-    size: 0.35, vertexColors: true, transparent: true, opacity: 1,
-    depthWrite: false, blending: THREE.AdditiveBlending,
-  });
-  const pts = new THREE.Points(geo, mat);
-  pts.frustumCulled = false;
-  scene.add(pts);
-  bursts.push({ pts, geo, mat, vel, life: 1.2, max: 1.2, tag: 4, fx: cx, fy: cy, fz: cz });
 }
 
 function endermanPickSpot(cx, cz, minDist, others = [], maxDist = END_MOB_R, px = null, pz = null) {
@@ -24921,15 +24888,6 @@ function updateMegaDanger(dt) {
     if (dangerShakeT >= interval) { dangerShakeT = 0; if (!MEGA_QUIET) addCamShake(0.08 + 0.12 * k * (0.5 + 0.5 * beat)); }
   } else dangerShakeT = 0;
 }
-const unlockFlashEl = document.getElementById("unlockFlash");
-const UNLOCK_FLASH_TIME = 1.5;
-let unlockFlashT = 0;
-function tickUnlockFlash(dt) {
-  if (unlockFlashT <= 0) return;
-  unlockFlashT = Math.max(0, unlockFlashT - dt);
-  if (unlockFlashEl) unlockFlashEl.style.opacity = String(0.9 * (unlockFlashT / UNLOCK_FLASH_TIME));
-}
-
 // The hotbar is dimension-aware: in the Nether and the End the Flower slot
 // holds GLOWSTONE and the Water slot holds lava; the Overworld keeps
 // flowers and water — unless the player climbs high enough for the Moon to
@@ -25573,7 +25531,6 @@ function loop(now) {
     tickMegaEject(dt);
     if (toastTimer > 0) { toastTimer -= dt; if (toastTimer <= 0) toastEl.style.opacity = "0"; }
     updateMegaDanger(dt);
-    tickUnlockFlash(dt);
 
     if (dim === "over") {
       const y = camera.position.y;
@@ -25737,7 +25694,7 @@ if (location.search.includes('test')) {
     get PORTAL(){ return PORTAL; }, get OBSIDIAN(){ return OBSIDIAN; }, get WORLD_RADIUS(){ return WORLD_RADIUS; }, get PLAYER_HW(){ return PLAYER_HW; }, get PLAYER_H(){ return PLAYER_H; },     get MOON(){ return MOON; }, get MOON_WATER(){ return MOON_WATER; }, get MOON_Y(){ return MOON_Y; }, get MOON_R(){ return MOON_R; }, inMoonZone, get CLOUD(){ return CLOUD; }, get GRASS(){ return GRASS; }, get STONE(){ return STONE; }, get ENDSTONE(){ return ENDSTONE; }, get NETHERRACK(){ return NETHERRACK; }, get dim(){ return dim; },
     serialize, deserialize, restoreSave, snapshotOverworldMobs, restoreOverworldMobs, get overworldMobCache(){ return overworldMobCache; }, get pendingOverworldMobs(){ return pendingOverworldMobs; }, get pendingChainLinks(){ return pendingChainLinks; }, get pendingCarriedIdx(){ return pendingCarriedIdx; },
     snapshotMobsForDim, snapshotChainPairsForDim, DRAGON_CHAIN_CARRIER, restoreDimMobs, relinkDimChainsByIds, mobDimOf, suspendLiveDim, placeMobExact, mobRestoreOverlapsPlaced, settleMobSpot, restoreInitialTarget, aabbOverlaps,
-    get endMobCache(){ return endMobCache; }, get netherMobCache(){ return netherMobCache; }, get pendingEndMobs(){ return pendingEndMobs; }, get pendingNetherMobs(){ return pendingNetherMobs; },     get netherExit(){ return netherExit; }, get endExit(){ return endExit; }, get endCleared(){ return endCleared; }, get megaUnlocked(){ return megaUnlocked; }, set megaUnlocked(v){ megaUnlocked = !!v; }, unlockMegaTNT, spawnUnlockBurst,
+    get endMobCache(){ return endMobCache; }, get netherMobCache(){ return netherMobCache; }, get pendingEndMobs(){ return pendingEndMobs; }, get pendingNetherMobs(){ return pendingNetherMobs; },     get netherExit(){ return netherExit; }, get endExit(){ return endExit; }, get endCleared(){ return endCleared; }, get megaUnlocked(){ return megaUnlocked; }, set megaUnlocked(v){ megaUnlocked = !!v; }, unlockMegaTNT,
     goToDimension, removeVillagers,
     get DEV_START_DIM(){ return DEV_START_DIM; },
     get dragon(){ return dragon; }, spawnDragon, removeDragon, updateDragon, paintDragon, damageDragon, dragonShotsCap, aimedDragon, get DRAGON_FULL_DMG(){ return DRAGON_FULL_DMG; }, get DRAGON_SPEED(){ return DRAGON_SPEED; }, get DRAGON_FOLLOW_DIST(){ return DRAGON_FOLLOW_DIST; },
