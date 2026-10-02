@@ -4581,6 +4581,153 @@ function fishRandomTarget(from, hw, hh, vx, vy, vz) {
   return null;
 }
 const FISH_TUNNEL_REPLAN = 0.4;
+const FISH_YAW_RATE = 1.8;
+const FISH_PITCH_RATE = 1.1;
+const FISH_PROBE_DIST = 3.0;
+const FISH_PROBE_EVERY = 0.25;
+const FISH_STRAIGHT_MIN = 6;
+const FISH_COMMIT_TIME = 4;
+const FISH_STALL_TIME = 1.5;
+const FISH_STALL_EPS = 0.3;
+function fishAngDiff(a, b) {
+  let d = a - b;
+  while (d > Math.PI) d -= Math.PI * 2;
+  while (d < -Math.PI) d += Math.PI * 2;
+  return d;
+}
+function fishDirToYawPitch(dx, dy, dz) {
+  const yaw = Math.atan2(dx, dz);
+  const pitch = Math.max(-1.0, Math.min(1.0, -Math.atan2(dy, Math.max(Math.hypot(dx, dz), 0.001))));
+  return { yaw, pitch };
+}
+function fishFreeRun(x, y, z, dx, dy, dz, maxD, m) {
+  const dl = Math.hypot(dx, dy, dz) || 1;
+  const ux = dx / dl, uy = dy / dl, uz = dz / dl;
+  let free = 0;
+  const step = 1.0;
+  for (let d = step; d <= maxD + 1e-6; d += step) {
+    if (!fishSegmentFree(x, y, z, x + ux * d, y + uy * d, z + uz * d, m)) break;
+    free = d;
+  }
+  return free;
+}
+function fishStraightTarget(from, hw, hh, vx, vy, vz, minD, maxD, coneYaw, conePitch) {
+  hw = hw != null ? hw : FISH_HW;
+  hh = hh != null ? hh : FISH_HH;
+  const sp = Math.hypot(vx || 0, vy || 0, vz || 0);
+  let hx = null, hy = null, hz = null;
+  if (sp > 0.3) { hx = vx / sp; hy = vy / sp; hz = vz / sp; }
+  else if (from && isFinite(from.yaw)) { hx = Math.sin(from.yaw); hy = 0; hz = Math.cos(from.yaw); }
+  const baseYaw = hx != null ? Math.atan2(hx, hz) : Math.random() * Math.PI * 2;
+  const basePitch = hx != null ? Math.max(-0.5, Math.min(0.5, -Math.asin(Math.max(-1, Math.min(1, hy))))) : 0;
+  const tryLeg = (yaw, pitch, d) => {
+    const ch = Math.cos(pitch);
+    const dx = Math.sin(yaw) * ch, dy = -Math.sin(pitch), dz = Math.cos(yaw) * ch;
+    const dl = Math.hypot(dx, dy, dz) || 1;
+    let tx = Math.max(-WORLD_RADIUS + 2, Math.min(WORLD_RADIUS - 2, from.x + dx / dl * d));
+    let tz = Math.max(-WORLD_RADIUS + 2, Math.min(WORLD_RADIUS - 2, from.z + dz / dl * d));
+    let ty = Math.max(1, Math.min(MAX_Y - 2, from.y + dy / dl * d));
+    tx = Math.floor(tx) + 0.5; tz = Math.floor(tz) + 0.5;
+    const bed = fishBedY(tx, tz, from.y, hh);
+    const sTop = waterTopAt(tx, tz, from.y + 4);
+    ty = Math.max(bed + 0.5, Math.min(sTop != null ? sTop - hh - FISH_SUBMERGE_GAP : ty, ty));
+    if (aabbCollidesWorld(tx, ty, tz, hw, hh)) return null;
+    if (!fishBodyWetLoose(tx, ty, tz, hw, hh)) return null;
+    if (!fishSegmentWet(from.x, from.y, from.z, tx, ty, tz, hw, hh)) return null;
+    if (!fishSegmentFree(from.x, from.y, from.z, tx, ty, tz, { hw, h: hh })) return null;
+    return { x: tx, y: ty, z: tz };
+  };
+  for (let t = 0; t < 12; t++) {
+    const yaw = baseYaw + (Math.random() * 2 - 1) * (coneYaw != null ? coneYaw : 0.35);
+    const pitch = Math.max(-0.6, Math.min(0.6, basePitch + (Math.random() * 2 - 1) * (conePitch != null ? conePitch : 0.3)));
+    const leg = tryLeg(yaw, pitch, (minD != null ? minD : 8) + Math.random() * ((maxD != null ? maxD : 16) - (minD != null ? minD : 8)));
+    if (leg) return leg;
+  }
+  return null;
+}
+function fishChannelAxis(m) {
+  const vl = Math.hypot(m.vel.x, m.vel.y, m.vel.z);
+  let fx = 0, fz = 1;
+  if (vl > 0.3) { fx = m.vel.x / vl; fz = m.vel.z / vl; }
+  else if (isFinite(m.yaw)) { fx = Math.sin(m.yaw); fz = Math.cos(m.yaw); }
+  const fwd = fishFreeRun(m.pos.x, m.pos.y, m.pos.z, fx, 0, fz, 8, m);
+  const lx = -fz, lz = fx;
+  const left = fishFreeRun(m.pos.x, m.pos.y, m.pos.z, lx, 0, lz, 8, m);
+  const right = fishFreeRun(m.pos.x, m.pos.y, m.pos.z, -lx, 0, -lz, 8, m);
+  const back = fishFreeRun(m.pos.x, m.pos.y, m.pos.z, -fx, 0, -fz, 8, m);
+  const side = Math.min(left, right);
+  if (fwd >= 5 && side <= 3) return { dx: fx, dz: fz, fwd, side };
+  if (back >= 5 && side <= 3) return { dx: -fx, dz: -fz, fwd: back, side };
+  if (Math.max(left, right) >= 6 && fwd <= 3) {
+    const sx = left >= right ? lx : -lx, sz = left >= right ? lz : -lz;
+    return { dx: sx, dz: sz, fwd: Math.max(left, right), side: fwd };
+  }
+  return null;
+}
+function fishAvoidTarget(m, minRun) {
+  minRun = minRun != null ? minRun : FISH_STRAIGHT_MIN;
+  const cur = fishDirToYawPitch(m.vel.x, m.vel.y, m.vel.z);
+  const vl = Math.hypot(m.vel.x, m.vel.y, m.vel.z);
+  const baseYaw = vl > 0.3 ? cur.yaw : (isFinite(m.yaw) ? m.yaw : 0);
+  const basePitch = vl > 0.3 ? cur.pitch : (m._pitch != null ? m._pitch : 0);
+  const yawOffs = [0, 15, -15, 30, -30, 45, -45, 60, -60, 90, -90, 135, -135, 180];
+  const pitchOffs = [0, 15, -15, 30, -30];
+  let best = null, bestCost = Infinity;
+  for (const yo of yawOffs) {
+    for (const po of pitchOffs) {
+      if (Math.abs(yo) > 60 && po !== 0) continue;
+      const yaw = baseYaw + yo * Math.PI / 180;
+      const pitch = Math.max(-0.6, Math.min(0.6, basePitch + po * Math.PI / 180));
+      const ch = Math.cos(pitch);
+      const dx = Math.sin(yaw) * ch, dy = -Math.sin(pitch), dz = Math.cos(yaw) * ch;
+      const run = fishFreeRun(m.pos.x, m.pos.y, m.pos.z, dx, dy, dz, 12, m);
+      if (run < minRun) continue;
+      const d = Math.min(12, Math.max(FISH_STRAIGHT_MIN, run));
+      const dl = Math.hypot(dx, dy, dz) || 1;
+      let tx = Math.max(-WORLD_RADIUS + 2, Math.min(WORLD_RADIUS - 2, m.pos.x + dx / dl * d));
+      let tz = Math.max(-WORLD_RADIUS + 2, Math.min(WORLD_RADIUS - 2, m.pos.z + dz / dl * d));
+      let ty = Math.max(1, Math.min(MAX_Y - 2, m.pos.y + dy / dl * d));
+      tx = Math.floor(tx) + 0.5; tz = Math.floor(tz) + 0.5;
+      const bed = fishBedY(tx, tz, m.pos.y, m.h);
+      const sTop = waterTopAt(tx, tz, m.pos.y + 4);
+      ty = Math.max(bed + 0.5, Math.min(sTop != null ? sTop - m.h - FISH_SUBMERGE_GAP : ty, ty));
+      if (aabbCollidesWorld(tx, ty, tz, m.hw, m.h)) continue;
+      if (!fishBodyWetLoose(tx, ty, tz, m.hw, m.h)) continue;
+      if (!fishSegmentFree(m.pos.x, m.pos.y, m.pos.z, tx, ty, tz, m)) continue;
+      const cost = Math.abs(yo) + 0.5 * Math.abs(po) - Math.min(6, run - minRun) * 0.5;
+      if (cost < bestCost) { bestCost = cost; best = { x: tx, y: ty, z: tz }; }
+    }
+  }
+  return best;
+}
+function fishAvoidCommit(m, now, lockTime) {
+  let av = fishAvoidTarget(m);
+  if (av) return { tgt: av, lock: lockTime != null ? lockTime : FISH_COMMIT_TIME };
+  av = fishAvoidTarget(m, 2);
+  if (av) return { tgt: av, lock: 1.5 };
+  const hop = fishMillHop(m);
+  if (hop) return { tgt: { x: hop.x, y: hop.y, z: hop.z }, lock: 2 };
+  const lh = fishLooseHop(m);
+  if (lh) return { tgt: lh, lock: 1.5 };
+  return null;
+}
+function fishLooseHop(m) {
+  const dirs = [[1, 0, 0], [-1, 0, 0], [0, 0, 1], [0, 0, -1], [0, 1, 0], [0, -1, 0]];
+  const vl = Math.hypot(m.vel.x, m.vel.y, m.vel.z);
+  let best = null, bestDot = -2;
+  for (const [ax, ay, az] of dirs) {
+    for (const d of [1.0, 2.0]) {
+      const x = Math.max(-WORLD_RADIUS + 2, Math.min(WORLD_RADIUS - 2, m.pos.x + ax * d));
+      const y = Math.max(1, Math.min(MAX_Y - 2, m.pos.y + ay * d));
+      const z = Math.max(-WORLD_RADIUS + 2, Math.min(WORLD_RADIUS - 2, m.pos.z + az * d));
+      if (aabbCollidesWorld(x, y, z, m.hw, m.h)) continue;
+      if (!fishBodyWetLoose(x, y, z, m.hw, m.h)) continue;
+      const dot = vl > 0.3 ? (m.vel.x * ax + m.vel.y * ay + m.vel.z * az) / vl / (Math.hypot(ax, ay, az) || 1) : 0;
+      if (dot > bestDot) { bestDot = dot; best = { x, y, z }; }
+    }
+  }
+  return best;
+}
 const FISH_TUNNEL_BFS_CELLS = 600;
 const FISH_TUNNEL_PATH_CELLS = 40;
 const FISH_TUNNEL_EXIT_NEAR = 60;
@@ -5110,7 +5257,16 @@ function updateTunnelFish(m, dt, now) {
       vy += (Math.sin(wa * 0.7) * wd * 0.5 - vy) * k0;
       vz += (Math.sin(wa) * wd - vz) * k0;
     }
+    const sx0 = m.pos.x, sy0 = m.pos.y, sz0 = m.pos.z;
     const slid = fishMoveSlide(m, vx, vy, vz, dt);
+    if (Math.hypot(m.pos.x - sx0, m.pos.y - sy0, m.pos.z - sz0) < 1e-6) {
+      const lx = sx0 + vx * dt;
+      if (!aabbCollidesWorld(lx, sy0, sz0, m.hw, m.h) && fishBodyWetLoose(lx, sy0, sz0, m.hw, m.h)) m.pos.x = lx;
+      const lz = sz0 + vz * dt;
+      if (!aabbCollidesWorld(m.pos.x, sy0, lz, m.hw, m.h) && fishBodyWetLoose(m.pos.x, sy0, lz, m.hw, m.h)) m.pos.z = lz;
+      const ly = sy0 + vy * dt;
+      if (!aabbCollidesWorld(m.pos.x, ly, m.pos.z, m.hw, m.h) && fishBodyWetLoose(m.pos.x, ly, m.pos.z, m.hw, m.h)) m.pos.y = ly;
+    }
     m.vel.set(slid.vx, slid.vy, slid.vz);
     fishAnimate(m, dt, slid.vx, slid.vy, slid.vz, sp, null);
     return;
@@ -5392,9 +5548,32 @@ function updateFish(m, dt) {
       t = m.target;
     }
   }
+  if (m._fishLockUntil != null && now < m._fishLockUntil && t && !t._rodLure && !t._fishWater) {
+    const dl = Math.hypot(t.x - m.pos.x, t.y - m.pos.y, t.z - m.pos.z);
+    if (dl < 1.0 || !fishSegmentFree(m.pos.x, m.pos.y, m.pos.z, t.x, t.y, t.z, m)) m._fishLockUntil = 0;
+    else m._swimT0 = now;
+  }
+  const lockHeld = m._fishLockUntil != null && now < m._fishLockUntil && m.target && !m.target._rodLure && !m.target._fishWater;
   if (!t || (td < 1.0 && !isLure && !isWaterChase) || (m._swimT0 && now - m._swimT0 > 14)) {
-    if (!seekLure && !(m.target && m.target._fishWater)) {
-      m.target = fishRandomTarget(m.pos, m.hw, m.h, m.vel.x, m.vel.y, m.vel.z);
+    if (!seekLure && !(m.target && m.target._fishWater) && !lockHeld) {
+      const ch = fishChannelAxis(m);
+      let nt = null;
+      if (ch) {
+        let useCh = true;
+        const cvl = Math.hypot(m.vel.x, m.vel.z);
+        if (cvl > 0.5) {
+          const dot = (m.vel.x * ch.dx + m.vel.z * ch.dz) / cvl;
+          if (dot < -0.2 && fishFreeRun(m.pos.x, m.pos.y, m.pos.z, m.vel.x, 0, m.vel.z, 8, m) >= 4) useCh = false;
+        }
+        if (useCh) nt = fishStraightTarget(m.pos, m.hw, m.h, ch.dx * 2, 0, ch.dz * 2, 6, 14, 0.3, 0.2);
+      }
+      if (!nt) nt = fishStraightTarget(m.pos, m.hw, m.h, m.vel.x, m.vel.y, m.vel.z, 8, 16, 0.35, 0.3);
+      if (!nt) {
+        const ac = fishAvoidCommit(m, now, 2);
+        if (ac) { nt = ac.tgt; m._fishLockUntil = now + ac.lock; }
+      }
+      if (!nt) nt = fishRandomTarget(m.pos, m.hw, m.h, m.vel.x, m.vel.y, m.vel.z);
+      m.target = nt;
       m._swimT0 = now;
       t = m.target;
     }
@@ -5407,20 +5586,73 @@ function updateFish(m, dt) {
     const a = now * 0.5 + m.legPhase;
     dx = Math.cos(a) * 0.3; dz = Math.sin(a) * 0.3; dy = 0;
   }
+  if (!seekLure && t) {
+    const bedBelow = fishBedY(m.pos.x, m.pos.z, m.pos.y, m.h);
+    if (m.pos.y - bedBelow < 0.8 && dy < 0.2) dy = 0.2;
+    const want = fishDirToYawPitch(dx, dy, dz);
+    if (!isFinite(m.yaw)) m.yaw = want.yaw;
+    const dyaw = fishAngDiff(want.yaw, m.yaw);
+    const maxYaw = FISH_YAW_RATE * dt;
+    m.yaw += Math.max(-maxYaw, Math.min(maxYaw, dyaw));
+    if (m._pitch == null || !isFinite(m._pitch)) m._pitch = want.pitch;
+    const dp = want.pitch - m._pitch;
+    const maxP = FISH_PITCH_RATE * dt;
+    m._pitch += Math.max(-maxP, Math.min(maxP, dp));
+    const chh = Math.cos(m._pitch);
+    dx = Math.sin(m.yaw) * chh; dy = -Math.sin(m._pitch); dz = Math.cos(m.yaw) * chh;
+  }
   const spd0 = (m.speed || FISH_SPEED);
   const k = Math.min(1, dt * 3);
   m.vel.x += (dx * spd0 - m.vel.x) * k;
   m.vel.y += (dy * spd0 - m.vel.y) * k;
   m.vel.z += (dz * spd0 - m.vel.z) * k;
+  if (!seekLure && t && !t._rodLure) {
+    if (m._fishProbeT == null || now >= m._fishProbeT) {
+      m._fishProbeT = now + FISH_PROBE_EVERY;
+      const vl = Math.hypot(m.vel.x, m.vel.y, m.vel.z);
+      if (vl > 0.5) {
+        const ux = m.vel.x / vl, uy = m.vel.y / vl, uz = m.vel.z / vl;
+        if (!fishSegmentFree(m.pos.x, m.pos.y, m.pos.z, m.pos.x + ux * FISH_PROBE_DIST, m.pos.y + uy * FISH_PROBE_DIST, m.pos.z + uz * FISH_PROBE_DIST, m)) {
+          const ac = fishAvoidCommit(m, now);
+          if (ac) { m.target = ac.tgt; t = ac.tgt; m._fishLockUntil = now + ac.lock; m._swimT0 = now; }
+        }
+      }
+    }
+  }
+  let fishBlocked = false;
   const nx = m.pos.x + m.vel.x * dt;
   if (!aabbCollidesWorld(nx, m.pos.y, m.pos.z, m.hw, m.h) && (fishBodyWetLoose(nx, m.pos.y, m.pos.z, m.hw, m.h) || seekLure)) m.pos.x = nx;
-  else { m.vel.x = 0; if (!seekLure) m.target = null; }
+  else { m.vel.x *= 0.3; if (!seekLure) fishBlocked = true; }
   const nz = m.pos.z + m.vel.z * dt;
   if (!aabbCollidesWorld(m.pos.x, m.pos.y, nz, m.hw, m.h) && (fishBodyWetLoose(m.pos.x, m.pos.y, nz, m.hw, m.h) || seekLure)) m.pos.z = nz;
-  else { m.vel.z = 0; if (!seekLure) m.target = null; }
+  else { m.vel.z *= 0.3; if (!seekLure) fishBlocked = true; }
   const yy = m.pos.y + m.vel.y * dt;
   if (!aabbCollidesWorld(m.pos.x, yy, m.pos.z, m.hw, m.h) && (fishBodyWetLoose(m.pos.x, yy, m.pos.z, m.hw, m.h) || seekLure)) m.pos.y = yy;
-  else { m.vel.y = 0; if (!seekLure) m.target = null; }
+  else { m.vel.y *= 0.3; if (!seekLure) fishBlocked = true; }
+  if (fishBlocked && !(t && t._rodLure)) {
+    if (m._fishAvoidT == null || now >= m._fishAvoidT) {
+      m._fishAvoidT = now + 0.3;
+      const ac = fishAvoidCommit(m, now);
+      if (ac) { m.target = ac.tgt; t = ac.tgt; m._fishLockUntil = now + ac.lock; m._swimT0 = now; }
+      else m._fishLockUntil = 0;
+    }
+  }
+  if (m._fishLX == null) { m._fishLX = m.pos.x; m._fishLY = m.pos.y; m._fishLZ = m.pos.z; m._fishLT = now; }
+  if (!fishBlocked) {
+    if (now - m._fishLT > 0.5) { m._fishLX = m.pos.x; m._fishLY = m.pos.y; m._fishLZ = m.pos.z; m._fishLT = now; }
+  } else if (now - m._fishLT > FISH_STALL_TIME) {
+    const stalled = Math.hypot(m.pos.x - m._fishLX, m.pos.y - m._fishLY, m.pos.z - m._fishLZ) < FISH_STALL_EPS;
+    m._fishLX = m.pos.x; m._fishLY = m.pos.y; m._fishLZ = m.pos.z; m._fishLT = now;
+    if (stalled && !(t && t._rodLure)) {
+      const side = fishSidestep(m);
+      if (side) { m.target = { x: side.x, y: side.y, z: side.z }; m._fishLockUntil = now + 2; m._swimT0 = now; }
+      else {
+        const lh = fishLooseHop(m);
+        if (lh) { m.target = lh; m._fishLockUntil = now + 1.5; m._swimT0 = now; }
+        else { m.vel.x *= -0.3; m.vel.y *= -0.3; m.vel.z *= -0.3; m._fishLockUntil = 0; }
+      }
+    }
+  }
   m.pos.x = Math.max(-WORLD_RADIUS + 2, Math.min(WORLD_RADIUS - 2, m.pos.x));
   m.pos.z = Math.max(-WORLD_RADIUS + 2, Math.min(WORLD_RADIUS - 2, m.pos.z));
   m.pos.y = Math.max(1, Math.min(MAX_Y - 2, m.pos.y));
@@ -5445,12 +5677,21 @@ function updateFish(m, dt) {
   }
   const hv = Math.hypot(m.vel.x, m.vel.z);
   if (hv > 0.3) {
-    m.yaw = Math.atan2(m.vel.x, m.vel.z);
+    const wantYaw = Math.atan2(m.vel.x, m.vel.z);
+    if (!isFinite(m.yaw)) m.yaw = wantYaw;
+    const dyw = fishAngDiff(wantYaw, m.yaw);
+    const my = FISH_YAW_RATE * dt;
+    m.yaw += Math.max(-my, Math.min(my, dyw));
     m.yawTarget = m.yaw;
-    m.mesh.rotation.y = m.yaw;
   }
+  m.mesh.rotation.y = m.yaw;
   m.mesh.position.copy(m.pos);
-  m.mesh.rotation.x = Math.max(-1.0, Math.min(1.0, -Math.atan2(m.vel.y, Math.max(Math.hypot(m.vel.x, m.vel.z), 0.001))));
+  const wantP = Math.max(-1.0, Math.min(1.0, -Math.atan2(m.vel.y, Math.max(Math.hypot(m.vel.x, m.vel.z), 0.001))));
+  if (m._pitch == null || !isFinite(m._pitch)) m._pitch = wantP;
+  const dpp = wantP - m._pitch;
+  const mp = FISH_PITCH_RATE * dt;
+  m._pitch += Math.max(-mp, Math.min(mp, dpp));
+  m.mesh.rotation.x = m._pitch;
   m.mesh.rotation.z = 0;
   const spd = Math.hypot(m.vel.x, m.vel.y, m.vel.z);
   const tail2 = m.mesh.userData.tail;
@@ -26127,7 +26368,7 @@ if (location.search.includes('test')) {
     get pos(){ return pos; }, get vel(){ return vel; }, get camera(){ return camera; }, get scene(){ return scene; }, get freeCam(){ return freeCam; }, set freeCam(v){ freeCam = v; }, get camPos(){ return camPos; }, get yaw(){ return yaw; }, set yaw(v){ yaw=v; }, get pitch(){ return pitch; }, set pitch(v){ pitch=v; },
     get carryMob(){ return carryMob; }, set carryMob(v){ carryMob = v; }, handleCarryEnterDown, handleCarryEnterUp, pickMob, get carryGrappleActive(){ return carryGrappleActive; }, get carryGrapplePulling(){ return carryGrapplePulling; }, get carryGrappleMob(){ return carryGrappleMob; }, get carryGrappleBlock(){ return carryGrappleBlock; }, get carryGrappleHookPos(){ return carryGrappleHookPos; }, get carryGrappleOffset(){ return carryGrappleOffset; }, get carryGrappleMode(){ return carryGrappleMode; }, get isMobFrozenByGrapple(){ return isMobFrozenByGrapple; }, isChained, isChainCarrier, chainRootOf, chainTailOf, linkChain, dropChainFrom, chainTakeForCarry, severChainMob, groundChainFrom, insertChainBefore, insertChainBehind, insertBehindRide, prependChainLead, clearChains, pruneChains, updateChains, syncChainLinkColor, syncChainLinkColors, syncGrappleColor, stampSpawn, get mobById(){ return mobById; }, chainAttachTarget, startCarryAttachGrapple, killChainMob, respawnChainMob, unchainMob, severGroundedChainVictim, isGroundedChainVictim, get chainLinks(){ return chainLinks; }, get chainParent(){ return chainParent; }, get chainChild(){ return chainChild; }, playerChainAvatar, playerInChain, PLAYER_CHAIN_ID, spliceChainLink, chainHasJumping, chainPushCrumb, chainTrailTarget, latchPlayerTo, latchPlayerInMiddle, playerInsertCutAndLink, insertChainAheadOfPlayer, insertChainBehindPlayer, playerLeadLink, dropPlayerLeadEntry, readyLeadForLatch, leadAwareLatchInsert, appendCutFollowerBehindLeadTail, grabRideForCarry, fireGrapple, detachDisplacementGrapple, pickStar, get grappleStar(){ return grappleStar; }, get grappleActive(){ return grappleActive; }, get grappleHooked(){ return grappleHooked; }, get grappleRetracting(){ return grappleRetracting; }, get grappleMob(){ return grappleMob; }, get grappleMobOffset(){ return grappleMobOffset; }, get grappleHookPos(){ return grappleHookPos; }, get grappleTarget(){ return grappleTarget; },     updateCarryGrapple, updateCarry, releaseCarriedMobAt, releaseCarriedMob, get currentBlock(){ return currentBlock; }, updateTarget, hotbarList, placeBlock, breakBlock, get selected(){ return selected; }, set selected(v){ selected=v; }, toggleCarry: handleCarryEnterDown, findNearestMobForGrab: (...a)=>{ const d=new THREE.Vector3(); camera.getWorldDirection(d); return pickMob(d); }, get playerArms(){ return playerArms; }, get started(){ return started; }, set started(v){ started=v; }, get loading(){ return loading; }, get freeCam(){ return freeCam; }, set freeCam(v){ freeCam=v; }, get helpOpen(){ return helpOpen; },
     get WOLF_COUNT(){ return WOLF_COUNT; }, get GOLEM_COUNT(){ return GOLEM_COUNT; }, get GOLEM_HW(){ return GOLEM_HW; }, get GOLEM_HH(){ return GOLEM_HH; }, get CAT_COUNT(){ return CAT_COUNT; }, get CAT_HW(){ return CAT_HW; }, get CAT_HH(){ return CAT_HH; }, makeWolfMesh, makeCatMesh, pickCatRobe, catParentFor, catTrailSpot, panicCats, makeIronGolemMesh, villagerHW, villagerH, wolfHasMobGround, wolfBlockedAt, wolfProbeFree, wanderGoalForWolf, wolfFindPath, wolfFlatSpot, wolfLeaveTarget, panicLeaveDir, panicWolves, wolfInWater, mobInWater, waterSurfaceForMob, mobPhysicsStep, wolfPhysicsStep, updateMobs, obstacleTurnDir, buildMobGrid,     get isPenMob(){ return isPenMob; }, get pigOverlapsFence(){ return pigOverlapsFence; }, pigFenceSlideOut, get MOB_FLOAT_FRAC(){ return MOB_FLOAT_FRAC; }, mobFloatTargetY, mobWaterExitJump, poolExitTarget, penPoolExitTarget, isInsidePenPool, moonLakeExitTarget, isMobInPoolWater, isMobInMoonLake, get BATH_MIN_T(){ return BATH_MIN_T; }, get BATH_MAX_T(){ return BATH_MAX_T; },
-    get BIRD_COUNT(){ return BIRD_COUNT; }, get BIRD_MIN_Y(){ return BIRD_MIN_Y; }, get BIRD_MAX_Y(){ return BIRD_MAX_Y; }, get BIRD_SPEED(){ return BIRD_SPEED; }, get TNT_HOME_SPEED(){ return TNT_HOME_SPEED; }, get BIRD_AIM_DIST(){ return BIRD_AIM_DIST; }, get BIRD_LOCK_TIME(){ return BIRD_LOCK_TIME; }, get birdLock(){ return birdLock; }, get birdLockT(){ return birdLockT; }, set birdLockT(v){ birdLockT = v; }, get birdLockShots(){ return birdLockShots; }, liveBirdLock, tntTargeted, tryFireLockedTNT, tntChainAimMob, aimOnMob, aimOnStar, aimOnStarFor, get chainBreaking(){ return chainBreaking; }, set chainBreaking(v){ chainBreaking = v; },     makeBirdMesh, spawnBirds, spawnSingleBird, removeBirds, spawnBirdChain, updateBird, updatePerchedBird, updateToPerchBird, birdTakeoff, birdNextLeg, birdFindPerchSpot, birdCloudTopAt, birdTreeTopAt, birdRoofTopAt, birdPerchBand, birdPerchSupports, killBird, birdSpotOutOfView, birdProbeFree, birdRandomTarget, birdSeparate,     makeFishMesh, spawnFishes, spawnSingleFish, updateFish, killFish, fishInWater, fishRandomTarget, tryPlace, get FISH_COUNT(){ return FISH_COUNT; }, get FISH_SPEED(){ return FISH_SPEED; },     fishWaterSurface, waterTopAt, fishNarrow, fishColHW, fishColH, fishEaseScale, fishProbeFree, fishSegmentFree, fishIsConfined, fishHoleCell, fishMillHop, fishMoveSlide, fishTunnelPlan, updateTunnelFish, fishAnimate, fishSidestep, fishNoticeWater, fishWaterLiveKeys, fishFreshWaterFor, fishWaterGiveUp, fishResolvePenetration, fishBodyWetFull, fishProbeDims, tunnelFindStart, tunnelBFSWalk, tunnelBuildPath, tunnelAxisStep, get FISH_NARROW_SCALE(){ return FISH_NARROW_SCALE; }, get FISH_TUNNEL_HW(){ return FISH_TUNNEL_HW; }, get FISH_SUBMERGE_GAP(){ return FISH_SUBMERGE_GAP; }, get FISH_LURE_DEPTH(){ return FISH_LURE_DEPTH; }, get FISH_TUNNEL_WATER_NEAR(){ return FISH_TUNNEL_WATER_NEAR; }, get FISH_OPEN_WATER_LURE_R(){ return FISH_OPEN_WATER_LURE_R; }, get fishNotices(){ return fishNotices; },     deployRod, stowRod, rodStartRetract, rodTick, rodAimWater, buildRodMesh, updateRodBeam, renderRodRope, renderRodStraight, rodRopeEnd, get rodOut(){ return rodOut; }, get rodFish(){ return rodFish; }, get rodHasCast(){ return rodHasCast; },     get rodBob(){ return rodBob; }, get rodTipW(){ return rodTipW; }, get rodBobber(){ return rodBobber; }, get rodBeam(){ return rodBeam; }, get rodLine(){ return rodLine; }, get rodAnim(){ return rodAnim; }, get rodCastF(){ return rodCastF; }, get rodDunked(){ return rodDunked; }, get ROD_BOB_SMOOTH(){ return ROD_BOB_SMOOTH; }, get ROD_BITE_MAX_T(){ return ROD_BITE_MAX_T; }, get ROD_BITE_LAMBDA(){ return ROD_BITE_LAMBDA; }, get ROD_ORBIT_R(){ return ROD_ORBIT_R; }, rodClearTimers, rodDropBite, pickFishVariant, fishComboFor, fishSizeFor, get FISH_VARIANT_COUNT(){ return FISH_VARIANT_COUNT; },     houseInteriorFor, houseMouths, birdCoopTarget,     birdSegmentFree, birdClearance, birdBestSteer, birdMillHop, birdConfinedSteer, birdMoveSlide, bandReturnTarget, birdNoticeBreak, setMobTransparent, birdIsConfined, birdHoleCell, chainSegmentFree, chainThreadRide, chainFindRejoinPath, chainDriveRejoin, chainRejoinSlot, birdTunnelPlan, updateTunnelBird, birdTunnelSeparate, birdSkyClear, birdSidestep, birdUTurn, birdNarrow, birdColHW, birdColH,     get BIRD_NARROW_SCALE(){ return BIRD_NARROW_SCALE; }, get BIRD_SKY_CLEAR(){ return BIRD_SKY_CLEAR; }, get NETHER_BIRD_MIN_Y(){ return NETHER_BIRD_MIN_Y; }, get NETHER_BIRD_MAX_Y(){ return NETHER_BIRD_MAX_Y; }, birdDimOf, birdBandMinFor, birdBandMaxFor, birdBandMin, birdBandMax, birdNetherLegY, netherBirdCeiling, birdLavaAt, get BIRD_TUNNEL_SCALE(){ return BIRD_TUNNEL_SCALE; }, get BIRD_COL_HW(){ return BIRD_COL_HW; }, get BIRD_COL_H(){ return BIRD_COL_H; },     get tntLit(){ return tntLit; }, get explosionQueue(){ return explosionQueue; }, get tntEta(){ return tntEta; }, tickLitMegaTex, getLitMegaTex, getLitMegaTexEff(){ return litMegaTexEff; }, megaWhiteEff, get MEGA_WHITE_TEX_CAP(){ return MEGA_WHITE_TEX_CAP; }, get pendingTNTBombs(){ return pendingTNTBombs; }, get pendingTNTEta(){ return pendingTNTEta; }, get bursts(){ return bursts; }, get flashes(){ return flashes; }, snapshotLiveFx, replayLiveFx, spawnExplosion, igniteTNT, fireTNTAtBird, purgeLiveTNT, tickTNT, snapshotLiveTNT, restoreLiveTNT, get pendingDragon(){ return pendingDragon; }, get tntEta(){ return tntEta; }, igniteTNT, aimedBird, fireTNTAtBird, explodeBird, spawnBirdBurst, get bursts(){ return bursts; }, get flashes(){ return flashes; }, updateTNTTarget, tickTNT, fireGrapple, updateGrapple, updatePlayer, get grappleActive(){ return grappleActive; }, get grapplePulling(){ return grapplePulling; }, get grappleHooked(){ return grappleHooked; },
+    get BIRD_COUNT(){ return BIRD_COUNT; }, get BIRD_MIN_Y(){ return BIRD_MIN_Y; }, get BIRD_MAX_Y(){ return BIRD_MAX_Y; }, get BIRD_SPEED(){ return BIRD_SPEED; }, get TNT_HOME_SPEED(){ return TNT_HOME_SPEED; }, get BIRD_AIM_DIST(){ return BIRD_AIM_DIST; }, get BIRD_LOCK_TIME(){ return BIRD_LOCK_TIME; }, get birdLock(){ return birdLock; }, get birdLockT(){ return birdLockT; }, set birdLockT(v){ birdLockT = v; }, get birdLockShots(){ return birdLockShots; }, liveBirdLock, tntTargeted, tryFireLockedTNT, tntChainAimMob, aimOnMob, aimOnStar, aimOnStarFor, get chainBreaking(){ return chainBreaking; }, set chainBreaking(v){ chainBreaking = v; },     makeBirdMesh, spawnBirds, spawnSingleBird, removeBirds, spawnBirdChain, updateBird, updatePerchedBird, updateToPerchBird, birdTakeoff, birdNextLeg, birdFindPerchSpot, birdCloudTopAt, birdTreeTopAt, birdRoofTopAt, birdPerchBand, birdPerchSupports, killBird, birdSpotOutOfView, birdProbeFree, birdRandomTarget, birdSeparate,     makeFishMesh, spawnFishes, spawnSingleFish, updateFish, killFish, fishInWater, fishRandomTarget, tryPlace, get FISH_COUNT(){ return FISH_COUNT; }, get FISH_SPEED(){ return FISH_SPEED; },     fishWaterSurface, waterTopAt, fishNarrow, fishColHW, fishColH, fishEaseScale, fishProbeFree, fishSegmentFree, fishIsConfined, fishHoleCell, fishMillHop, fishMoveSlide, fishTunnelPlan, updateTunnelFish, fishAnimate, fishSidestep, fishNoticeWater,     fishWaterLiveKeys, fishFreshWaterFor, fishWaterGiveUp, fishResolvePenetration, fishBodyWetFull, fishProbeDims, fishAngDiff, fishDirToYawPitch, fishFreeRun, fishStraightTarget, fishChannelAxis, fishAvoidTarget, fishAvoidCommit, fishLooseHop, get FISH_YAW_RATE(){ return FISH_YAW_RATE; }, get FISH_PITCH_RATE(){ return FISH_PITCH_RATE; }, get FISH_PROBE_DIST(){ return FISH_PROBE_DIST; }, get FISH_STRAIGHT_MIN(){ return FISH_STRAIGHT_MIN; }, get FISH_COMMIT_TIME(){ return FISH_COMMIT_TIME; }, get FISH_STALL_TIME(){ return FISH_STALL_TIME; }, tunnelFindStart, tunnelBFSWalk, tunnelBuildPath, tunnelAxisStep, get FISH_NARROW_SCALE(){ return FISH_NARROW_SCALE; }, get FISH_TUNNEL_HW(){ return FISH_TUNNEL_HW; }, get FISH_SUBMERGE_GAP(){ return FISH_SUBMERGE_GAP; }, get FISH_LURE_DEPTH(){ return FISH_LURE_DEPTH; }, get FISH_TUNNEL_WATER_NEAR(){ return FISH_TUNNEL_WATER_NEAR; }, get FISH_OPEN_WATER_LURE_R(){ return FISH_OPEN_WATER_LURE_R; }, get fishNotices(){ return fishNotices; },     deployRod, stowRod, rodStartRetract, rodTick, rodAimWater, buildRodMesh, updateRodBeam, renderRodRope, renderRodStraight, rodRopeEnd, get rodOut(){ return rodOut; }, get rodFish(){ return rodFish; }, get rodHasCast(){ return rodHasCast; },     get rodBob(){ return rodBob; }, get rodTipW(){ return rodTipW; }, get rodBobber(){ return rodBobber; }, get rodBeam(){ return rodBeam; }, get rodLine(){ return rodLine; }, get rodAnim(){ return rodAnim; }, get rodCastF(){ return rodCastF; }, get rodDunked(){ return rodDunked; }, get ROD_BOB_SMOOTH(){ return ROD_BOB_SMOOTH; }, get ROD_BITE_MAX_T(){ return ROD_BITE_MAX_T; }, get ROD_BITE_LAMBDA(){ return ROD_BITE_LAMBDA; }, get ROD_ORBIT_R(){ return ROD_ORBIT_R; }, rodClearTimers, rodDropBite, pickFishVariant, fishComboFor, fishSizeFor, get FISH_VARIANT_COUNT(){ return FISH_VARIANT_COUNT; },     houseInteriorFor, houseMouths, birdCoopTarget,     birdSegmentFree, birdClearance, birdBestSteer, birdMillHop, birdConfinedSteer, birdMoveSlide, bandReturnTarget, birdNoticeBreak, setMobTransparent, birdIsConfined, birdHoleCell, chainSegmentFree, chainThreadRide, chainFindRejoinPath, chainDriveRejoin, chainRejoinSlot, birdTunnelPlan, updateTunnelBird, birdTunnelSeparate, birdSkyClear, birdSidestep, birdUTurn, birdNarrow, birdColHW, birdColH,     get BIRD_NARROW_SCALE(){ return BIRD_NARROW_SCALE; }, get BIRD_SKY_CLEAR(){ return BIRD_SKY_CLEAR; }, get NETHER_BIRD_MIN_Y(){ return NETHER_BIRD_MIN_Y; }, get NETHER_BIRD_MAX_Y(){ return NETHER_BIRD_MAX_Y; }, birdDimOf, birdBandMinFor, birdBandMaxFor, birdBandMin, birdBandMax, birdNetherLegY, netherBirdCeiling, birdLavaAt, get BIRD_TUNNEL_SCALE(){ return BIRD_TUNNEL_SCALE; }, get BIRD_COL_HW(){ return BIRD_COL_HW; }, get BIRD_COL_H(){ return BIRD_COL_H; },     get tntLit(){ return tntLit; }, get explosionQueue(){ return explosionQueue; }, get tntEta(){ return tntEta; }, tickLitMegaTex, getLitMegaTex, getLitMegaTexEff(){ return litMegaTexEff; }, megaWhiteEff, get MEGA_WHITE_TEX_CAP(){ return MEGA_WHITE_TEX_CAP; }, get pendingTNTBombs(){ return pendingTNTBombs; }, get pendingTNTEta(){ return pendingTNTEta; }, get bursts(){ return bursts; }, get flashes(){ return flashes; }, snapshotLiveFx, replayLiveFx, spawnExplosion, igniteTNT, fireTNTAtBird, purgeLiveTNT, tickTNT, snapshotLiveTNT, restoreLiveTNT, get pendingDragon(){ return pendingDragon; }, get tntEta(){ return tntEta; }, igniteTNT, aimedBird, fireTNTAtBird, explodeBird, spawnBirdBurst, get bursts(){ return bursts; }, get flashes(){ return flashes; }, updateTNTTarget, tickTNT, fireGrapple, updateGrapple, updatePlayer, get grappleActive(){ return grappleActive; }, get grapplePulling(){ return grapplePulling; }, get grappleHooked(){ return grappleHooked; },
     get overPortalWin(){ return overPortalWin; }, get overPortalDir(){ return overPortalDir; }, get overPortalSpawn(){ return overPortalSpawn; }, get overPortalFace(){ return overPortalFace; },
     portalWinValid, portalFrameBBox, findReturnSpot, frameTopSpot, facePortalFrom, faceAwayFromPortal, recordOverPortal, recordDimExit, resolveDimArrival, nearestReturnWin, resolveOverworldReturn, nearPortalSpawn, resolveSpawn, collectEndWins, collectNetherWins, collectReturnWins, insideEndInterior, insideNetherInterior, winCenter, windowDist, isSolid,
     get PORTAL(){ return PORTAL; }, get OBSIDIAN(){ return OBSIDIAN; }, get WORLD_RADIUS(){ return WORLD_RADIUS; }, get PLAYER_HW(){ return PLAYER_HW; }, get PLAYER_H(){ return PLAYER_H; },     get MOON(){ return MOON; }, get MOON_WATER(){ return MOON_WATER; }, get MOON_Y(){ return MOON_Y; }, get MOON_R(){ return MOON_R; }, inMoonZone, get CLOUD(){ return CLOUD; }, get GRASS(){ return GRASS; }, get STONE(){ return STONE; }, get ENDSTONE(){ return ENDSTONE; }, get NETHERRACK(){ return NETHERRACK; }, get dim(){ return dim; },
