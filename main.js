@@ -1750,8 +1750,8 @@ function stairEntrances() {
 
 const VILLAGE_RADIUS = 28;
 const VILLAGE_HOUSES = 8;
-const VILLAGE_PEN_W = 14;
-const VILLAGE_PEN_D = 12;
+const VILLAGE_PEN_W = 15;
+const VILLAGE_PEN_D = 13;
 const VILLAGE_POOL_W = 8;
 const VILLAGE_POOL_D = 6;
 const VILLAGE_POOL_DEPTH = 2;
@@ -1760,6 +1760,9 @@ const VILLAGE_PEN_POOL_D = 2;
 const VILLAGE_PEN_POOL_DEPTH = 1;
 const PIG_COUNT = 4;
 const COW_COUNT = 4;
+const CHICKEN_COUNT = 5;
+const CHICKEN_HW = 0.25;
+const CHICKEN_HH = 0.70;
 const WOLF_COUNT = 20;
 const GOLEM_COUNT = 1;
 const GOLEM_HW = 0.6;
@@ -2504,7 +2507,7 @@ function computeVillageLayout() {
   villageCenter = { x: vx, z: vz, y: vy };
   villageMinX = vx - VILLAGE_RADIUS; villageMaxX = vx + VILLAGE_RADIUS;
   villageMinZ = vz - VILLAGE_RADIUS; villageMaxZ = vz + VILLAGE_RADIUS;
-  // — pig/cow pen first to guarantee a slot (14×12) —
+  // — pig/cow/chicken pen first to guarantee a slot (15×13) —
   villagePen = null;
   let _penTries = 0;
   for (let _pt = 0; _pt < 1200 && !villagePen; _pt++) {
@@ -3612,6 +3615,66 @@ function makeCowMesh() {
   g.userData = { sc, legBL, legBR, legFL, legFR, body, head, tail: tailGroup, tailGroup, kind: "cow" };
   return g;
 }
+const chickenMat = new THREE.MeshStandardMaterial({ color: 0xf5f0e6, roughness: 0.9 });
+const chickenBeakMat = new THREE.MeshStandardMaterial({ color: 0xe8963c, roughness: 0.9 });
+const chickenCombMat = new THREE.MeshStandardMaterial({ color: 0xd43a2e, roughness: 0.9 });
+function makeChickenMesh() {
+  const g = new THREE.Group();
+  const sc = 1;
+  if (!villagerGeo) villagerGeo = new THREE.BoxGeometry(1, 1, 1);
+  const geo = villagerGeo;
+  const body = new THREE.Mesh(geo, chickenMat);
+  body.scale.set(0.42 * sc, 0.34 * sc, 0.55 * sc);
+  body.position.set(0, 0.38 * sc, 0);
+  g.add(body);
+  const head = new THREE.Mesh(geo, chickenMat);
+  head.scale.set(0.26 * sc, 0.26 * sc, 0.26 * sc);
+  head.position.set(0, 0.62 * sc, 0.30 * sc);
+  g.add(head);
+  const beak = new THREE.Mesh(geo, chickenBeakMat);
+  beak.scale.set(0.12 * sc, 0.08 * sc, 0.10 * sc);
+  beak.position.set(0, 0.58 * sc, 0.46 * sc);
+  g.add(beak);
+  const comb = new THREE.Mesh(geo, chickenCombMat);
+  comb.scale.set(0.08 * sc, 0.12 * sc, 0.16 * sc);
+  comb.position.set(0, 0.78 * sc, 0.28 * sc);
+  g.add(comb);
+  const eyeMat = new THREE.MeshStandardMaterial({ color: 0x111111 });
+  const eyeL = new THREE.Mesh(geo, eyeMat);
+  eyeL.scale.set(0.05 * sc, 0.05 * sc, 0.02 * sc);
+  eyeL.position.set(-0.14 * sc, 0.66 * sc, 0.43 * sc);
+  g.add(eyeL);
+  const eyeR = new THREE.Mesh(geo, eyeMat);
+  eyeR.scale.set(0.05 * sc, 0.05 * sc, 0.02 * sc);
+  eyeR.position.set(0.14 * sc, 0.66 * sc, 0.43 * sc);
+  g.add(eyeR);
+  const wingL = new THREE.Mesh(geo, chickenMat);
+  wingL.scale.set(0.06 * sc, 0.22 * sc, 0.34 * sc);
+  wingL.position.set(-0.24 * sc, 0.38 * sc, -0.02 * sc);
+  g.add(wingL);
+  const wingR = new THREE.Mesh(geo, chickenMat);
+  wingR.scale.set(0.06 * sc, 0.22 * sc, 0.34 * sc);
+  wingR.position.set(0.24 * sc, 0.38 * sc, -0.02 * sc);
+  g.add(wingR);
+  const tailGroup = new THREE.Group();
+  tailGroup.position.set(0, 0.48 * sc, -0.28 * sc);
+  g.add(tailGroup);
+  const tail = new THREE.Mesh(geo, chickenMat);
+  tail.scale.set(0.16 * sc, 0.22 * sc, 0.08 * sc);
+  tail.position.set(0, 0.08 * sc, -0.05 * sc);
+  tail.rotation.x = -0.5;
+  tailGroup.add(tail);
+  const legL = new THREE.Mesh(geo, chickenBeakMat);
+  legL.scale.set(0.08 * sc, 0.22 * sc, 0.08 * sc);
+  legL.position.set(-0.12 * sc, 0.11 * sc, 0.02 * sc);
+  g.add(legL);
+  const legR = new THREE.Mesh(geo, chickenBeakMat);
+  legR.scale.set(0.08 * sc, 0.22 * sc, 0.08 * sc);
+  legR.position.set(0.12 * sc, 0.11 * sc, 0.02 * sc);
+  g.add(legR);
+  g.userData = { sc, legL, legR, body, head, tail: tailGroup, tailGroup, kind: "chicken" };
+  return g;
+}
 const golemIronMat = new THREE.MeshStandardMaterial({ color: 0xdfe3e6, roughness: 0.85 });
 const golemIronDarkMat = new THREE.MeshStandardMaterial({ color: 0xb9bdc1, roughness: 0.9 });
 const golemBrowMat = new THREE.MeshStandardMaterial({ color: 0x6e6a63, roughness: 0.9 });
@@ -4281,7 +4344,7 @@ function removeBirds() {
   birdLockShots = 0;
   pruneChains();
 }
-const CHAIN_SPAWN_KINDS = ["villager", "pig", "cow", "wolf", "cat"];
+const CHAIN_SPAWN_KINDS = ["villager", "pig", "cow", "chicken", "wolf", "cat"];
 // ---------------------------------------------------------------------------
 // Fishes: Overworld WATER-only swimmers (red/green/blue/orange, sometimes
 // spiky). They cruise near the bottom, travelling rivers and seas; dropped
@@ -5957,6 +6020,7 @@ function spawnChainMob(kind, sx, sy, sz) {
   let mesh, hw, hh, canStep = false, speed = WALK / 2, extra = null;
   if (kind === "pig") { mesh = makePigMesh(); hw = 0.32; hh = 0.92; speed = WALK / 2.2; }
   else if (kind === "cow") { mesh = makeCowMesh(); hw = 0.32; hh = 1.30; speed = WALK / 2.2; }
+  else if (kind === "chicken") { mesh = makeChickenMesh(); hw = CHICKEN_HW; hh = CHICKEN_HH; speed = WALK / 2.2; }
   else if (kind === "wolf") {
     mesh = makeWolfMesh(WOLF_FUR, WOLF_COLLAR_COLORS[Math.floor(Math.random() * WOLF_COLLAR_COLORS.length)]);
     hw = 0.30; hh = 0.90; canStep = true;
@@ -5999,7 +6063,7 @@ function spawnBirdChain() {
   const total = 3 + Math.floor(Math.random() * 6);
   const kinds = [];
   for (let i = 1; i < total; i++) kinds.push(CHAIN_SPAWN_KINDS[Math.floor(Math.random() * CHAIN_SPAWN_KINDS.length)]);
-  const sizes = { villager: [0.27, 1.82], pig: [0.32, 0.92], cow: [0.32, 1.30], wolf: [0.30, 0.90], cat: [CAT_HW, CAT_HH], pigeon: [0.25, 0.5], parrot: [0.25, 0.5] };
+  const sizes = { villager: [0.27, 1.82], pig: [0.32, 0.92], cow: [0.32, 1.30], chicken: [CHICKEN_HW, CHICKEN_HH], wolf: [0.30, 0.90], cat: [CAT_HW, CAT_HH], pigeon: [0.25, 0.5], parrot: [0.25, 0.5] };
   const aimDir = new THREE.Vector3();
   camera.getWorldDirection(aimDir);
   const aimHit = pickBlock(camera.position, aimDir, true);
@@ -6974,6 +7038,7 @@ function villagerHW(m) {
   if (m.kind === "wolf") return 0.30;
   if (m.kind === "cat") return CAT_HW;
   if (m.kind === "pig" || m.kind === "cow") return 0.32;
+  if (m.kind === "chicken") return CHICKEN_HW;
   if (m.kind === "iron_golem") return GOLEM_HW;
   return m.isBaby ? 0.16 : 0.27;
 }
@@ -6985,6 +7050,7 @@ function villagerH(m) {
   if (m.kind === "cat") return CAT_HH;
   if (m.kind === "pig") return 0.92;
   if (m.kind === "cow") return 1.30;
+  if (m.kind === "chicken") return CHICKEN_HH;
   if (m.kind === "iron_golem") return GOLEM_HH;
   return m.isBaby ? 0.98 : 1.82;
 }
@@ -10012,7 +10078,7 @@ function wanderGoalFor(m) {
     let mobPenalty = 0;
     for (const o of mobs) {
       if (o === m || (o.dim !== undefined && o.dim !== dim)) continue;
-      if (o.kind === "pig" || o.kind === "cow" || o.kind === "wolf") continue;
+      if (o.kind === "pig" || o.kind === "cow" || o.kind === "chicken" || o.kind === "wolf") continue;
       const d = Math.hypot(ix - o.pos.x, iz - o.pos.z);
       if (d < 1.8) mobPenalty += (1.8 - d) * 7;
       if (o.target) {
@@ -10116,7 +10182,7 @@ function wanderGoalForPen(m) {
     let mobPenalty = 0;
     for (const o of mobs) {
       if (o === m || (o.dim !== undefined && o.dim !== dim)) continue;
-      if (o.kind !== "pig" && o.kind !== "cow") continue;
+      if (o.kind !== "pig" && o.kind !== "cow" && o.kind !== "chicken") continue;
       const d = Math.hypot(cx - o.pos.x, cz - o.pos.z);
       if (d < 1.9) mobPenalty += (1.9 - d) * 8;
       if (o.target) {
@@ -10727,7 +10793,7 @@ function mobCanStep(m){ return !!m.canStep; }
 function mobHasGroundFor(m,x,z,hw,y){ return m.canStep ? wolfHasMobGround(x,z,hw,y) : hasMobGround(x,z,hw,y); }
 function mobBlockedAtFor(m,x,z,hw,y){ return m.canStep ? wolfBlockedAt(x,z,hw,y) : mobBlockedAt(x,z,hw,y); }
 function mobProbeFreeFor(m,x,z,dx,dz,d,hw,y){ return m.canStep ? wolfProbeFree(x,z,dx,dz,d,hw,y) : mobProbeFree(x,z,dx,dz,d,hw,y); }
-function isPigCow(m){ return m.kind === "pig" || m.kind === "cow"; }
+function isPenMob(m){ return m.kind === "pig" || m.kind === "cow" || m.kind === "chicken"; }
 function penDestroyed() {
   if (dim !== "over" || !villagePen) return false;
   const gy = groundYDown(villagePen.cx + 0.5, villagePen.cz + 0.5, villageCenter.y + 1, 0.32);
@@ -10735,7 +10801,7 @@ function penDestroyed() {
 }
 function homeIntactFor(m) {
   if (dim !== "over") return false;
-  if (m.kind === "pig" || m.kind === "cow") return !penDestroyed();
+  if (m.kind === "pig" || m.kind === "cow" || m.kind === "chicken") return !penDestroyed();
   const h = m.homeId >= 0 ? villageHouses[m.homeId] : null;
   if (!h) return false;
   const gy = groundYDown(h.cx + 0.5, h.cz + 0.5, villageCenter.y + 1, m.hw);
@@ -10748,7 +10814,7 @@ function homeReachable(m, tx, tz) {
 function updateHomeReturn(m, now) {
   if (!m._returnHome || dim !== "over") return;
   if (!soilOutsideClamp(m.pos.x, m.pos.z, m.hw)) { delete m._returnHome; delete m._homeRetryT; delete m._penReturn; return; }
-  const isPig = m.kind === "pig" || m.kind === "cow";
+  const isPig = m.kind === "pig" || m.kind === "cow" || m.kind === "chicken";
   if (isPig && isInsidePen(m.pos.x, m.pos.z)) { delete m._returnHome; delete m._homeRetryT; delete m._penReturn; return; }
   if (m.fleeUntil != null && now < m.fleeUntil) return;
   if (m.mode !== "wander" && m.mode !== "follow") return;
@@ -11083,9 +11149,9 @@ function mobHitsPlayer(nx, nz, hw, y) {
 }
 function spawnVillagers() {
   const villagerTarget = VILLAGE_HOUSES * 3;
-  const livestockTarget = (PIG_COUNT + COW_COUNT);
+  const livestockTarget = (PIG_COUNT + COW_COUNT + CHICKEN_COUNT);
   const villagerCount = () => mobs.filter((m) => (m.dim === "over" || m.dim === undefined) && (!m.kind || m.kind === "villager")).length;
-  const livestockCount = () => mobs.filter((m) => (m.dim === "over" || m.dim === undefined) && (m.kind === "pig" || m.kind === "cow")).length;
+  const livestockCount = () => mobs.filter((m) => (m.dim === "over" || m.dim === undefined) && (m.kind === "pig" || m.kind === "cow" || m.kind === "chicken")).length;
   const wolfCount = () => mobs.filter((m) => (m.dim === "over" || m.dim === undefined) && m.kind === "wolf").length;
   const golemCount = () => mobs.filter((m) => (m.dim === "over" || m.dim === undefined) && m.kind === "iron_golem").length;
   const babyCount = () => mobs.filter((m) => (m.dim === "over" || m.dim === undefined) && (!m.kind || m.kind === "villager") && m.isBaby).length;
@@ -11187,18 +11253,21 @@ function spawnVillagers() {
     m.mode = "wander";
     m.wanderT = 3 + Math.random() * 4;
   }
-  // — pigs and cows in the pen (same physics as villagers) —
+  // — pigs, cows and chickens in the pen (same physics as villagers) —
   if (villagePen) {
     const curPig = mobs.filter((m) => m.kind === "pig" && (m.dim === "over" || m.dim === undefined)).length;
     const curCow = mobs.filter((m) => m.kind === "cow" && (m.dim === "over" || m.dim === undefined)).length;
+    const curChicken = mobs.filter((m) => m.kind === "chicken" && (m.dim === "over" || m.dim === undefined)).length;
     const needPig = Math.max(0, PIG_COUNT - curPig);
     const needCow = Math.max(0, COW_COUNT - curCow);
+    const needChicken = Math.max(0, CHICKEN_COUNT - curChicken);
     const penMobsToSpawn = [];
     for (let i = 0; i < needPig; i++) penMobsToSpawn.push("pig");
     for (let i = 0; i < needCow; i++) penMobsToSpawn.push("cow");
+    for (let i = 0; i < needChicken; i++) penMobsToSpawn.push("chicken");
     for (const kind of penMobsToSpawn) {
-      const mesh = kind === "pig" ? makePigMesh() : makeCowMesh();
-      const hw = 0.32, hh = kind === "pig" ? 0.92 : 1.30;
+      const mesh = kind === "pig" ? makePigMesh() : kind === "cow" ? makeCowMesh() : makeChickenMesh();
+      const hw = kind === "chicken" ? CHICKEN_HW : 0.32, hh = kind === "pig" ? 0.92 : kind === "cow" ? 1.30 : CHICKEN_HH;
       let sx, sz, tries = 0;
       do {
         const rx = (Math.random() * (villagePen.maxX - villagePen.minX - 3)) + villagePen.minX + 1.5;
@@ -11516,6 +11585,7 @@ function mobKindCode(m) {
   if (m.kind === "parrot") return 7;
   if (m.kind === "cat") return 8;
   if (m.kind === "fish") return 9;
+  if (m.kind === "chicken") return 10;
   return 0;
 }
 function mobKindFromCode(c) {
@@ -11528,6 +11598,7 @@ function mobKindFromCode(c) {
   if (c === 7) return "parrot";
   if (c === 8) return "cat";
   if (c === 9) return "fish";
+  if (c === 10) return "chicken";
   return "villager";
 }
 function mobLookIndex(m) {
@@ -11684,7 +11755,7 @@ function settleMobSpot(sx, sy, sz, hw, h, isWolf) {
 }
 function restoreInitialTarget(m) {
   if (dim === "over" && m.kind === "villager" && !m.isBaby && houseAtRoof(m.pos.x, m.pos.z)) return wanderGoalForRoof(m);
-  if (dim === "over" && (m.kind === "pig" || m.kind === "cow") && m.penBound !== false && villagePen && isInsidePen(m.pos.x, m.pos.z)) return wanderGoalForPen(m);
+  if (dim === "over" && (m.kind === "pig" || m.kind === "cow" || m.kind === "chicken") && m.penBound !== false && villagePen && isInsidePen(m.pos.x, m.pos.z)) return wanderGoalForPen(m);
   if (m.kind === "cat") {
     const p = catParentFor(m);
     if (p) {
@@ -11758,8 +11829,8 @@ function restoreOverworldMobs(list, opts) {
     const e = list[i];
     const kind = mobKindFromCode(e.kind);
     const isBaby = !!e.isBaby && kind === "villager";
-    const hw = isBirdKind(kind) ? 0.25 : kind === "fish" ? fishSizeFor(e.look).hw : kind === "wolf" ? 0.30 : kind === "cat" ? CAT_HW : (kind === "pig" || kind === "cow") ? 0.32 : kind === "enderman" ? ENDERMAN_HW : kind === "iron_golem" ? GOLEM_HW : (isBaby ? 0.16 : 0.27);
-    const hh = isBirdKind(kind) ? 0.5 : kind === "fish" ? fishSizeFor(e.look).h : kind === "wolf" ? 0.90 : kind === "cat" ? CAT_HH : kind === "pig" ? 0.92 : kind === "cow" ? 1.30 : kind === "enderman" ? ENDERMAN_H : kind === "iron_golem" ? GOLEM_HH : (isBaby ? 0.98 : 1.82);
+    const hw = isBirdKind(kind) ? 0.25 : kind === "fish" ? fishSizeFor(e.look).hw : kind === "wolf" ? 0.30 : kind === "cat" ? CAT_HW : (kind === "pig" || kind === "cow") ? 0.32 : kind === "chicken" ? CHICKEN_HW : kind === "enderman" ? ENDERMAN_HW : kind === "iron_golem" ? GOLEM_HW : (isBaby ? 0.16 : 0.27);
+    const hh = isBirdKind(kind) ? 0.5 : kind === "fish" ? fishSizeFor(e.look).h : kind === "wolf" ? 0.90 : kind === "cat" ? CAT_HH : kind === "pig" ? 0.92 : kind === "cow" ? 1.30 : kind === "chicken" ? CHICKEN_HH : kind === "enderman" ? ENDERMAN_H : kind === "iron_golem" ? GOLEM_HH : (isBaby ? 0.98 : 1.82);
     const isWolf = isJumpingKind(kind);
     let sx = e.x, sy = e.y, sz = e.z;
     if (!isFinite(sx) || !isFinite(sy) || !isFinite(sz)) continue;
@@ -11808,6 +11879,7 @@ function restoreOverworldMobs(list, opts) {
       mesh = makeVillagerMesh(isBaby, palIdx);
     } else if (kind === "pig") mesh = makePigMesh();
     else if (kind === "cow") mesh = makeCowMesh();
+    else if (kind === "chicken") mesh = makeChickenMesh();
     else if (kind === "pigeon") mesh = makeBirdMesh();
     else if (kind === "parrot") mesh = makeParrotMesh((e.look >= 0 && e.look < PARROT_VARIANT_COUNT) ? e.look : 0);
     else if (kind === "fish") {
@@ -11845,7 +11917,7 @@ function restoreOverworldMobs(list, opts) {
       base.speed = WALK / 2;
       base.sc = isBaby ? 0.52 : 1;
       base.palIdx = palIdx;
-    } else if (kind === "pig" || kind === "cow") {
+    } else if (kind === "pig" || kind === "cow" || kind === "chicken") {
       base.canStep = false;
       base.speed = WALK / 2.2;
       base.villageBound = false;
@@ -11929,7 +12001,7 @@ function restoreOverworldMobs(list, opts) {
       base.wasOnGroundWolf = false;
     }
     if (e.villageBound != null) base.villageBound = !!e.villageBound;
-    else if (kind === "pig" || kind === "cow") base.villageBound = false;
+    else if (kind === "pig" || kind === "cow" || kind === "chicken") base.villageBound = false;
     if (kind === "wolf") base.villageBound = false;
     if (e.penBound != null) base.penBound = !!e.penBound;
     mobs.push(base);
@@ -12071,8 +12143,8 @@ function restoreDimMobs(list, dimName, opts) {
     if (kind === "dragon") continue;
     if (kind === "fish") continue;
     const isBaby = !!e.isBaby && kind === "villager";
-    const hw = isBirdKind(kind) ? 0.25 : kind === "fish" ? fishSizeFor(e.look).hw : kind === "wolf" ? 0.30 : kind === "cat" ? CAT_HW : (kind === "pig" || kind === "cow") ? 0.32 : kind === "enderman" ? ENDERMAN_HW : kind === "iron_golem" ? GOLEM_HW : (isBaby ? 0.16 : 0.27);
-    const hh = isBirdKind(kind) ? 0.5 : kind === "fish" ? fishSizeFor(e.look).h : kind === "wolf" ? 0.90 : kind === "cat" ? CAT_HH : kind === "pig" ? 0.92 : kind === "cow" ? 1.30 : kind === "enderman" ? ENDERMAN_H : kind === "iron_golem" ? GOLEM_HH : (isBaby ? 0.98 : 1.82);
+    const hw = isBirdKind(kind) ? 0.25 : kind === "fish" ? fishSizeFor(e.look).hw : kind === "wolf" ? 0.30 : kind === "cat" ? CAT_HW : (kind === "pig" || kind === "cow") ? 0.32 : kind === "chicken" ? CHICKEN_HW : kind === "enderman" ? ENDERMAN_HW : kind === "iron_golem" ? GOLEM_HW : (isBaby ? 0.16 : 0.27);
+    const hh = isBirdKind(kind) ? 0.5 : kind === "fish" ? fishSizeFor(e.look).h : kind === "wolf" ? 0.90 : kind === "cat" ? CAT_HH : kind === "pig" ? 0.92 : kind === "cow" ? 1.30 : kind === "chicken" ? CHICKEN_HH : kind === "enderman" ? ENDERMAN_H : kind === "iron_golem" ? GOLEM_HH : (isBaby ? 0.98 : 1.82);
     let sx = e.x, sy = e.y, sz = e.z;
     if (!isFinite(sx) || !isFinite(sy) || !isFinite(sz)) continue;
     sx = Math.max(-WORLD_RADIUS + 1, Math.min(WORLD_RADIUS - 1, sx));
@@ -12093,6 +12165,7 @@ function restoreDimMobs(list, dimName, opts) {
       mesh = makeVillagerMesh(isBaby, palIdx);
     } else if (kind === "pig") mesh = makePigMesh();
     else if (kind === "cow") mesh = makeCowMesh();
+    else if (kind === "chicken") mesh = makeChickenMesh();
     else if (kind === "pigeon") mesh = makeBirdMesh();
     else if (kind === "parrot") mesh = makeParrotMesh((e.look >= 0 && e.look < PARROT_VARIANT_COUNT) ? e.look : 0);
     else if (kind === "cat") {
@@ -12125,7 +12198,7 @@ function restoreDimMobs(list, dimName, opts) {
     if (e.penBound != null) base.penBound = !!e.penBound;
     if (kind === "wolf") base.villageBound = false;
     if (kind === "villager") { base.canStep = false; base.speed = WALK / 2; base.sc = isBaby ? 0.52 : 1; base.palIdx = palIdx; }
-    else if (kind === "pig" || kind === "cow") { base.canStep = false; base.speed = WALK / 2.2; if (e.penBound == null) base.penBound = false; base.sc = 1; }
+    else if (kind === "pig" || kind === "cow" || kind === "chicken") { base.canStep = false; base.speed = WALK / 2.2; if (e.penBound == null) base.penBound = false; base.sc = 1; }
     else if (kind === "iron_golem") { base.canStep = false; base.speed = WALK / 2; base.sc = 1; }
     else if (kind === "cat") { base.canStep = true; base.speed = WALK / 2; base.catVar = catVar; base.sc = 1; base.wolfStepUp = false; base.wolfStepUpClearY = 0; base.wolfInWater = false; base.wasOnGroundWolf = false; }
   else if (kind === "cat") {
@@ -12276,7 +12349,7 @@ function separateMobs() {
       if (cnt) {
         let nx = m.pos.x + sx, nz = m.pos.z + sz;
         const hg = m.canStep ? wolfHasMobGround : hasMobGround;
-        const pigBlocked = (x,z)=> isPigCow(m) && pigOverlapsFence(x,z,m.hw);
+        const pigBlocked = (x,z)=> isPenMob(m) && pigOverlapsFence(x,z,m.hw);
         if (!aabbCollidesWorld(nx, m.pos.y, nz, m.hw, m.h) && hg(nx, nz, m.hw, m.pos.y) && !pigBlocked(nx,nz)) {
           m.pos.x = nx; m.pos.z = nz; anyMoved = true;
           if (mobStats) mobStats.mobCol++;
@@ -12326,7 +12399,7 @@ function pushMobsFromPlayer() {
       const push = (need - d) * (fleeing ? 0.22 : 0.30);
       const nx = m.pos.x + (dx / d) * push, nz = m.pos.z + (dz / d) * push;
       const hg2 = m.canStep ? wolfHasMobGround : hasMobGround;
-      if (!aabbCollidesWorld(nx, m.pos.y, nz, m.hw, m.h) && !mobCollidesOther(m, nx, nz) && hg2(nx, nz, m.hw, m.pos.y) && !(isPigCow(m) && pigOverlapsFence(nx,nz,m.hw))) {
+      if (!aabbCollidesWorld(nx, m.pos.y, nz, m.hw, m.h) && !mobCollidesOther(m, nx, nz) && hg2(nx, nz, m.hw, m.pos.y) && !(isPenMob(m) && pigOverlapsFence(nx,nz,m.hw))) {
         m.pos.x += (nx - m.pos.x) * (fleeing ? 0.55 : 0.50);
         m.pos.z += (nz - m.pos.z) * (fleeing ? 0.55 : 0.50);
         if (mobStats) mobStats.playerCol++;
@@ -12403,15 +12476,15 @@ function isHeadonWalker(m) {
   if (isStrictFollower(m)) return false;
   if (m.dim !== undefined && m.dim !== dim) return false;
   if (isFlyingKind(m.kind) || m.kind === "dragon" || m.kind === "enderman") return false;
-  return !m.kind || m.kind === "villager" || m.kind === "pig" || m.kind === "cow" || m.kind === "wolf" || m.kind === "cat";
+  return !m.kind || m.kind === "villager" || m.kind === "pig" || m.kind === "cow" || m.kind === "chicken" || m.kind === "wolf" || m.kind === "cat";
 }
 function headonSidestepOk(m, tx, tz) {
   if (aabbCollidesWorld(tx, m.pos.y, tz, m.hw, m.h)) return false;
   if (!mobHasGroundFor(m, tx, tz, m.hw, m.pos.y)) return false;
-  if (isPigCow(m) && pigOverlapsFence(tx, tz, m.hw)) return false;
+  if (isPenMob(m) && pigOverlapsFence(tx, tz, m.hw)) return false;
   if (typeof isInsidePool === "function" && isInsidePool(tx, tz)) return false;
   if (typeof isInsidePenPool === "function" && isInsidePenPool(tx, tz)) return false;
-  if (dim === "over" && (m.kind === "pig" || m.kind === "cow") && typeof isInsidePen === "function" && isInsidePen(m.pos.x, m.pos.z) && !isInsidePen(tx, tz)) return false;
+  if (dim === "over" && (m.kind === "pig" || m.kind === "cow" || m.kind === "chicken") && typeof isInsidePen === "function" && isInsidePen(m.pos.x, m.pos.z) && !isInsidePen(tx, tz)) return false;
   if (dim === "over" && villageHouses.length && m.villageBound !== false) {
     if (tx < villageMinX + 1 || tx > villageMaxX - 1 || tz < villageMinZ + 1 || tz > villageMaxZ - 1) return false;
   }
@@ -12770,7 +12843,7 @@ function updateMobs(dt) {
           m.wanderT = 3 + Math.random() * 4; m.path = null; m.pathKey = null; m.steerCooldown = 0;
         }
       }
-    } else if (m.kind === "pig" || m.kind === "cow") {
+    } else if (m.kind === "pig" || m.kind === "cow" || m.kind === "chicken") {
       updateHomeReturn(m, now);
       if (m.target && !isInsidePen(m.target.x, m.target.z)) {
         // debug
@@ -13150,7 +13223,7 @@ function updateMobs(dt) {
       const rh = houseAtRoof(m.pos.x, m.pos.z);
       const fleeing = m.fleeUntil != null && now < m.fleeUntil;
       m.mode = "wander";
-      m.speed = fleeing ? WALK * 2 : ((m.kind === "pig" || m.kind === "cow") ? WALK / 2.2 : WALK / 2);
+      m.speed = fleeing ? WALK * 2 : ((m.kind === "pig" || m.kind === "cow" || m.kind === "chicken") ? WALK / 2.2 : WALK / 2);
       m.wanderT -= dt;
       const onSameRoof = m.target && houseAtRoof(m.target.x, m.target.z) === rh;
       if (!m.target || !onSameRoof || Math.hypot(m.target.x - m.pos.x, m.target.z - m.pos.z) < 0.6 || m.wanderT <= 0) {
@@ -13219,7 +13292,7 @@ function updateMobs(dt) {
     let hasPath = false;
     const plantMile = m.mode === "goPlant" && m.plantPhase === "walk" && m._plantMile;
     const toTarOverall = Math.hypot(tx - m.pos.x, tz - m.pos.z);
-    const insideNow = (()=>{ if (m.kind === "pig" || m.kind === "cow") return isInsidePen(m.pos.x, m.pos.z); if (canStep) return false; const h=villageHouses[m.homeId]; return h && m.pos.x>h.minX&&m.pos.x<h.maxX&&m.pos.z>h.minZ&&m.pos.z<h.maxZ; })();
+    const insideNow = (()=>{ if (m.kind === "pig" || m.kind === "cow" || m.kind === "chicken") return isInsidePen(m.pos.x, m.pos.z); if (canStep) return false; const h=villageHouses[m.homeId]; return h && m.pos.x>h.minX&&m.pos.x<h.maxX&&m.pos.z>h.minZ&&m.pos.z<h.maxZ; })();
     const needPath = (poolEx || plantMile || strictFollow) ? false : (!insideNow && m.mode !== "inside" && (toTarOverall > 1.8 || probeFree(m.pos.x, m.pos.z, (tx - m.pos.x)/(toTarOverall||1), (tz - m.pos.z)/(toTarOverall||1), Math.min(1.2, toTarOverall), m.hw, m.pos.y) < 0.55));
     if (needPath) {
       const pk = Math.round(tx) + "," + Math.round(tz);
@@ -13441,7 +13514,7 @@ function updateMobs(dt) {
       else if (m.pos.z > hi) { m.pos.z = hi; if (m.vel.z > 0) m.vel.z = 0; }
       if (m.pos.y > DRAGON_MAX_Y) { m.pos.y = DRAGON_MAX_Y; m.vel.y = Math.min(m.vel.y, 0); }
     }
-    if(isPigCow(m) && villagePen && pigOverlapsFence(m.pos.x, m.pos.z, m.hw)){
+    if(isPenMob(m) && villagePen && pigOverlapsFence(m.pos.x, m.pos.z, m.hw)){
       pigFenceSlideOut(m);
     }
     // mob-mob / player already in separate/push, but also check immediate collision after move
@@ -13453,7 +13526,7 @@ function updateMobs(dt) {
       if (isStrictFollower(m)) { m._stuckT = 0; }
       else if (m.mode === "inside") {
         m.target = randomInsidePoint(m.homeId);
-      } else if ((m.kind === "pig" || m.kind === "cow") && isInsidePen(m.pos.x, m.pos.z)) {
+      } else if ((m.kind === "pig" || m.kind === "cow" || m.kind === "chicken") && isInsidePen(m.pos.x, m.pos.z)) {
         m.target = wanderGoalForPen(m);
         m.path = null; m.pathKey = null;
         const td = obstacleTurnDir(m, probeFree);
@@ -13654,7 +13727,7 @@ function resumeMobPanic(m, e) {
         else { m.mode = "goOut"; m.target = centre; m.wanderT = 99; }
         return true;
       }
-    } else if (m.kind === "pig" || m.kind === "cow") {
+    } else if (m.kind === "pig" || m.kind === "cow" || m.kind === "chicken") {
       if (villagePen && isInsidePen(m.pos.x, m.pos.z)) { m.target = wanderGoalForPen(m); m.wanderT = 0.25 + Math.random() * 0.25; }
       else { m.target = fleePointAway(m, sx, sz); m.wanderT = 1.2 + Math.random() * 0.8; }
       return true;
@@ -13801,7 +13874,7 @@ function panicPenMobs(cx, cy, cz) {
       if (isMobHeld(m)) continue;
       if (isChained(m)) continue;
       if (m.dim !== undefined && m.dim !== dim) continue;
-      if (m.kind !== "pig" && m.kind !== "cow") continue;
+      if (m.kind !== "pig" && m.kind !== "cow" && m.kind !== "chicken") continue;
       if (!mobInVillageSq(m)) continue;
       m.fleeUntil = Math.max(m.fleeUntil || 0, now + VILLAGE_PANIC_TIME);
       m.speed = WALK * 2;
@@ -13836,7 +13909,7 @@ function panicPenMobs(cx, cy, cz) {
       if (isMobHeld(m)) continue;
       if (isChained(m)) continue;
       if (m.dim !== undefined && m.dim !== dim) continue;
-      if (m.kind !== "pig" && m.kind !== "cow") continue;
+      if (m.kind !== "pig" && m.kind !== "cow" && m.kind !== "chicken") continue;
       const dx = m.pos.x - cx, dy = m.pos.y - cy, dz = m.pos.z - cz;
       if (Math.hypot(dx, dy, dz) > OUTSIDE_PANIC_DIST) continue;
       m.fleeUntil = Math.max(m.fleeUntil || 0, now + PANIC_TIME);
@@ -16684,7 +16757,7 @@ function moveMobAxisX(mob, dx) {
         mob.pos.x = cellX + 1 + mob.hw + 0.001; mob.vel.x = 0; if (mobStats) mobStats.worldCol++; return true;
       }
     }
-  if(isPigCow(mob) && pigOverlapsFence(mob.pos.x, mob.pos.z, mob.hw)){
+  if(isPenMob(mob) && pigOverlapsFence(mob.pos.x, mob.pos.z, mob.hw)){
     mob.pos.x = oldX; mob.vel.x = 0; if(mobStats) mobStats.worldCol++; return true;
   }
   if (mobWouldCollide(mob, mob.pos.x, mob.pos.z)) {
@@ -16756,7 +16829,7 @@ function moveMobAxisZ(mob, dz) {
         mob.pos.z = cellZ + 1 + mob.hw + 0.001; mob.vel.z = 0; if (mobStats) mobStats.worldCol++; return true;
       }
     }
-  if(isPigCow(mob) && pigOverlapsFence(mob.pos.x, mob.pos.z, mob.hw)){
+  if(isPenMob(mob) && pigOverlapsFence(mob.pos.x, mob.pos.z, mob.hw)){
     mob.pos.z = oldZ; mob.vel.z = 0; if(mobStats) mobStats.worldCol++; return true;
   }
   if (mobWouldCollide(mob, mob.pos.x, mob.pos.z)) {
@@ -16800,7 +16873,7 @@ function moveMobAxisY(mob, dy) {
   for (let bx = Math.floor(mob.pos.x - mob.hw + 0.001); bx <= Math.floor(mob.pos.x + mob.hw - 0.001); bx++)
     for (let bz = Math.floor(mob.pos.z - mob.hw + 0.001); bz <= Math.floor(mob.pos.z + mob.hw - 0.001); bz++) {
       if (mob.vel.y > 0 && isSolid(bx, Math.floor(top), bz) && top > Math.floor(top)) {
-        if ((mob.kind === "pig" || mob.kind === "cow") && villagePen && getBlock(bx, Math.floor(top), bz) === LOG && (bx === villagePen.minX || bx === villagePen.maxX || bz === villagePen.minZ || bz === villagePen.maxZ)) continue;
+        if ((mob.kind === "pig" || mob.kind === "cow" || mob.kind === "chicken") && villagePen && getBlock(bx, Math.floor(top), bz) === LOG && (bx === villagePen.minX || bx === villagePen.maxX || bz === villagePen.minZ || bz === villagePen.maxZ)) continue;
         if (!onRoof && villageHouses.length && Math.floor(top) >= villageCenter.y + 1 && Math.floor(top) <= villageCenter.y + 5) {
           let overHouse = false; for (const h of villageHouses) if (bx >= h.minX && bx <= h.maxX && bz >= h.minZ && bz <= h.maxZ) { overHouse = true; break; }
           if (overHouse) continue;
@@ -16808,7 +16881,7 @@ function moveMobAxisY(mob, dy) {
         mob.pos.y = Math.floor(top) - mob.h - 0.001; mob.vel.y = 0; return true;
       }
       if (mob.vel.y <= 0 && isSolid(bx, Math.floor(feet), bz)) {
-        if ((mob.kind === "pig" || mob.kind === "cow") && villagePen && getBlock(bx, Math.floor(feet), bz) === LOG && (bx === villagePen.minX || bx === villagePen.maxX || bz === villagePen.minZ || bz === villagePen.maxZ)) continue;
+        if ((mob.kind === "pig" || mob.kind === "cow" || mob.kind === "chicken") && villagePen && getBlock(bx, Math.floor(feet), bz) === LOG && (bx === villagePen.minX || bx === villagePen.maxX || bz === villagePen.minZ || bz === villagePen.maxZ)) continue;
         if (!onRoof && villageHouses.length && Math.floor(feet) >= villageCenter.y + 1 && Math.floor(feet) <= villageCenter.y + 5) {
           let overHouse = false; for (const h of villageHouses) if (bx >= h.minX && bx <= h.maxX && bz >= h.minZ && bz <= h.maxZ) { overHouse = true; break; }
           if (overHouse) continue;
@@ -16859,7 +16932,7 @@ function mobPhysicsStep(mob, dt, g) {
       if (mob.pos.z > maxZ) { mob.pos.z = maxZ; mob.vel.z = 0; }
     }
   }
-  if(isPigCow(mob) && villagePen && pigOverlapsFence(mob.pos.x, mob.pos.z, mob.hw)){
+  if(isPenMob(mob) && villagePen && pigOverlapsFence(mob.pos.x, mob.pos.z, mob.hw)){
     pigFenceSlideOut(mob);
   }
 }
@@ -20749,7 +20822,7 @@ function applyMegaKnockback(cx, cy, cz, members = null, radiusMul = 1) {
       m.target = null; m.path = null; m.pathKey = null;
       m.wanderT = 0.5;
       m._noClamp = true;
-      const homed = m.kind === "pig" || m.kind === "cow" ||
+      const homed = m.kind === "pig" || m.kind === "cow" || m.kind === "chicken" ||
         ((!m.kind || m.kind === "villager" || m.kind === "cat") && m.homeId >= 0);
       if (homed) { m._returnHome = true; delete m._homeRetryT; delete m._penReturn; }
       if (m.mode === "goOut" || m.mode === "inside" || m.mode === "goHome") m.mode = "wander";
@@ -23709,7 +23782,7 @@ function serialize() {
   const dv = new DataView(buf);
   let o = 0;
   new Uint8Array(buf, o, 9).set(SAVE_MAGIC); o += 9;
-  dv.setUint8(o++, 45); // format version
+  dv.setUint8(o++, 46); // format version
   dv.setUint8(o++, dim === "end" ? 1 : dim === "nether" ? 2 : 0);
   dv.setInt32(o, seed, true); o += 4;
   dv.setInt32(o, endSeed, true); o += 4;
@@ -23986,7 +24059,7 @@ function deserialize(buf) {
   for (let i = 0; i < 9; i++) if (new Uint8Array(buf, o, 9)[i] !== SAVE_MAGIC[i]) throw new Error("Not a MiniCraft save");
   o += 9;
   const ver = dv.getUint8(o++);
-  if (ver !== 1 && ver !== 2 && ver !== 3 && ver !== 4 && ver !== 5 && ver !== 6 && ver !== 7 && ver !== 8 && ver !== 9 && ver !== 10 && ver !== 11 && ver !== 12 && ver !== 13 && ver !== 14 && ver !== 15 && ver !== 16 && ver !== 17 && ver !== 18 && ver !== 19 && ver !== 20 && ver !== 21 && ver !== 22 && ver !== 23 && ver !== 24 && ver !== 25 && ver !== 26 && ver !== 27 && ver !== 28 && ver !== 29 && ver !== 30 && ver !== 31 && ver !== 32 && ver !== 33 && ver !== 34 && ver !== 35 && ver !== 36 && ver !== 37 && ver !== 38 && ver !== 39 && ver !== 40 && ver !== 41 && ver !== 42 && ver !== 43 && ver !== 44 && ver !== 45) throw new Error("Unsupported save version");
+  if (ver !== 1 && ver !== 2 && ver !== 3 && ver !== 4 && ver !== 5 && ver !== 6 && ver !== 7 && ver !== 8 && ver !== 9 && ver !== 10 && ver !== 11 && ver !== 12 && ver !== 13 && ver !== 14 && ver !== 15 && ver !== 16 && ver !== 17 && ver !== 18 && ver !== 19 && ver !== 20 && ver !== 21 && ver !== 22 && ver !== 23 && ver !== 24 && ver !== 25 && ver !== 26 && ver !== 27 && ver !== 28 && ver !== 29 && ver !== 30 && ver !== 31 && ver !== 32 && ver !== 33 && ver !== 34 && ver !== 35 && ver !== 36 && ver !== 37 && ver !== 38 && ver !== 39 && ver !== 40 && ver !== 41 && ver !== 42 && ver !== 43 && ver !== 44 && ver !== 45 && ver !== 46) throw new Error("Unsupported save version");
   const yWidth = ver >= 8 ? 2 : 1;
   const readY = () => { const y = yWidth === 2 ? dv.getUint16(o, true) : dv.getUint8(o); o += yWidth; return y; };
   placedFlowers.clear();
@@ -26053,7 +26126,7 @@ if (location.search.includes('test')) {
     getTypeMats, get typeMats(){ return typeMats; }, buildWorld, generateWorld, generateMoonLakes, get moonLakesGenerated(){ return moonLakesGenerated; }, computeVillageLayout, spawnVillagers, refreshBlocks, rebuildMeshes, get chunkMeshes(){ return chunkMeshes; }, get boxGeo(){ return boxGeo; }, THREE,
     get pos(){ return pos; }, get vel(){ return vel; }, get camera(){ return camera; }, get scene(){ return scene; }, get freeCam(){ return freeCam; }, set freeCam(v){ freeCam = v; }, get camPos(){ return camPos; }, get yaw(){ return yaw; }, set yaw(v){ yaw=v; }, get pitch(){ return pitch; }, set pitch(v){ pitch=v; },
     get carryMob(){ return carryMob; }, set carryMob(v){ carryMob = v; }, handleCarryEnterDown, handleCarryEnterUp, pickMob, get carryGrappleActive(){ return carryGrappleActive; }, get carryGrapplePulling(){ return carryGrapplePulling; }, get carryGrappleMob(){ return carryGrappleMob; }, get carryGrappleBlock(){ return carryGrappleBlock; }, get carryGrappleHookPos(){ return carryGrappleHookPos; }, get carryGrappleOffset(){ return carryGrappleOffset; }, get carryGrappleMode(){ return carryGrappleMode; }, get isMobFrozenByGrapple(){ return isMobFrozenByGrapple; }, isChained, isChainCarrier, chainRootOf, chainTailOf, linkChain, dropChainFrom, chainTakeForCarry, severChainMob, groundChainFrom, insertChainBefore, insertChainBehind, insertBehindRide, prependChainLead, clearChains, pruneChains, updateChains, syncChainLinkColor, syncChainLinkColors, syncGrappleColor, stampSpawn, get mobById(){ return mobById; }, chainAttachTarget, startCarryAttachGrapple, killChainMob, respawnChainMob, unchainMob, severGroundedChainVictim, isGroundedChainVictim, get chainLinks(){ return chainLinks; }, get chainParent(){ return chainParent; }, get chainChild(){ return chainChild; }, playerChainAvatar, playerInChain, PLAYER_CHAIN_ID, spliceChainLink, chainHasJumping, chainPushCrumb, chainTrailTarget, latchPlayerTo, latchPlayerInMiddle, playerInsertCutAndLink, insertChainAheadOfPlayer, insertChainBehindPlayer, playerLeadLink, dropPlayerLeadEntry, readyLeadForLatch, leadAwareLatchInsert, appendCutFollowerBehindLeadTail, grabRideForCarry, fireGrapple, detachDisplacementGrapple, pickStar, get grappleStar(){ return grappleStar; }, get grappleActive(){ return grappleActive; }, get grappleHooked(){ return grappleHooked; }, get grappleRetracting(){ return grappleRetracting; }, get grappleMob(){ return grappleMob; }, get grappleMobOffset(){ return grappleMobOffset; }, get grappleHookPos(){ return grappleHookPos; }, get grappleTarget(){ return grappleTarget; },     updateCarryGrapple, updateCarry, releaseCarriedMobAt, releaseCarriedMob, get currentBlock(){ return currentBlock; }, updateTarget, hotbarList, placeBlock, breakBlock, get selected(){ return selected; }, set selected(v){ selected=v; }, toggleCarry: handleCarryEnterDown, findNearestMobForGrab: (...a)=>{ const d=new THREE.Vector3(); camera.getWorldDirection(d); return pickMob(d); }, get playerArms(){ return playerArms; }, get started(){ return started; }, set started(v){ started=v; }, get loading(){ return loading; }, get freeCam(){ return freeCam; }, set freeCam(v){ freeCam=v; }, get helpOpen(){ return helpOpen; },
-    get WOLF_COUNT(){ return WOLF_COUNT; }, get GOLEM_COUNT(){ return GOLEM_COUNT; }, get GOLEM_HW(){ return GOLEM_HW; }, get GOLEM_HH(){ return GOLEM_HH; }, get CAT_COUNT(){ return CAT_COUNT; }, get CAT_HW(){ return CAT_HW; }, get CAT_HH(){ return CAT_HH; }, makeWolfMesh, makeCatMesh, pickCatRobe, catParentFor, catTrailSpot, panicCats, makeIronGolemMesh, villagerHW, villagerH, wolfHasMobGround, wolfBlockedAt, wolfProbeFree, wanderGoalForWolf, wolfFindPath, wolfFlatSpot, wolfLeaveTarget, panicLeaveDir, panicWolves, wolfInWater, mobInWater, waterSurfaceForMob, mobPhysicsStep, wolfPhysicsStep, updateMobs, obstacleTurnDir, buildMobGrid,     get isPigCow(){ return isPigCow; }, get pigOverlapsFence(){ return pigOverlapsFence; }, pigFenceSlideOut, get MOB_FLOAT_FRAC(){ return MOB_FLOAT_FRAC; }, mobFloatTargetY, mobWaterExitJump, poolExitTarget, penPoolExitTarget, isInsidePenPool, moonLakeExitTarget, isMobInPoolWater, isMobInMoonLake, get BATH_MIN_T(){ return BATH_MIN_T; }, get BATH_MAX_T(){ return BATH_MAX_T; },
+    get WOLF_COUNT(){ return WOLF_COUNT; }, get GOLEM_COUNT(){ return GOLEM_COUNT; }, get GOLEM_HW(){ return GOLEM_HW; }, get GOLEM_HH(){ return GOLEM_HH; }, get CAT_COUNT(){ return CAT_COUNT; }, get CAT_HW(){ return CAT_HW; }, get CAT_HH(){ return CAT_HH; }, makeWolfMesh, makeCatMesh, pickCatRobe, catParentFor, catTrailSpot, panicCats, makeIronGolemMesh, villagerHW, villagerH, wolfHasMobGround, wolfBlockedAt, wolfProbeFree, wanderGoalForWolf, wolfFindPath, wolfFlatSpot, wolfLeaveTarget, panicLeaveDir, panicWolves, wolfInWater, mobInWater, waterSurfaceForMob, mobPhysicsStep, wolfPhysicsStep, updateMobs, obstacleTurnDir, buildMobGrid,     get isPenMob(){ return isPenMob; }, get pigOverlapsFence(){ return pigOverlapsFence; }, pigFenceSlideOut, get MOB_FLOAT_FRAC(){ return MOB_FLOAT_FRAC; }, mobFloatTargetY, mobWaterExitJump, poolExitTarget, penPoolExitTarget, isInsidePenPool, moonLakeExitTarget, isMobInPoolWater, isMobInMoonLake, get BATH_MIN_T(){ return BATH_MIN_T; }, get BATH_MAX_T(){ return BATH_MAX_T; },
     get BIRD_COUNT(){ return BIRD_COUNT; }, get BIRD_MIN_Y(){ return BIRD_MIN_Y; }, get BIRD_MAX_Y(){ return BIRD_MAX_Y; }, get BIRD_SPEED(){ return BIRD_SPEED; }, get TNT_HOME_SPEED(){ return TNT_HOME_SPEED; }, get BIRD_AIM_DIST(){ return BIRD_AIM_DIST; }, get BIRD_LOCK_TIME(){ return BIRD_LOCK_TIME; }, get birdLock(){ return birdLock; }, get birdLockT(){ return birdLockT; }, set birdLockT(v){ birdLockT = v; }, get birdLockShots(){ return birdLockShots; }, liveBirdLock, tntTargeted, tryFireLockedTNT, tntChainAimMob, aimOnMob, aimOnStar, aimOnStarFor, get chainBreaking(){ return chainBreaking; }, set chainBreaking(v){ chainBreaking = v; },     makeBirdMesh, spawnBirds, spawnSingleBird, removeBirds, spawnBirdChain, updateBird, updatePerchedBird, updateToPerchBird, birdTakeoff, birdNextLeg, birdFindPerchSpot, birdCloudTopAt, birdTreeTopAt, birdRoofTopAt, birdPerchBand, birdPerchSupports, killBird, birdSpotOutOfView, birdProbeFree, birdRandomTarget, birdSeparate,     makeFishMesh, spawnFishes, spawnSingleFish, updateFish, killFish, fishInWater, fishRandomTarget, tryPlace, get FISH_COUNT(){ return FISH_COUNT; }, get FISH_SPEED(){ return FISH_SPEED; },     fishWaterSurface, waterTopAt, fishNarrow, fishColHW, fishColH, fishEaseScale, fishProbeFree, fishSegmentFree, fishIsConfined, fishHoleCell, fishMillHop, fishMoveSlide, fishTunnelPlan, updateTunnelFish, fishAnimate, fishSidestep, fishNoticeWater, fishWaterLiveKeys, fishFreshWaterFor, fishWaterGiveUp, fishResolvePenetration, fishBodyWetFull, fishProbeDims, tunnelFindStart, tunnelBFSWalk, tunnelBuildPath, tunnelAxisStep, get FISH_NARROW_SCALE(){ return FISH_NARROW_SCALE; }, get FISH_TUNNEL_HW(){ return FISH_TUNNEL_HW; }, get FISH_SUBMERGE_GAP(){ return FISH_SUBMERGE_GAP; }, get FISH_LURE_DEPTH(){ return FISH_LURE_DEPTH; }, get FISH_TUNNEL_WATER_NEAR(){ return FISH_TUNNEL_WATER_NEAR; }, get FISH_OPEN_WATER_LURE_R(){ return FISH_OPEN_WATER_LURE_R; }, get fishNotices(){ return fishNotices; },     deployRod, stowRod, rodStartRetract, rodTick, rodAimWater, buildRodMesh, updateRodBeam, renderRodRope, renderRodStraight, rodRopeEnd, get rodOut(){ return rodOut; }, get rodFish(){ return rodFish; }, get rodHasCast(){ return rodHasCast; },     get rodBob(){ return rodBob; }, get rodTipW(){ return rodTipW; }, get rodBobber(){ return rodBobber; }, get rodBeam(){ return rodBeam; }, get rodLine(){ return rodLine; }, get rodAnim(){ return rodAnim; }, get rodCastF(){ return rodCastF; }, get rodDunked(){ return rodDunked; }, get ROD_BOB_SMOOTH(){ return ROD_BOB_SMOOTH; }, get ROD_BITE_MAX_T(){ return ROD_BITE_MAX_T; }, get ROD_BITE_LAMBDA(){ return ROD_BITE_LAMBDA; }, get ROD_ORBIT_R(){ return ROD_ORBIT_R; }, rodClearTimers, rodDropBite, pickFishVariant, fishComboFor, fishSizeFor, get FISH_VARIANT_COUNT(){ return FISH_VARIANT_COUNT; },     houseInteriorFor, houseMouths, birdCoopTarget,     birdSegmentFree, birdClearance, birdBestSteer, birdMillHop, birdConfinedSteer, birdMoveSlide, bandReturnTarget, birdNoticeBreak, setMobTransparent, birdIsConfined, birdHoleCell, chainSegmentFree, chainThreadRide, chainFindRejoinPath, chainDriveRejoin, chainRejoinSlot, birdTunnelPlan, updateTunnelBird, birdTunnelSeparate, birdSkyClear, birdSidestep, birdUTurn, birdNarrow, birdColHW, birdColH,     get BIRD_NARROW_SCALE(){ return BIRD_NARROW_SCALE; }, get BIRD_SKY_CLEAR(){ return BIRD_SKY_CLEAR; }, get NETHER_BIRD_MIN_Y(){ return NETHER_BIRD_MIN_Y; }, get NETHER_BIRD_MAX_Y(){ return NETHER_BIRD_MAX_Y; }, birdDimOf, birdBandMinFor, birdBandMaxFor, birdBandMin, birdBandMax, birdNetherLegY, netherBirdCeiling, birdLavaAt, get BIRD_TUNNEL_SCALE(){ return BIRD_TUNNEL_SCALE; }, get BIRD_COL_HW(){ return BIRD_COL_HW; }, get BIRD_COL_H(){ return BIRD_COL_H; },     get tntLit(){ return tntLit; }, get explosionQueue(){ return explosionQueue; }, get tntEta(){ return tntEta; }, tickLitMegaTex, getLitMegaTex, getLitMegaTexEff(){ return litMegaTexEff; }, megaWhiteEff, get MEGA_WHITE_TEX_CAP(){ return MEGA_WHITE_TEX_CAP; }, get pendingTNTBombs(){ return pendingTNTBombs; }, get pendingTNTEta(){ return pendingTNTEta; }, get bursts(){ return bursts; }, get flashes(){ return flashes; }, snapshotLiveFx, replayLiveFx, spawnExplosion, igniteTNT, fireTNTAtBird, purgeLiveTNT, tickTNT, snapshotLiveTNT, restoreLiveTNT, get pendingDragon(){ return pendingDragon; }, get tntEta(){ return tntEta; }, igniteTNT, aimedBird, fireTNTAtBird, explodeBird, spawnBirdBurst, get bursts(){ return bursts; }, get flashes(){ return flashes; }, updateTNTTarget, tickTNT, fireGrapple, updateGrapple, updatePlayer, get grappleActive(){ return grappleActive; }, get grapplePulling(){ return grapplePulling; }, get grappleHooked(){ return grappleHooked; },
     get overPortalWin(){ return overPortalWin; }, get overPortalDir(){ return overPortalDir; }, get overPortalSpawn(){ return overPortalSpawn; }, get overPortalFace(){ return overPortalFace; },
     portalWinValid, portalFrameBBox, findReturnSpot, frameTopSpot, facePortalFrom, faceAwayFromPortal, recordOverPortal, recordDimExit, resolveDimArrival, nearestReturnWin, resolveOverworldReturn, nearPortalSpawn, resolveSpawn, collectEndWins, collectNetherWins, collectReturnWins, insideEndInterior, insideNetherInterior, winCenter, windowDist, isSolid,
