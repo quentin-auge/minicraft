@@ -5406,6 +5406,8 @@ function spawnSingleFish(outOfView = false, sx = null, sy = null, sz = null, fis
       const rz = (Math.random() * 2 - 1) * (WORLD_RADIUS - 4);
       const bx = Math.floor(rx), bz = Math.floor(rz);
       if (isInsidePool(bx + 0.5, bz + 0.5) || isInsidePenPool(bx + 0.5, bz + 0.5)) continue;
+      const rv = nearestRiver(bx + 0.5, bz + 0.5);
+      if (rv && rv.d <= rv.w) continue;
       for (let y = WATER_LEVEL; y >= 1; y--) {
         if (getBlock(bx, y, bz) !== WATER) continue;
         const below = getBlock(bx, y - 1, bz);
@@ -25108,6 +25110,7 @@ async function restoreSave(buf) {
   await new Promise((r) => setTimeout(r, 30));
   try {
     deserialize(buf);
+    generateRivers();
     const liveDim = dim;
     clearChains();
     purgeLiveTNT();
