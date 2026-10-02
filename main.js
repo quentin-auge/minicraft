@@ -16536,6 +16536,7 @@ const grappleTarget = new THREE.Vector3();
 const grappleStart = new THREE.Vector3();
 let grappleBlock = null;
 let grappleFill = null;
+let grappleStar = null;
 let grappleMob = null;
 const grappleMobOffset = new THREE.Vector3();
 let grappleArrived = false;
@@ -17169,6 +17170,7 @@ function detachDisplacementGrapple() {
   if (!grappleActive) return;
   grapplePendingInsert = null;
   grappleFill = null;
+  grappleStar = null;
   grappleRetracting = true;
   grappleTowInit = false;
   grappleTowPos.set(0, 0, 0);
@@ -17198,7 +17200,10 @@ function fireGrapple() {
   }
   let fillDist = Infinity;
   if (f) fillDist = Math.hypot(f.x + 0.5 - sx, f.y + 0.5 - sy, f.z + 0.5 - sz);
-  const mob0 = pickMob(dir, Math.min(blockDist, fillDist));
+  const s = pickStar(camera.position, dir);
+  let starDist = Infinity;
+  if (s) starDist = Math.hypot(s.x - sx, s.top - sy, s.z - sz);
+  const mob0 = pickMob(dir, Math.min(blockDist, fillDist, starDist));
   const mob = mob0;
   if (mob && mob.kind === "enderman" && !isChained(mob) && !isChainCarrier(mob)) return;
   if (mob && mob.kind === "fish") return;
@@ -17214,12 +17219,13 @@ function fireGrapple() {
     else grappleMobOffset.set(0, mob.h + 0.001, 0);
     const distMob = Math.hypot(mx - sx, my - sy, mz - sz);
     if (distMob < 0.3) return;
-    if ((!b && !f) || distMob < Math.min(blockDist, fillDist)) {
+    if ((!b && !f && !s) || distMob < Math.min(blockDist, fillDist, starDist)) {
       if (mob === carryMob || mob === carryGrappleMob) return;
       grapplePendingInsert = (isChainCarrier(mob) || playerInChain()) ? mob.id : null;
       grappleMob = mob;
       grappleBlock = null;
       grappleFill = null;
+      grappleStar = null;
       if (mob.kind !== "dragon" && mob !== carryMob && mob !== carryGrappleMob) setMobTransparent(mob, 1);
       grappleTarget.set(mx, my, mz);
       grappleStart.set(sx, sy, sz);
@@ -17241,12 +17247,38 @@ function fireGrapple() {
       return;
     }
   }
-  if (!b && !f) return;
+  if (!b && !f && !s) return;
+  if (s && starDist < blockDist && starDist < fillDist) {
+    grapplePendingInsert = null;
+    grappleMob = null;
+    grappleBlock = null;
+    grappleFill = null;
+    grappleStar = { x: s.x, top: s.top, z: s.z };
+    grappleTarget.set(s.x, s.top, s.z);
+    grappleStart.set(sx, sy, sz);
+    grapplingDist = starDist;
+    grappleFly = 0;
+    grappleHookPos.set(sx, sy, sz);
+    grappleHooked = false;
+    grappleArrived = false;
+    grapplePulling = false;
+    grapplePass = true;
+    grappleActive = true;
+    grappleRetracting = false;
+    grappleTowInit = false;
+    grappleTowPos.set(0, 0, 0);
+    syncGrappleColor();
+    jumpCount = 1;
+    jumpIdle = 0;
+    stepDown = false;
+    return;
+  }
   if (f && fillDist < blockDist) {
     if (fillDist < 0.3) return;
     grapplePendingInsert = null;
     grappleMob = null;
     grappleBlock = null;
+    grappleStar = null;
     grappleFill = { x: f.x, y: f.y, z: f.z, frame: portalFrameSkip(f.win, f.nether) };
     grappleTarget.set(f.x + 0.5, f.y + 0.5, f.z + 0.5);
     grappleStart.set(sx, sy, sz);
@@ -17273,6 +17305,7 @@ function fireGrapple() {
   grappleMob = null;
   grappleBlock = b;
   grappleFill = null;
+  grappleStar = null;
   grappleTarget.set(tx, ty, tz);
   grappleStart.set(sx, sy, sz);
   grapplingDist = blockDist;
@@ -17298,6 +17331,7 @@ function latchPlayerTo(mob) {
   grapplePendingInsert = null;
   grappleMob = mob;
   grappleBlock = null;
+  grappleStar = null;
   if (mob.kind === "dragon") grappleMobOffset.set(0, DRAGON_ANCHOR_DY, 0);
   else grappleMobOffset.set(0, mob.h + 0.001, 0);
   grappleTarget.set(mob.pos.x, mob.pos.y + grappleMobOffset.y, mob.pos.z);
@@ -18211,6 +18245,28 @@ function waterSurfaceTop() {
 // Raycast (DDA voxel traversal)
 // ---------------------------------------------------------------------------
 const REACH = Infinity;
+const STAR_GRAPPLE_R = 0.9;
+function pickStar(origin, dir) {
+  if (dim !== "over" || !decorVisible || !starPlatforms.length) return null;
+  const dl = Math.hypot(dir.x, dir.y, dir.z) || 1;
+  const dx = dir.x / dl, dy = dir.y / dl, dz = dir.z / dl;
+  let best = null, bestDist = Infinity;
+  for (const sp of starPlatforms) {
+    const cx = sp.x - origin.x, cy = (sp.top - 0.3) - origin.y, cz = sp.z - origin.z;
+    const t = cx * dx + cy * dy + cz * dz;
+    if (t < 0 || t >= bestDist) continue;
+    const d2 = cx * cx + cy * cy + cz * cz - t * t;
+    if (d2 > STAR_GRAPPLE_R * STAR_GRAPPLE_R) continue;
+    const dist = t - Math.sqrt(STAR_GRAPPLE_R * STAR_GRAPPLE_R - d2);
+    if (dist < 0.3 || dist >= bestDist) continue;
+    if (dist > REACH) continue;
+    bestDist = dist;
+    best = sp;
+  }
+  if (!best) return null;
+  return { x: best.x, top: best.top, z: best.z, dist: bestDist };
+}
+
 function pickFill(origin, dir) {
   const cells = new Set();
   const owners = new Map();
@@ -21426,12 +21482,13 @@ function goToDimension(name, sx, sy, sz) {
   birdLock = null; birdLockT = 0; birdLockShots = 0;
   clearChains();
   if (playerInChain()) detachDisplacementGrapple();
-  if (grappleFill) {
+  if (grappleFill || grappleStar) {
     grappleActive = false;
     grapplePulling = false;
     grappleRetracting = false;
     grappleArrived = false;
     grappleFill = null;
+    grappleStar = null;
     if (grappleCubes) grappleCubes.visible = false;
     if (grappleHead) grappleHead.visible = false;
   }
@@ -25336,6 +25393,7 @@ document.addEventListener("mouseup", (e) => {
   grappleRetracting = true;
   grapplePendingInsert = null;
   grappleFill = null;
+  grappleStar = null;
   grappleTowInit = false;
   grappleTowPos.set(0, 0, 0);
   if (grappleMob) {
@@ -25942,7 +26000,7 @@ if (location.search.includes('test')) {
     get villageCenter(){ return villageCenter; }, get villageHouses(){ return villageHouses; }, get villagePen(){ return villagePen; }, get villagePool(){ return villagePool; }, get isInsidePen(){ return isInsidePen; }, get isInsidePool(){ return isInsidePool; }, get isInsidePenPool(){ return isInsidePenPool; }, get poolExitTarget(){ return poolExitTarget; }, get penPoolExitTarget(){ return penPoolExitTarget; }, get LOG(){ return LOG; }, findPenGaps, nearestPenGap, penGapInside, penGapOutside, hasMobGround, mobBlockedAt, aabbCollidesWorld, mobProbeFree, randomPenPoint, randomAroundPenPoint, groundYForMob, get CLOUD_BASE(){ return CLOUD_BASE; }, get CLOUD_TOP(){ return CLOUD_TOP; }, get MAX_Y(){ return MAX_Y; },
     getTypeMats, get typeMats(){ return typeMats; }, buildWorld, generateWorld, generateMoonLakes, get moonLakesGenerated(){ return moonLakesGenerated; }, computeVillageLayout, spawnVillagers, refreshBlocks, rebuildMeshes, get chunkMeshes(){ return chunkMeshes; }, get boxGeo(){ return boxGeo; }, THREE,
     get pos(){ return pos; }, get vel(){ return vel; }, get camera(){ return camera; }, get scene(){ return scene; }, get freeCam(){ return freeCam; }, set freeCam(v){ freeCam = v; }, get camPos(){ return camPos; }, get yaw(){ return yaw; }, set yaw(v){ yaw=v; }, get pitch(){ return pitch; }, set pitch(v){ pitch=v; },
-    get carryMob(){ return carryMob; }, set carryMob(v){ carryMob = v; }, handleCarryEnterDown, handleCarryEnterUp, pickMob, get carryGrappleActive(){ return carryGrappleActive; }, get carryGrapplePulling(){ return carryGrapplePulling; }, get carryGrappleMob(){ return carryGrappleMob; }, get carryGrappleBlock(){ return carryGrappleBlock; }, get carryGrappleHookPos(){ return carryGrappleHookPos; }, get carryGrappleOffset(){ return carryGrappleOffset; }, get carryGrappleMode(){ return carryGrappleMode; }, get isMobFrozenByGrapple(){ return isMobFrozenByGrapple; }, isChained, isChainCarrier, chainRootOf, chainTailOf, linkChain, dropChainFrom, chainTakeForCarry, severChainMob, groundChainFrom, insertChainBefore, insertChainBehind, insertBehindRide, prependChainLead, clearChains, pruneChains, updateChains, syncChainLinkColor, syncChainLinkColors, syncGrappleColor, stampSpawn, get mobById(){ return mobById; }, chainAttachTarget, startCarryAttachGrapple, killChainMob, respawnChainMob, unchainMob, severGroundedChainVictim, isGroundedChainVictim, get chainLinks(){ return chainLinks; }, get chainParent(){ return chainParent; }, get chainChild(){ return chainChild; }, playerChainAvatar, playerInChain, PLAYER_CHAIN_ID, spliceChainLink, chainHasJumping, chainPushCrumb, chainTrailTarget, latchPlayerTo, latchPlayerInMiddle, playerInsertCutAndLink, insertChainAheadOfPlayer, insertChainBehindPlayer, playerLeadLink, dropPlayerLeadEntry, readyLeadForLatch, leadAwareLatchInsert, appendCutFollowerBehindLeadTail, grabRideForCarry, fireGrapple, detachDisplacementGrapple, get grappleActive(){ return grappleActive; }, get grappleHooked(){ return grappleHooked; }, get grappleRetracting(){ return grappleRetracting; }, get grappleMob(){ return grappleMob; }, get grappleMobOffset(){ return grappleMobOffset; }, get grappleHookPos(){ return grappleHookPos; }, get grappleTarget(){ return grappleTarget; },     updateCarryGrapple, updateCarry, releaseCarriedMobAt, releaseCarriedMob, get currentBlock(){ return currentBlock; }, updateTarget, hotbarList, placeBlock, breakBlock, get selected(){ return selected; }, set selected(v){ selected=v; }, toggleCarry: handleCarryEnterDown, findNearestMobForGrab: (...a)=>{ const d=new THREE.Vector3(); camera.getWorldDirection(d); return pickMob(d); }, get playerArms(){ return playerArms; }, get started(){ return started; }, set started(v){ started=v; }, get loading(){ return loading; }, get freeCam(){ return freeCam; }, set freeCam(v){ freeCam=v; }, get helpOpen(){ return helpOpen; },
+    get carryMob(){ return carryMob; }, set carryMob(v){ carryMob = v; }, handleCarryEnterDown, handleCarryEnterUp, pickMob, get carryGrappleActive(){ return carryGrappleActive; }, get carryGrapplePulling(){ return carryGrapplePulling; }, get carryGrappleMob(){ return carryGrappleMob; }, get carryGrappleBlock(){ return carryGrappleBlock; }, get carryGrappleHookPos(){ return carryGrappleHookPos; }, get carryGrappleOffset(){ return carryGrappleOffset; }, get carryGrappleMode(){ return carryGrappleMode; }, get isMobFrozenByGrapple(){ return isMobFrozenByGrapple; }, isChained, isChainCarrier, chainRootOf, chainTailOf, linkChain, dropChainFrom, chainTakeForCarry, severChainMob, groundChainFrom, insertChainBefore, insertChainBehind, insertBehindRide, prependChainLead, clearChains, pruneChains, updateChains, syncChainLinkColor, syncChainLinkColors, syncGrappleColor, stampSpawn, get mobById(){ return mobById; }, chainAttachTarget, startCarryAttachGrapple, killChainMob, respawnChainMob, unchainMob, severGroundedChainVictim, isGroundedChainVictim, get chainLinks(){ return chainLinks; }, get chainParent(){ return chainParent; }, get chainChild(){ return chainChild; }, playerChainAvatar, playerInChain, PLAYER_CHAIN_ID, spliceChainLink, chainHasJumping, chainPushCrumb, chainTrailTarget, latchPlayerTo, latchPlayerInMiddle, playerInsertCutAndLink, insertChainAheadOfPlayer, insertChainBehindPlayer, playerLeadLink, dropPlayerLeadEntry, readyLeadForLatch, leadAwareLatchInsert, appendCutFollowerBehindLeadTail, grabRideForCarry, fireGrapple, detachDisplacementGrapple, pickStar, get grappleStar(){ return grappleStar; }, get grappleActive(){ return grappleActive; }, get grappleHooked(){ return grappleHooked; }, get grappleRetracting(){ return grappleRetracting; }, get grappleMob(){ return grappleMob; }, get grappleMobOffset(){ return grappleMobOffset; }, get grappleHookPos(){ return grappleHookPos; }, get grappleTarget(){ return grappleTarget; },     updateCarryGrapple, updateCarry, releaseCarriedMobAt, releaseCarriedMob, get currentBlock(){ return currentBlock; }, updateTarget, hotbarList, placeBlock, breakBlock, get selected(){ return selected; }, set selected(v){ selected=v; }, toggleCarry: handleCarryEnterDown, findNearestMobForGrab: (...a)=>{ const d=new THREE.Vector3(); camera.getWorldDirection(d); return pickMob(d); }, get playerArms(){ return playerArms; }, get started(){ return started; }, set started(v){ started=v; }, get loading(){ return loading; }, get freeCam(){ return freeCam; }, set freeCam(v){ freeCam=v; }, get helpOpen(){ return helpOpen; },
     get WOLF_COUNT(){ return WOLF_COUNT; }, get GOLEM_COUNT(){ return GOLEM_COUNT; }, get GOLEM_HW(){ return GOLEM_HW; }, get GOLEM_HH(){ return GOLEM_HH; }, get CAT_COUNT(){ return CAT_COUNT; }, get CAT_HW(){ return CAT_HW; }, get CAT_HH(){ return CAT_HH; }, makeWolfMesh, makeCatMesh, pickCatRobe, catParentFor, catTrailSpot, panicCats, makeIronGolemMesh, villagerHW, villagerH, wolfHasMobGround, wolfBlockedAt, wolfProbeFree, wanderGoalForWolf, wolfFindPath, wolfFlatSpot, wolfLeaveTarget, panicLeaveDir, panicWolves, wolfInWater, mobInWater, waterSurfaceForMob, mobPhysicsStep, wolfPhysicsStep, updateMobs, obstacleTurnDir, buildMobGrid,     get isPigCow(){ return isPigCow; }, get pigOverlapsFence(){ return pigOverlapsFence; }, pigFenceSlideOut, get MOB_FLOAT_FRAC(){ return MOB_FLOAT_FRAC; }, mobFloatTargetY, mobWaterExitJump, poolExitTarget, penPoolExitTarget, isInsidePenPool, moonLakeExitTarget, isMobInPoolWater, isMobInMoonLake, get BATH_MIN_T(){ return BATH_MIN_T; }, get BATH_MAX_T(){ return BATH_MAX_T; },
     get BIRD_COUNT(){ return BIRD_COUNT; }, get BIRD_MIN_Y(){ return BIRD_MIN_Y; }, get BIRD_MAX_Y(){ return BIRD_MAX_Y; }, get BIRD_SPEED(){ return BIRD_SPEED; }, get TNT_HOME_SPEED(){ return TNT_HOME_SPEED; }, get BIRD_AIM_DIST(){ return BIRD_AIM_DIST; }, get BIRD_LOCK_TIME(){ return BIRD_LOCK_TIME; }, get birdLock(){ return birdLock; }, get birdLockT(){ return birdLockT; }, set birdLockT(v){ birdLockT = v; }, get birdLockShots(){ return birdLockShots; }, liveBirdLock, tntTargeted, tryFireLockedTNT, tntChainAimMob, aimOnMob, get chainBreaking(){ return chainBreaking; }, set chainBreaking(v){ chainBreaking = v; },     makeBirdMesh, spawnBirds, spawnSingleBird, removeBirds, spawnBirdChain, updateBird, updatePerchedBird, updateToPerchBird, birdTakeoff, birdNextLeg, birdFindPerchSpot, birdCloudTopAt, birdTreeTopAt, birdRoofTopAt, birdPerchBand, birdPerchSupports, killBird, birdSpotOutOfView, birdProbeFree, birdRandomTarget, birdSeparate,     makeFishMesh, spawnFishes, spawnSingleFish, updateFish, killFish, fishInWater, fishRandomTarget, tryPlace, get FISH_COUNT(){ return FISH_COUNT; }, get FISH_SPEED(){ return FISH_SPEED; },     fishWaterSurface, waterTopAt, fishNarrow, fishColHW, fishColH, fishEaseScale, fishProbeFree, fishSegmentFree, fishIsConfined, fishHoleCell, fishMillHop, fishMoveSlide, fishTunnelPlan, updateTunnelFish, fishAnimate, fishSidestep, fishNoticeWater, fishWaterLiveKeys, fishFreshWaterFor, fishWaterGiveUp, fishResolvePenetration, fishBodyWetFull, fishProbeDims, tunnelFindStart, tunnelBFSWalk, tunnelBuildPath, tunnelAxisStep, get FISH_NARROW_SCALE(){ return FISH_NARROW_SCALE; }, get FISH_TUNNEL_HW(){ return FISH_TUNNEL_HW; }, get FISH_SUBMERGE_GAP(){ return FISH_SUBMERGE_GAP; }, get FISH_LURE_DEPTH(){ return FISH_LURE_DEPTH; }, get FISH_TUNNEL_WATER_NEAR(){ return FISH_TUNNEL_WATER_NEAR; }, get FISH_OPEN_WATER_LURE_R(){ return FISH_OPEN_WATER_LURE_R; }, get fishNotices(){ return fishNotices; },     deployRod, stowRod, rodStartRetract, rodTick, rodAimWater, buildRodMesh, updateRodBeam, renderRodRope, renderRodStraight, rodRopeEnd, get rodOut(){ return rodOut; }, get rodFish(){ return rodFish; }, get rodHasCast(){ return rodHasCast; },     get rodBob(){ return rodBob; }, get rodTipW(){ return rodTipW; }, get rodBobber(){ return rodBobber; }, get rodBeam(){ return rodBeam; }, get rodLine(){ return rodLine; }, get rodAnim(){ return rodAnim; }, get rodCastF(){ return rodCastF; }, get rodDunked(){ return rodDunked; }, get ROD_BOB_SMOOTH(){ return ROD_BOB_SMOOTH; }, get ROD_BITE_MAX_T(){ return ROD_BITE_MAX_T; }, get ROD_BITE_LAMBDA(){ return ROD_BITE_LAMBDA; }, get ROD_ORBIT_R(){ return ROD_ORBIT_R; }, rodClearTimers, rodDropBite, pickFishVariant, fishComboFor, fishSizeFor, get FISH_VARIANT_COUNT(){ return FISH_VARIANT_COUNT; },     houseInteriorFor, houseMouths, birdCoopTarget,     birdSegmentFree, birdClearance, birdBestSteer, birdMillHop, birdConfinedSteer, birdMoveSlide, bandReturnTarget, birdNoticeBreak, setMobTransparent, birdIsConfined, birdHoleCell, chainSegmentFree, chainThreadRide, chainFindRejoinPath, chainDriveRejoin, chainRejoinSlot, birdTunnelPlan, updateTunnelBird, birdTunnelSeparate, birdSkyClear, birdSidestep, birdUTurn, birdNarrow, birdColHW, birdColH,     get BIRD_NARROW_SCALE(){ return BIRD_NARROW_SCALE; }, get BIRD_SKY_CLEAR(){ return BIRD_SKY_CLEAR; }, get NETHER_BIRD_MIN_Y(){ return NETHER_BIRD_MIN_Y; }, get NETHER_BIRD_MAX_Y(){ return NETHER_BIRD_MAX_Y; }, birdDimOf, birdBandMinFor, birdBandMaxFor, birdBandMin, birdBandMax, birdNetherLegY, netherBirdCeiling, birdLavaAt, get BIRD_TUNNEL_SCALE(){ return BIRD_TUNNEL_SCALE; }, get BIRD_COL_HW(){ return BIRD_COL_HW; }, get BIRD_COL_H(){ return BIRD_COL_H; },     get tntLit(){ return tntLit; }, get explosionQueue(){ return explosionQueue; }, get tntEta(){ return tntEta; }, tickLitMegaTex, getLitMegaTex, getLitMegaTexEff(){ return litMegaTexEff; }, megaWhiteEff, get MEGA_WHITE_TEX_CAP(){ return MEGA_WHITE_TEX_CAP; }, get pendingTNTBombs(){ return pendingTNTBombs; }, get pendingTNTEta(){ return pendingTNTEta; }, get bursts(){ return bursts; }, get flashes(){ return flashes; }, snapshotLiveFx, replayLiveFx, spawnExplosion, igniteTNT, fireTNTAtBird, purgeLiveTNT, tickTNT, snapshotLiveTNT, restoreLiveTNT, get pendingDragon(){ return pendingDragon; }, get tntEta(){ return tntEta; }, igniteTNT, aimedBird, fireTNTAtBird, explodeBird, spawnBirdBurst, get bursts(){ return bursts; }, get flashes(){ return flashes; }, updateTNTTarget, tickTNT, fireGrapple, updateGrapple, updatePlayer, get grappleActive(){ return grappleActive; }, get grapplePulling(){ return grapplePulling; }, get grappleHooked(){ return grappleHooked; },
     get overPortalWin(){ return overPortalWin; }, get overPortalDir(){ return overPortalDir; }, get overPortalSpawn(){ return overPortalSpawn; }, get overPortalFace(){ return overPortalFace; },
