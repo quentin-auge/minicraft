@@ -7436,13 +7436,16 @@ function setMobOnTop(m, on) {
   m.mesh.frustumCulled = on ? false : true;
 }
 
-function pickMob(dir, maxDist = 1000) {
+function pickMob(dir, maxDist = 1000, includeFish = false) {
   const eye = camera.position;
   let best = null, bestT = Infinity;
   for (const m of mobs) {
     if (m.dim !== undefined && m.dim !== dim) continue;
     if (isMobHeld(m)) continue;
-    if (m.kind === "fish" && (m._hooked || (fishInWater(m) && !eyeInWater()))) continue;
+    if (m.kind === "fish") {
+      if (m._hooked) continue;
+      if (!includeFish && fishInWater(m) && !eyeInWater()) continue;
+    }
     const falling = !m.onGround || (m.vel && Math.abs(m.vel.y) > 1);
     const expand = falling ? 0.45 : 0;
     const phw = m.kind === "fish" && m.hw0 != null ? m.hw0 : m.hw;
@@ -7750,9 +7753,9 @@ function chainMobById(id) {
 }
 function chainFollowDist(carrier) {
   if (carrier === playerChainAvatar) {
-    return grappleMob && grappleMob.kind === "dragon" ? DRAGON_FOLLOW_DIST : BIRD_FOLLOW_DIST;
+    return grappleMob && grappleMob.kind === "dragon" ? DRAGON_FOLLOW_DIST : grappleMob && grappleMob.kind === "fish" ? FISH_FOLLOW_DIST : BIRD_FOLLOW_DIST;
   }
-  return carrier.kind === "dragon" ? DRAGON_FOLLOW_DIST : BIRD_FOLLOW_DIST;
+  return carrier.kind === "dragon" ? DRAGON_FOLLOW_DIST : carrier.kind === "fish" ? FISH_FOLLOW_DIST : BIRD_FOLLOW_DIST;
 }
 function chainMidY(m) {
   return m.pos.y + m.h * 0.5;
@@ -16989,6 +16992,7 @@ const GRAPPLE_THROW = 70;
 const GRAPPLE_RETRACT = 275;
 const GRAPPLE_FLING = 34;
 const BIRD_FOLLOW_DIST = 2.5;
+const FISH_FOLLOW_DIST = 1.8;
 const DRAGON_FOLLOW_DIST = 8;
 const MOB_GRAPPLE_THROW = GRAPPLE_THROW * 1.25;
 const MOB_GRAPPLE_RETRACT = MOB_GRAPPLE_THROW * 1.25;
@@ -17678,18 +17682,20 @@ function fireGrapple() {
   const s = pickStar(camera.position, dir);
   let starDist = Infinity;
   if (s) starDist = Math.hypot(s.x - sx, s.top - sy, s.z - sz);
-  const mob0 = pickMob(dir, Math.min(blockDist, fillDist, starDist));
+  const mob0 = pickMob(dir, Math.min(blockDist, fillDist, starDist), true);
   const mob = mob0;
   if (mob && mob.kind === "enderman" && !isChained(mob) && !isChainCarrier(mob)) return;
-  if (mob && mob.kind === "fish") return;
   if (mob && readyLeadForLatch(mob) === false) return;
   if (mob) {
     const isDragon = mob.kind === "dragon";
-    const off = isDragon ? null : getMobHitOffset(eye, dir, mob);
-    const mx = off ? mob.pos.x + off.x : mob.pos.x;
-    const my = off ? mob.pos.y + off.y : (isDragon ? mob.pos.y + DRAGON_ANCHOR_DY : mob.pos.y + mob.h + 0.001);
-    const mz = off ? mob.pos.z + off.z : mob.pos.z;
-    if (off) grappleMobOffset.copy(off);
+    const isFish = mob.kind === "fish";
+    const off = isDragon || isFish ? null : getMobHitOffset(eye, dir, mob);
+    const ax = isFish ? 0 : (off ? off.x : 0);
+    const ay = isFish ? mob.h * 0.5 : (off ? off.y : (isDragon ? DRAGON_ANCHOR_DY : mob.h + 0.001));
+    const az = isFish ? 0 : (off ? off.z : 0);
+    const mx = mob.pos.x + ax, my = mob.pos.y + ay, mz = mob.pos.z + az;
+    if (isFish) grappleMobOffset.set(0, mob.h * 0.5, 0);
+    else if (off) grappleMobOffset.copy(off);
     else if (isDragon) grappleMobOffset.set(0, DRAGON_ANCHOR_DY, 0);
     else grappleMobOffset.set(0, mob.h + 0.001, 0);
     const distMob = Math.hypot(mx - sx, my - sy, mz - sz);
@@ -18205,7 +18211,7 @@ function updateGrapple(dt) {
   const grappleChainTail = grappleMob && grappleHooked && !chainChild.has(grappleMob.id) && (isChained(grappleMob) || isChainCarrier(grappleMob));
   if (grappleMob && grappleHooked) {
     const pm = grappleMob;
-    const followDist = pm.kind === "dragon" ? DRAGON_FOLLOW_DIST : BIRD_FOLLOW_DIST;
+    const followDist = pm.kind === "dragon" ? DRAGON_FOLLOW_DIST : pm.kind === "fish" ? FISH_FOLLOW_DIST : BIRD_FOLLOW_DIST;
     const pdx = grappleTarget.x - pos.x, pdy = grappleTarget.y - pos.y, pdz = grappleTarget.z - pos.z;
     const pvl = pm.vel.length();
     const followR = (grappleTowInit ? followDist + 2 : followDist) + pvl * 0.25;
@@ -25851,7 +25857,7 @@ document.addEventListener("mouseup", (e) => {
   if (grapplePulling) {
     const fdx = grappleTarget.x - pos.x, fdy = grappleTarget.y - pos.y, fdz = grappleTarget.z - pos.z;
     const mob = grappleMob;
-    const followDist = !mob ? 0 : mob.kind === "dragon" ? DRAGON_FOLLOW_DIST : BIRD_FOLLOW_DIST;
+    const followDist = !mob ? 0 : mob.kind === "dragon" ? DRAGON_FOLLOW_DIST : mob.kind === "fish" ? FISH_FOLLOW_DIST : BIRD_FOLLOW_DIST;
     const mobFollow = mob && grappleHooked &&
       (grappleTowInit || Math.hypot(fdx, fdy, fdz) <= followDist + 0.5);
     if (mobFollow) {
