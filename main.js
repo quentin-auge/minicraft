@@ -3598,7 +3598,18 @@ function makeCowMesh() {
   legFR.scale.set(0.24 * sc, 0.46 * sc, 0.24 * sc);
   legFR.position.set(0.32 * sc, 0.23 * sc, 0.42 * sc);
   g.add(legFR);
-  g.userData = { sc, legBL, legBR, legFL, legFR, body, head, kind: "cow" };
+  const tailGroup = new THREE.Group();
+  tailGroup.position.set(0, 1.02 * sc, -0.63 * sc);
+  g.add(tailGroup);
+  const tailStrand = new THREE.Mesh(geo, cowMat);
+  tailStrand.scale.set(0.09 * sc, 0.55 * sc, 0.09 * sc);
+  tailStrand.position.set(0, -0.27 * sc, -0.03 * sc);
+  tailGroup.add(tailStrand);
+  const tailTuft = new THREE.Mesh(geo, cowDarkMat);
+  tailTuft.scale.set(0.13 * sc, 0.13 * sc, 0.13 * sc);
+  tailTuft.position.set(0, -0.58 * sc, -0.03 * sc);
+  tailGroup.add(tailTuft);
+  g.userData = { sc, legBL, legBR, legFL, legFR, body, head, tail: tailGroup, tailGroup, kind: "cow" };
   return g;
 }
 const golemIronMat = new THREE.MeshStandardMaterial({ color: 0xdfe3e6, roughness: 0.85 });
@@ -13524,7 +13535,16 @@ function updateMobs(dt) {
       m.mesh.userData.legFR.rotation.x = Math.sin(m.legPhase) * 0.65;
     }
     if (m.kind === "pig" && m.mesh.userData.tailGroup) {
-      m.mesh.userData.tailGroup.rotation.y = Math.sin(m.legPhase) * (moving ? 0.35 : 0.15);
+      m.tailPhase = (m.tailPhase || 0) + dt * (moving ? 3.2 : 1.6);
+      const wantAmp = moving ? 0.35 : 0.15;
+      m.tailAmp = m.tailAmp == null ? wantAmp : m.tailAmp + (wantAmp - m.tailAmp) * Math.min(1, dt * 4);
+      m.mesh.userData.tailGroup.rotation.y = Math.sin(m.tailPhase) * m.tailAmp;
+    }
+    if (m.kind === "cow" && m.mesh.userData.tailGroup) {
+      m.tailPhase = (m.tailPhase || 0) + dt * (moving ? 3.2 : 1.6);
+      const wantAmp = moving ? 0.30 : 0.12;
+      m.tailAmp = m.tailAmp == null ? wantAmp : m.tailAmp + (wantAmp - m.tailAmp) * Math.min(1, dt * 4);
+      m.mesh.userData.tailGroup.rotation.z = Math.sin(m.tailPhase) * m.tailAmp;
     }
     if (m.kind === "iron_golem" && m.mesh.userData.armL) {
       m.mesh.userData.armL.rotation.x = Math.sin(m.legPhase + Math.PI) * 0.4;
