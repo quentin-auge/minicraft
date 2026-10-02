@@ -7487,6 +7487,32 @@ function getMobHitOffset(eye, dir, mob) {
   const hitX = eye.x + dir.x * t, hitY = eye.y + dir.y * t, hitZ = eye.z + dir.z * t;
   return new THREE.Vector3(hitX - mob.pos.x, hitY - mob.pos.y, hitZ - mob.pos.z);
 }
+function solidRayT(eye, dir) {
+  let x = Math.floor(eye.x), y = Math.floor(eye.y), z = Math.floor(eye.z);
+  const stepX = dir.x > 0 ? 1 : -1, stepY = dir.y > 0 ? 1 : -1, stepZ = dir.z > 0 ? 1 : -1;
+  const tDeltaX = dir.x !== 0 ? Math.abs(1 / dir.x) : Infinity;
+  const tDeltaY = dir.y !== 0 ? Math.abs(1 / dir.y) : Infinity;
+  const tDeltaZ = dir.z !== 0 ? Math.abs(1 / dir.z) : Infinity;
+  let tMaxX = dir.x !== 0 ? ((stepX > 0 ? Math.floor(eye.x) + 1 - eye.x : eye.x - Math.floor(eye.x)) / Math.abs(dir.x)) : Infinity;
+  let tMaxY = dir.y !== 0 ? ((stepY > 0 ? Math.floor(eye.y) + 1 - eye.y : eye.y - Math.floor(eye.y)) / Math.abs(dir.y)) : Infinity;
+  let tMaxZ = dir.z !== 0 ? ((stepZ > 0 ? Math.floor(eye.z) + 1 - eye.z : eye.z - Math.floor(eye.z)) / Math.abs(dir.z)) : Infinity;
+  let t = 0;
+  for (let i = 0; i < 2048; i++) {
+    if (x >= -WORLD_RADIUS && x <= WORLD_RADIUS && z >= -WORLD_RADIUS && z <= WORLD_RADIUS && y >= 0 && y <= MAX_Y) {
+      if (isSolid(x, y, z)) return t;
+    }
+    if (tMaxX < tMaxY && tMaxX < tMaxZ) { t = tMaxX; x += stepX; tMaxX += tDeltaX; }
+    else if (tMaxY < tMaxZ) { t = tMaxY; y += stepY; tMaxY += tDeltaY; }
+    else { t = tMaxZ; z += stepZ; tMaxZ += tDeltaZ; }
+  }
+  return Infinity;
+}
+function mobBlockedBySolid(eye, dir, mob) {
+  const off = getMobHitOffset(eye, dir, mob);
+  const hx = off ? mob.pos.x + off.x : mob.pos.x, hy = off ? mob.pos.y + off.y : mob.pos.y + mob.h * 0.5, hz = off ? mob.pos.z + off.z : mob.pos.z;
+  const mobT = Math.hypot(hx - eye.x, hy - eye.y, hz - eye.z);
+  return mobT > solidRayT(eye, dir) + 0.5;
+}
 
 // Carry grapple (red) — from scratch, inspired by normal grapple
 let carryGrappleActive = false;
@@ -9472,11 +9498,12 @@ function startCarryGrabGrapple() {
   if (!started || loading || helpOpen) return false;
   const dir = new THREE.Vector3();
   camera.getWorldDirection(dir);
+  const eye = camera.position;
   const mob = pickMob(dir, Infinity);
   if (!mob) return false;
+  if (mobBlockedBySolid(eye, dir, mob)) return false;
   if (mob.kind === "dragon") { showMsg("The dragon is too powerful to grab"); return false; }
   if (mob.kind === "iron_golem") { showMsg("The iron golem refuses to be carried"); return false; }
-  const eye = camera.position;
   const off = getMobHitOffset(eye, dir, mob);
   if (mob.kind === "enderman") carryGrappleOffset.set(0, mob.h * 0.5, 0);
   else if (off) carryGrappleOffset.copy(off);
@@ -9810,6 +9837,7 @@ function chainAttachTarget() {
   if (!mob || mob === carryMob || mob === carryGrappleMob) return null;
   if ((mob.dim || "over") !== dim) return null;
   if (mob.kind === "fish") return null;
+  if (mobBlockedBySolid(camera.position, dir, mob)) return null;
   const ck = (carryMob && carryMob.kind) || null;
   if (playerInChain() && (mob === grappleMob || chainRootOf(mob) === chainRootOf(grappleMob))) {
     if (mob === grappleMob) {
