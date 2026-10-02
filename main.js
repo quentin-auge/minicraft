@@ -3516,7 +3516,17 @@ function makePigMesh() {
   legFR.scale.set(0.22 * sc, 0.34 * sc, 0.22 * sc);
   legFR.position.set(0.30 * sc, 0.17 * sc, 0.38 * sc);
   g.add(legFR);
-  g.userData = { sc, legBL, legBR, legFL, legFR, body, head, kind: "pig" };
+  const tailGroup = new THREE.Group();
+  tailGroup.position.set(0, 0.66 * sc, -0.58 * sc);
+  g.add(tailGroup);
+  for (let ti = 0; ti < 5; ti++) {
+    const seg = new THREE.Mesh(geo, pigMat);
+    const ta = ti * 2.4;
+    seg.scale.set(0.08 * sc, 0.08 * sc, 0.08 * sc);
+    seg.position.set(Math.cos(ta) * 0.045 * sc, Math.sin(ta) * 0.045 * sc, -0.02 * sc - ti * 0.055 * sc);
+    tailGroup.add(seg);
+  }
+  g.userData = { sc, legBL, legBR, legFL, legFR, body, head, tail: tailGroup, tailGroup, kind: "pig" };
   return g;
 }
 function makeCowMesh() {
@@ -13512,6 +13522,9 @@ function updateMobs(dt) {
       m.mesh.userData.legBR.rotation.x = Math.sin(m.legPhase + Math.PI) * 0.65;
       m.mesh.userData.legFL.rotation.x = Math.sin(m.legPhase + Math.PI) * 0.65;
       m.mesh.userData.legFR.rotation.x = Math.sin(m.legPhase) * 0.65;
+    }
+    if (m.kind === "pig" && m.mesh.userData.tailGroup) {
+      m.mesh.userData.tailGroup.rotation.y = Math.sin(m.legPhase) * (moving ? 0.35 : 0.15);
     }
     if (m.kind === "iron_golem" && m.mesh.userData.armL) {
       m.mesh.userData.armL.rotation.x = Math.sin(m.legPhase + Math.PI) * 0.4;
