@@ -25507,6 +25507,7 @@ function updateCamera() {
 // HUD (dimension label, toast)
 // ---------------------------------------------------------------------------
 const dimEl = document.getElementById("dim");
+const debugEl = document.getElementById("debug");
 const toastEl = document.getElementById("toast");
 const bossBarEl = document.getElementById("bossbar");
 const bossFillEl = document.getElementById("bossfill");
@@ -26492,6 +26493,7 @@ document.addEventListener("keydown", (e) => {
   if (e.code === "KeyL" && !loading) select(selected + 1);
   if (e.code === "KeyF") { freeCam = !freeCam; if (freeCam) camPos.copy(camera.position); else exitFreeCam(); }
   if (e.code === "KeyV" && !loading) { spawnBirdChain(); }
+  if (e.code === "Equal" && !loading && !e.repeat) { debugHud = !debugHud; }
   if (e.code === "Escape") {
     if (started) {
       saveToFile();
@@ -26553,6 +26555,7 @@ addEventListener("resize", () => {
 let last = performance.now();
 let simActivePrev = true;
 let fpsEMA = 60, perfLogT = 0;
+let debugHud = false, debugHudT = 0;
 let qualityTier = 0, qualityLowT = 0, qualityHighT = 0, qualityCheckT = 0;
 const QUALITY_DPR = [2, 1.25, 1];
 const QUALITY_LIGHTS = [16, 8, 4];
@@ -26588,6 +26591,11 @@ function loop(now) {
     perfLogT = 0;
     if (typeof console !== "undefined") console.log("[perf] fps~" + Math.round(fpsEMA) + " q=" + qualityTier + " dim=" + dim + " chunks=" + chunkMeshes.size + " mobs=" + mobs.length + " bursts=" + (typeof bursts !== "undefined" ? bursts.length : 0));
   }
+  if (debugHud && started) {
+    debugHudT += dt;
+    if (debugHudT >= 0.25) { debugHudT = 0; debugEl.textContent = "fps~" + Math.round(fpsEMA); }
+    if (debugEl.style.display !== "block") debugEl.style.display = "block";
+  } else if (debugEl.style.display !== "none") debugEl.style.display = "none";
 
   if (!loading) {
     // Freeze gameplay simulation while the pause menu (or help panel) is open:
@@ -27025,7 +27033,7 @@ if (location.search.includes('test')) {
     get GROWABLE_DIST(){ return GROWABLE_DIST; }, get PLANT_NECK(){ return PLANT_NECK; }, get PINE_RATE(){ return PINE_RATE; }, get PINE_PHASE_TIME(){ return PINE_PHASE_TIME; }, get SOIL_TIMER(){ return SOIL_TIMER; }, get SOIL_SOAK_TIME(){ return SOIL_SOAK_TIME; }, get PLANT_BEND_TIME(){ return PLANT_BEND_TIME; }, get PLANT_LEAVE_DIST(){ return PLANT_LEAVE_DIST; },     get PINE_MIN_M(){ return PINE_MIN_M; }, get PINE_MAX_M(){ return PINE_MAX_M; },     get PINE_LIFT_MAX(){ return PINE_LIFT_MAX; }, get PLANT_STEAL_D(){ return PLANT_STEAL_D; }, get GROWTH_PUSH_SPEED(){ return GROWTH_PUSH_SPEED; }, get growthSettlePasses(){ return growthSettlePasses; },
     get MOON_PINE_MAX_M(){ return MOON_PINE_MAX_M; }, get STAR_STYLE_COUNT(){ return STAR_STYLE_COUNT; }, get STAR_STYLE_NAMES(){ return STAR_STYLE_NAMES; }, get STAR_STYLES(){ return STAR_STYLES; },     getStarStyleIdx(){ return starStyleIdx; }, getStarAngle(){ return starAngle; }, get STAR_SPIN(){ return STAR_SPIN; }, get STAR_PLATFORM_R(){ return STAR_PLATFORM_R; }, get starPlatforms(){ return starPlatforms; }, getStarRide(){ return starRide; }, starPlatformAt, rotXZ, rebuildStars, starTick, buildStarShape, pineCellAt, chainComponentFrom, despawnChainMob, cullSmallChainsNear,
     isSoilHole, isSoilFloor, releaseGrowable, armSoak, absorbSoak, spawnSoakDrips, plantWalkGoal, soilSameY, pickPineDims, fitTrunkRange, pineCellsFor, pineFits, pineSpotBlocked, pineLayerWidths, pineSpiralOrder, pineSummit, pineTrunkE0, pineFolReserved, pineCellReserved, pineCellKey, pineOwnerDim, reservePineCells, releasePineCells, clearAllPineReservations, pushOutOfGrowth, growthSolidOverlap, growthExitTarget, growthSlide, startPineGrowth, tickPineGrowths, tickSoilTimers, startPineFailBlink, clearPineFailBlink, clearAllPineFailBlinks, tickPineFailBlinks, setVillagerNeck, findPlantPath, soilClaimant, plantLeaveTarget, soilKey, dimToByte, dimFromByte,
-    get plantedPines(){ return plantedPines; }, get brokenPineCells(){ return brokenPineCells; }, getGarlandBulbCount(){ return garlandBulbCount; }, garlandPathFor, garlandRadiusAt, garlandAnchor, garlandAnchorStrict, garlandTrimSet, pineAt, registerPlantedPine, rebuildGarlands, garlandTick, getDecorVisible(){ return true; }, pineCellsFor, pineLayerWidths, pineSummit, countUpperVisible,
+    get plantedPines(){ return plantedPines; }, get brokenPineCells(){ return brokenPineCells; }, getGarlandBulbCount(){ return garlandBulbCount; }, garlandPathFor, garlandRadiusAt, garlandAnchor, garlandAnchorStrict, garlandTrimSet, pineAt, registerPlantedPine, rebuildGarlands, garlandTick, getDecorVisible(){ return true; }, getDebugHud(){ return debugHud; }, pineCellsFor, pineLayerWidths, pineSummit, countUpperVisible,
   });
   Object.assign(window._test, {
     get PIGEON_COUNT(){ return BIRD_COUNT; }, get PIGEON_MIN_Y(){ return BIRD_MIN_Y; }, get PIGEON_MAX_Y(){ return BIRD_MAX_Y; },

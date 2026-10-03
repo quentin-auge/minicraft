@@ -1537,7 +1537,7 @@ or phase. Step-up is root-gated by jumping leadership: when the chain root is a 
   so ESC always saves the camera even right after closing help); world regen resets to new
   seeds (`regenerate`).
 - **HUD/UI**: crosshair, hotbar with slot icons (wheel or K/L selects), dimension
-  label,
+  label, debug FPS readout (`#debug`, hidden by default, `=` toggles),
   toasts; pause overlay (Resume/New
   World/Load Save) and H help panel (portal diagrams: `portalArt` for the
   horizontal End frame, `netherArt` for the 5×4 obsidian Nether frame).

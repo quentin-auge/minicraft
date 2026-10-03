@@ -68,6 +68,12 @@
       background: rgba(0,0,0,0.4); padding: 6px 12px; border-radius: 6px;
       display: none;
     }
+    #debug {
+      position: fixed; top: 10px; left: 50%; transform: translateX(-50%);
+      color: #ffd75e; font-size: 13px; font-weight: 600; text-shadow: 1px 1px 2px #000;
+      background: rgba(0,0,0,0.4); padding: 6px 12px; border-radius: 6px;
+      display: none; font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    }
 
     /* Toast */
     #toast {
@@ -254,6 +260,7 @@
   <div id="crosshair"></div>
   <div id="hotbar"></div>
   <div id="dim"></div>
+  <div id="debug"></div>
   <div id="bossbar"><div class="boss-label">ENDER DRAGON</div><div class="boss-track"><div id="bossfill" class="boss-fill"></div></div></div>
   <div id="toast"></div>
   <div id="portalSpiral">
@@ -275,6 +282,7 @@
         <tr><td>Middle Click</td><td>Hook</td></tr>
         <tr><td>Enter</td><td>Carry mob</td></tr>
         <tr><td>F</td><td>Fly</td></tr>
+        <tr><td>=</td><td>Debug HUD</td></tr>
         <tr><td>H</td><td>Help</td></tr>
       </table>
       <div class="portal-diagram">
