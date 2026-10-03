@@ -3648,14 +3648,20 @@ function makeChickenMesh() {
   eyeR.scale.set(0.05 * sc, 0.05 * sc, 0.02 * sc);
   eyeR.position.set(0.14 * sc, 0.66 * sc, 0.43 * sc);
   g.add(eyeR);
-  const wingL = new THREE.Mesh(geo, chickenMat);
-  wingL.scale.set(0.06 * sc, 0.22 * sc, 0.34 * sc);
-  wingL.position.set(-0.24 * sc, 0.38 * sc, -0.02 * sc);
+  const wingL = new THREE.Group();
+  wingL.position.set(-0.21 * sc, 0.46 * sc, -0.02 * sc);
   g.add(wingL);
-  const wingR = new THREE.Mesh(geo, chickenMat);
-  wingR.scale.set(0.06 * sc, 0.22 * sc, 0.34 * sc);
-  wingR.position.set(0.24 * sc, 0.38 * sc, -0.02 * sc);
+  const wingLM = new THREE.Mesh(geo, chickenMat);
+  wingLM.scale.set(0.06 * sc, 0.22 * sc, 0.34 * sc);
+  wingLM.position.set(-0.03 * sc, -0.08 * sc, 0);
+  wingL.add(wingLM);
+  const wingR = new THREE.Group();
+  wingR.position.set(0.21 * sc, 0.46 * sc, -0.02 * sc);
   g.add(wingR);
+  const wingRM = new THREE.Mesh(geo, chickenMat);
+  wingRM.scale.set(0.06 * sc, 0.22 * sc, 0.34 * sc);
+  wingRM.position.set(0.03 * sc, -0.08 * sc, 0);
+  wingR.add(wingRM);
   const tailGroup = new THREE.Group();
   tailGroup.position.set(0, 0.48 * sc, -0.28 * sc);
   g.add(tailGroup);
@@ -3672,7 +3678,7 @@ function makeChickenMesh() {
   legR.scale.set(0.08 * sc, 0.22 * sc, 0.08 * sc);
   legR.position.set(0.12 * sc, 0.11 * sc, 0.02 * sc);
   g.add(legR);
-  g.userData = { sc, legL, legR, body, head, tail: tailGroup, tailGroup, kind: "chicken" };
+  g.userData = { sc, legL, legR, wingL, wingR, body, head, tail: tailGroup, tailGroup, kind: "chicken" };
   return g;
 }
 const golemIronMat = new THREE.MeshStandardMaterial({ color: 0xdfe3e6, roughness: 0.85 });
@@ -6291,7 +6297,7 @@ function spawnChainMob(kind, sx, sy, sz) {
   let mesh, hw, hh, canStep = false, speed = WALK / 2, extra = null;
   if (kind === "pig") { mesh = makePigMesh(); hw = 0.32; hh = 0.92; speed = WALK / 2.2; }
   else if (kind === "cow") { mesh = makeCowMesh(); hw = 0.32; hh = 1.30; speed = WALK / 2.2; }
-  else if (kind === "chicken") { mesh = makeChickenMesh(); hw = CHICKEN_HW; hh = CHICKEN_HH; speed = WALK / 2.2; }
+  else if (kind === "chicken") { mesh = makeChickenMesh(); hw = CHICKEN_HW; hh = CHICKEN_HH; speed = WALK / 2.2; canStep = true; }
   else if (kind === "wolf") {
     mesh = makeWolfMesh(WOLF_FUR, WOLF_COLLAR_COLORS[Math.floor(Math.random() * WOLF_COLLAR_COLORS.length)]);
     hw = 0.30; hh = 0.90; canStep = true;
@@ -7776,7 +7782,7 @@ function isBirdKind(kind) {
   return kind === "pigeon" || kind === "parrot";
 }
 function isJumpingKind(kind) {
-  return kind === "wolf" || kind === "cat";
+  return kind === "wolf" || kind === "cat" || kind === "chicken";
 }
 function chainAttachModeFor(carriedKind, target) {
   if (target && target.kind === "iron_golem") return "behind";
@@ -9933,6 +9939,10 @@ function updateCarry(dt) {
       carryMob.mesh.userData.legL.rotation.x = 0;
       carryMob.mesh.userData.legR.rotation.x = 0;
     }
+    if (carryMob.mesh.userData.wingL) {
+      carryMob.mesh.userData.wingL.rotation.z = -0.15;
+      carryMob.mesh.userData.wingR.rotation.z = 0.15;
+    }
   }
 }
 
@@ -10991,6 +11001,21 @@ function penGapOutside(gap) {
   else if (gap.z === p.maxZ) oz = gap.z + 1;
   return { x: ox + 0.5, z: oz + 0.5 };
 }
+function chickenPenReturnTarget(m) {
+  if (!villagePen || !m) return null;
+  const p = villagePen, py = villageCenter.y + 1;
+  let best = null, bestD2 = Infinity;
+  for (let bx = p.minX + 1; bx <= p.maxX - 1; bx++) for (let bz = p.minZ + 1; bz <= p.maxZ - 1; bz++) {
+    const cx = bx + 0.5, cz = bz + 0.5;
+    if (isInsidePenPool(cx, cz)) continue;
+    if (aabbCollidesWorld(cx, py, cz, m.hw, m.h)) continue;
+    if (!wolfHasMobGround(cx, cz, m.hw, py)) continue;
+    const dx = cx - m.pos.x, dz = cz - m.pos.z;
+    const d2 = dx * dx + dz * dz;
+    if (d2 < bestD2) { bestD2 = d2; best = { x: cx, z: cz }; }
+  }
+  return best;
+}
 function randomAroundPenPoint(m) {
   if (!villagePen) return wanderGoalFor(m);
   const p = villagePen;
@@ -11538,6 +11563,26 @@ function mobHasGroundFor(m,x,z,hw,y){ return m.canStep ? wolfHasMobGround(x,z,hw
 function mobBlockedAtFor(m,x,z,hw,y){ return m.canStep ? wolfBlockedAt(x,z,hw,y) : mobBlockedAt(x,z,hw,y); }
 function mobProbeFreeFor(m,x,z,dx,dz,d,hw,y){ return m.canStep ? wolfProbeFree(x,z,dx,dz,d,hw,y) : mobProbeFree(x,z,dx,dz,d,hw,y); }
 function isPenMob(m){ return m.kind === "pig" || m.kind === "cow" || m.kind === "chicken"; }
+function chickenFenceHop(m) {
+  if (!m || m.kind !== "chicken") return false;
+  if (chickenInsidePen(m)) return false;
+  if (m._penReturn) return true;
+  const now = (typeof mobNowS === "number" && mobNowS > 0) ? mobNowS : performance.now() / 1000;
+  return m.fleeUntil != null && now < m.fleeUntil;
+}
+function chickenInsidePen(m) {
+  if (!m || m.kind !== "chicken" || dim !== "over") return false;
+  if (!villagePen) return false;
+  if (!isInsidePen(m.pos.x, m.pos.z)) return false;
+  return m.pos.y <= villagePen.vy + 1.75;
+}
+function chickenCalm(m) {
+  if (!m || m.kind !== "chicken") return false;
+  if (!chickenInsidePen(m)) return false;
+  if (m._penReturn) return false;
+  const now = (typeof mobNowS === "number" && mobNowS > 0) ? mobNowS : performance.now() / 1000;
+  return !(m.fleeUntil != null && now < m.fleeUntil);
+}
 function penDestroyed() {
   if (dim !== "over" || !villagePen) return false;
   const gy = groundYDown(villagePen.cx + 0.5, villagePen.cz + 0.5, villageCenter.y + 1, 0.32);
@@ -11571,10 +11616,16 @@ function updateHomeReturn(m, now) {
   if (!homeIntactFor(m)) { delete m._returnHome; return; }
   let gx, gz;
   if (isPig) {
-    const gap = nearestPenGap(m.pos.x, m.pos.z);
-    if (!gap) { m._homeRetryT = now + 12 + Math.random() * 8; return; }
-    const inside = penGapInside(gap);
-    gx = inside.x; gz = inside.z;
+    if (m.kind === "chicken") {
+      const hop = chickenPenReturnTarget(m);
+      if (!hop) { m._homeRetryT = now + 12 + Math.random() * 8; return; }
+      gx = hop.x; gz = hop.z;
+    } else {
+      const gap = nearestPenGap(m.pos.x, m.pos.z);
+      if (!gap) { m._homeRetryT = now + 12 + Math.random() * 8; return; }
+      const inside = penGapInside(gap);
+      gx = inside.x; gz = inside.z;
+    }
   } else {
     const h = villageHouses[m.homeId];
     if (!h) { delete m._returnHome; return; }
@@ -12040,7 +12091,7 @@ function spawnVillagers() {
       mesh.rotation.y = yaw;
       scene.add(mesh);
       const m = {
-        id: gid++, kind, canStep: false, homeId: -1, isBaby: false, parentId: -1, dim: "over",
+        id: gid++, kind, canStep: kind === "chicken", homeId: -1, isBaby: false, parentId: -1, dim: "over",
         pos: new THREE.Vector3(sx, villageCenter.y + 1, sz),
         vel: new THREE.Vector3(0, 0, 0),
         hw, h: hh, mesh, onGround: false,
@@ -12664,13 +12715,24 @@ function restoreOverworldMobs(list, opts) {
       base.speed = WALK / 2;
       base.sc = isBaby ? 0.52 : 1;
       base.palIdx = palIdx;
-    } else if (kind === "pig" || kind === "cow" || kind === "chicken") {
+    } else if (kind === "pig" || kind === "cow") {
       base.canStep = false;
       base.speed = WALK / 2.2;
       base.villageBound = false;
       base.penBound = true;
       base.penId = 0;
       base.sc = 1;
+    } else if (kind === "chicken") {
+      base.canStep = true;
+      base.speed = WALK / 2.2;
+      base.villageBound = false;
+      base.penBound = true;
+      base.penId = 0;
+      base.sc = 1;
+      base.wolfStepUp = false;
+      base.wolfStepUpClearY = 0;
+      base.wolfInWater = false;
+      base.wasOnGroundWolf = false;
     } else if (kind === "iron_golem") {
       base.canStep = false;
       base.speed = WALK / 2;
@@ -13104,7 +13166,7 @@ function separateMobs() {
       if (cnt) {
         let nx = m.pos.x + sx, nz = m.pos.z + sz;
         const hg = m.canStep ? wolfHasMobGround : hasMobGround;
-        const pigBlocked = (x,z)=> isPenMob(m) && pigOverlapsFence(x,z,m.hw);
+        const pigBlocked = (x,z)=> isPenMob(m) && !chickenFenceHop(m) && pigOverlapsFence(x,z,m.hw);
         if (!aabbCollidesWorld(nx, m.pos.y, nz, m.hw, m.h) && hg(nx, nz, m.hw, m.pos.y) && !pigBlocked(nx,nz)) {
           m.pos.x = nx; m.pos.z = nz; anyMoved = true;
           if (mobStats) mobStats.mobCol++;
@@ -13154,7 +13216,7 @@ function pushMobsFromPlayer() {
       const push = (need - d) * (fleeing ? 0.22 : 0.30);
       const nx = m.pos.x + (dx / d) * push, nz = m.pos.z + (dz / d) * push;
       const hg2 = m.canStep ? wolfHasMobGround : hasMobGround;
-      if (!aabbCollidesWorld(nx, m.pos.y, nz, m.hw, m.h) && !mobCollidesOther(m, nx, nz) && hg2(nx, nz, m.hw, m.pos.y) && !(isPenMob(m) && pigOverlapsFence(nx,nz,m.hw))) {
+      if (!aabbCollidesWorld(nx, m.pos.y, nz, m.hw, m.h) && !mobCollidesOther(m, nx, nz) && hg2(nx, nz, m.hw, m.pos.y) && !(isPenMob(m) && !chickenFenceHop(m) && pigOverlapsFence(nx,nz,m.hw))) {
         m.pos.x += (nx - m.pos.x) * (fleeing ? 0.55 : 0.50);
         m.pos.z += (nz - m.pos.z) * (fleeing ? 0.55 : 0.50);
         if (mobStats) mobStats.playerCol++;
@@ -13236,7 +13298,7 @@ function isHeadonWalker(m) {
 function headonSidestepOk(m, tx, tz) {
   if (aabbCollidesWorld(tx, m.pos.y, tz, m.hw, m.h)) return false;
   if (!mobHasGroundFor(m, tx, tz, m.hw, m.pos.y)) return false;
-  if (isPenMob(m) && pigOverlapsFence(tx, tz, m.hw)) return false;
+  if (isPenMob(m) && !chickenFenceHop(m) && pigOverlapsFence(tx, tz, m.hw)) return false;
   if (typeof isInsidePool === "function" && isInsidePool(tx, tz)) return false;
   if (typeof isInsidePenPool === "function" && isInsidePenPool(tx, tz)) return false;
   if (dim === "over" && (m.kind === "pig" || m.kind === "cow" || m.kind === "chicken") && typeof isInsidePen === "function" && isInsidePen(m.pos.x, m.pos.z) && !isInsidePen(tx, tz)) return false;
@@ -13570,7 +13632,7 @@ function updateMobs(dt) {
     addVisit(m.pos.x, m.pos.z);
     if (aabbCollidesWorld(m.pos.x, m.pos.y, m.pos.z, m.hw, m.h)) { mobInvariantsViolated++; if (mobStats) mobStats.invariants++; }
     // Step-capable mobs (wolves) — instant step, no block feeling (leave the village when panicking inside it, or flee away outside)
-    if (m.canStep && m.kind !== "cat") {
+    if (m.canStep && m.kind !== "cat" && m.kind !== "chicken") {
       if (m.fleeUntil != null && now < m.fleeUntil) {
         if (m._outsideFlee || m._villageFlee) {
           m.speed = WALK * 2;
@@ -13605,6 +13667,15 @@ function updateMobs(dt) {
         // console.log("pig outside target", m.id, m.pos.x.toFixed(2), m.pos.z.toFixed(2), m.target.x.toFixed(2), m.target.z.toFixed(2), m.vel.x.toFixed(2), m.onGround);
       }
       const insidePen = dim === "over" && isInsidePen(m.pos.x, m.pos.z);
+      const inPenNow = m.kind === "chicken" ? chickenInsidePen(m) : insidePen;
+      if (inPenNow) delete m._penReturn;
+      if (m.kind === "chicken" && insidePen && !inPenNow && (!m._penReturn || !m.target || Math.hypot(m.target.x - m.pos.x, m.target.z - m.pos.z) < 0.8 || m.wanderT <= 0)) {
+        const hop = chickenPenReturnTarget(m);
+        if (hop) {
+          m.target = hop; m._penReturn = true;
+          m.wanderT = 1.2 + Math.random() * 0.8; m.steerCooldown = 0; m.path = null; m.pathKey = null;
+        }
+      }
       if (m.fleeUntil != null && now < m.fleeUntil) {
         if (m._outsideFlee) {
           m.speed = WALK * 2;
@@ -13615,11 +13686,19 @@ function updateMobs(dt) {
           }
         } else {
           m.speed = WALK * 2;
-          if (!insidePen) {
+          if (!inPenNow) {
             if (penDestroyed()) {
               m.wanderT -= dt;
               if (!m.target || Math.hypot(m.target.x - m.pos.x, m.target.z - m.pos.z) < 0.8 || m.wanderT <= 0) {
                 m.target = fleePointAway(m, m._fleeSrcX != null ? m._fleeSrcX : m.pos.x, m._fleeSrcZ != null ? m._fleeSrcZ : m.pos.z);
+                m.wanderT = 1.2 + Math.random() * 0.8; m.steerCooldown = 0; m.path = null; m.pathKey = null;
+              }
+            } else if (m.kind === "chicken") {
+              m.wanderT -= dt;
+              if (!m.target || Math.hypot(m.target.x - m.pos.x, m.target.z - m.pos.z) < 0.8 || m.wanderT <= 0) {
+                const hop = chickenPenReturnTarget(m);
+                m.target = hop || randomAroundPenPoint(m);
+                if (hop) m._penReturn = true;
                 m.wanderT = 1.2 + Math.random() * 0.8; m.steerCooldown = 0; m.path = null; m.pathKey = null;
               }
             } else {
@@ -13628,7 +13707,8 @@ function updateMobs(dt) {
               const inside = penGapInside(gap);
               if (!m.target || Math.hypot(m.target.x - inside.x, m.target.z - inside.z) > 0.5) {
                 const d = Math.hypot(inside.x - m.pos.x, inside.z - m.pos.z);
-                const probe = mobProbeFree(m.pos.x, m.pos.z, (inside.x - m.pos.x)/(d||1), (inside.z - m.pos.z)/(d||1), Math.min(d, 8), m.hw, m.pos.y);
+                const gapProbe = m.kind === "chicken" ? wolfProbeFree : mobProbeFree;
+                const probe = gapProbe(m.pos.x, m.pos.z, (inside.x - m.pos.x)/(d||1), (inside.z - m.pos.z)/(d||1), Math.min(d, 8), m.hw, m.pos.y);
                 if (probe < d * 0.4) {
                   if (!m.target || m._aroundT === undefined || m.wanderT <= 0 || Math.hypot(m.target.x - m.pos.x, m.target.z - m.pos.z) < 0.8) {
                     m.target = randomAroundPenPoint(m); m.wanderT = 0.35 + Math.random()*0.35; m.steerCooldown = 0; m._aroundT = (m._aroundT||0)+1;
@@ -13688,6 +13768,8 @@ function updateMobs(dt) {
               } else {
                 m.target = randomAroundPenPoint(m);
               }
+            } else if (m.kind === "chicken" && !wantsPen) {
+              m.target = (m._penReturn && chickenPenReturnTarget(m)) || wanderGoalForWolf(m);
             } else {
               m.target = (m.penBound === false || dim !== "over") ? wanderNear(m) : (wantsPen ? wanderGoalForPen(m) : wanderGoalFor(m));
             }
@@ -13990,10 +14072,11 @@ function updateMobs(dt) {
 
     // Steering towards target — BFS path for 1-block corridors + smart wall avoidance
     const canStep = !!m.canStep;
-    const probeFree = canStep ? wolfProbeFree : mobProbeFree;
-    const hasGround = canStep ? wolfHasMobGround : hasMobGround;
-    const findPath = m.mode === "goPlant" ? findPlantPath : ((m.mode === "goHome" && m._returnHome) || m._penReturn ? (canStep ? wolfFindPath : findPlantPath) : (canStep ? wolfFindPath : findVillagePath));
-    const goalFor = canStep ? wanderGoalForWolf : wanderGoalFor;
+    const steppy = canStep && !chickenCalm(m) && !chickenInsidePen(m);
+    const probeFree = steppy ? wolfProbeFree : mobProbeFree;
+    const hasGround = steppy ? wolfHasMobGround : hasMobGround;
+    const findPath = m.mode === "goPlant" ? findPlantPath : ((m.mode === "goHome" && m._returnHome) || m._penReturn ? (steppy ? wolfFindPath : findPlantPath) : (steppy ? wolfFindPath : findVillagePath));
+    const goalFor = steppy ? wanderGoalForWolf : wanderGoalFor;
     let poolEx = null;
     const pHead = mobHeadonHeading(m);
     const bathable = m.kind !== "enderman" && !isFlyingKind(m.kind);
@@ -14243,8 +14326,10 @@ function updateMobs(dt) {
     }
     // lerp vel towards want (like player)
     if (m.mode === "goPlant" && m.plantPhase === "bend") { wantX = 0; wantZ = 0; }
-    m.vel.x += (wantX - m.vel.x) * Math.min(1, dt * 6);
-    m.vel.z += (wantZ - m.vel.z) * Math.min(1, dt * 6);
+    const airGlide = m.kind === "chicken" && !m.onGround;
+    const steerGain = airGlide ? dt * 2 : dt * 6;
+    m.vel.x += (wantX - m.vel.x) * Math.min(1, steerGain);
+    m.vel.z += (wantZ - m.vel.z) * Math.min(1, steerGain);
     if (dist < 0.1 && !poolEx) { m.vel.x *= 0.85; m.vel.z *= 0.85; }
     // handle inside house wall clamp: if trying to go out of house interior via wall, pick new inside point
     if (m.mode === "inside") {
@@ -14269,7 +14354,7 @@ function updateMobs(dt) {
       else if (m.pos.z > hi) { m.pos.z = hi; if (m.vel.z > 0) m.vel.z = 0; }
       if (m.pos.y > DRAGON_MAX_Y) { m.pos.y = DRAGON_MAX_Y; m.vel.y = Math.min(m.vel.y, 0); }
     }
-    if(isPenMob(m) && villagePen && pigOverlapsFence(m.pos.x, m.pos.z, m.hw)){
+    if(isPenMob(m) && !chickenFenceHop(m) && villagePen && pigOverlapsFence(m.pos.x, m.pos.z, m.hw)){
       pigFenceSlideOut(m);
     }
     // mob-mob / player already in separate/push, but also check immediate collision after move
@@ -14355,6 +14440,17 @@ function updateMobs(dt) {
     } else if (bending && m.mesh.userData.legL) {
       m.mesh.userData.legL.rotation.x = 0;
       m.mesh.userData.legR.rotation.x = 0;
+    }
+    if (m.kind === "chicken" && m.mesh.userData.wingL) {
+      if (!m.onGround) {
+        m._flapPhase = (m._flapPhase || 0) + dt * CHICKEN_FLAP_RATE;
+        const wf = CHICKEN_FLAP_BASE + Math.sin(m._flapPhase) * CHICKEN_FLAP_AMP;
+        m.mesh.userData.wingL.rotation.z = -wf;
+        m.mesh.userData.wingR.rotation.z = wf;
+      } else {
+        m.mesh.userData.wingL.rotation.z = -0.15;
+        m.mesh.userData.wingR.rotation.z = 0.15;
+      }
     }
     if (m.mesh.userData.legBL) {
       m.mesh.userData.legBL.rotation.x = Math.sin(m.legPhase) * 0.65;
@@ -14484,6 +14580,12 @@ function resumeMobPanic(m, e) {
       }
     } else if (m.kind === "pig" || m.kind === "cow" || m.kind === "chicken") {
       if (villagePen && isInsidePen(m.pos.x, m.pos.z)) { m.target = wanderGoalForPen(m); m.wanderT = 0.25 + Math.random() * 0.25; }
+      else if (m.kind === "chicken" && villagePen && !penDestroyed()) {
+        const hop = chickenPenReturnTarget(m);
+        m.target = hop || fleePointAway(m, sx, sz);
+        if (hop) m._penReturn = true;
+        m.wanderT = 1.2 + Math.random() * 0.8;
+      }
       else { m.target = fleePointAway(m, sx, sz); m.wanderT = 1.2 + Math.random() * 0.8; }
       return true;
     } else if (m.kind === "wolf") {
@@ -14635,11 +14737,18 @@ function panicPenMobs(cx, cy, cz) {
       m.speed = WALK * 2;
       delete m._outsideFlee; delete m._fleeSrcX; delete m._fleeSrcZ;
       const insidePen = isInsidePen(m.pos.x, m.pos.z);
-      if (insidePen) {
+      const inPenNow = m.kind === "chicken" ? chickenInsidePen(m) : insidePen;
+      if (inPenNow) {
         m.target = wanderGoalForPen(m);
         m.wanderT = 0.25 + Math.random()*0.25; m.steerCooldown = 0; m.path = null; m.pathKey = null;
       } else if (penDestroyed()) {
         m.target = fleePointAway(m, cx, cz);
+        m.wanderT = 1.2 + Math.random() * 0.8; m.steerCooldown = 0;
+        m.path = null; m.pathKey = null;
+      } else if (m.kind === "chicken") {
+        const hop = chickenPenReturnTarget(m);
+        m.target = hop || randomAroundPenPoint(m);
+        if (hop) m._penReturn = true;
         m.wanderT = 1.2 + Math.random() * 0.8; m.steerCooldown = 0;
         m.path = null; m.pathKey = null;
       } else {
@@ -14647,7 +14756,8 @@ function panicPenMobs(cx, cy, cz) {
         if (gap) {
           const inside = penGapInside(gap);
           const d = Math.hypot(inside.x - m.pos.x, inside.z - m.pos.z);
-          const probe = mobProbeFree(m.pos.x, m.pos.z, (inside.x - m.pos.x)/(d||1), (inside.z - m.pos.z)/(d||1), Math.min(d, 6), m.hw, m.pos.y);
+          const gapProbe = m.kind === "chicken" ? wolfProbeFree : mobProbeFree;
+          const probe = gapProbe(m.pos.x, m.pos.z, (inside.x - m.pos.x)/(d||1), (inside.z - m.pos.z)/(d||1), Math.min(d, 6), m.hw, m.pos.y);
           if (probe > d * 0.6 || d < 3) {
             m.target = inside; m.wanderT = 1.2 + Math.random()*0.6; m.steerCooldown = 0;
           } else {
@@ -17354,6 +17464,11 @@ const PLAYER_HW = 0.3;
 const PLAYER_H = 1.8;
 const EYE = 1.62;
 const GRAVITY = 37.44;
+const CHICKEN_GLIDE_FACTOR = 0.12;
+const CHICKEN_GLIDE_MAXFALL = 5.625;
+const CHICKEN_FLAP_RATE = 14;
+const CHICKEN_FLAP_BASE = 0.85;
+const CHICKEN_FLAP_AMP = 0.65;
 const WALK = 4.4, SPRINT = 7.2, FLY = 10;
 const JUMP_MIN = 8.2;
 const JUMP_HOLD_TIME = 0.7;
@@ -17513,7 +17628,7 @@ function moveMobAxisX(mob, dx) {
         mob.pos.x = cellX + 1 + mob.hw + 0.001; mob.vel.x = 0; if (mobStats) mobStats.worldCol++; return true;
       }
     }
-  if(isPenMob(mob) && pigOverlapsFence(mob.pos.x, mob.pos.z, mob.hw)){
+  if(isPenMob(mob) && !chickenFenceHop(mob) && pigOverlapsFence(mob.pos.x, mob.pos.z, mob.hw)){
     mob.pos.x = oldX; mob.vel.x = 0; if(mobStats) mobStats.worldCol++; return true;
   }
   if (mobWouldCollide(mob, mob.pos.x, mob.pos.z)) {
@@ -17585,7 +17700,7 @@ function moveMobAxisZ(mob, dz) {
         mob.pos.z = cellZ + 1 + mob.hw + 0.001; mob.vel.z = 0; if (mobStats) mobStats.worldCol++; return true;
       }
     }
-  if(isPenMob(mob) && pigOverlapsFence(mob.pos.x, mob.pos.z, mob.hw)){
+  if(isPenMob(mob) && !chickenFenceHop(mob) && pigOverlapsFence(mob.pos.x, mob.pos.z, mob.hw)){
     mob.pos.z = oldZ; mob.vel.z = 0; if(mobStats) mobStats.worldCol++; return true;
   }
   if (mobWouldCollide(mob, mob.pos.x, mob.pos.z)) {
@@ -17688,7 +17803,7 @@ function mobPhysicsStep(mob, dt, g) {
       if (mob.pos.z > maxZ) { mob.pos.z = maxZ; mob.vel.z = 0; }
     }
   }
-  if(isPenMob(mob) && villagePen && pigOverlapsFence(mob.pos.x, mob.pos.z, mob.hw)){
+  if(isPenMob(mob) && !chickenFenceHop(mob) && villagePen && pigOverlapsFence(mob.pos.x, mob.pos.z, mob.hw)){
     pigFenceSlideOut(mob);
   }
 }
@@ -17777,6 +17892,7 @@ function wolfMoveAxisX(mob, dx) {
   }
   if (mob.onGround && !mobHasGroundFor(mob, mob.pos.x, mob.pos.z, mob.hw, mob.pos.y)) {
     if (mobHasGroundFor(mob, mob.pos.x, mob.pos.z, mob.hw, mob.pos.y-1) && !aabbCollidesWorld(mob.pos.x, mob.pos.y-1, mob.pos.z, mob.hw, mob.h)) {
+      if (mob.kind === "chicken") { mob.onGround = false; return false; }
       mob.pos.y -= 1;
       return false;
     }
@@ -17830,6 +17946,7 @@ function wolfMoveAxisZ(mob, dz) {
   }
   if (mob.onGround && !mobHasGroundFor(mob, mob.pos.x, mob.pos.z, mob.hw, mob.pos.y)) {
     if (mobHasGroundFor(mob, mob.pos.x, mob.pos.z, mob.hw, mob.pos.y-1) && !aabbCollidesWorld(mob.pos.x, mob.pos.y-1, mob.pos.z, mob.hw, mob.h)) {
+      if (mob.kind === "chicken") { mob.onGround = false; return false; }
       mob.pos.y -= 1;
       return false;
     }
@@ -17870,8 +17987,10 @@ function wolfPhysicsStep(mob, dt, g) {
     }
     mob.vel.y = Math.min(Math.max(mob.vel.y, -SWIM_MAX), SWIM_MAX);
   } else {
-    if (!mob.onGround) mob.vel.y -= useGrav * dt;
-    if (mob.vel.y < -40) mob.vel.y = -40;
+    const gliding = mob.kind === "chicken" && !mob.onGround && mob.vel.y < 0;
+    mob._gliding = gliding;
+    if (!mob.onGround) mob.vel.y -= (gliding ? useGrav * CHICKEN_GLIDE_FACTOR : useGrav) * dt;
+    if (mob.vel.y < (gliding ? -CHICKEN_GLIDE_MAXFALL : -40)) mob.vel.y = gliding ? -CHICKEN_GLIDE_MAXFALL : -40;
   }
   wolfMoveAxisY(mob, mob.vel.y * dt);
   wolfMoveAxisX(mob, mob.vel.x * dt);
