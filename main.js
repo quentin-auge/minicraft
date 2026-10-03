@@ -16449,7 +16449,7 @@ function rebuildStars() {
   ensureStarMesh(st.cube);
   if (starShapeKey !== starStyleIdx) { starShape = buildStarShape(st); starShapeKey = starStyleIdx; }
   let n = 0;
-  if (dim === "over" && world === worlds.over && starShape && decorVisible) {
+  if (dim === "over" && world === worlds.over && starShape) {
     for (const p of plantedPines.values()) {
       if ((p.dim || "over") !== "over") continue;
       if (!moonZoneGeo(p.x, p.y, p.z)) continue;   // moon pines only: ground pines stay bare
@@ -16493,7 +16493,7 @@ function rebuildStars() {
 }
 function starTick(dt, active) {
   if (!starMesh) return;
-  const show = starRecs.length > 0 && dim === "over" && world === worlds.over && decorVisible;
+  const show = starRecs.length > 0 && dim === "over" && world === worlds.over;
   starMesh.visible = show;
   if (!show) return;
   if (active) starAngle += STAR_SPIN * dt;
@@ -16587,8 +16587,7 @@ let garlandDirty = true;
 const pineUpperVis = new Map();   // soilKey -> visible upper-spiral bulbs per run
 let garlandRevealUntil = 0;   // wall-clock: while now is below, rebuild every frame
 let garlandRevealLast = 0;    // last reveal rebuild (throttled to 10Hz)
-// Garland + star visibility, toggled live with B (applies to every planted pine).
-let decorVisible = true;
+// Garland + star visibility: always on for every planted pine.
 let garlandBulbCount = 0;
 const garlandMatrix = new THREE.Matrix4();
 const garlandColor = new THREE.Color();
@@ -16924,7 +16923,7 @@ function rebuildGarlands() {
   garlandDirty = false;
   const rebuildNowS = performance.now() / 1000;
   ensureGarlandMesh();
-  garlandBulbCount = 0;  if (dim !== "over" || world !== worlds.over || !plantedPines.size || !decorVisible) {
+  garlandBulbCount = 0;  if (dim !== "over" || world !== worlds.over || !plantedPines.size) {
     garlandMesh.count = 0;
     garlandMesh.visible = false;
     return;
@@ -16983,7 +16982,7 @@ function rebuildGarlands() {
 }
 function garlandTick(dt) {
   if (!garlandMesh) return;
-  garlandMesh.visible = garlandBulbCount > 0 && dim === "over" && world === worlds.over && decorVisible;
+  garlandMesh.visible = garlandBulbCount > 0 && dim === "over" && world === worlds.over;
 }
 
 // Chunked streaming renderer: the world (now 2x) is split into CHUNK-chunks
@@ -19230,7 +19229,7 @@ function waterSurfaceTop() {
 const REACH = Infinity;
 const STAR_GRAPPLE_R = 0.9;
 function pickStar(origin, dir) {
-  if (dim !== "over" || !decorVisible || !starPlatforms.length) return null;
+  if (dim !== "over" || !starPlatforms.length) return null;
   const dl = Math.hypot(dir.x, dir.y, dir.z) || 1;
   const dx = dir.x / dl, dy = dir.y / dl, dz = dir.z / dl;
   let best = null, bestDist = Infinity;
@@ -24796,7 +24795,7 @@ function serialize() {
   }
   dv.setUint8(o++, starStyleIdx);
   dv.setUint8(o++, 0);   // retired pine choice, cone only now
-  dv.setUint8(o++, decorVisible ? 1 : 0);
+  dv.setUint8(o++, 1);   // retired decor-visibility byte, always on
   const writeMob = (em) => {
     dv.setUint8(o++, em.kind & 255);
     let mfl = em.isBaby ? 1 : 0;
@@ -25213,7 +25212,6 @@ function deserialize(buf) {
   }
   garlandDirty = true;
   starStyleIdx = 0;
-  decorVisible = true;
   if (ver === 34) {
     // v34 carried per-star style entries; styles are global now, so the choice
     // is kept and the per-block entries are skipped.
@@ -25225,7 +25223,7 @@ function deserialize(buf) {
   } else if (ver >= 35) {
     starStyleIdx = dv.getUint8(o++) % STAR_STYLE_COUNT;
     if (ver >= 36) dv.getUint8(o++);   // retired pine choice, cone only now
-    if (ver >= 37) decorVisible = dv.getUint8(o++) !== 0;
+    if (ver >= 37) dv.getUint8(o++);   // retired decor-visibility byte, always on
   }
   dim = dimFlag === 2 ? "nether" : dimFlag === 1 ? "end" : "over";
   world = worlds[dim];
@@ -25509,7 +25507,6 @@ function updateCamera() {
 // HUD (dimension label, toast)
 // ---------------------------------------------------------------------------
 const dimEl = document.getElementById("dim");
-const pineEl = document.getElementById("pine");
 const toastEl = document.getElementById("toast");
 const bossBarEl = document.getElementById("bossbar");
 const bossFillEl = document.getElementById("bossfill");
@@ -25556,11 +25553,9 @@ function damageDragon(amount) {
 }
 
 function updateDimLabel() {
-  if (!started) { dimEl.style.display = "none"; pineEl.style.display = "none"; return; }
+  if (!started) { dimEl.style.display = "none"; return; }
   dimEl.textContent = dim === "end" ? "The End" : dim === "nether" ? "The Nether" : "Overworld";
   dimEl.style.display = "block";
-  if (!decorVisible) { pineEl.textContent = "Decor: off"; pineEl.style.display = "block"; }
-  else pineEl.style.display = "none";
 }
 function showMsg(text) {
   toastEl.textContent = text;
@@ -26091,7 +26086,6 @@ async function buildWorld() {
     plantedPines.clear();
     brokenPineCells.clear();
     garlandDirty = true;
-    decorVisible = true;
     starStyleIdx = 0;
     wetSoilSet.clear();
     clearAllSoakMeshes();
@@ -26498,13 +26492,6 @@ document.addEventListener("keydown", (e) => {
   if (e.code === "KeyL" && !loading) select(selected + 1);
   if (e.code === "KeyF") { freeCam = !freeCam; if (freeCam) camPos.copy(camera.position); else exitFreeCam(); }
   if (e.code === "KeyV" && !loading) { spawnBirdChain(); }
-  if (e.code === "KeyB" && !loading && !e.repeat) {
-    decorVisible = !decorVisible;
-    garlandDirty = true;
-    updateDimLabel();
-    queueSave();
-    showMsg("Decorations: " + (decorVisible ? "on" : "off"));
-  }
   if (e.code === "Escape") {
     if (started) {
       saveToFile();
@@ -27038,7 +27025,7 @@ if (location.search.includes('test')) {
     get GROWABLE_DIST(){ return GROWABLE_DIST; }, get PLANT_NECK(){ return PLANT_NECK; }, get PINE_RATE(){ return PINE_RATE; }, get PINE_PHASE_TIME(){ return PINE_PHASE_TIME; }, get SOIL_TIMER(){ return SOIL_TIMER; }, get SOIL_SOAK_TIME(){ return SOIL_SOAK_TIME; }, get PLANT_BEND_TIME(){ return PLANT_BEND_TIME; }, get PLANT_LEAVE_DIST(){ return PLANT_LEAVE_DIST; },     get PINE_MIN_M(){ return PINE_MIN_M; }, get PINE_MAX_M(){ return PINE_MAX_M; },     get PINE_LIFT_MAX(){ return PINE_LIFT_MAX; }, get PLANT_STEAL_D(){ return PLANT_STEAL_D; }, get GROWTH_PUSH_SPEED(){ return GROWTH_PUSH_SPEED; }, get growthSettlePasses(){ return growthSettlePasses; },
     get MOON_PINE_MAX_M(){ return MOON_PINE_MAX_M; }, get STAR_STYLE_COUNT(){ return STAR_STYLE_COUNT; }, get STAR_STYLE_NAMES(){ return STAR_STYLE_NAMES; }, get STAR_STYLES(){ return STAR_STYLES; },     getStarStyleIdx(){ return starStyleIdx; }, getStarAngle(){ return starAngle; }, get STAR_SPIN(){ return STAR_SPIN; }, get STAR_PLATFORM_R(){ return STAR_PLATFORM_R; }, get starPlatforms(){ return starPlatforms; }, getStarRide(){ return starRide; }, starPlatformAt, rotXZ, rebuildStars, starTick, buildStarShape, pineCellAt, chainComponentFrom, despawnChainMob, cullSmallChainsNear,
     isSoilHole, isSoilFloor, releaseGrowable, armSoak, absorbSoak, spawnSoakDrips, plantWalkGoal, soilSameY, pickPineDims, fitTrunkRange, pineCellsFor, pineFits, pineSpotBlocked, pineLayerWidths, pineSpiralOrder, pineSummit, pineTrunkE0, pineFolReserved, pineCellReserved, pineCellKey, pineOwnerDim, reservePineCells, releasePineCells, clearAllPineReservations, pushOutOfGrowth, growthSolidOverlap, growthExitTarget, growthSlide, startPineGrowth, tickPineGrowths, tickSoilTimers, startPineFailBlink, clearPineFailBlink, clearAllPineFailBlinks, tickPineFailBlinks, setVillagerNeck, findPlantPath, soilClaimant, plantLeaveTarget, soilKey, dimToByte, dimFromByte,
-    get plantedPines(){ return plantedPines; }, get brokenPineCells(){ return brokenPineCells; }, getGarlandBulbCount(){ return garlandBulbCount; }, garlandPathFor, garlandRadiusAt, garlandAnchor, garlandAnchorStrict, garlandTrimSet, pineAt, registerPlantedPine, rebuildGarlands, garlandTick, getDecorVisible(){ return decorVisible; }, setDecorVisible(v){ decorVisible = !!v; garlandDirty = true; updateDimLabel(); }, pineCellsFor, pineLayerWidths, pineSummit, countUpperVisible,
+    get plantedPines(){ return plantedPines; }, get brokenPineCells(){ return brokenPineCells; }, getGarlandBulbCount(){ return garlandBulbCount; }, garlandPathFor, garlandRadiusAt, garlandAnchor, garlandAnchorStrict, garlandTrimSet, pineAt, registerPlantedPine, rebuildGarlands, garlandTick, getDecorVisible(){ return true; }, pineCellsFor, pineLayerWidths, pineSummit, countUpperVisible,
   });
   Object.assign(window._test, {
     get PIGEON_COUNT(){ return BIRD_COUNT; }, get PIGEON_MIN_Y(){ return BIRD_MIN_Y; }, get PIGEON_MAX_Y(){ return BIRD_MAX_Y; },
