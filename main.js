@@ -11107,6 +11107,123 @@ function chickenPenReturnTarget(m) {
   m._penRetT = now; m._penRetX = m.pos.x; m._penRetZ = m.pos.z; m._penRetHw = m.hw; m._penRetV = best;
   return best ? { x: best.x, z: best.z } : null;
 }
+function chickenAirProbe(x, z, dx, dz, maxDist, hw, y, h) {
+  const len = Math.hypot(dx, dz);
+  if (len < 1e-6) return 0;
+  dx /= len; dz /= len;
+  const steps = Math.max(1, Math.ceil(maxDist / 0.28));
+  for (let s = 1; s <= steps; s++) {
+    const t = s / steps * maxDist;
+    if (aabbCollidesWorld(x + dx * t, y, z + dz * t, hw, h)) return (s - 1) / steps * maxDist;
+  }
+  return maxDist;
+}
+function chickenHeightAbove(m) {
+  if (typeof colTops !== "undefined" && colTops.over) {
+    const bx = Math.floor(m.pos.x), bz = Math.floor(m.pos.z);
+    if (Math.abs(bx) <= WORLD_RADIUS && Math.abs(bz) <= WORLD_RADIUS) {
+      const top = colTops.over[colTopIdx(bx, bz)];
+      if (top != null && top >= 0) return m.pos.y - (top + 1);
+    }
+  }
+  return m.pos.y - (villageCenter.y + 1);
+}
+function chickenGlideSink(m) {
+  const above = Math.max(0, chickenHeightAbove(m));
+  return Math.min(CHICKEN_GLIDE_SINK_MAX, Math.max(CHICKEN_GLIDE_SINK_MIN, above * CHICKEN_GLIDE_SINK_K));
+}
+function chickenGlideRange(drop) {
+  if (drop <= CHICKEN_FLARE_H) return Math.max(0, drop) * CHICKEN_GLIDE_V / CHICKEN_GLIDE_SINK_MIN;
+  return CHICKEN_GLIDE_V * Math.log(drop / CHICKEN_FLARE_H) / CHICKEN_GLIDE_SINK_K +
+    CHICKEN_FLARE_H * CHICKEN_GLIDE_V / CHICKEN_GLIDE_SINK_MIN;
+}
+function chickenPickGlideSpot(m) {
+  const drop = m.pos.y - (villageCenter.y + 1);
+  if (drop < CHICKEN_GLIDE_MIN_DROP) return null;
+  const want = chickenGlideRange(drop);
+  let best = null, bestScore = Infinity;
+  for (let t = 0; t < 12; t++) {
+    const x = villageMinX + 2 + Math.random() * (villageMaxX - villageMinX - 4);
+    const z = villageMinZ + 2 + Math.random() * (villageMaxZ - villageMinZ - 4);
+    if (isInsideAnyHouse(x, z)) continue;
+    if (isInsidePool(x, z)) continue;
+    if (isInsidePenPool(x, z)) continue;
+    const bx = Math.floor(x), bz = Math.floor(z);
+    if (Math.abs(bx) > WORLD_RADIUS - 2 || Math.abs(bz) > WORLD_RADIUS - 2) continue;
+    const top = colTops.over[colTopIdx(bx, bz)];
+    if (top == null || top < 0 || top > MAX_Y - 2) continue;
+    const fy = top + 1;
+    if (aabbCollidesWorld(bx + 0.5, fy, bz + 0.5, m.hw, m.h)) continue;
+    if (aabbCollidesWorld(bx + 0.5, fy + 1, bz + 0.5, m.hw, m.h)) continue;
+    const dx = bx + 0.5 - m.pos.x, dz = bz + 0.5 - m.pos.z;
+    const distXZ = Math.hypot(dx, dz);
+    if (distXZ < 3) continue;
+    if (distXZ > chickenGlideRange(drop) * 0.9) continue;
+    const score = Math.abs(distXZ - want);
+    if (score < bestScore) { bestScore = score; best = { x: bx + 0.5, z: bz + 0.5 }; }
+  }
+  return best;
+}
+function chickenCommitGlide(m) {
+  delete m._glide;
+  if (!m || m.kind !== "chicken" || dim !== "over") return false;
+  if (!villageHouses.length) return false;
+  if (m.onGround) return false;
+  const drop = m.pos.y - (villageCenter.y + 1);
+  if (drop < CHICKEN_GLIDE_MIN_DROP) return false;
+  const spot = chickenPickGlideSpot(m);
+  const gx = spot ? spot.x : villageCenter.x + 0.5, gz = spot ? spot.z : villageCenter.z + 0.5;
+  const toGX = gx - m.pos.x, toGZ = gz - m.pos.z;
+  const toAng = Math.atan2(toGX, toGZ);
+  let head = toAng;
+  let minFree = Infinity;
+  const frees = [];
+  for (let k = 0; k < 12; k++) {
+    const a = k * Math.PI / 6;
+    const free = chickenAirProbe(m.pos.x, m.pos.z, Math.sin(a), Math.cos(a), CHICKEN_WALL_SCAN, m.hw, m.pos.y, m.h);
+    frees.push(free);
+    if (free < minFree) minFree = free;
+  }
+  if (minFree < CHICKEN_WALL_NEAR) {
+    let bx = 0, bz = 0, bestScore = -Infinity;
+    for (let k = 0; k < 12; k++) {
+      const a = k * Math.PI / 6;
+      const dx = Math.sin(a), dz = Math.cos(a);
+      const dot = dx * Math.sin(toAng) + dz * Math.cos(toAng);
+      const score = frees[k] + dot * 12;
+      if (score > bestScore) { bestScore = score; bx = dx; bz = dz; }
+    }
+    head = Math.atan2(bx, bz);
+  } else {
+    const sp = Math.hypot(m.vel.x, m.vel.z);
+    if (sp > 0.5) head = Math.atan2(m.vel.x, m.vel.z);
+  }
+  const lFree = chickenAirProbe(m.pos.x, m.pos.z, Math.sin(toAng + Math.PI / 2), Math.cos(toAng + Math.PI / 2), 6, m.hw, m.pos.y, m.h);
+  const rFree = chickenAirProbe(m.pos.x, m.pos.z, Math.sin(toAng - Math.PI / 2), Math.cos(toAng - Math.PI / 2), 6, m.hw, m.pos.y, m.h);
+  let ftx = gx, ftz = gz, fhead = head;
+  if (!spot) {
+    let ex = 0, ez = 0, eScore = -Infinity, eFree = 0;
+    for (let k = 0; k < 12; k++) {
+      const a = k * Math.PI / 6;
+      const dx = Math.sin(a), dz = Math.cos(a);
+      const score = frees[k] + (dx * Math.sin(toAng) + dz * Math.cos(toAng)) * 12;
+      if (score > eScore) { eScore = score; ex = dx; ez = dz; eFree = frees[k]; }
+    }
+    if (eScore > 2) {
+      const reach = eFree >= CHICKEN_WALL_SCAN ? chickenGlideRange(drop) : Math.min(chickenGlideRange(drop), eFree);
+      ftx = Math.max(-WORLD_RADIUS + 2, Math.min(WORLD_RADIUS - 2, m.pos.x + ex * reach));
+      ftz = Math.max(-WORLD_RADIUS + 2, Math.min(WORLD_RADIUS - 2, m.pos.z + ez * reach));
+      fhead = Math.atan2(ex, ez);
+    }
+  }
+  m._glide = { tx: ftx, tz: ftz, mode: spot ? "direct" : "toward", head: fhead,
+    spun: 0, spinNeed: 0, side: lFree >= rFree ? 1 : -1,
+    phase: Math.random() * Math.PI * 2, probeT: 0, flipT: 0 };
+  return true;
+}
+function chickenGlideActive(m) {
+  return !!m._glide && m.kind === "chicken" && dim === "over" && !m.onGround && m.vel.y < 0;
+}
 function randomAroundPenPoint(m) {
   if (!villagePen) return wanderGoalFor(m);
   const p = villagePen;
@@ -11752,6 +11869,7 @@ function pigOverlapsFence(x,z,hw){
 }
 function pigFenceSlideOut(mob) {  const pen = villagePen;
   if (!pen) return false;
+  if (!aabbCollidesWorld(mob.pos.x, mob.pos.y, mob.pos.z, mob.hw, mob.h)) return true;
   const dx = (pen.cx + 0.5) - mob.pos.x, dz = (pen.cz + 0.5) - mob.pos.z;
   const d = Math.hypot(dx, dz) || 1;
   const ux = dx / d, uz = dz / d;
@@ -14380,7 +14498,8 @@ function updateMobs(dt) {
       }
     }
     const wantDeflected = (m._headonSteerT || 0) > 0;
-    if (!strictFollow) {
+    let gliding = false;
+    if (!strictFollow && !gliding) {
       let repX = 0, repZ = 0, cnt = 0;
       const nearby = nearbyMobsFor(m.pos.x, m.pos.z, 2);
       for (const o of nearby) {
@@ -14417,7 +14536,7 @@ function updateMobs(dt) {
         }
       }
     }
-    if (!wantDeflected && isChainCarrier(m) && !isFlyingKind(m.kind) && (wantX || wantZ)) {
+    if (!wantDeflected && !gliding && isChainCarrier(m) && !isFlyingKind(m.kind) && (wantX || wantZ)) {
       const wl = Math.hypot(wantX, wantZ);
       const f = wl > 1e-6 ? chainLiveFollower(m) : null;
       if (f) {
@@ -14449,10 +14568,75 @@ function updateMobs(dt) {
     // lerp vel towards want (like player)
     if (m.mode === "goPlant" && m.plantPhase === "bend") { wantX = 0; wantZ = 0; }
     const airGlide = m.kind === "chicken" && !m.onGround;
-    if (airGlide && m.vel.y < 0 && !poolEx && !strictFollow && dim === "over" && villagePen && !isInsidePen(m.pos.x, m.pos.z)) {
-      const pdx = villagePen.cx + 0.5 - m.pos.x, pdz = villagePen.cz + 0.5 - m.pos.z;
-      const pdd = Math.hypot(pdx, pdz);
-      if (pdd > 1.0) { wantX = pdx / pdd * m.speed; wantZ = pdz / pdd * m.speed; }
+    if (airGlide && m.vel.y < 0 && !poolEx && !strictFollow && dim === "over" && !mobInWater(m)) {
+      if (!m._glide) chickenCommitGlide(m);
+      if (m._glide) {
+        gliding = true;
+        const gd = m._glide;
+        const gdx = gd.tx - m.pos.x, gdz = gd.tz - m.pos.z;
+        const gdist = Math.hypot(gdx, gdz);
+        const gdrop = m.pos.y - (villageCenter.y + 1);
+        const grange = chickenGlideRange(gdrop);
+        if (gd.mode !== "spiral" && gdrop > 10 && gdist > 1 &&
+            m.pos.x >= villageMinX && m.pos.x <= villageMaxX && m.pos.z >= villageMinZ && m.pos.z <= villageMaxZ &&
+            grange > gdist * 1.3) {
+          gd.mode = "spiral";
+          gd.spun = 0;
+          const sinkEst = Math.min(CHICKEN_GLIDE_SINK_MAX, Math.max(CHICKEN_GLIDE_SINK_MIN, gdrop * CHICKEN_GLIDE_SINK_K));
+          const sinkPerTurn = 2 * Math.PI * sinkEst / CHICKEN_GLIDE_TURN;
+          gd.spinNeed = Math.min(CHICKEN_SPIRAL_MAX_TURNS, Math.max(1, Math.ceil((grange - gdist) / Math.max(1, sinkPerTurn)))) * Math.PI * 2;
+        }
+        if (gd.mode === "spiral") {
+          if (gd.spun >= gd.spinNeed || chickenGlideRange(gdrop) <= Math.max(gdist, 4) * 1.2) gd.mode = "direct";
+          else {
+            gd.flipT -= dt;
+            if (gd.flipT <= 0 && (m.pos.x < villageMinX + 4 || m.pos.x > villageMaxX - 4 || m.pos.z < villageMinZ + 4 || m.pos.z > villageMaxZ - 4)) {
+              gd.side *= -1; gd.flipT = 3;
+            }
+            const rate = CHICKEN_GLIDE_TURN * (0.7 + 0.3 * Math.sin(gd.spun * 0.7 + gd.phase));
+            gd.head += gd.side * rate * dt; gd.spun += rate * dt;
+          }
+        }
+        if (gd.mode !== "spiral" && gdist > 0.5) {
+          const wantAng = Math.atan2(gdx, gdz);
+          let rel = wantAng - gd.head;
+          while (rel > Math.PI) rel -= Math.PI * 2;
+          while (rel < -Math.PI) rel += Math.PI * 2;
+          const maxTurn = CHICKEN_GLIDE_TURN * dt;
+          gd.head += Math.max(-maxTurn, Math.min(maxTurn, rel));
+        }
+        gd.probeT -= dt;
+        if (gd.probeT <= 0) {
+          gd.probeT = 0.1;
+          const glook = Math.max(1.4, CHICKEN_GLIDE_V * 0.4);
+          const ghx = Math.sin(gd.head), ghz = Math.cos(gd.head);
+          const gprobe = chickenAirProbe(m.pos.x, m.pos.z, ghx, ghz, glook, m.hw, m.pos.y, m.h);
+          if (gprobe < glook * 0.9) {
+            let bs = -Infinity, bfx = 0, bfz = 0, bf = gprobe;
+            const gangles = gprobe < 0.5 ? [0,30,-30,60,-60,90,-90,120,-120,150,-150,180] : [0,35,-35,70,-70,110,-110];
+            for (const ga of gangles) {
+              const grad = ga * Math.PI / 180;
+              const gcx = Math.cos(grad) * ghx - Math.sin(grad) * ghz;
+              const gcz = Math.sin(grad) * ghx + Math.cos(grad) * ghz;
+              const gfree = chickenAirProbe(m.pos.x, m.pos.z, gcx, gcz, glook, m.hw, m.pos.y, m.h);
+              if (gfree < 0.5) continue;
+              const gscore = gfree + (gcx * ghx + gcz * ghz) * 1.0;
+              if (gscore > bs) { bs = gscore; bf = gfree; bfx = gcx; bfz = gcz; }
+            }
+            if (bs > -Infinity && bf > gprobe) gd.head = Math.atan2(bfx, bfz);
+          }
+        }
+        const panicking = m.fleeUntil != null && now < m.fleeUntil;
+        const gspd = CHICKEN_GLIDE_V * (panicking ? CHICKEN_GLIDE_PANIC_BOOST : 1);
+        wantX = Math.sin(gd.head) * gspd;
+        wantZ = Math.cos(gd.head) * gspd;
+      } else if (villagePen && !isInsidePen(m.pos.x, m.pos.z)) {
+        const pdx = villagePen.cx + 0.5 - m.pos.x, pdz = villagePen.cz + 0.5 - m.pos.z;
+        const pdd = Math.hypot(pdx, pdz);
+        if (pdd > 1.0) { wantX = pdx / pdd * m.speed; wantZ = pdz / pdd * m.speed; }
+      }
+    } else if (m._glide && (m.onGround || poolEx || strictFollow || dim !== "over" || mobInWater(m))) {
+      delete m._glide;
     }
     const steerGain = airGlide ? dt * 2 : dt * 6;
     m.vel.x += (wantX - m.vel.x) * Math.min(1, steerGain);
@@ -14473,6 +14657,7 @@ function updateMobs(dt) {
     // physics step — canStep (wolves) use player-like smooth step + swim, others classic
     if (canStep) wolfPhysicsStep(m, dt, g);
     else mobPhysicsStep(m, dt, g);
+    if (m._glide && (m.onGround || mobInWater(m))) delete m._glide;
     if (dim === "end") {
       const lo = -END_PLATFORM_R + 0.5, hi = END_PLATFORM_R + 0.5;
       if (m.pos.x < lo) { m.pos.x = lo; if (m.vel.x < 0) m.vel.x = 0; }
@@ -14481,7 +14666,7 @@ function updateMobs(dt) {
       else if (m.pos.z > hi) { m.pos.z = hi; if (m.vel.z > 0) m.vel.z = 0; }
       if (m.pos.y > DRAGON_MAX_Y) { m.pos.y = DRAGON_MAX_Y; m.vel.y = Math.min(m.vel.y, 0); }
     }
-    if(isPenMob(m) && !chickenFenceHop(m) && villagePen && pigOverlapsFence(m.pos.x, m.pos.z, m.hw)){
+    if(isPenMob(m) && !chickenFenceHop(m) && !m._glide && villagePen && pigOverlapsFence(m.pos.x, m.pos.z, m.hw)){
       pigFenceSlideOut(m);
     }
     // mob-mob / player already in separate/push, but also check immediate collision after move
@@ -14490,7 +14675,8 @@ function updateMobs(dt) {
     const wantMove = Math.hypot(wantX, wantZ) * dt;
     if (wantMove > 0.05 && moved < wantMove * 0.20) m._stuckT += dt; else m._stuckT = Math.max(0, m._stuckT - dt * 2);
     if (m._stuckT > 0.55) {
-      if (isStrictFollower(m)) { m._stuckT = 0; }
+      if (gliding) { m._stuckT = 0; }
+      else if (isStrictFollower(m)) { m._stuckT = 0; }
       else if (m.mode === "inside") {
         m.target = randomInsidePoint(m.homeId);
       } else if ((m.kind === "pig" || m.kind === "cow" || m.kind === "chicken") && isInsidePen(m.pos.x, m.pos.z)) {
@@ -14539,7 +14725,7 @@ function updateMobs(dt) {
       m.wanderT = 2 + Math.random() * 2;
       m._stuckT = 0;
       if (mobStats) mobStats.stuck++;
-    } else if (wantMove > 0.05 && moved < 0.02 && probeFree(m.pos.x, m.pos.z, wantX/(m.speed||1), wantZ/(m.speed||1), 0.5, m.hw, m.pos.y) < 0.15) {
+    } else if (!gliding && wantMove > 0.05 && moved < 0.02 && probeFree(m.pos.x, m.pos.z, wantX/(m.speed||1), wantZ/(m.speed||1), 0.5, m.hw, m.pos.y) < 0.15) {
       const td = obstacleTurnDir(m, probeFree, 1.4);
       const bestF = probeFree(m.pos.x, m.pos.z, td.x, td.z, 1.4, m.hw, m.pos.y);
       if (bestF > 0.35) {
@@ -17597,8 +17783,17 @@ const PLAYER_HW = 0.3;
 const PLAYER_H = 1.8;
 const EYE = 1.62;
 const GRAVITY = 37.44;
-const CHICKEN_GLIDE_FACTOR = 0.5;
-const CHICKEN_GLIDE_MAXFALL = 20;
+const CHICKEN_GLIDE_V = 8.8;
+const CHICKEN_GLIDE_SINK_K = 0.36;
+const CHICKEN_GLIDE_SINK_MIN = 2.4;
+const CHICKEN_GLIDE_SINK_MAX = 60;
+const CHICKEN_GLIDE_TURN = 1.3;
+const CHICKEN_GLIDE_PANIC_BOOST = 1.2;
+const CHICKEN_GLIDE_MIN_DROP = 4;
+const CHICKEN_FLARE_H = 8;
+const CHICKEN_SPIRAL_MAX_TURNS = 6;
+const CHICKEN_WALL_SCAN = 30;
+const CHICKEN_WALL_NEAR = 1.5;
 const CHICKEN_FLAP_RATE = 14;
 const CHICKEN_FLAP_BASE = 0.85;
 const CHICKEN_FLAP_AMP = 0.65;
@@ -18120,10 +18315,11 @@ function wolfPhysicsStep(mob, dt, g) {
     }
     mob.vel.y = Math.min(Math.max(mob.vel.y, -SWIM_MAX), SWIM_MAX);
   } else {
-    const gliding = mob.kind === "chicken" && !mob.onGround && mob.vel.y < 0;
+    const gliding = mob.kind === "chicken" && !mob.onGround && !!mob._glide;
     mob._gliding = gliding;
-    if (!mob.onGround) mob.vel.y -= (gliding ? useGrav * CHICKEN_GLIDE_FACTOR : useGrav) * dt;
-    if (mob.vel.y < (gliding ? -CHICKEN_GLIDE_MAXFALL : -40)) mob.vel.y = gliding ? -CHICKEN_GLIDE_MAXFALL : -40;
+    if (gliding) mob.vel.y = -chickenGlideSink(mob);
+    else if (!mob.onGround) mob.vel.y -= useGrav * dt;
+    if (mob.vel.y < -40) mob.vel.y = -40;
   }
   wolfMoveAxisY(mob, mob.vel.y * dt);
   wolfMoveAxisX(mob, mob.vel.x * dt);
@@ -27210,6 +27406,12 @@ if (location.search.includes('test')) {
     drainMegaCarveJobs, clearMegaCarveJobs, megaFxLod, carveMegaUnionColumn,
     get megaCarveJobs(){ return megaCarveJobs; },
     get MEGA_CARVE_BUDGET_MS(){ return MEGA_CARVE_BUDGET_MS; },
+    chickenAirProbe, chickenHeightAbove, chickenGlideSink, chickenGlideRange, chickenPickGlideSpot, chickenCommitGlide, chickenGlideActive,
+    get CHICKEN_GLIDE_V(){ return CHICKEN_GLIDE_V; }, get CHICKEN_GLIDE_SINK_K(){ return CHICKEN_GLIDE_SINK_K; },
+    get CHICKEN_GLIDE_SINK_MIN(){ return CHICKEN_GLIDE_SINK_MIN; }, get CHICKEN_GLIDE_SINK_MAX(){ return CHICKEN_GLIDE_SINK_MAX; },
+    get CHICKEN_GLIDE_TURN(){ return CHICKEN_GLIDE_TURN; },
+    get CHICKEN_GLIDE_PANIC_BOOST(){ return CHICKEN_GLIDE_PANIC_BOOST; }, get CHICKEN_GLIDE_MIN_DROP(){ return CHICKEN_GLIDE_MIN_DROP; },
+    get CHICKEN_FLARE_H(){ return CHICKEN_FLARE_H; }, get CHICKEN_SPIRAL_MAX_TURNS(){ return CHICKEN_SPIRAL_MAX_TURNS; },
   });
 }
 
