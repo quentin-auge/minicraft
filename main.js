@@ -3065,7 +3065,7 @@ function birdNextLeg(m) {
   m.targetMode = null;
 }
 function birdTakeoff(m) {
-  const yaw2 = m.yaw + (Math.random() - 0.5) * 1.2;
+  if (birdRootsFishChain(m)) return;  const yaw2 = m.yaw + (Math.random() - 0.5) * 1.2;
   m.vel.set(Math.cos(yaw2) * BIRD_SPEED, 1.5, Math.sin(yaw2) * BIRD_SPEED);
   m.perchSpot = null;
   m.perchGroup = null;
@@ -6476,6 +6476,7 @@ function killChainMob(m) {
   const i = mobs.indexOf(m);
   if (i < 0) return;
   if (m === carryMob || m === carryGrappleMob) return;
+  fishPromoteCancelFor(m);
   const snap = {
     hw: m.hw, h: m.h,
     ox: m.spawnX !== undefined ? m.spawnX : m.pos.x,
@@ -6532,6 +6533,7 @@ function unchainMob(m, fizzleKey) {
   if (!mobs.includes(m)) return;
   if (m === carryMob || m === carryGrappleMob) return;
   if (m.kind === "dragon") return;
+  fishPromoteCancelFor(m);
   severChainMob(m);
   resumeChainedMob(m);
   if (m.isBaby) rebindBabyBounds(m); else m.villageBound = false;
@@ -6550,6 +6552,7 @@ function severGroundedChainVictim(m, fizzleKey) {
   if (!mobs.includes(m)) return;
   if (m === carryMob || m === carryGrappleMob) return;
   if (m.kind === "dragon") return;
+  fishPromoteCancelFor(m);
   severChainMob(m);
   resumeChainedMob(m);
   if (m.isBaby) rebindBabyBounds(m); else m.villageBound = false;
@@ -6991,6 +6994,40 @@ function updateToPerchBird(m, dt) {
 }
 function updateBird(m, dt) {
   dt = Math.min(0.05, dt);
+  if (birdRootsFishChain(m)) {
+    birdResolvePenetration(m);
+    if (!m.vel) m.vel = new THREE.Vector3();
+    const inWater = mobInWater(m);
+    if (!inWater) m._wasInWater = false;
+    else if (inWater && !m._wasInWater && m.vel.y < 0) m.vel.y *= 0.3;
+    if (inWater) {
+      const surface = waterSurfaceForMob(m);
+      if (surface === -Infinity) {
+        if (!m.onGround) m.vel.y -= GRAVITY * dt;
+      } else {
+        const err = mobFloatTargetY(surface, m.h) - m.pos.y;
+        if (err > SWIM_AREA) m.vel.y += SWIM_ACCEL * dt;
+        else m.vel.y += (err * 4 - m.vel.y) * Math.min(1, dt * SWIM_BRAKE * 2);
+      }
+      m.vel.y = Math.min(Math.max(m.vel.y, -SWIM_MAX), SWIM_MAX);
+    } else if (!m.onGround) {
+      m.vel.y -= GRAVITY * dt;
+    } else {
+      m.vel.set(0, 0, 0);
+    }
+    m._wasInWater = inWater;
+    const damp = Math.max(0, 1 - dt * 3);
+    const slid = birdMoveSlide(m, m.vel.x * damp, m.vel.y, m.vel.z * damp, dt);
+    m.vel.set(slid.vx, slid.vy, slid.vz);
+    m.onGround = aabbCollidesWorld(m.pos.x, m.pos.y - 0.05, m.pos.z, m.hw, m.h);
+    m.mesh.position.copy(m.pos);
+    m.mesh.rotation.y = m.yaw;
+    m.mesh.rotation.x = 0;
+    m.mesh.rotation.z = 0;
+    if (m.mesh.userData.wingL) m.mesh.userData.wingL.rotation.z = 0.12;
+    if (m.mesh.userData.wingR) m.mesh.userData.wingR.rotation.z = -0.12;
+    return;
+  }
   const nowP = performance.now() / 1000;
   birdTouchVisit(m, nowP);
   const inHouse = dim === "over" && houseInteriorFor(m.pos.x, m.pos.y, m.pos.z);
@@ -7748,6 +7785,139 @@ function chainAttachModeFor(carriedKind, target) {
   }
   return "behind";
 }
+const FISH_PROMOTE_TIME = 0.5;
+let fishPromote = null;
+let fishPromoteQueue = [];
+function chainHasFish(root) {
+  if (!root) return false;
+  const comp = chainComponentFrom(root);
+  for (const m of comp) if (m.kind === "fish") return true;
+  return false;
+}
+function birdRootsFishChain(m) {
+  return !!m && isBirdKind(m.kind) && chainChild.has(m.id) && !chainParent.has(m.id) && chainHasFish(m);
+}
+function chainFishAttachOk(carried, target) {
+  if (!carried || !target) return false;
+  if (carried.kind !== "fish" && target.kind !== "fish") return false;
+  if (dim !== "over") return false;
+  if ((carried.dim || "over") !== "over" || (target.dim || "over") !== "over") return false;
+  if (carried.kind === "dragon" || target.kind === "dragon") return false;
+  if (carried.kind === "enderman" || target.kind === "enderman") return false;
+  if (carried.kind === "iron_golem" || target.kind === "iron_golem") return false;
+  if (playerInChain() && (target === grappleMob || (grappleMob && chainRootOf(target) === chainRootOf(grappleMob)))) return false;
+  if (!fishInWater(target)) return false;
+  const root = chainRootOf(target);
+  const comp = root ? chainComponentFrom(root) : [target];
+  for (const m of comp) {
+    if (!m || !mobs.includes(m)) continue;
+    if (m.kind === "dragon" || m.kind === "enderman") return false;
+  }
+  return true;
+}
+function electFishLeadsForRoots(roots) {
+  for (const r of roots) {
+    if (!r || !mobs.includes(r)) continue;
+    const root = chainRootOf(r);
+    if (!root || root.kind === "fish") continue;
+    const comp = chainComponentFrom(root);
+    const f = comp.find((m) => m.kind === "fish");
+    if (!f || f === root) continue;
+    if (fishPromote && fishPromote.fishId === f.id) continue;
+    if (fishPromoteQueue.some((p) => p.fishId === f.id)) continue;
+    fishPromoteQueue.push({ fishId: f.id, ids: new Set(comp.map((m) => m.id)), t: 0, dur: FISH_PROMOTE_TIME });
+  }
+}
+function electFishLead(root) {
+  electFishLeadsForRoots([root]);
+}
+function fishPromoteFinish() {
+  const pr = fishPromote;
+  fishPromote = null;
+  if (!pr) return;
+  const fish = mobById.get(pr.fishId);
+  if (!fish || !mobs.includes(fish) || !isChained(fish)) {
+    if (fishPromoteQueue.length) fishPromoteBeginNext();
+    return;
+  }
+  const root = chainRootOf(fish);
+  if (!root || root === fish || root.kind === "fish") {
+    if (fishPromoteQueue.length) fishPromoteBeginNext();
+    return;
+  }
+  const fId = chainParent.get(fish.id);
+  const bId = chainChild.get(fish.id);
+  const F = fId === PLAYER_CHAIN_ID ? playerChainAvatar : mobById.get(fId);
+  const B = bId !== undefined ? mobById.get(bId) : null;
+  if (fId !== undefined) {
+    if (fId === PLAYER_CHAIN_ID) chainChild.delete(PLAYER_CHAIN_ID);
+    else if (chainChild.get(fId) === fish.id) chainChild.delete(fId);
+    chainParent.delete(fish.id);
+  }
+  chainChild.delete(fish.id);
+  const fl = chainLinks.get(fish.id);
+  if (fl) {
+    scene.remove(fl.rope);
+    scene.remove(fl.head);
+    if (fl.rope.dispose) fl.rope.dispose();
+    chainLinks.delete(fish.id);
+  }
+  if (F && F !== playerChainAvatar && B && mobs.includes(B) && !isMobHeld(B)) spliceChainLink(F, B);
+  else if (B && mobs.includes(B) && !isMobHeld(B)) freeChainRoot(B);
+  const r2 = F && F !== playerChainAvatar && mobs.includes(F) ? chainRootOf(F) : (B && mobs.includes(B) ? chainRootOf(B) : null);
+  if (r2 && r2 !== fish && r2.kind !== "fish") {
+    if (!prependChainLead(r2, fish)) {
+      resumeChainedMob(fish);
+      if (fish.isBaby) rebindBabyBounds(fish); else fish.villageBound = false;
+      fish.penBound = false;
+    }
+  } else {
+    resumeChainedMob(fish);
+    if (fish.isBaby) rebindBabyBounds(fish); else fish.villageBound = false;
+    fish.penBound = false;
+  }
+  if (fishPromoteQueue.length) fishPromoteBeginNext();
+}
+function fishPromoteBeginNext() {
+  if (fishPromote || !fishPromoteQueue.length) return;
+  const pr = fishPromoteQueue.shift();
+  const fish = mobById.get(pr.fishId);
+  if (!fish || !mobs.includes(fish) || !isChained(fish)) return;
+  const root = chainRootOf(fish);
+  if (!root || root === fish || root.kind === "fish") return;
+  pr.t = 0;
+  fishPromote = pr;
+}
+function fishPromoteTick(dt) {
+  fishPromoteBeginNext();
+  if (!fishPromote) return;
+  const fish = mobById.get(fishPromote.fishId);
+  if (!fish || !mobs.includes(fish) || !isChained(fish)) { fishPromote = null; return; }
+  fishPromote.t += dt;
+  const k = Math.min(1, fishPromote.t / fishPromote.dur);
+  const root = chainRootOf(fish);
+  if (root && root !== fish && mobs.includes(root)) {
+    const e = k * k * (3 - 2 * k);
+    fish.pos.x += (root.pos.x - fish.pos.x) * Math.min(1, e + dt * 2);
+    fish.pos.y += (root.pos.y - fish.pos.y) * Math.min(1, e + dt * 2);
+    fish.pos.z += (root.pos.z - fish.pos.z) * Math.min(1, e + dt * 2);
+    fish.mesh.position.copy(fish.pos);
+    if (fish.vel) fish.vel.set(0, 0, 0);
+  }
+  if (k >= 1) fishPromoteFinish();
+}
+function fishPromoteCancelFor(m) {
+  if (!m) return;
+  if (fishPromote && fishPromote.ids.has(m.id)) fishPromoteFinish();
+  if (fishPromoteQueue.length) {
+    fishPromoteQueue = fishPromoteQueue.filter((p) => !p.ids.has(m.id));
+  }
+}
+function attachFishWithPromote(tail, mob) {
+  if (!insertChainBehind(tail, mob)) return false;
+  if (mobs.includes(mob) && isChained(mob)) electFishLead(chainRootOf(mob));
+  return true;
+}
 function chainMobById(id) {
   return id === PLAYER_CHAIN_ID ? playerChainAvatar : mobById.get(id);
 }
@@ -8013,7 +8183,15 @@ function linkChain(carrier, child) {
   if (!mobs.includes(child)) return false;
   if (child.kind === "dragon") return false;
   if (child.kind === "iron_golem") return false;
-  if (carrier.kind === "fish" || child.kind === "fish") return false;
+  if (carrier.kind === "fish" || child.kind === "fish") {
+    if (carrierIsPlayer) return false;
+    if ((carrier.dim || "over") !== "over" || (child.dim || "over") !== "over") return false;
+    if (dim !== "over") return false;
+    if (carrier.kind === "dragon" || child.kind === "dragon") return false;
+    if (carrier.kind === "enderman" || child.kind === "enderman") return false;
+    if (carrier.kind === "iron_golem" || child.kind === "iron_golem") return false;
+    if (!fishInWater(carrier) && !fishInWater(child)) return false;
+  }
   if (isChained(child) || (chainChild.has(child.id) && chainParent.has(child.id))) return false;
   if (child === carryMob || child === carryGrappleMob) return false;
   if (carrier === carryMob || carrier === carryGrappleMob) return false;
@@ -8313,6 +8491,16 @@ function resumeChainedMob(m) {
     } else m.vel.set(0, 0, 0);
   }
   if (m.kind === "enderman") { m.falling = true; m.fallV = 0; }
+  if (m.kind === "fish") {
+    m.mode = "swim";
+    m.target = null;
+    m.flopUntil = null;
+    m._hooked = false;
+    m._lured = false;
+    m._swimT0 = performance.now() / 1000;
+    m.wanderT = 2 + Math.random() * 3;
+    if (m.mesh) { m.mesh.rotation.z = 0; m.mesh.rotation.x = 0; }
+  }
   syncEndermanHalo(m);
   if (m._chainStep) { m.canStep = isJumpingKind(m.kind); delete m._chainStep; }
   m._chainJumpT = 0;
@@ -8362,6 +8550,7 @@ function isStrictFollower(m) {
 function chainTakeForCarry(mob) {
   if (!mob || !mobs.includes(mob)) return;
   if (mob.kind === "dragon") return;
+  fishPromoteCancelFor(mob);
   const carrierId = chainParent.get(mob.id);
   const childId = chainChild.get(mob.id);
   const front = carrierId === PLAYER_CHAIN_ID ? playerChainAvatar : mobById.get(carrierId);
@@ -8397,9 +8586,11 @@ function chainTakeForCarry(mob) {
     if (front && spliceChainLink(front, back)) {
       const se = chainLinks.get(back.id);
       if (se) se.taut = CHAIN_TAUT_TIME;
+      electFishLeadsForRoots([front, back]);
       return;
     }
     freeChainRoot(back);
+    electFishLeadsForRoots([front, back]);
   }
 }
 function groundChainFrom(back) {
@@ -8487,6 +8678,7 @@ function freeChainRoot(back) {
 function severChainMob(m) {
   if (!m || !mobs.includes(m)) return;
   if (m.kind === "dragon") return;
+  fishPromoteCancelFor(m);
   const carrierId = chainParent.get(m.id);
   const childId = chainChild.get(m.id);
   const front = carrierId === PLAYER_CHAIN_ID ? playerChainAvatar : mobById.get(carrierId);
@@ -8676,6 +8868,7 @@ function updateChains(dt) {
   pruneChains();
   if (dim !== "over" && dim !== "end" && dim !== "nether") return;
   dt = Math.min(0.05, dt);
+  fishPromoteTick(dt);
   const nowC = performance.now() / 1000;
   if (!chainOrderCache || nowC - chainOrderT > 0.1 || chainOrderCache.length !== chainLinks.size) {
     chainOrderCache = [...chainLinks];
@@ -8687,6 +8880,13 @@ function updateChains(dt) {
     const child = mobById.get(childId);
     const carrier = chainMobById(link.carrierId);
     if (!child || !carrier) continue;
+    if (fishPromote && (fishPromote.ids.has(childId) || fishPromote.ids.has(link.carrierId))) {
+      chainPushCrumb(carrier);
+      chainPushCrumb(child);
+      child.mesh.position.copy(child.pos);
+      renderChainLink(link, carrier, child);
+      continue;
+    }
     if (child.dim !== undefined && child.dim !== dim) continue;
     if (carrier === carryMob || carrier === carryGrappleMob) {
       chainTakeForCarry(carrier);
@@ -8748,7 +8948,10 @@ function updateChains(dt) {
     if (link.towPos.lengthSq() < 1e-6) link.towPos.set(wantX, wantY, wantZ);
     else link.towPos.lerp(chainLinkTmp.set(wantX, wantY, wantZ), Math.min(1, dt * 6));
     if (!legacyTow) {
-      updateChainGroundLink(link, carrier, child, followDist, dt);
+      if (towRoot && towRoot.kind === "fish") {
+        if (!updateChainFishLink(link, carrier, child, followDist, dt)) continue;
+      }
+      else updateChainGroundLink(link, carrier, child, followDist, dt);
     } else {
     if (!child.vel) child.vel = new THREE.Vector3();
     let lead = chainRootOf(child);
@@ -8973,8 +9176,9 @@ function chainDriveRejoin(link, carrier, child, followDist, dt) {
   const hi = followDist * 1.5;
   const root = chainRootOf(child);
   const airlift = (root && root !== playerChainAvatar && isFlyingKind(root.kind)) ||
-    (carrier === playerChainAvatar && grappleMob && isFlyingKind(grappleMob.kind));
-  const flies = airlift || isFlyingKind(child.kind);
+    (carrier === playerChainAvatar && grappleMob && isFlyingKind(grappleMob.kind)) ||
+    (root && root.kind === "fish");
+  const flies = airlift || isFlyingKind(child.kind) || child.kind === "fish";
   let sep = chainLinkDelta(carrier, child);
   if (sep.d <= hi) { link.rejoin = null; return false; }
   let rj = link.rejoin;
@@ -9052,11 +9256,163 @@ function chainDriveRejoin(link, carrier, child, followDist, dt) {
   if (rj.stall > CHAIN_REJOIN_STALL_T) {
     if (rj.repathed) link.rejoin = { mode: "ghost", t: 0 };
     else {
-      const path = chainFindRejoinPath(child, carrier);
+      const path = chainFindRejoinPath(child, carrier, flies);
       if (path && path.length) link.rejoin = { mode: "path", path, idx: 0, t: 0, lastD: sep.d, stall: 0, repathed: true };
       else link.rejoin = { mode: "ghost", t: 0 };
     }
   }
+  return true;
+}
+function chainAquaSpotFree(child, nx, ny, nz, needWet) {
+  if (ny < 1 || ny > MAX_Y - 1) return false;
+  if (aabbCollidesWorld(nx, ny, nz, child.hw, child.h)) return false;
+  if (needWet && !fishBodyWetFull(nx, ny, nz, child.hw, child.h)) return false;
+  if (needWet) {
+    const S = fishWaterSurface(nx, ny + child.h * 0.5, nz);
+    if (S != null && ny + child.h > S - FISH_SUBMERGE_GAP) return false;
+  }
+  return true;
+}
+function chainAquaBypass(child, fx, fy, fz, needWet) {
+  const probe = 2;
+  let c = -1;
+  for (let d = 0.5; d <= probe + 1e-6; d += 0.5) {
+    if (!chainAquaSpotFree(child, child.pos.x + fx * d, child.pos.y + fy * d, child.pos.z + fz * d, needWet)) { c = d; break; }
+  }
+  if (c < 0) return null;
+  const hl = Math.hypot(fx, fz);
+  const px = hl > 0.2 ? -fz / hl : 1, pz = hl > 0.2 ? fx / hl : 0;
+  const off = child.hw + 0.4;
+  const ax = child.pos.x + fx, ay = child.pos.y + fy, az = child.pos.z + fz;
+  const freeP = chainAquaSpotFree(child, ax + px * off, ay, az + pz * off, needWet);
+  const freeM = chainAquaSpotFree(child, ax - px * off, ay, az - pz * off, needWet);
+  if (freeP || freeM) {
+    const side = freeP && !freeM ? 1 : (!freeP && freeM ? -1 : 0);
+    return { lx: px, ly: 0, lz: pz, side, c };
+  }
+  const voff = child.h * 0.5 + 0.4;
+  if (chainAquaSpotFree(child, ax, ay + voff, az, needWet)) return { lx: 0, ly: 1, lz: 0, side: 0, c };
+  if (chainAquaSpotFree(child, ax, ay - voff, az, needWet)) return { lx: 0, ly: -1, lz: 0, side: 0, c };
+  return { lx: 0, ly: 0, lz: 0, side: 0, c };
+}
+function chainAquaSidestep(child, dirX, dirZ, needWet) {
+  const dl = Math.hypot(dirX, dirZ);
+  const ux = dl > 1e-6 ? dirX / dl : 1, uz = dl > 1e-6 ? dirZ / dl : 0;
+  const px = -uz, pz = ux;
+  const cands = [
+    [px, 0, pz], [-px, 0, -pz],
+    [0, 0.7, 0], [0, -0.7, 0],
+    [px * 0.5, 0.5, pz * 0.5], [-px * 0.5, 0.5, -pz * 0.5],
+    [px * 0.5, -0.5, pz * 0.5], [-px * 0.5, -0.5, -pz * 0.5],
+  ];
+  for (const [ox, oy, oz] of cands) {
+    const nx = child.pos.x + ox, ny = child.pos.y + oy, nz = child.pos.z + oz;
+    if (ny < 1 || ny > MAX_Y - 1) continue;
+    if (aabbCollidesWorld(nx, ny, nz, child.hw, child.h)) continue;
+    if (needWet && !fishBodyWetFull(nx, ny, nz, child.hw, child.h)) continue;
+    if (needWet) {
+      const S = fishWaterSurface(nx, ny + child.h * 0.5, nz);
+      if (S != null && ny + child.h > S - FISH_SUBMERGE_GAP) continue;
+    }
+    chainSlideToward(child, nx, ny, nz, 0.25);
+    return true;
+  }
+  return false;
+}
+function updateChainFishLink(link, carrier, child, followDist, dt) {
+  if (!child.vel) child.vel = new THREE.Vector3();
+  const hi = followDist * 1.5, leash = followDist * CHAIN_FLY_LEASH;
+  link.snapT = Math.max(0, (link.snapT || 0) - dt);
+  let hx = link.towDir.x, hz = link.towDir.z;
+  const hl = Math.hypot(hx, hz);
+  if (hl < 1e-6) { hx = 0; hz = 1; } else { hx /= hl; hz /= hl; }
+  const sx = carrier.pos.x - hx * followDist;
+  const sz = carrier.pos.z - hz * followDist;
+  const sy = chainAnchorY(carrier) - child.h * 0.5;
+  link.towPos.lerp(chainLinkTmp.set(sx, sy, sz), Math.min(1, dt * 8));
+  const tx = link.towPos.x, ty = link.towPos.y, tz = link.towPos.z;
+  const ex = tx - child.pos.x, ey = ty - child.pos.y, ez = tz - child.pos.z;
+  const ed = Math.hypot(ex, ey, ez);
+  const cap = Math.max(8, (carrier.vel ? carrier.vel.length() : 0) + 4);
+  let dvx = 0, dvy = 0, dvz = 0;
+  if (ed > 1e-4) {
+    const s = Math.min(cap, ed * 4) / ed;
+    dvx = ex * s; dvy = ey * s; dvz = ez * s;
+  }
+  const isFish = child.kind === "fish";
+  const spdDes = Math.hypot(dvx, dvy, dvz);
+  if (spdDes > 0.5 && ed > 0.4) {
+    const fx = dvx / spdDes, fy = dvy / spdDes, fz = dvz / spdDes;
+    const bp = chainAquaBypass(child, fx, fy, fz, isFish);
+    if (!bp) link.aquaSide = 0;
+    else {
+      if (bp.side !== 0) link.aquaSide = bp.side;
+      const side = link.aquaSide || 0;
+      const slow = Math.max(0.35, Math.min(1, bp.c / 2));
+      dvx *= slow; dvy *= slow; dvz *= slow;
+      const lat = Math.min(3, Math.max(0, 2 - bp.c) * 1.5);
+      dvx += bp.lx * side * lat + bp.lx * (side === 0 ? lat : 0);
+      dvy += bp.ly * lat;
+      dvz += bp.lz * side * lat + bp.lz * (side === 0 ? lat : 0);
+    }
+  } else if (link.aquaSide) link.aquaSide = 0;
+  const pvx = child.vel.x, pvy = child.vel.y, pvz = child.vel.z;
+  const k = Math.min(1, dt * 5);
+  let nvx = pvx + (dvx - pvx) * k, nvy = pvy + (dvy - pvy) * k, nvz = pvz + (dvz - pvz) * k;
+  const qx = nvx - pvx, qy = nvy - pvy, qz = nvz - pvz;
+  const ql = Math.hypot(qx, qy, qz), msl = 12 * dt;
+  if (ql > msl && msl > 0) {
+    const qs = msl / ql;
+    nvx = pvx + qx * qs; nvy = pvy + qy * qs; nvz = pvz + qz * qs;
+  }
+  child.vel.set(nvx, nvy, nvz);
+  let res;
+  if (isFish && fishBodyWetFull(child.pos.x, child.pos.y, child.pos.z, child.hw, child.h)) {
+    res = fishMoveSlide(child, child.vel.x, child.vel.y, child.vel.z, dt);
+  } else {
+    const hit = chainMoveAxis(child, child.vel.x * dt, child.vel.y * dt, child.vel.z * dt);
+    res = { vx: hit.x ? 0 : child.vel.x, vy: hit.y ? 0 : child.vel.y, vz: hit.z ? 0 : child.vel.z, blocked: (hit.x || hit.y || hit.z) ? 1 : 0 };
+  }
+  child.vel.set(res.vx, res.vy, res.vz);
+  const stalled = !!res.blocked;
+  link._aquaStallT = stalled ? (link._aquaStallT || 0) + dt : 0;
+  if (stalled && link._aquaStallT > 0.5 && ed > 0.4) chainAquaSidestep(child, ex, ez, isFish);
+  if (isFish) {
+    const S = fishWaterSurface(child.pos.x, child.pos.y + child.h * 0.5, child.pos.z);
+    if (S != null && child.pos.y + child.h > S - FISH_SUBMERGE_GAP) {
+      child.pos.y = S - child.h - FISH_SUBMERGE_GAP;
+    }
+  }
+  child.pos.x = Math.max(-WORLD_RADIUS + 2, Math.min(WORLD_RADIUS - 2, child.pos.x));
+  child.pos.z = Math.max(-WORLD_RADIUS + 2, Math.min(WORLD_RADIUS - 2, child.pos.z));
+  child.pos.y = Math.max(1, Math.min(MAX_Y - 1, child.pos.y));
+  if (isFish) {
+    fishAnimate(child, dt, child.vel.x, child.vel.y, child.vel.z, Math.hypot(child.vel.x, child.vel.y, child.vel.z), null);
+  } else if (ed > 0.3) {
+    const targetYaw = Math.atan2(ex, ez);
+    let dyaw = targetYaw - child.mesh.rotation.y;
+    while (dyaw > Math.PI) dyaw -= Math.PI * 2;
+    while (dyaw < -Math.PI) dyaw += Math.PI * 2;
+    child.mesh.rotation.y += dyaw * Math.min(1, dt * 10);
+  }
+  const hspd = Math.hypot(child.vel.x, child.vel.z);
+  if (hspd < 1.5) {
+    const cy = carrier.mesh ? carrier.mesh.rotation.y : 0;
+    if (isFinite(cy)) {
+      const base = isFinite(carrier.yaw) ? carrier.yaw : cy;
+      let dyaw = base - child.mesh.rotation.y;
+      while (dyaw > Math.PI) dyaw -= Math.PI * 2;
+      while (dyaw < -Math.PI) dyaw += Math.PI * 2;
+      child.mesh.rotation.y += dyaw * Math.min(1, dt * 5);
+    }
+  }
+  const sep = chainLinkDelta(carrier, child);
+  link.farT = (sep.d > leash) ? (link.farT || 0) + dt : 0;
+  if (link.farT > CHAIN_FLY_LEASH_T) {
+    freeChainRoot(child);
+    return false;
+  }
+  link.strained = sep.d > hi + 0.15;
   return true;
 }
 function updateChainGroundLink(link, carrier, child, followDist, dt) {
@@ -9927,13 +10283,26 @@ function finishMobPortalTx() {
 function chainAttachTarget() {
   chainAttachMode = "behind";
   if ((dim !== "over" && dim !== "end" && dim !== "nether") || !started || loading || helpOpen) return null;
-  if (carryMob && carryMob.kind === "fish") return null;
+  if (carryMob && carryMob.kind === "fish" && dim !== "over") return null;
   const dir = new THREE.Vector3();
   camera.getWorldDirection(dir);
   const mob = pickMob(dir, Infinity);
   if (!mob || mob === carryMob || mob === carryGrappleMob) return null;
   if ((mob.dim || "over") !== dim) return null;
-  if (mob.kind === "fish") return null;
+  if ((carryMob && carryMob.kind === "fish") || mob.kind === "fish") {
+    if (dim !== "over") return null;
+    if (!carryMob) return null;
+    if (carryMob.kind === "dragon" || mob.kind === "dragon") return null;
+    if (carryMob.kind === "iron_golem" || mob.kind === "iron_golem") return null;
+    if (playerInChain() && (mob === grappleMob || (grappleMob && chainRootOf(mob) === chainRootOf(grappleMob)))) return null;
+    if (mobBlockedBySolid(camera.position, dir, mob)) return null;
+    if (!chainFishAttachOk(carryMob, mob)) return null;
+    const root = chainRootOf(mob);
+    if (carryMob.kind === "fish" && root && root.kind !== "fish") {
+      chainAttachMode = (root === mob) ? "fishPrependDirect" : "fishPrepend";
+    } else chainAttachMode = "behind";
+    return mob;
+  }
   if (mobBlockedBySolid(camera.position, dir, mob)) return null;
   const ck = (carryMob && carryMob.kind) || null;
   if (playerInChain() && (mob === grappleMob || chainRootOf(mob) === chainRootOf(grappleMob))) {
@@ -10132,9 +10501,12 @@ function updateCarryGrapple(dt) {
         if (mode === "playerAhead") linked = insertChainAheadOfPlayer(mob);
         else if (mode === "playerBehind") linked = insertChainBehindPlayer(tail, mob);
         else if (tail === playerChainAvatar) linked = linkChain(tail, mob);
+        else if (mode === "fishPrependDirect") linked = prependChainLead(tail, mob);
+        else if (mode === "fishPrepend") linked = attachFishWithPromote(tail, mob);
         else if (mode === "prepend") linked = prependChainLead(tail, mob);
         else if (mode === "before") linked = insertChainBefore(tail, mob);
         else linked = insertChainBehind(tail, mob);
+        if (linked && mobs.includes(mob) && (mob.kind === "fish" || chainHasFish(chainRootOf(mob)))) electFishLead(chainRootOf(mob));
         if (!linked) {
           carryMob = mob;
           setMobTransparent(mob, 0.35);
@@ -11911,6 +12283,9 @@ function snapshotChainPairsForDim(dimName, mobList, includeDragon = false) {
   mobList.forEach((e, i) => { if (e.id != null) idxById.set(e.id, i); });
   const pairs = [];
   for (const [carrierId, childId] of chainChild) {
+    const _cb = mobById.get(childId);
+    const _ca = carrierId === PLAYER_CHAIN_ID ? null : mobById.get(carrierId);
+    if ((_cb && _cb.kind === "fish") || (_ca && _ca.kind === "fish")) continue;
     let a = idxById.get(carrierId);
     const b = idxById.get(childId);
     if (carrierId === PLAYER_CHAIN_ID) {
@@ -12500,6 +12875,14 @@ function relinkDimChainsByIds(idByListIdx, pairs) {
     const ca = idByListIdx[a] != null ? mobById.get(idByListIdx[a]) : null;
     if (!ca) continue;
     linkChain(ca, cb);
+  }
+  const _seenRoots = new Set();
+  for (const m of mobs) {
+    if (!isChained(m)) continue;
+    const r = chainRootOf(m);
+    if (!r || _seenRoots.has(r.id)) continue;
+    _seenRoots.add(r.id);
+    electFishLead(r);
   }
 }
 function restoreDimMobs(list, dimName, opts) {
@@ -20245,7 +20628,10 @@ function tickTNT(dt) {
         const downstream = victimChained && mobs.includes(v) ? chainDownstreamOf(v) : null;
         const frontId = victimChained && mobs.includes(v) ? chainParent.get(v.id) : undefined;
         const front = frontId !== undefined && frontId !== PLAYER_CHAIN_ID ? mobById.get(frontId) : null;
-        if (victimChained && mobs.includes(v) && isGroundedChainVictim(v)) {
+        if (victimChained && mobs.includes(v) && v.kind === "fish") {
+          severGroundedChainVictim(v, k);
+          explodeBird(t.px, t.py, t.pz, true);
+        } else if (victimChained && mobs.includes(v) && isGroundedChainVictim(v)) {
           severGroundedChainVictim(v, k);
           explodeBird(t.px, t.py, t.pz, true);
         } else {
@@ -20260,6 +20646,7 @@ function tickTNT(dt) {
           if (t.bird && t.bird.kind !== "dragon") explodeBird(t.px, t.py, t.pz, true);
           else enqueueExplosion(t.px, t.py, t.pz, true, true);
         }
+        if (victimChained) electFishLeadsForRoots([front, ...((downstream || []).slice(1))]);
         if (downstream) for (const d of downstream) panicSingleMob(d, t.px, t.py, t.pz);
         if (front) panicSingleMob(front, t.px, t.py, t.pz);
       } else if (t.bird) {
@@ -20272,7 +20659,10 @@ function tickTNT(dt) {
           clearTNTVisual(t);
           tntLit.delete(k);
           tntSyncClear(v);
-          if (victimChained && mobs.includes(v) && isGroundedChainVictim(v)) {
+          if (victimChained && mobs.includes(v) && v.kind === "fish") {
+            severGroundedChainVictim(v, k);
+            explodeBird(t.px, t.py, t.pz, false);
+          } else if (victimChained && mobs.includes(v) && isGroundedChainVictim(v)) {
             severGroundedChainVictim(v, k);
             explodeBird(t.px, t.py, t.pz, false);
           } else {
@@ -20283,6 +20673,7 @@ function tickTNT(dt) {
             if (v.kind === "dragon") enqueueExplosion(t.px, t.py, t.pz, false, true);
             else explodeBird(t.px, t.py, t.pz, false);
           }
+          if (victimChained) electFishLeadsForRoots([front, ...((downstream || []).slice(1))]);
           if (downstream) for (const d of downstream) panicSingleMob(d, t.px, t.py, t.pz);
           if (front) panicSingleMob(front, t.px, t.py, t.pz);
         } else {
@@ -21955,6 +22346,13 @@ function suspendLiveDim() {
     carryGrappleBlock = null;
     if (carryGrappleCubes) carryGrappleCubes.visible = false;
     if (carryGrappleHead) carryGrappleHead.visible = false;
+  }
+  for (const m of [...mobs]) {
+    if (m.kind === "fish" && isChained(m) && mobDimOf(m) === dim) {
+      fishPromoteCancelFor(m);
+      severChainMob(m);
+      resumeChainedMob(m);
+    }
   }
   if (dim === "over") {
     overworldMobCache = snapshotMobsForDim("over", false);
