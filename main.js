@@ -2053,7 +2053,7 @@ function birdTunnelPlan(m, now) {
           for (let dz = -r; dz <= r && !found; dz++) {
             if (freeCell(sx + dx, sy + dy, sz + dz)) found = [sx + dx, sy + dy, sz + dz];
           }
-    if (!found) { m._tPath = null; m._tPlanT = now + BIRD_TUNNEL_REPLAN; return null; }
+    if (!found) { m._tPath = null; m._tPlanT = now + aiReplan(BIRD_TUNNEL_REPLAN); return null; }
     start = found;
   }
   const digKeys = birdTunnelLiveDigKeys(m);
@@ -2179,7 +2179,7 @@ function birdTunnelPlan(m, now) {
       m._tGoalKind = "explore";
     }
   }
-  if (!goal) { m._tPath = null; m._tGoal = null; m._tPlanT = now + BIRD_TUNNEL_REPLAN; return null; }
+  if (!goal) { m._tPath = null; m._tGoal = null; m._tPlanT = now + aiReplan(BIRD_TUNNEL_REPLAN); return null; }
   const cells = [goal];
   let cur = goal, ck = key(goal[0], goal[1], goal[2]);
   const sk = key(start[0], start[1], start[2]);
@@ -2198,13 +2198,13 @@ function birdTunnelPlan(m, now) {
     m._tGoalCell = null;
     m._tGoalKind = null;
     m._tPath = null; m._tGoal = null;
-    m._tPlanT = now + BIRD_TUNNEL_REPLAN;
+    m._tPlanT = now + aiReplan(BIRD_TUNNEL_REPLAN);
     return null;
   }
   const path = cells.slice(0, BIRD_TUNNEL_PATH_CELLS).map(([bx, by, bz]) => new THREE.Vector3(bx + 0.5, by + (1 - birdColH(m)) / 2, bz + 0.5));
   m._tPath = path;
   m._tGoal = goalKind;
-  m._tPlanT = now + BIRD_TUNNEL_REPLAN;
+  m._tPlanT = now + aiReplan(BIRD_TUNNEL_REPLAN);
   if (goalKind === "dig") {
     for (const n of birdNotices) {
       if (n.bx === goal[0] && n.by === goal[1] && n.bz === goal[2]) { m._digGoal = n.id; m._digT0 = now; break; }
@@ -3350,6 +3350,10 @@ function nearbyMobsFor(x, z, rCells = 1) {
   }
   return out;
 }
+function mobPenaltyNear(x, z) {
+  if (typeof mobGrid !== "undefined" && mobGrid && mobGrid.size) return nearbyMobsFor(x, z, 1);
+  return mobs;
+}
 let villagerGeo = null;
 let _villagerFace = null;
 let mobStats = { worldCol: 0, mobCol: 0, playerCol: 0, stuck: 0, falls: 0, frames: 0, invariants: 0 };
@@ -3618,6 +3622,7 @@ function makeCowMesh() {
 const chickenMat = new THREE.MeshStandardMaterial({ color: 0xf5f0e6, roughness: 0.9 });
 const chickenBeakMat = new THREE.MeshStandardMaterial({ color: 0xe8963c, roughness: 0.9 });
 const chickenCombMat = new THREE.MeshStandardMaterial({ color: 0xd43a2e, roughness: 0.9 });
+const chickenEyeMat = new THREE.MeshStandardMaterial({ color: 0x111111 });
 function makeChickenMesh() {
   const g = new THREE.Group();
   const sc = 1;
@@ -3639,12 +3644,11 @@ function makeChickenMesh() {
   comb.scale.set(0.08 * sc, 0.12 * sc, 0.16 * sc);
   comb.position.set(0, 0.78 * sc, 0.28 * sc);
   g.add(comb);
-  const eyeMat = new THREE.MeshStandardMaterial({ color: 0x111111 });
-  const eyeL = new THREE.Mesh(geo, eyeMat);
+  const eyeL = new THREE.Mesh(geo, chickenEyeMat);
   eyeL.scale.set(0.05 * sc, 0.05 * sc, 0.02 * sc);
   eyeL.position.set(-0.14 * sc, 0.66 * sc, 0.43 * sc);
   g.add(eyeL);
-  const eyeR = new THREE.Mesh(geo, eyeMat);
+  const eyeR = new THREE.Mesh(geo, chickenEyeMat);
   eyeR.scale.set(0.05 * sc, 0.05 * sc, 0.02 * sc);
   eyeR.position.set(0.14 * sc, 0.66 * sc, 0.43 * sc);
   g.add(eyeR);
@@ -4495,6 +4499,24 @@ function fishWaterSurface(x, y, z) {
   while (top + 1 <= MAX_Y - 1 && getBlock(bx, top + 1, bz) === WATER) top++;
   return top + 1;
 }
+function fishSurfaceNear(x, y, z, hh) {
+  const bx = Math.floor(x), bz = Math.floor(z);
+  let cy = Math.floor(y);
+  if (getBlock(bx, cy, bz) !== WATER) {
+    let found = false;
+    for (let sy = cy; sy >= Math.max(0, cy - 4); sy--) {
+      if (getBlock(bx, sy, bz) === WATER) { cy = sy; found = true; break; }
+    }
+    if (!found) return null;
+  }
+  let top = cy;
+  for (let k = 0; k < 2; k++) {
+    if (top + 1 > MAX_Y - 1 || getBlock(bx, top + 1, bz) !== WATER) break;
+    top++;
+  }
+  if (top + 1 <= MAX_Y - 1 && getBlock(bx, top + 1, bz) === WATER) return null;
+  return top + 1;
+}
 function waterTopAt(x, z, yHint) {
   const bx = Math.floor(x), bz = Math.floor(z);
   const start = Math.max(0, Math.min(MAX_Y - 1, Math.floor(yHint)));
@@ -4905,7 +4927,7 @@ function fishProbeFree(x, y, z, m) {
   const { hw, hh } = fishProbeDims(m);
   if (aabbCollidesWorld(x, y, z, hw, hh)) return false;
   if (!fishBodyWetFull(x, y, z, hw, hh)) return false;
-  const S = fishWaterSurface(x, y + hh * 0.5, z);
+  const S = fishSurfaceNear(x, y + hh * 0.5, z, hh);
   if (S != null && y + hh > S - FISH_SUBMERGE_GAP) return false;
   return true;
 }
@@ -4919,12 +4941,22 @@ function fishSegmentFree(ax, ay, az, bx, by, bz, m) {
     const px = ax + (bx - ax) * f, py = ay + (by - ay) * f, pz = az + (bz - az) * f;
     if (aabbCollidesWorld(px, py, pz, hw, hh)) return false;
     if (!transit && !fishBodyWetFull(px, py, pz, hw, hh)) return false;
-    const S = fishWaterSurface(px, py + hh * 0.5, pz);
+    const S = fishSurfaceNear(px, py + hh * 0.5, pz, hh);
     if (S != null && py + hh > S - FISH_SUBMERGE_GAP) return false;
   }
   return true;
 }
 function fishIsConfined(m) {
+  const now = performance.now() / 1000;
+  const vl0 = Math.hypot(m.vel.x, m.vel.y, m.vel.z);
+  const hasDir0 = vl0 > 0.5;
+  const dx0 = hasDir0 ? m.vel.x / vl0 : 0, dy0 = hasDir0 ? m.vel.y / vl0 : 0, dz0 = hasDir0 ? m.vel.z / vl0 : 0;
+  const narrow0 = fishNarrow(m);
+  if (m._confT !== undefined && now - m._confT < 0.2 * aiTierMul() && m._confNarrow === narrow0 &&
+      Math.abs(m.pos.x - m._confX) < 0.5 && Math.abs(m.pos.y - m._confY) < 0.5 && Math.abs(m.pos.z - m._confZ) < 0.5 &&
+      ((hasDir0 && m._confHasDir && (m._confDx * dx0 + m._confDy * dy0 + m._confDz * dz0) > 0.95) || (!hasDir0 && !m._confHasDir))) {
+    return m._confV;
+  }
   const d = 1.2;
   let free = 0;
   if (fishProbeFree(m.pos.x + d, m.pos.y, m.pos.z, m)) free++;
@@ -4933,13 +4965,14 @@ function fishIsConfined(m) {
   if (fishProbeFree(m.pos.x, m.pos.y, m.pos.z - d, m)) free++;
   if (fishProbeFree(m.pos.x, m.pos.y + d, m.pos.z, m)) free++;
   if (fishProbeFree(m.pos.x, m.pos.y - d, m.pos.z, m)) free++;
-  if (free <= 3) return true;
-  const vl = Math.hypot(m.vel.x, m.vel.y, m.vel.z);
-  if (vl > 0.5) {
-    const dx = m.vel.x / vl, dy = m.vel.y / vl, dz = m.vel.z / vl;
-    if (!fishSegmentFree(m.pos.x, m.pos.y, m.pos.z, m.pos.x + dx * 1.5, m.pos.y + dy * 1.5, m.pos.z + dz * 1.5, m)) return true;
+  let v = false;
+  if (free <= 3) v = true;
+  else if (hasDir0) {
+    if (!fishSegmentFree(m.pos.x, m.pos.y, m.pos.z, m.pos.x + dx0 * 1.5, m.pos.y + dy0 * 1.5, m.pos.z + dz0 * 1.5, m)) v = true;
   }
-  return false;
+  m._confT = now; m._confX = m.pos.x; m._confY = m.pos.y; m._confZ = m.pos.z;
+  m._confDx = dx0; m._confDy = dy0; m._confDz = dz0; m._confHasDir = hasDir0; m._confNarrow = narrow0; m._confV = v;
+  return v;
 }
 function fishSidestep(m) {
   const dirs = [[1, 0, 0], [-1, 0, 0], [0, 0, 1], [0, 0, -1], [0, 1, 0], [0, -1, 0]];
@@ -5020,7 +5053,7 @@ function fishMoveSlide(m, vx, vy, vz, dt) {
   const { hw, hh } = fishProbeDims(m);
   const wetOk = (x, y, z) => {
     if (!fishBodyWetFull(x, y, z, hw, hh)) return false;
-    const S = fishWaterSurface(x, y + hh * 0.5, z);
+    const S = fishSurfaceNear(x, y + hh * 0.5, z, hh);
     if (S != null && y + hh > S - FISH_SUBMERGE_GAP) return false;
     return true;
   };
@@ -5150,24 +5183,24 @@ function fishTunnelPlan(m, now) {
     }
   }
   if (!goal && bestOpen) { goal = bestOpen; goalKind = "open"; }
-  if (!goal) { m._tPath = null; m._tGoal = null; m._tPlanT = now + FISH_TUNNEL_REPLAN; return null; }
+  if (!goal) { m._tPath = null; m._tGoal = null; m._tPlanT = now + aiReplan(FISH_TUNNEL_REPLAN); return null; }
   if (isStartCell(goal)) {
     m._tGoalCell = null; m._tGoalKind = null;
     m._tPath = null; m._tGoal = null;
-    m._tPlanT = now + FISH_TUNNEL_REPLAN;
+    m._tPlanT = now + aiReplan(FISH_TUNNEL_REPLAN);
     return null;
   }
   const cells = tunnelBuildPath(start, goal, prev, key, FISH_TUNNEL_PATH_CELLS);
   if (!cells.length) {
     m._tGoalCell = null; m._tGoalKind = null;
     m._tPath = null; m._tGoal = null;
-    m._tPlanT = now + FISH_TUNNEL_REPLAN;
+    m._tPlanT = now + aiReplan(FISH_TUNNEL_REPLAN);
     return null;
   }
   const path = cells.slice(0, FISH_TUNNEL_PATH_CELLS).map(([bx, by, bz]) => ({ x: bx + 0.5, y: by + 0.35, z: bz + 0.5 }));
   m._tPath = path;
   m._tGoal = goalKind;
-  m._tPlanT = now + FISH_TUNNEL_REPLAN;
+  m._tPlanT = now + aiReplan(FISH_TUNNEL_REPLAN);
   return path;
 }
 function fishTouchVisit(m, now) {
@@ -5618,7 +5651,7 @@ function updateFish(m, dt) {
   m.vel.z += (dz * spd0 - m.vel.z) * k;
   if (!seekLure && t && !t._rodLure) {
     if (m._fishProbeT == null || now >= m._fishProbeT) {
-      m._fishProbeT = now + FISH_PROBE_EVERY;
+      m._fishProbeT = now + FISH_PROBE_EVERY * aiTierMul();
       const vl = Math.hypot(m.vel.x, m.vel.y, m.vel.z);
       if (vl > 0.5) {
         const ux = m.vel.x / vl, uy = m.vel.y / vl, uz = m.vel.z / vl;
@@ -5671,7 +5704,7 @@ function updateFish(m, dt) {
     m.pos.y = subTop - m.h - FISH_SUBMERGE_GAP;
     if (m.vel.y > 0) m.vel.y = 0;
   }
-  for (const o of mobs) {
+  for (const o of nearbyMobsFor(m.pos.x, m.pos.z, 1)) {
     if (o === m || o.kind !== "fish" || isMobHeld(o)) continue;
     if (o.dim !== undefined && o.dim !== dim) continue;
     const ox = m.pos.x - o.pos.x, oy = (m.pos.y + m.h * 0.5) - (o.pos.y + o.h * 0.5), oz = m.pos.z - o.pos.z;
@@ -5742,6 +5775,7 @@ const rodBob = new THREE.Vector3();
 const rodBobTarget = new THREE.Vector3();
 let rodSurfTarget = 0;
 let rodDunked = false;
+let rodSlowT = 1, rodAimCache = null;
 const rodTipW = new THREE.Vector3();
 const rodRideFrom = new THREE.Vector3();
 const rodBeamBase = new THREE.Vector3();
@@ -5823,6 +5857,7 @@ function stowRod() {
   rodLiftF = 0;
   rodOut = false;
   rodDunked = false;
+  rodAimCache = null;
   rodHasCast = false;
   if (rodBeam) { rodBeam.visible = false; rodBeam.scale.set(1, 1, 1); }
   if (rodLine) rodLine.visible = false;
@@ -5927,6 +5962,7 @@ function deployRod(aimOpt) {
   else rodBobTarget.set(aim.x + 0.5, aim.surf + 0.1, aim.z + 0.5);
   rodBob.copy(rodBobTarget);
   rodDunked = false;
+  rodAimCache = null; rodSlowT = 1;
   rodBeam.visible = true;
   rodBeam.scale.set(1, 1, 1);
   rodLine.visible = false;
@@ -6062,6 +6098,9 @@ function rodTick(dt) {
   if ((carryMob || carryGrappleMob) && rodAnim !== "retract") { stowRod(); return; }
   dt = Math.min(0.05, dt);
   const now = performance.now() / 1000;
+  rodSlowT += dt;
+  const rodSlow = rodSlowT >= 1 / 30;
+  if (rodSlow) rodSlowT = 0;
   const eye = camera.position;
   updateRodBeam(now, dt);
   if (eyeLiquidId(eye.x, eye.y, eye.z) === WATER) {
@@ -6122,7 +6161,8 @@ function rodTick(dt) {
     if (k2 >= 1) { stowRod(); return; }
     return;
   }
-  const aim = rodAimWater();
+  if (rodSlow) rodAimCache = rodAimWater();
+  const aim = rodAimCache;
   if (!aim || aim.solid) {
     if (rodAnim === "deploy") { rodAnim = "idle"; rodAnimT = 0; rodBeam.scale.set(1, 1, 1); }
     if (rodCastF > 0) {
@@ -6221,7 +6261,7 @@ function rodTick(dt) {
     }
     return;
   }
-  renderRodRope(now, 1);
+  if (rodSlow) renderRodRope(now, 1);
   const biteTop = waterTopAt(rodBob.x, rodBob.z, rodSurf + 2);
   const biteS = biteTop != null ? biteTop : rodSurf;
   const biteLX = rodBob.x, biteLY = biteS - FISH_LURE_DEPTH, biteLZ = rodBob.z;
@@ -6666,7 +6706,7 @@ function birdBestSteer(m, baseYaw, dyHint) {
 }
 function birdCachedClearance(m, dx, dy, dz) {
   const now = performance.now() / 1000;
-  if (m._clrT !== undefined && now - m._clrT < 0.2 &&
+  if (m._clrT !== undefined && now - m._clrT < 0.2 * aiTierMul() &&
       Math.abs(m.pos.x - m._clrX) < 0.5 && Math.abs(m.pos.y - m._clrY) < 0.5 && Math.abs(m.pos.z - m._clrZ) < 0.5 &&
       (m._clrDx * dx + m._clrDy * dy + m._clrDz * dz) > 0.95) {
     return m._clrV;
@@ -10814,7 +10854,7 @@ function wanderGoalFor(m) {
   if (dim !== "over") return wanderNear(m);
   if (soilOutsideClamp(m.pos.x, m.pos.z, m.hw)) return wanderNear(m);
   let best = null, bestScore = Infinity;
-  for (let t = 0; t < 30; t++) {
+  for (let t = 0; t < aiWanderTries(); t++) {
     const x = villageMinX + 2 + Math.random() * (villageMaxX - villageMinX - 4);
     const z = villageMinZ + 2 + Math.random() * (villageMaxZ - villageMinZ - 4);
     if (isInsideAnyHouse(x, z)) continue;
@@ -10830,7 +10870,7 @@ function wanderGoalFor(m) {
     if (m.lastTarget && Math.hypot(ix - m.lastTarget.x, iz - m.lastTarget.z) < 4) continue;
     const v = getVisit(ix, iz);
     let mobPenalty = 0;
-    for (const o of mobs) {
+    for (const o of mobPenaltyNear(ix, iz)) {
       if (o === m || (o.dim !== undefined && o.dim !== dim)) continue;
       if (o.kind === "pig" || o.kind === "cow" || o.kind === "chicken" || o.kind === "wolf") continue;
       const d = Math.hypot(ix - o.pos.x, iz - o.pos.z);
@@ -10861,7 +10901,7 @@ function wanderGoalForRoof(m) {
   if (!h) return wanderGoalFor(m);
   const roofY = h.vy + 6;
   let best = null, bestScore = Infinity;
-  for (let t = 0; t < 30; t++) {
+  for (let t = 0; t < aiWanderTries(); t++) {
     const x = h.minX + Math.random() * (h.maxX - h.minX + 1);
     const z = h.minZ + Math.random() * (h.maxZ - h.minZ + 1);
     const cx = Math.floor(x) + 0.5, cz = Math.floor(z) + 0.5;
@@ -10876,7 +10916,7 @@ function wanderGoalForRoof(m) {
     if (m.lastTarget && Math.hypot(cx - m.lastTarget.x, cz - m.lastTarget.z) < 2) continue;
     const v = getVisit(cx | 0, cz | 0);
     let mobPenalty = 0;
-    for (const o of mobs) {
+    for (const o of mobPenaltyNear(cx, cz)) {
       if (o === m || (o.dim !== undefined && o.dim !== dim)) continue;
       if (houseAtRoof(o.pos.x, o.pos.z) !== h) continue;
       const d = Math.hypot(cx - o.pos.x, cz - o.pos.z);
@@ -10920,7 +10960,7 @@ function wanderGoalForPen(m) {
   if (dim !== "over" || !villagePen) return dim !== "over" ? wanderNear(m) : wanderGoalFor(m);
   const p = villagePen;
   let best = null, bestScore = Infinity;
-  for (let t = 0; t < 30; t++) {
+  for (let t = 0; t < aiWanderTries(); t++) {
     const x = p.minX + 1.5 + Math.random() * (p.maxX - p.minX - 3);
     const z = p.minZ + 1.5 + Math.random() * (p.maxZ - p.minZ - 3);
     const cx = Math.floor(x) + 0.5, cz = Math.floor(z) + 0.5;
@@ -10934,7 +10974,7 @@ function wanderGoalForPen(m) {
     if (m.lastTarget && Math.hypot(cx - m.lastTarget.x, cz - m.lastTarget.z) < 2) continue;
     const v = getVisit(cx | 0, cz | 0);
     let mobPenalty = 0;
-    for (const o of mobs) {
+    for (const o of mobPenaltyNear(cx, cz)) {
       if (o === m || (o.dim !== undefined && o.dim !== dim)) continue;
       if (o.kind !== "pig" && o.kind !== "cow" && o.kind !== "chicken") continue;
       const d = Math.hypot(cx - o.pos.x, cz - o.pos.z);
@@ -11001,20 +11041,44 @@ function penGapOutside(gap) {
   else if (gap.z === p.maxZ) oz = gap.z + 1;
   return { x: ox + 0.5, z: oz + 0.5 };
 }
+let penCellCache = { key: null, cells: null };
+function penInteriorCells() {
+  if (!villagePen) return null;
+  const key = villagePen.minX + "," + villagePen.maxX + "," + villagePen.minZ + "," + villagePen.maxZ;
+  if (penCellCache.key !== key) {
+    const cells = [];
+    for (let bx = villagePen.minX + 1; bx <= villagePen.maxX - 1; bx++) for (let bz = villagePen.minZ + 1; bz <= villagePen.maxZ - 1; bz++) {
+      const cx = bx + 0.5, cz = bz + 0.5;
+      if (isInsidePenPool(cx, cz)) continue;
+      cells.push(cx, cz);
+    }
+    penCellCache = { key, cells };
+  }
+  return penCellCache.cells;
+}
 function chickenPenReturnTarget(m) {
   if (!villagePen || !m) return null;
+  const now = (typeof mobNowS === "number" && mobNowS > 0) ? mobNowS : performance.now() / 1000;
+  if (m._penRetT != null && now - m._penRetT < 1.0 && m._penRetHw === m.hw &&
+      Math.abs(m.pos.x - m._penRetX) < 0.5 && Math.abs(m.pos.z - m._penRetZ) < 0.5) {
+    const v = m._penRetV;
+    return v ? { x: v.x, z: v.z } : null;
+  }
+  const cells = penInteriorCells();
+  if (!cells) return null;
   const p = villagePen, py = villageCenter.y + 1;
   let best = null, bestD2 = Infinity;
-  for (let bx = p.minX + 1; bx <= p.maxX - 1; bx++) for (let bz = p.minZ + 1; bz <= p.maxZ - 1; bz++) {
-    const cx = bx + 0.5, cz = bz + 0.5;
-    if (isInsidePenPool(cx, cz)) continue;
-    if (aabbCollidesWorld(cx, py, cz, m.hw, m.h)) continue;
-    if (!wolfHasMobGround(cx, cz, m.hw, py)) continue;
+  for (let i = 0; i < cells.length; i += 2) {
+    const cx = cells[i], cz = cells[i + 1];
     const dx = cx - m.pos.x, dz = cz - m.pos.z;
     const d2 = dx * dx + dz * dz;
-    if (d2 < bestD2) { bestD2 = d2; best = { x: cx, z: cz }; }
+    if (d2 >= bestD2) continue;
+    if (aabbCollidesWorld(cx, py, cz, m.hw, m.h)) continue;
+    if (!wolfHasMobGround(cx, cz, m.hw, py)) continue;
+    bestD2 = d2; best = { x: cx, z: cz };
   }
-  return best;
+  m._penRetT = now; m._penRetX = m.pos.x; m._penRetZ = m.pos.z; m._penRetHw = m.hw; m._penRetV = best;
+  return best ? { x: best.x, z: best.z } : null;
 }
 function randomAroundPenPoint(m) {
   if (!villagePen) return wanderGoalFor(m);
@@ -11744,7 +11808,7 @@ function wanderGoalForWolf(m) {
   if (dim !== "over") return wanderNear(m);
   const py = m.pos.y;
   let best = null, bestScore = Infinity;
-  for (let t = 0; t < 30; t++) {
+  for (let t = 0; t < aiWanderTries(); t++) {
     const ang = Math.random() * Math.PI * 2, dist = 15 + Math.random() * 35;
     const x = Math.max(-WORLD_RADIUS + 2, Math.min(WORLD_RADIUS - 2, m.pos.x + Math.cos(ang) * dist));
     const z = Math.max(-WORLD_RADIUS + 2, Math.min(WORLD_RADIUS - 2, m.pos.z + Math.sin(ang) * dist));
@@ -11756,7 +11820,7 @@ function wanderGoalForWolf(m) {
     if (m.lastTarget && Math.hypot(ix - m.lastTarget.x, iz - m.lastTarget.z) < 4) continue;
     const v = getVisit(ix, iz);
     let mobPenalty = 0;
-    for (const o of mobs) {
+    for (const o of mobPenaltyNear(ix, iz)) {
       if (o === m || (o.dim !== undefined && o.dim !== dim)) continue;
       if (o.kind !== "wolf") continue;
       const d = Math.hypot(ix - o.pos.x, iz - o.pos.z);
@@ -11900,7 +11964,7 @@ function findPlantPath(sx, sz, tx, tz, hw, pyHint) {
       came.set(k, [cx, cz]);
       q.push([nx, nz]);
     }
-    if (came.size > 60000) break;
+    if (came.size > 12000) break;
   }
   if (!found) return null;
   const path = [];
@@ -13123,7 +13187,7 @@ function isMobStandingOn(bx, by, bz, ignoreBirds) {
   return false;
 }
 function separateMobs() {
-  for (let iter = 0; iter < 2; iter++) {
+  for (let iter = 0; iter < (qualityTier >= 1 ? 1 : 2); iter++) {
     let anyMoved = false;
     for (const m of mobs) {
       if (isMobHeld(m)) continue;
@@ -13166,7 +13230,8 @@ function separateMobs() {
       if (cnt) {
         let nx = m.pos.x + sx, nz = m.pos.z + sz;
         const hg = m.canStep ? wolfHasMobGround : hasMobGround;
-        const pigBlocked = (x,z)=> isPenMob(m) && !chickenFenceHop(m) && pigOverlapsFence(x,z,m.hw);
+        const hopOk = !isPenMob(m) || chickenFenceHop(m);
+        const pigBlocked = (x,z)=> !hopOk && pigOverlapsFence(x,z,m.hw);
         if (!aabbCollidesWorld(nx, m.pos.y, nz, m.hw, m.h) && hg(nx, nz, m.hw, m.pos.y) && !pigBlocked(nx,nz)) {
           m.pos.x = nx; m.pos.z = nz; anyMoved = true;
           if (mobStats) mobStats.mobCol++;
@@ -13216,7 +13281,8 @@ function pushMobsFromPlayer() {
       const push = (need - d) * (fleeing ? 0.22 : 0.30);
       const nx = m.pos.x + (dx / d) * push, nz = m.pos.z + (dz / d) * push;
       const hg2 = m.canStep ? wolfHasMobGround : hasMobGround;
-      if (!aabbCollidesWorld(nx, m.pos.y, nz, m.hw, m.h) && !mobCollidesOther(m, nx, nz) && hg2(nx, nz, m.hw, m.pos.y) && !(isPenMob(m) && !chickenFenceHop(m) && pigOverlapsFence(nx,nz,m.hw))) {
+      const hopOk2 = !isPenMob(m) || chickenFenceHop(m);
+      if (!aabbCollidesWorld(nx, m.pos.y, nz, m.hw, m.h) && !mobCollidesOther(m, nx, nz) && hg2(nx, nz, m.hw, m.pos.y) && !(!hopOk2 && pigOverlapsFence(nx,nz,m.hw))) {
         m.pos.x += (nx - m.pos.x) * (fleeing ? 0.55 : 0.50);
         m.pos.z += (nz - m.pos.z) * (fleeing ? 0.55 : 0.50);
         if (mobStats) mobStats.playerCol++;
@@ -13327,7 +13393,9 @@ function applyHeadonSidestep(m, dx, dz, free) {
     m.steerX = dx * sp; m.steerZ = dz * sp; m.steerCooldown = 0.45;
   }
 }
+let headonFrame = 0;
 function resolveHeadOn() {
+  if ((headonFrame = (headonFrame + 1) % 3) !== 0) return;
   const nowS = performance.now() / 1000;
   for (const a of mobs) {
     if (!isHeadonWalker(a)) continue;
@@ -13375,10 +13443,12 @@ function resolveHeadOn() {
 }
 let liveFillCells = null;
 let liveFillWin = null;
+let liveFillCols = null;
 let mobNowS = 0;
 let fillCacheT = -1, fillCacheDim = "", fillCacheSize = -1, fillCacheCleared = false;
 function rebuildLiveFillCells() {
   liveFillCells = new Set();
+  liveFillCols = new Set();
   liveFillWin = new Map();  for (const f of portalFills.values()) {
     if (f.dim !== dim) continue;
     if (f.dim === "end" && !endCleared) continue;
@@ -13386,6 +13456,7 @@ function rebuildLiveFillCells() {
     for (const [x, y, z] of portalFillCells(f.win, f.nether)) {
       const k = x + "," + y + "," + z;
       liveFillCells.add(k);
+      liveFillCols.add(Math.floor(x / 8) + "," + Math.floor(z / 8));
       if (!liveFillWin.has(k)) liveFillWin.set(k, f);
     }
   }
@@ -13393,6 +13464,15 @@ function rebuildLiveFillCells() {
 function mobBodyFillCells(m) {
   const out = [];
   if (!liveFillCells || !liveFillCells.size || !m) return out;
+  if (liveFillCols && liveFillCols.size) {
+    const cx0 = Math.floor((m.pos.x - m.hw) / 8), cx1 = Math.floor((m.pos.x + m.hw) / 8);
+    const cz0 = Math.floor((m.pos.z - m.hw) / 8), cz1 = Math.floor((m.pos.z + m.hw) / 8);
+    let near = false;
+    for (let cx = cx0; cx <= cx1 && !near; cx++) for (let cz = cz0; cz <= cz1 && !near; cz++) {
+      if (liveFillCols.has(cx + "," + cz)) near = true;
+    }
+    if (!near) return out;
+  }
   const x0 = Math.floor(m.pos.x - m.hw), x1 = Math.floor(m.pos.x + m.hw);
   const y0 = Math.floor(m.pos.y), y1 = Math.floor(m.pos.y + m.h - 0.001);
   const z0 = Math.floor(m.pos.z - m.hw), z1 = Math.floor(m.pos.z + m.hw);
@@ -13513,7 +13593,7 @@ function updateMobs(dt) {
       if (m.mesh) m.mesh.position.copy(m.pos);
       continue;
     }
-    if (starRideMob(m, dt)) continue;
+    if ((m.starRide || m.pos.y >= starMinTop - 3) && starRideMob(m, dt)) continue;
     if (m.kind !== "dragon" && mobDimOf(m) === dim) {
       if (m._fillSlide) {
         const s = m._fillSlide;
@@ -13998,7 +14078,7 @@ function updateMobs(dt) {
       } else if ((m.mode === "wander" || m.mode === "inside") && !plantFleeing) {
         m._plantScanT = (m._plantScanT || 0) - dt;
         if (m._plantScanT <= 0 && growableSoils.size) {
-          m._plantScanT = 0;
+          m._plantScanT = 0.4 + Math.random() * 0.3;
           let best = null, bestD = Infinity;
           for (const g of growableSoils.values()) {
             if (g.dim !== dim) continue;
@@ -16345,6 +16425,7 @@ let starStyleIdx = 0;
 let starMesh = null;
 const starRecs = [];       // {x, y, z, phase, base} render records, rebuilt live
 const starPlatforms = [];  // {x, top, z} ride surfaces, rebuilt live
+let starMinTop = Infinity;
 const starDummy = new THREE.Object3D();
 const starColor = new THREE.Color();
 let starShape = null;      // [{dx, dy, dz, shade}] local cubes of current style
@@ -16445,6 +16526,7 @@ function ensureStarMesh(cube) {
 function rebuildStars() {
   starRecs.length = 0;
   starPlatforms.length = 0;
+  starMinTop = Infinity;
   const st = STAR_STYLES[starStyleIdx];
   ensureStarMesh(st.cube);
   if (starShapeKey !== starStyleIdx) { starShape = buildStarShape(st); starShapeKey = starStyleIdx; }
@@ -16464,6 +16546,7 @@ function rebuildStars() {
       if (!up || !up.some((c) => c > 0)) continue;   // all 4 spire chunks gone: no star
       const cx = p.x + 0.5, cy = summit + STAR_CY, cz = p.z + 0.5;
       starPlatforms.push({ x: cx, top: cy + STAR_TOP, z: cz });
+      if (cy + STAR_TOP < starMinTop) starMinTop = cy + STAR_TOP;
       const rec = { x: cx, y: cy, z: cz, phase: p.seed / 255 * Math.PI * 2, base: n };
       for (const c of starShape) {
         if (n >= STAR_MAX) break;
@@ -26561,6 +26644,9 @@ const QUALITY_DPR = [2, 1.25, 1];
 const QUALITY_LIGHTS = [16, 8, 4];
 const QUALITY_STAR_HZ = [60, 15, 8];
 function qualityLights() { return QUALITY_LIGHTS[qualityTier] || 16; }
+function aiTierMul() { return qualityTier >= 1 ? 2 : 1; }
+function aiWanderTries() { return qualityTier >= 2 ? 15 : 30; }
+function aiReplan(base) { return base * (qualityTier >= 2 ? 2 : 1); }
 function applyQualityTier(t) {
   t = Math.max(0, Math.min(2, t));
   if (t === qualityTier) return;
@@ -27033,7 +27119,7 @@ if (location.search.includes('test')) {
     get GROWABLE_DIST(){ return GROWABLE_DIST; }, get PLANT_NECK(){ return PLANT_NECK; }, get PINE_RATE(){ return PINE_RATE; }, get PINE_PHASE_TIME(){ return PINE_PHASE_TIME; }, get SOIL_TIMER(){ return SOIL_TIMER; }, get SOIL_SOAK_TIME(){ return SOIL_SOAK_TIME; }, get PLANT_BEND_TIME(){ return PLANT_BEND_TIME; }, get PLANT_LEAVE_DIST(){ return PLANT_LEAVE_DIST; },     get PINE_MIN_M(){ return PINE_MIN_M; }, get PINE_MAX_M(){ return PINE_MAX_M; },     get PINE_LIFT_MAX(){ return PINE_LIFT_MAX; }, get PLANT_STEAL_D(){ return PLANT_STEAL_D; }, get GROWTH_PUSH_SPEED(){ return GROWTH_PUSH_SPEED; }, get growthSettlePasses(){ return growthSettlePasses; },
     get MOON_PINE_MAX_M(){ return MOON_PINE_MAX_M; }, get STAR_STYLE_COUNT(){ return STAR_STYLE_COUNT; }, get STAR_STYLE_NAMES(){ return STAR_STYLE_NAMES; }, get STAR_STYLES(){ return STAR_STYLES; },     getStarStyleIdx(){ return starStyleIdx; }, getStarAngle(){ return starAngle; }, get STAR_SPIN(){ return STAR_SPIN; }, get STAR_PLATFORM_R(){ return STAR_PLATFORM_R; }, get starPlatforms(){ return starPlatforms; }, getStarRide(){ return starRide; }, starPlatformAt, rotXZ, rebuildStars, starTick, buildStarShape, pineCellAt, chainComponentFrom, despawnChainMob, cullSmallChainsNear,
     isSoilHole, isSoilFloor, releaseGrowable, armSoak, absorbSoak, spawnSoakDrips, plantWalkGoal, soilSameY, pickPineDims, fitTrunkRange, pineCellsFor, pineFits, pineSpotBlocked, pineLayerWidths, pineSpiralOrder, pineSummit, pineTrunkE0, pineFolReserved, pineCellReserved, pineCellKey, pineOwnerDim, reservePineCells, releasePineCells, clearAllPineReservations, pushOutOfGrowth, growthSolidOverlap, growthExitTarget, growthSlide, startPineGrowth, tickPineGrowths, tickSoilTimers, startPineFailBlink, clearPineFailBlink, clearAllPineFailBlinks, tickPineFailBlinks, setVillagerNeck, findPlantPath, soilClaimant, plantLeaveTarget, soilKey, dimToByte, dimFromByte,
-    get plantedPines(){ return plantedPines; }, get brokenPineCells(){ return brokenPineCells; }, getGarlandBulbCount(){ return garlandBulbCount; }, garlandPathFor, garlandRadiusAt, garlandAnchor, garlandAnchorStrict, garlandTrimSet, pineAt, registerPlantedPine, rebuildGarlands, garlandTick, getDecorVisible(){ return true; }, getDebugHud(){ return debugHud; }, pineCellsFor, pineLayerWidths, pineSummit, countUpperVisible,
+    get plantedPines(){ return plantedPines; }, get brokenPineCells(){ return brokenPineCells; }, getGarlandBulbCount(){ return garlandBulbCount; }, garlandPathFor, garlandRadiusAt, garlandAnchor, garlandAnchorStrict, garlandTrimSet, pineAt, registerPlantedPine, rebuildGarlands, garlandTick, getDecorVisible(){ return true; }, getDebugHud(){ return debugHud; }, getQualityTier(){ return qualityTier; }, applyQualityTier, aiTierMul, aiWanderTries, aiReplan, pineCellsFor, pineLayerWidths, pineSummit, countUpperVisible,
   });
   Object.assign(window._test, {
     get PIGEON_COUNT(){ return BIRD_COUNT; }, get PIGEON_MIN_Y(){ return BIRD_MIN_Y; }, get PIGEON_MAX_Y(){ return BIRD_MAX_Y; },

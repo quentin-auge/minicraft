@@ -20,10 +20,35 @@ small Python server for saving/loading worlds.
   (`fpsEMA`, auto-quality tier, dim, chunks, mobs, bursts). An auto-quality
   governor (`qualityTier` 0/1/2, `tickQuality`/`applyQualityTier` in `main.js`)
   degrades pixel ratio (2→1.25→1), glow lights (16→8→4) and star matrix rate
-  (60→15→8 Hz) when FPS stays <45, and steps back up above 58. Bird steering
-  uses a 0.2s clearance cache (`birdCachedClearance`) plus reduced
-  `birdBestSteer` candidates beyond 40 blocks; `separateMobs` runs 2 iterations
-  with a cached `mobNowS`; BFS queues use index pointers; blast carves walk
+  (60→15→8 Hz) when FPS stays <45, and steps back up above 58. The same tier
+  throttles mob AI with no behaviour change: tier 1 halves `separateMobs` to
+  1 iteration and doubles the fish-lookahead, fish-confinement and bird-clearance
+  intervals (`aiTierMul`); tier 2 halves wander-goal tries to 15
+  (`aiWanderTries`) and doubles bird/fish tunnel replans (`aiReplan`); both
+  step back down automatically with the tier, and `resolveHeadOn` runs
+  1 frame in 3; `separateMobs` runs 2 iterations at tier 0 (1 once degraded).
+  Bird steering uses a 0.2s clearance cache (`birdCachedClearance`) plus reduced
+  `birdBestSteer` candidates beyond 40 blocks; fish confinement uses the same
+  0.2s cache pattern (`fishIsConfined` memo on pos/heading/narrow) and fish
+  probes use a depth-bounded surface lookup (`fishSurfaceNear`, exact same
+  decisions as the full up-scan, no scan past 2 water cells above); open-water
+  fish separation runs over the mob grid (`nearbyMobsFor`, like the tunnel
+  branch) instead of all mobs; `chickenPenReturnTarget` reuses a static pen
+  interior cell list (`penInteriorCells`, rebuilt on layout change) with
+  distance-first probe pruning plus a 1s per-mob memo, and the fence-hop check
+  is hoisted once per mob in `separateMobs`/`pushMobsFromPlayer`; chicken eyes
+  share one module-level material (`chickenEyeMat`); wander-goal dispersion
+  penalties score grid neighbours (`mobPenaltyNear`, exact within the ≤1.9
+  radii) instead of all mobs; `findPlantPath` caps at 12000 cells (village
+  routing needs ~3k); wet-soil scans run at ~2 Hz staggered (`_plantScanT`)
+  and holder reachability stays at 1 Hz (`_plantReT`); `resolveHeadOn` runs
+  1 frame in 3; `separateMobs` runs 2 iterations
+  with a cached `mobNowS`; BFS queues use index pointers; the deployed rod
+  re-marches its water aim and redraws its rope at 30 Hz (`rodSlowT`/
+  `rodAimCache`, bobber glide and anim transitions stay at 60 Hz); portal-fill
+  overlap pre-rejects mobs via a coarse 8-block column set (`liveFillCols`,
+  rebuilt with the live cells) before any per-cell string key is built; star
+  rides skip mobs below the lowest platform (`starMinTop`); blast carves walk
   integer `scanBlastSphere` scanlines clamped per column to `colTops` (exact
   in-sphere set only, no fractional lattice, no above-terrain air), and pool
   blasts enqueue their chunk keys into `poolRefreshQueue` (deduped Set,
