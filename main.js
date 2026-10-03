@@ -11041,6 +11041,33 @@ function penGapOutside(gap) {
   else if (gap.z === p.maxZ) oz = gap.z + 1;
   return { x: ox + 0.5, z: oz + 0.5 };
 }
+const PEN_EXIT_TIME = 8;
+const PEN_KEEP_OUT_TIME = 5;
+function penExitGapOpen(gx, gz) {
+  if (!villagePen || dim !== "over" || penDestroyed()) return false;
+  return getBlock(gx, villagePen.vy + 1, gz) === AIR;
+}
+function startPenExit(m, gap) {
+  if (!gap || !villagePen) return false;
+  const outside = penGapOutside(gap);
+  if (!outside) return false;
+  m._penExit = { ox: outside.x, oz: outside.z, gapX: gap.x, gapZ: gap.z };
+  m._penExitT = PEN_EXIT_TIME;
+  const inside = penGapInside(gap);
+  const dIn = Math.hypot(inside.x - m.pos.x, inside.z - m.pos.z);
+  m.target = dIn < 1.2 ? { x: outside.x, z: outside.z } : { x: inside.x, z: inside.z };
+  m.wanderT = PEN_EXIT_TIME; m.steerCooldown = 0; m.path = null; m.pathKey = null;
+  return true;
+}
+function wanderGoalOutsidePen(m) {
+  if (!villagePen) return wanderNear(m);
+  const wolfLegs = m.kind === "chicken";
+  for (let t = 0; t < 6; t++) {
+    const g = m.penBound === false ? wanderNear(m) : (wolfLegs ? wanderGoalForWolf(m) : wanderGoalFor(m));
+    if (g && !isInsidePen(g.x, g.z)) return g;
+  }
+  return randomAroundPenPoint(m);
+}
 let penCellCache = { key: null, cells: null };
 function penInteriorCells() {
   if (!villagePen) return null;
@@ -11668,6 +11695,7 @@ function updateHomeReturn(m, now) {
   if (!m._returnHome || dim !== "over") return;
   if (!soilOutsideClamp(m.pos.x, m.pos.z, m.hw)) { delete m._returnHome; delete m._homeRetryT; delete m._penReturn; return; }
   const isPig = m.kind === "pig" || m.kind === "cow" || m.kind === "chicken";
+  if (isPig && (m._penKeepOut || 0) > 0) return;
   if (isPig && isInsidePen(m.pos.x, m.pos.z)) { delete m._returnHome; delete m._homeRetryT; delete m._penReturn; return; }
   if (m.fleeUntil != null && now < m.fleeUntil) return;
   if (m.mode !== "wander" && m.mode !== "follow") return;
@@ -13747,15 +13775,8 @@ function updateMobs(dt) {
         // console.log("pig outside target", m.id, m.pos.x.toFixed(2), m.pos.z.toFixed(2), m.target.x.toFixed(2), m.target.z.toFixed(2), m.vel.x.toFixed(2), m.onGround);
       }
       const insidePen = dim === "over" && isInsidePen(m.pos.x, m.pos.z);
-      const inPenNow = m.kind === "chicken" ? chickenInsidePen(m) : insidePen;
+      const inPenNow = insidePen;
       if (inPenNow) delete m._penReturn;
-      if (m.kind === "chicken" && insidePen && !inPenNow && (!m._penReturn || !m.target || Math.hypot(m.target.x - m.pos.x, m.target.z - m.pos.z) < 0.8 || m.wanderT <= 0)) {
-        const hop = chickenPenReturnTarget(m);
-        if (hop) {
-          m.target = hop; m._penReturn = true;
-          m.wanderT = 1.2 + Math.random() * 0.8; m.steerCooldown = 0; m.path = null; m.pathKey = null;
-        }
-      }
       if (m.fleeUntil != null && now < m.fleeUntil) {
         if (m._outsideFlee) {
           m.speed = WALK * 2;
@@ -13774,12 +13795,14 @@ function updateMobs(dt) {
                 m.wanderT = 1.2 + Math.random() * 0.8; m.steerCooldown = 0; m.path = null; m.pathKey = null;
               }
             } else if (m.kind === "chicken") {
+              // panic hop: straight at the nearest interior cell, over the fence
+              m.speed = WALK * 2.5;
               m.wanderT -= dt;
               if (!m.target || Math.hypot(m.target.x - m.pos.x, m.target.z - m.pos.z) < 0.8 || m.wanderT <= 0) {
                 const hop = chickenPenReturnTarget(m);
                 m.target = hop || randomAroundPenPoint(m);
                 if (hop) m._penReturn = true;
-                m.wanderT = 1.2 + Math.random() * 0.8; m.steerCooldown = 0; m.path = null; m.pathKey = null;
+                m.wanderT = 2.5 + Math.random(); m.steerCooldown = 0; m.path = null; m.pathKey = null;
               }
             } else {
             const gap = nearestPenGap(m.pos.x, m.pos.z);
@@ -13787,7 +13810,7 @@ function updateMobs(dt) {
               const inside = penGapInside(gap);
               if (!m.target || Math.hypot(m.target.x - inside.x, m.target.z - inside.z) > 0.5) {
                 const d = Math.hypot(inside.x - m.pos.x, inside.z - m.pos.z);
-                const gapProbe = m.kind === "chicken" ? wolfProbeFree : mobProbeFree;
+                const gapProbe = mobProbeFree;
                 const probe = gapProbe(m.pos.x, m.pos.z, (inside.x - m.pos.x)/(d||1), (inside.z - m.pos.z)/(d||1), Math.min(d, 8), m.hw, m.pos.y);
                 if (probe < d * 0.4) {
                   if (!m.target || m._aroundT === undefined || m.wanderT <= 0 || Math.hypot(m.target.x - m.pos.x, m.target.z - m.pos.z) < 0.8) {
@@ -13812,13 +13835,29 @@ function updateMobs(dt) {
         } else {
           if (m._outsideFlee) { delete m._outsideFlee; delete m._fleeSrcX; delete m._fleeSrcZ; m.fleeUntil = 0; m.speed = WALK / 2.2; }
           else if (m.fleeUntil) { m.fleeUntil = 0; m.speed = WALK / 2.2; } else m.speed = WALK / 2.2;
+          if ((m._penKeepOut || 0) > 0) m._penKeepOut -= dt;
+          const keepOut = (m._penKeepOut || 0) > 0;
+          if (m._penExit) {
+            // committed pen exit: no re-rolls, no U-turns until outside
+            const ex = m._penExit;
+            const fleeing = m.fleeUntil != null && now < m.fleeUntil;
+            m._penExitT -= dt;
+            const arrived = !isInsidePen(m.pos.x, m.pos.z) && Math.hypot(ex.ox - m.pos.x, ex.oz - m.pos.z) < 0.8;
+            if (!penExitGapOpen(ex.gapX, ex.gapZ) || fleeing || m._penExitT <= 0 || arrived) {
+              delete m._penExit; delete m._penExitT;
+              if (arrived) { m._penKeepOut = PEN_KEEP_OUT_TIME; delete m._penReturn; m.target = null; m.wanderT = 0; }
+            } else {
+              const exInside = penGapInside({ x: ex.gapX, z: ex.gapZ });
+              const exOut = penGapOutside({ x: ex.gapX, z: ex.gapZ });
+              const dIn = Math.hypot(exInside.x - m.pos.x, exInside.z - m.pos.z);
+              m.target = dIn < 1.2 ? { x: exOut.x, z: exOut.z } : { x: exInside.x, z: exInside.z };
+            }
+          }
+          if (!m._penExit) {
           // when not panicking: 1.5% per frame to exit freely if a gap exists
           if (insidePen && findPenGaps().length && Math.random() < 0.015) {
             const gap = nearestPenGap(m.pos.x, m.pos.z);
-            if (gap) {
-              m.target = penGapOutside(gap);
-              m.wanderT = 3 + Math.random()*4; m.steerCooldown = 0; m.path = null; m.pathKey = null;
-            }
+            if (gap) startPenExit(m, gap);
           }
           m.wanderT -= dt;
           // inside → stay inside unless gap → 45% chance to exit freely (panic stays inside)
@@ -13833,19 +13872,16 @@ function updateMobs(dt) {
             const isGapOutside = findPenGaps().some(g=> { const o=penGapOutside(g); return o && Math.abs(o.x - m.target.x)<0.1 && Math.abs(o.z - m.target.z)<0.1; });
             if (!isGapOutside) m.target = null;
           }
-          if (!wantsPen && m.target && isInsidePen(m.target.x, m.target.z)) m.target = null;
+          if ((!wantsPen || keepOut) && m.target && isInsidePen(m.target.x, m.target.z)) m.target = null;
           if (!m.target || Math.hypot(m.target.x - m.pos.x, m.target.z - m.pos.z) < 0.6 || m.wanderT <= 0) {
-            if (wantsExit) {
+            if (keepOut && insidePen) {
               const gap = nearestPenGap(m.pos.x, m.pos.z);
-              if (gap) {
-                const inside = penGapInside(gap);
-                const dInside = Math.hypot(inside.x - m.pos.x, inside.z - m.pos.z);
-                if (dInside < 1.2) {
-                  m.target = penGapOutside(gap);
-                } else {
-                  m.target = inside;
-                }
-              } else {
+              if (gap && penExitGapOpen(gap.x, gap.z)) startPenExit(m, gap);
+              else { m._penKeepOut = 0; m.target = wanderGoalForPen(m); }
+            } else if (wantsExit) {
+              const gap = nearestPenGap(m.pos.x, m.pos.z);
+              if (gap) startPenExit(m, gap);
+              else {
                 m.target = randomAroundPenPoint(m);
               }
             } else if (m.kind === "chicken" && !wantsPen) {
@@ -13853,7 +13889,9 @@ function updateMobs(dt) {
             } else {
               m.target = (m.penBound === false || dim !== "over") ? wanderNear(m) : (wantsPen ? wanderGoalForPen(m) : wanderGoalFor(m));
             }
+            if (keepOut && m.target && isInsidePen(m.target.x, m.target.z)) m.target = wanderGoalOutsidePen(m);
             m.wanderT = 3 + Math.random() * 4; m.path = null; m.pathKey = null; m.steerCooldown = 0;
+          }
           }
         }
     } else if (m.mode === "inside") {
@@ -14152,7 +14190,11 @@ function updateMobs(dt) {
 
     // Steering towards target — BFS path for 1-block corridors + smart wall avoidance
     const canStep = !!m.canStep;
-    const steppy = canStep && !chickenCalm(m) && !chickenInsidePen(m);
+    let steppy = canStep && !chickenCalm(m) && !chickenInsidePen(m);
+    if (steppy && m.kind === "chicken" && dim === "over" && villagePen && !m._penReturn) {
+      const ngp = nearestPenGap(m.pos.x, m.pos.z);
+      if (ngp && Math.hypot(ngp.x + 0.5 - m.pos.x, ngp.z + 0.5 - m.pos.z) < 2.5) steppy = false;
+    }
     const probeFree = steppy ? wolfProbeFree : mobProbeFree;
     const hasGround = steppy ? wolfHasMobGround : hasMobGround;
     const findPath = m.mode === "goPlant" ? findPlantPath : ((m.mode === "goHome" && m._returnHome) || m._penReturn ? (steppy ? wolfFindPath : findPlantPath) : (steppy ? wolfFindPath : findVillagePath));
@@ -14407,6 +14449,11 @@ function updateMobs(dt) {
     // lerp vel towards want (like player)
     if (m.mode === "goPlant" && m.plantPhase === "bend") { wantX = 0; wantZ = 0; }
     const airGlide = m.kind === "chicken" && !m.onGround;
+    if (airGlide && m.vel.y < 0 && !poolEx && !strictFollow && dim === "over" && villagePen && !isInsidePen(m.pos.x, m.pos.z)) {
+      const pdx = villagePen.cx + 0.5 - m.pos.x, pdz = villagePen.cz + 0.5 - m.pos.z;
+      const pdd = Math.hypot(pdx, pdz);
+      if (pdd > 1.0) { wantX = pdx / pdd * m.speed; wantZ = pdz / pdd * m.speed; }
+    }
     const steerGain = airGlide ? dt * 2 : dt * 6;
     m.vel.x += (wantX - m.vel.x) * Math.min(1, steerGain);
     m.vel.z += (wantZ - m.vel.z) * Math.min(1, steerGain);
@@ -14661,10 +14708,12 @@ function resumeMobPanic(m, e) {
     } else if (m.kind === "pig" || m.kind === "cow" || m.kind === "chicken") {
       if (villagePen && isInsidePen(m.pos.x, m.pos.z)) { m.target = wanderGoalForPen(m); m.wanderT = 0.25 + Math.random() * 0.25; }
       else if (m.kind === "chicken" && villagePen && !penDestroyed()) {
+        // panic hop: straight at the nearest interior cell, over the fence
+        m.speed = WALK * 2.5;
         const hop = chickenPenReturnTarget(m);
         m.target = hop || fleePointAway(m, sx, sz);
         if (hop) m._penReturn = true;
-        m.wanderT = 1.2 + Math.random() * 0.8;
+        m.wanderT = 2.5 + Math.random();
       }
       else { m.target = fleePointAway(m, sx, sz); m.wanderT = 1.2 + Math.random() * 0.8; }
       return true;
@@ -14817,7 +14866,7 @@ function panicPenMobs(cx, cy, cz) {
       m.speed = WALK * 2;
       delete m._outsideFlee; delete m._fleeSrcX; delete m._fleeSrcZ;
       const insidePen = isInsidePen(m.pos.x, m.pos.z);
-      const inPenNow = m.kind === "chicken" ? chickenInsidePen(m) : insidePen;
+      const inPenNow = insidePen;
       if (inPenNow) {
         m.target = wanderGoalForPen(m);
         m.wanderT = 0.25 + Math.random()*0.25; m.steerCooldown = 0; m.path = null; m.pathKey = null;
@@ -14826,17 +14875,19 @@ function panicPenMobs(cx, cy, cz) {
         m.wanderT = 1.2 + Math.random() * 0.8; m.steerCooldown = 0;
         m.path = null; m.pathKey = null;
       } else if (m.kind === "chicken") {
+        // panic hop: straight at the nearest interior cell, over the fence
+        m.speed = WALK * 2.5;
         const hop = chickenPenReturnTarget(m);
         m.target = hop || randomAroundPenPoint(m);
         if (hop) m._penReturn = true;
-        m.wanderT = 1.2 + Math.random() * 0.8; m.steerCooldown = 0;
+        m.wanderT = 2.5 + Math.random(); m.steerCooldown = 0;
         m.path = null; m.pathKey = null;
       } else {
         const gap = nearestPenGap(m.pos.x, m.pos.z);
         if (gap) {
           const inside = penGapInside(gap);
           const d = Math.hypot(inside.x - m.pos.x, inside.z - m.pos.z);
-          const gapProbe = m.kind === "chicken" ? wolfProbeFree : mobProbeFree;
+          const gapProbe = mobProbeFree;
           const probe = gapProbe(m.pos.x, m.pos.z, (inside.x - m.pos.x)/(d||1), (inside.z - m.pos.z)/(d||1), Math.min(d, 6), m.hw, m.pos.y);
           if (probe > d * 0.6 || d < 3) {
             m.target = inside; m.wanderT = 1.2 + Math.random()*0.6; m.steerCooldown = 0;
@@ -17546,8 +17597,8 @@ const PLAYER_HW = 0.3;
 const PLAYER_H = 1.8;
 const EYE = 1.62;
 const GRAVITY = 37.44;
-const CHICKEN_GLIDE_FACTOR = 0.12;
-const CHICKEN_GLIDE_MAXFALL = 5.625;
+const CHICKEN_GLIDE_FACTOR = 0.5;
+const CHICKEN_GLIDE_MAXFALL = 20;
 const CHICKEN_FLAP_RATE = 14;
 const CHICKEN_FLAP_BASE = 0.85;
 const CHICKEN_FLAP_AMP = 0.65;
