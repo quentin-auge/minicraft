@@ -19760,7 +19760,6 @@ function breakBlock(pre) {
 function breakBlockAt(x, y, z) {
   if (protectedBlocks.has(protKey(x, y, z))) return;
   if (y === 0) return;
-  if (isMobStandingOn(x, y, z, true) || intersectsMob(x, y, z, true)) return;
   if (getBlock(x, y, z) === TNT) { igniteTNT(x, y, z); return; }
   if (getBlock(x, y, z) === MEGA_TNT) { igniteTNT(x, y, z, MEGA_FUSE_TIME); return; }
   const bid = getBlock(x, y, z);
@@ -20243,7 +20242,6 @@ let explosionBudgetMs = 7;
 let explosionsPerFrame = 64;
 const chainPending = new Set();
 let poolConsumed = null;
-let mobPillarCache = null;
 
 function makeTNTBomb() {
   return new THREE.Mesh(tntBombGeo, tntBombMats);
@@ -21192,7 +21190,6 @@ function carveBlastCell(gx, gy, gz, mega, batchKeys) {
   const kk = key(gx, gy, gz);
   if (batchKeys.has(kk)) return false;
   const id = getBlock(gx, gy, gz);
-  if (id !== TNT && id !== MEGA_TNT && !mega && (mobPillarCache ? mobPillarCache.has(kk) : (isMobStandingOn(gx, gy, gz) || intersectsMob(gx, gy, gz)))) return false;
   if (id === AIR) return false;
   if (gy === 0) return false;
   if (protectedBlocks.has(dim + ":" + kk)) return false;
@@ -21232,7 +21229,7 @@ function carveBlastSphere(bx, by, bz, mega, batchKeys, radiusMul = 1) {
   const k0 = key(bx, by, bz);
   if (!protectedBlocks.has(dim + ":" + k0) && !batchKeys.has(k0)) {
     const id0 = getBlock(bx, by, bz);
-    if (id0 === TNT || id0 === MEGA_TNT || (!mega && (mobPillarCache ? !mobPillarCache.has(k0) : (!isMobStandingOn(bx, by, bz) && !intersectsMob(bx, by, bz))))) {
+    if (id0 !== AIR) {
       if (by !== 0) {
         if ((id0 === LOG || id0 === LEAVES) && plantedPines.size && pineCellAt(bx, by, bz)) brokePine = true;
         batchKeys.add(k0);
@@ -21487,17 +21484,7 @@ function processExplosionQueue() {
   refreshDefer = [];
   glowDefer++;
   const batchKeys = new Set();
-  mobPillarCache = new Set();
   try {
-  for (const m of mobs) {
-    if (isMobHeld(m) || isChained(m)) continue;
-    if (m.dim !== undefined && m.dim !== dim) continue;
-    const hw = villagerHW(m) + 0.05, hh = villagerH(m);
-    const x0 = Math.floor(m.pos.x - hw), x1 = Math.floor(m.pos.x + hw);
-    const z0 = Math.floor(m.pos.z - hw), z1 = Math.floor(m.pos.z + hw);
-    const y0 = Math.floor(m.pos.y) - 1, y1 = Math.floor(m.pos.y + hh);
-    for (let cx = x0; cx <= x1; cx++) for (let cy = y0; cy <= y1; cy++) for (let cz = z0; cz <= z1; cz++) mobPillarCache.add(key(cx, cy, cz));
-  }
   while (explosionQueue.length) {
     const head = explosionQueue[0];
     const freeMega = head.mega && !head.due && !head.homing && !head.bird && megaChained < 8 && (performance.now() - t0) < explosionBudgetMs;
@@ -21562,7 +21549,6 @@ function processExplosionQueue() {
     processed++;
   }
   } finally {
-  mobPillarCache = null;
   poolConsumed = null;
   glowDefer--;
   if (glowDefer === 0 && glowDirtyDeferred) { glowDirtyDeferred = false; recomputeGlowClusters(); syncGlowLights(); }
