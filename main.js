@@ -14384,10 +14384,12 @@ function updateMobs(dt) {
     const needPath = (poolEx || plantMile || strictFollow) ? false : (!insideNow && m.mode !== "inside" && (toTarOverall > 1.8 || probeFree(m.pos.x, m.pos.z, (tx - m.pos.x)/(toTarOverall||1), (tz - m.pos.z)/(toTarOverall||1), Math.min(1.2, toTarOverall), m.hw, m.pos.y) < 0.55));
     if (needPath) {
       const pk = Math.round(tx) + "," + Math.round(tz);
-      if (!m.path || m.pathKey !== pk) {
+      if (m.pathKey !== pk) m._directT = 0;
+      else if ((m._directT || 0) > 0) m._directT -= dt;
+      if ((!m.path || m.pathKey !== pk) && (m._directT || 0) <= 0 && ((m._pathRetryT || 0) <= now || m._pathRetryPk !== pk)) {
         const p = findPath(m.pos.x, m.pos.z, tx, tz, m.hw, m.pos.y);
         if (p && p.length > 1) { m.path = p; m.pathIdx = 1; m.pathKey = pk; hasPath = true; tx = p[1][0]; tz = p[1][1]; }
-        else { m.path = null; m.pathKey = null; }
+        else { m.path = null; m.pathKey = null; m._pathRetryT = now + 0.8 + Math.random() * 0.8; m._pathRetryPk = pk; }
       } else if (m.path && m.pathIdx < m.path.length) {
         hasPath = true;
         const le = m.path[m.path.length - 1];
@@ -14396,7 +14398,8 @@ function updateMobs(dt) {
         if (ldd > 0.6) {
           const lf = probeFree(m.pos.x, m.pos.z, ldx0 / ldd, ldz0 / ldd, ldd, m.hw, m.pos.y);
           if (lf >= ldd - 0.05) {
-            m.path = null; m.pathKey = null; hasPath = false; tx = le[0]; tz = le[1];
+            m.path = null; hasPath = false; tx = le[0]; tz = le[1];
+            m._directT = 0.5;
           }
         }
         if (hasPath) {
@@ -17770,7 +17773,6 @@ function refreshBlocks(coords) {
 const poolRefreshQueue = new Map();
 let carveSlice = 0;
 const POOL_SLICE_LAG = 3;
-const remeshCounts = new Map();
 function drainPoolRefresh() {
   if (!poolRefreshQueue.size) return;
   const deadline = performance.now() + remeshBudgetMs();
@@ -17796,7 +17798,6 @@ function drainPoolRefresh() {
     if (!chunkMeshes.has(ck)) continue;
     const u = ck.indexOf("_");
     rebuildChunk(+ck.slice(0, u), +ck.slice(u + 1));
-    remeshCounts.set(ck, (remeshCounts.get(ck) || 0) + 1);
     if (performance.now() >= deadline) break;
   }
 }
@@ -27861,7 +27862,7 @@ requestAnimationFrame(loop);
 if (location.search.includes('test')) {
   window._test = {
     get world(){ return world; }, get worlds(){ return worlds; }, get mobs(){ return mobs; },
-    getBlock, setBlock, handleMobExplosion, processExplosionQueue, carveBlastSphere, processMegaPool, processUltraBlast, purgeUltraPines, spawnMegaUnion, isMobStandingOn, intersectsMob, key, BLAST_RADIUS, MEGA_BLAST_RADIUS, MEGA_KNOCK_RADIUS, MEGA_FUSE_TIME, MEGA_EJECT_DUR, MEGA_FLY_TIME, TNT, MEGA_TNT, ULTRA_TNT, isMegaLike, get MEGA_BLINK(){ return MEGA_BLINK; }, getLitMegaMat, getLitUltraMat, ultraBandY, get ULTRA_BAND1_HI(){ return ULTRA_BAND1_HI; }, get ULTRA_BAND2_HI(){ return ULTRA_BAND2_HI; }, get ULTRA_FULL_R(){ return ULTRA_FULL_R; }, get ULTRA_FUSE_TIME(){ return ULTRA_FUSE_TIME; }, spawnMegaExplosion, applyMegaKnockback, addCamShake, tickMegaEject, tickBallisticMob, megaFlyLand, megaOutsideTarget, distToMegaUnion, distToMegaUnion3D, nearestMegaOf, spotOutsideMegaUnion, litMegaMembers, litMegaTouch, megaTouchesVillage, megaCraterRespawn, endermanMegaSpot, megaTeleportEnderman, birdMegaFleeTarget, megaFleePointUnion, clampMegaXZ, megaAirBand, outOfLevel, endMegaBallistic, clampMegaMob, get ultraTrauma(){ return ultraTrauma; }, get ULTRA_SHAKE_AMP(){ return ULTRA_SHAKE_AMP; }, get ULTRA_SHAKE_TIME(){ return ULTRA_SHAKE_TIME; }, ultraHaloR(){ const r = []; for (const t of tntLit.values()) if (t.ultra) r.push({ fuse: t.fuse, halo: t.halo ? t.halo.scale.x : null, haloOuter: t.haloOuter ? t.haloOuter.scale.x : null }); return r; }, ultraLightInfo(){ const cmap = new Map(megaLightClusters.map((c) => [c.ck, c])); const r = []; for (const L of megaLights) { if (!L || !L.light.visible || L.ck < 0) continue; const c = cmap.get(L.ck); r.push({ ultra: !!(c && c.ultra), distance: L.light.distance, decay: L.light.decay, intensity: L.light.intensity }); } return r; }, getMegaNoPerchUntil(){ return megaNoPerchUntil; }, resolveEmbedded, get megaEject(){ return megaEject; }, STONE, AIR, get SAND(){ return SAND; }, get WATER(){ return WATER; }, get VILLAGE_POOL_W(){ return VILLAGE_POOL_W; }, get VILLAGE_POOL_D(){ return VILLAGE_POOL_D; }, get VILLAGE_POOL_DEPTH(){ return VILLAGE_POOL_DEPTH; }, get VILLAGE_PEN_POOL_W(){ return VILLAGE_PEN_POOL_W; }, get VILLAGE_PEN_POOL_D(){ return VILLAGE_PEN_POOL_D; }, get VILLAGE_PEN_POOL_DEPTH(){ return VILLAGE_PEN_POOL_DEPTH; },
+    getBlock, setBlock, handleMobExplosion, processExplosionQueue, carveBlastSphere, processMegaPool, processUltraBlast, purgeUltraPines, spawnMegaUnion, isMobStandingOn, intersectsMob, key, BLAST_RADIUS, MEGA_BLAST_RADIUS, MEGA_KNOCK_RADIUS, MEGA_FUSE_TIME, MEGA_EJECT_DUR, MEGA_FLY_TIME, TNT, MEGA_TNT, ULTRA_TNT, isMegaLike, get MEGA_BLINK(){ return MEGA_BLINK; }, getLitMegaMat, getLitUltraMat, ultraBandY, get ULTRA_BAND1_HI(){ return ULTRA_BAND1_HI; }, get ULTRA_BAND2_HI(){ return ULTRA_BAND2_HI; }, get ULTRA_FULL_R(){ return ULTRA_FULL_R; }, get ULTRA_FUSE_TIME(){ return ULTRA_FUSE_TIME; }, spawnMegaExplosion, applyMegaKnockback, addCamShake, tickMegaEject, tickBallisticMob, megaFlyLand, megaOutsideTarget, distToMegaUnion, distToMegaUnion3D, nearestMegaOf, spotOutsideMegaUnion, litMegaMembers, litMegaTouch, megaTouchesVillage, megaCraterRespawn, endermanMegaSpot, megaTeleportEnderman, birdMegaFleeTarget, megaFleePointUnion, clampMegaXZ, megaAirBand, outOfLevel, endMegaBallistic, clampMegaMob, get ultraTrauma(){ return ultraTrauma; }, get ULTRA_SHAKE_AMP(){ return ULTRA_SHAKE_AMP; }, get ULTRA_SHAKE_TIME(){ return ULTRA_SHAKE_TIME; }, getMegaNoPerchUntil(){ return megaNoPerchUntil; }, resolveEmbedded, get megaEject(){ return megaEject; }, STONE, AIR, get SAND(){ return SAND; }, get WATER(){ return WATER; }, get VILLAGE_POOL_W(){ return VILLAGE_POOL_W; }, get VILLAGE_POOL_D(){ return VILLAGE_POOL_D; }, get VILLAGE_POOL_DEPTH(){ return VILLAGE_POOL_DEPTH; }, get VILLAGE_PEN_POOL_W(){ return VILLAGE_PEN_POOL_W; }, get VILLAGE_PEN_POOL_D(){ return VILLAGE_PEN_POOL_D; }, get VILLAGE_PEN_POOL_DEPTH(){ return VILLAGE_PEN_POOL_DEPTH; },
     get villageCenter(){ return villageCenter; }, get villageHouses(){ return villageHouses; }, get villagePen(){ return villagePen; }, get villagePool(){ return villagePool; }, get isInsidePen(){ return isInsidePen; }, get isInsidePool(){ return isInsidePool; }, get isInsidePenPool(){ return isInsidePenPool; }, get poolExitTarget(){ return poolExitTarget; }, get penPoolExitTarget(){ return penPoolExitTarget; }, get LOG(){ return LOG; }, findPenGaps, nearestPenGap, penGapInside, penGapOutside, hasMobGround, mobBlockedAt, aabbCollidesWorld, mobProbeFree, randomPenPoint, randomAroundPenPoint, groundYForMob, get CLOUD_BASE(){ return CLOUD_BASE; }, get CLOUD_TOP(){ return CLOUD_TOP; }, get MAX_Y(){ return MAX_Y; },
     getTypeMats, get typeMats(){ return typeMats; }, buildWorld, generateWorld, generateMoonLakes, get moonLakesGenerated(){ return moonLakesGenerated; }, computeVillageLayout, spawnVillagers, refreshBlocks, rebuildMeshes, get chunkMeshes(){ return chunkMeshes; }, get boxGeo(){ return boxGeo; }, THREE,
     get pos(){ return pos; }, get vel(){ return vel; }, get camera(){ return camera; }, get scene(){ return scene; }, get freeCam(){ return freeCam; }, set freeCam(v){ freeCam = v; }, get camPos(){ return camPos; }, get yaw(){ return yaw; }, set yaw(v){ yaw=v; }, get pitch(){ return pitch; }, set pitch(v){ pitch=v; },
@@ -27923,9 +27924,6 @@ if (location.search.includes('test')) {
   });
   Object.assign(window._test, {
     drainMegaCarveJobs, clearMegaCarveJobs, megaFxLod, carveMegaUnionColumn,
-    carveJobsPending(){ return megaCarveJobs.length; }, poolRefreshPending(){ return poolRefreshQueue.size; },
-    carveJobsProgress(){ return megaCarveJobs.map((j) => ({ ci: j.ci, total: j.cols.length, celli: j.celli, cellsTotal: j.cells ? j.cells.length : 0 })); },
-    remeshStats(){ const r = [...remeshCounts.entries()]; remeshCounts.clear(); return r; },
     get megaCarveJobs(){ return megaCarveJobs; },
     get MEGA_CARVE_BUDGET_MS(){ return MEGA_CARVE_BUDGET_MS; },
     chickenAirProbe, chickenHeightAbove, chickenGlideSink, chickenGlideRange, chickenPickGlideSpot, chickenCommitGlide, chickenGlideActive,
