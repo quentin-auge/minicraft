@@ -17,10 +17,14 @@ small Python server for saving/loading worlds.
   `main.js` in place would misparse its `import` line; the copy is parse-only, never
   executed. Verify game logic in the browser.
 - Performance: the main loop logs `[perf] fps~N q=T ...` to the console every 5s
-  (`fpsEMA`, auto-quality tier, dim, chunks, mobs, bursts). An auto-quality
+  (`fpsEMA`, auto-quality tier, dim, chunks, mobs, bursts, plus per-phase frame
+  ms `tnt`/`fx`/`mobs`/`sim`/`player`/`mesh`/`render` averaged over the window). An auto-quality
   governor (`qualityTier` 0/1/2, `tickQuality`/`applyQualityTier` in `main.js`)
   degrades pixel ratio (2→1.25→1), glow lights (16→8→4) and star matrix rate
-  (60→15→8 Hz) when FPS stays <45, and steps back up above 58. The same tier
+  (60→15→8 Hz) when FPS stays <45, and steps back up above 58. Enqueuing a blast
+  carve job forces tier ≥1 at once (DPR 1.25 for the whole drain, no 3 s wait);
+  tier 0 comes back at completion unconditionally (the governor re-degrades
+  within 3 s if still slow, so no stuck-slow state). The same tier
   throttles mob AI with no behaviour change: tier 1 halves `separateMobs` to
   1 iteration and doubles the fish-lookahead, fish-confinement and bird-clearance
   intervals (`aiTierMul`); tier 2 halves wander-goal tries to 15
@@ -51,13 +55,23 @@ small Python server for saving/loading worlds.
   rides skip mobs below the lowest platform (`starMinTop`); blast carves walk
   integer `scanBlastSphere` scanlines clamped per column to `colTops` (exact
   in-sphere set only, no fractional lattice, no above-terrain air), and pool
-  blasts enqueue their chunk keys into `poolRefreshQueue` (deduped Set,
-  `CHUNK_BUDGET_MS` drain next to `drainChunkQueue` — a max pool remeshes over
-  ~9 frames behind its own flash instead of one hitch, so scan cost is
-  independent of member count AND frame cost stays flat);
+   blasts enqueue their chunk keys into    `poolRefreshQueue` (deduped Map keyed by
+   carve slice, `remeshBudgetMs` drain next to `drainChunkQueue`, nearest-to-camera chunks
+   first — while a job drains only chunks whose columns are all carved rebuild
+   (exact per-chunk frontier `chunkMax` + `hot` hold-back, plus a 3-slice hysteresis),
+   so each chunk rebuilds ~once behind the front instead of once per slice; a max pool remeshes over
+   ~9 frames behind its own flash instead of one hitch, so scan cost is
+   independent of member count AND frame cost stays flat);
   multi-mega pool carves drain as sliced union jobs (`enqueueMegaCarveJob`/
-  `drainMegaCarveJobs`, `MEGA_CARVE_BUDGET_MS` 6, per-slice purge + refresh +
-  save) with member blocks vanishing the same tick, far/off-screen mega FX
+  `drainMegaCarveJobs`, adaptive budgets `carveBudgetMs`/`remeshBudgetMs` tied to
+  `qualityTier` — 12/6 ms at tier 0, 6/4 at tier 1, 4/2 at tier 2 — instead of the
+  flat `MEGA_CARVE_BUDGET_MS` 6/`CHUNK_BUDGET_MS` 4, self-throttled by the live frame
+  time (`drainThrottle` 0.5–1: halves-ish on frames >26 ms, recovers under 12 ms)
+  and floored at 6/4 ms while a job drains (shorter blast over smoother frames);
+  mobs tick 1 frame in 2 while a job drains (`mobTickFlip`, half-speed panic for ~1 s),
+  per-slice chunk refresh +
+  save with no liquid purge on job slices, the carve itself already deleting
+  liquids in radius) with member blocks vanishing the same tick, far/off-screen mega FX
   degrade to one flash blob (`megaFxLod`, plus a 6-live-burst cap), and the
   knockback/panic mob passes prefilter by union bbox before any per-member
   distance probe;
@@ -342,7 +356,10 @@ stays bright at distance, `placeable: true` so it
   is rebuilt on every dimension change, load and new world. The MEGA_TNT slot is
   dragon-gated: it appears only after the Ender Dragon is defeated
   (`unlockMegaTNT()` on dragon kill; `MEGA_DEBUG_UNLOCKED = false` by default —
-  flip it to `true` to force-unlock everywhere for debugging).
+  flip it to `true` to force-unlock everywhere for debugging). The ULTRA_TNT slot is
+  kill-gated: it appears only after 3 Ender Dragon kills in the session
+  (`dragonKillsSession`, reset on load/new world, `unlockUltraTNT()` at the third
+  kill; the unlock itself persists in save v47).
 - **Player**: AABB collision, gravity (`GRAVITY = 37.44`, +20% twice; halved
   in the Overworld once the player rises to the bottom of the Moon sphere,
   `pos.y >= MOON_Y - MOON_R`), jump (Shift/Space), walk/sprint (/), fly mode, swimming,
@@ -372,7 +389,10 @@ stays bright at distance, `placeable: true` so it
   Respawn (`spawnPlayer`, used for new worlds, void falls and flying out of the
   level) scans the spawn column from `MAX_Y` down (skipping CLOUD/MOON) and stands
   on the top solid found, so the player never settles inside hills, mesas or
-  builds that rise above the old fixed 60-block scan ceiling.
+  builds that rise above the old fixed 60-block scan ceiling. Vertical moves
+  are sub-stepped in ≤0.5-block increments (player `moveAxisY`, mobs
+  `moveMobAxisY`/`wolfMoveAxisY`), so a fast fall after a blast can never
+  tunnel through the 1-thick y=0 floor into a void respawn.
   Auto-steps are smooth, not jumps: walking into a 1-block step auto-climbs (`tryStep`
   inspects the actual cell the footprint hits, so corners climb cleanly without
   deviating the line of travel; it only fires while on the ground and moving into the
@@ -495,6 +515,7 @@ stays bright at distance, `placeable: true` so it
   flickering blue pool (`recomputeMegaLightClusters`/`syncMegaLights`/
   `tickMegaLights`, mirroring the glowstone system: lit megas bucketed into
   5-block cells, a fixed pool of 8 blue `PointLight`s assigned nearest-first
+  (3 while a carve job drains, fill-rate guard)
   with keep-phase stability, throttled re-slots, quality-governor cap, and
   per-cluster beat/distance/white-hot flicker — never one light per block),
   disposed in `clearTNTVisual` (shells; lights are pooled)
@@ -591,11 +612,21 @@ stays bright at distance, `placeable: true` so it
   spawn radii, radial velocities, flash sizes and point sizes all scale with
   the radius factor, so the ball reads crater-sized at every step). Multi-mega
   pools carve as one sliced union job (`enqueueMegaCarveJob`/`drainMegaCarveJobs`,
-  `MEGA_CARVE_BUDGET_MS` 6): member blocks vanish the same tick while the
+  adaptive `carveBudgetMs`): member blocks vanish the same tick while the
   surrounding union (one centroid sphere when compact, the true member-sphere
   union when spread — single visit per cell via merged per-column y-intervals,
-  same crater as per-member carves) drains over the next frames behind the
-  flash, with per-slice liquid purge + chunk refresh + save; single-mega pools
+  same crater as per-member carves) drains concentrically from the members
+  over the next frames behind a growing fireball sphere (shared geometry riding
+  `job.front2`, payoff `spawnMegaUnion` at drain completion via `job.finalFx`,
+  `job.cols` pre-sorted by centroid XZ distance, `job.ci` cursor, deadline
+  tested inside the Y loop with an interval resume cursor (`job.iv`/`ivI`/`ivY`)
+  so no tall column can blow a frame),
+  with per-slice chunk refresh + save (no liquid purge on job slices); carved cells
+  go through the `carveDeleteCell` fast path (plain `world.delete`, index sets
+  touched only for special ids, no `soilKey` string, no `colTops` write) and push
+  one column marker per visited column instead of one array per cell, so the drain
+  runs ~5x faster (headless ultra band-1 A/B: 3.5 s → 0.7 s pure carve);
+  single-mega pools
   keep the synchronous `carveBlastSphere` sphere. Compact
   mega pools (members within R of the mega centroid) carve one centroid sphere
   at exactly that radius via integer `scanBlastSphere` scanlines clamped per
@@ -649,6 +680,70 @@ stays bright at distance, `placeable: true` so it
   (1 mega byte per bomb
   + queue entry, pre-v39 loads as regular; restored megas keep their own
   saved fuses).
+- **Ultra TNT**: a third TNT block (`ULTRA_TNT` id 23, black TNT-band
+  `TEX.ultra_side` texture — same layout as regular TNT, black instead of red,
+  violet per-frame throb via `getSingleMat`) in the hotbar right after Mega TNT
+  once unlocked (3 session dragon kills). Breaking one lights
+  the same 8s fuse (`ULTRA_FUSE_TIME`) in matte black (`t.mega` set, `t.ultra`
+  carried alongside: dedicated `ultratit`/`ultraveil` chunk buckets, texture
+  whitening held at 0 so the block stays pure black, `NormalBlending` black
+  veil breathing at `0.25 + 0.5 × blink` — DU NOIR, with a simulated black
+  light: ultra clusters join the same shared 8-light pool as mega clusters
+  (nearest-first, no extra shader cost) but drive white `PointLight`s at
+  negative intensity (neutral R/V/B subtraction, same flicker/beat/distance
+  choreography as the blue mega lights, clamped to pure black at the core) —
+  no white flash at the end: texture whitening stays at 0, veil and light
+  keep blinking black right up to detonation, and the light distance grows
+  accelerated (`up²`, `7 → ULTRA_FULL_R`, pulsed by the blink factor) with a
+  flat `decay: 0` falloff (uniform darkening out to the cutoff, smooth edge)
+  so the shadow throbs over the whole level at term, in sync with the halo;
+  plus a double black ground disc (`haloGeo` circles on the first solid below,
+  `t.halo` central reaching the full map diagonal `ULTRA_FULL_R` + fainter
+  `t.haloOuter` reaching 1.2× the full map diagonal `ULTRA_FULL_R` so the whole
+  Overworld surface is covered at detonation (both radii eased `up²`,
+  accelerating through the fuse), opacities 0.08→0.55 / 0.04→0.26
+  with the fuse so both start as a bare veil, disposed in `clearTNTVisual`,
+  re-attached on
+  restore) spreading under the bomb; same `#danger`
+  vignette and fuse-time panic) — the detonation differs: `processUltraBlast`
+  wipes the whole altitude band in XZ in one sliced union job: Overworld band
+  from the detonation height via `ultraBandY` (band 1 `[1, 90]` ground, strictly
+  under the lowest measured cloud block at 91 — plus a 6-connected LOG/LEAVES
+  BFS overhang (`ultraOverhangCells`, seedé par les LOG à `y=90`, cap 20000)
+  so ground-rooted trees are felled whole even when crowns poke into band 2;
+  band 2 `[91, 462]` (`CLOUD_TOP+1`) all clouds + sky content; band 3 `[462,
+  MAX_Y]` moon + shell + dome + moon pines) — Nether/End have a single band =
+  TOUT (full column `[1, colTops]`, nothing above survives); `y=0` and
+  `protectedBlocks` (return portals stay usable) always kept, liquids deleted
+  like mega. All live TNT/MEGA of the dimension plus same-band ULTRAs are swept
+  into the wipe (fuses cleared, queued placed entries dropped, no separate
+  blasts — every Ultra of the band detonates at once, other bands keep their
+  fuses) while an Ultra met by a mega pool chains out to its own wipe instead
+  of joining it; no ejection/knockback/crater-avoid (no "outside" to throw to)
+  — one standard panic pass (`handleMobExplosion`) plus the no-perch window.
+  The carve drains concentrically from the bomb(s): `enqueueMegaCarveJob`
+  pre-sorts columns by centroid XZ distance (`job.cols`/`colsD2`/`job.ci`, mega
+  pools included — the ring expands from the centroid instead of an x/z scan)
+  with `ULTRA_FULL_R` (map diagonal, so corner seeds still cover the far
+  corner); a shared-geometry fireball sphere (`attachJobFireball`, orange +
+  white core at 0.85/0.9 opacity so it masks the remesh popping behind the front,
+  zero per-frame allocation) rides the live carve front
+  (`job.front2`, mega pools too) with capped front embers (10 per ~120 ms on
+  the ring, band-clamped in Y), then the payoff burst fires at drain
+  completion (`job.finalFx` — the pool/ultra `spawnMegaUnion` moved from
+  detonation to completion; dim-drops dispose silently; solo-mega sync path
+  keeps its instant flash); `carveBlastCell` skips per-cell pine bookkeeping in ultra mode
+  (perf: no `pineAt` scan per carved cell) and `purgeUltraPines` at job end
+  purges soil-dead pines, trims partial survivors into `brokenPineCells` and
+  rebuilds `colTops`/`garlandDirty` for the dimension. The final blast draws a ×10
+  fireball (`spawnMegaUnion` at `r=10`: R150 flash + ~12k points, same 6-burst
+  cap and far-degradation — `megaFxSingle` scales sub-linearly past r=3: counts
+  capped (density factor ≤5), point sizes ≤6, shorter lives, so only the ultra
+  payoff shrinks while singles/pools render pixel-identical) and a dedicated shake channel (`ultraTrauma`, peak
+  1.5 like mega but `ULTRA_SHAKE_AMP` 3× amplitude and `ULTRA_SHAKE_TIME` 2×
+  duration ≈2.1 s, Mega shake untouched, reset in `purgeLiveTNT`, still gated by
+  `MEGA_QUIET`). Persisted in save v47 (unlock byte + 1 ultra byte per bomb
+  + queue entry; pre-v47 loads with Ultra locked and ultra flags off).
 - **Portals / dimensions**: portal frames are detected in either orientation —
   upright (vertical frames standing on edge) or flat (laid on the ground —
   `winOk`/`vWinOk` for End frames, `nWinOk`/`nFlatWinOk` for Nether obsidian,
@@ -1411,7 +1506,7 @@ or phase. Step-up is root-gated by jumping leadership: when the chain root is a 
   (perch roll `PIGEON_PERCH_CHANCE` 0.65, `PIGEON_END_PERCH_CHANCE` 0.1 in the End
   for ~10% sitting time, min 1.2 s between full decisions via `_decideT`),
   so flight legs stay short and duty cycle holds across worlds.
-- **Save/load**: binary format (`SAVE_MAGIC`, version 46) capturing world
+- **Save/load**: binary format (`SAVE_MAGIC`, version 47) capturing world
   blocks (over/end/nether), dim, seeds (over/end/nether), player pos/yaw/pitch,
   player velocity (`vel`, so a save made mid-air resumes at the exact spot still
   falling),
@@ -1541,6 +1636,8 @@ or phase. Step-up is root-gated by jumping leadership: when the chain root is a 
   of the same color and spikiness);
   pre-v46 saves have no chickens stored (kind code 10 `chicken` added in v46,
   topped up to `CHICKEN_COUNT` by `spawnVillagers` on load);
+  pre-v47 saves have no Ultra stored (unlock byte + per-bomb/queue ultra flags
+  added in v47, Ultra loads locked with ultra flags off);
   pre-v13 saves have no endermen stored (kind code 5 `enderman` added in v13);
   pre-v29 saves have no golems stored (kind code 6 `iron_golem` added in v29,
   topped up by `spawnVillagers` on load); pre-v30 saves decode their 8-bit yaw

@@ -3,7 +3,8 @@ import * as THREE from "three";
 // ---------------------------------------------------------------------------
 // Block definitions
 // ---------------------------------------------------------------------------
-const AIR = 0, GRASS = 1, DIRT = 2, STONE = 3, SAND = 4, LOG = 5, LEAVES = 6, WATER = 7, PLANKS = 8, GLASS = 9, TNT = 10, FLOWER = 11, PORTAL = 12, ENDSTONE = 13, CLOUD = 14, OBSIDIAN = 15, LAVA = 16, NETHERRACK = 17, SOULSAND = 18, MOON = 19, GLOWSTONE = 20, MOON_WATER = 21, MEGA_TNT = 22;
+const AIR = 0, GRASS = 1, DIRT = 2, STONE = 3, SAND = 4, LOG = 5, LEAVES = 6, WATER = 7, PLANKS = 8, GLASS = 9, TNT = 10, FLOWER = 11, PORTAL = 12, ENDSTONE = 13, CLOUD = 14, OBSIDIAN = 15, LAVA = 16, NETHERRACK = 17, SOULSAND = 18, MOON = 19, GLOWSTONE = 20, MOON_WATER = 21, MEGA_TNT = 22, ULTRA_TNT = 23;
+function isMegaLike(id) { return id === MEGA_TNT || id === ULTRA_TNT; }
 
 const BLOCK_INFO = {
   [GRASS]:   { name: "Grass",    solid: true,  opaque: true,  placeable: true },
@@ -17,6 +18,7 @@ const BLOCK_INFO = {
   [GLASS]:   { name: "Glass",    solid: true,  opaque: false, placeable: true },
   [TNT]:     { name: "TNT",      solid: true,  opaque: true,  placeable: true },
   [MEGA_TNT]:{ name: "Mega TNT", solid: true,  opaque: true,  placeable: true },
+  [ULTRA_TNT]:{ name: "Ultra TNT", solid: true,  opaque: true,  placeable: true },
   [FLOWER]:  { name: "Flower",   solid: false, opaque: false, placeable: true },
 [PORTAL]:  { name: "Portal",    solid: true,  opaque: false, placeable: true },
   [ENDSTONE]:{ name: "End Stone",solid: true,  opaque: true,  placeable: false },
@@ -304,6 +306,24 @@ const TEX = {
     ctx.fillStyle = "#1e3fae"; ctx.fillRect(0, 0, 16, 16);
     pxNoise(ctx, [30, 63, 174], 12);
   }),
+  ultra_side: canvasTex((ctx) => {
+    ctx.fillStyle = "#101014"; ctx.fillRect(0, 0, 64, 64);
+    ctx.fillStyle = "#ece6d0"; ctx.fillRect(0, 16, 64, 32);
+    for (let y = 0; y < 64; y++) for (let x = 0; x < 64; x++) {
+      const black = y < 16 || y > 47;
+      const base = black ? [16, 16, 20] : [236, 230, 208];
+      const d = (Math.random() - 0.5) * (black ? 14 : 8);
+      ctx.fillStyle = `rgb(${base[0] + d},${base[1] + d},${base[2] + d})`;
+      ctx.fillRect(x, y, 1, 1);
+    }
+    ctx.fillStyle = "#101014";
+    ctx.font = "bold 24px sans-serif"; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+    ctx.fillText("TNT", 32, 32);
+  }, 64),
+  ultra_top: canvasTex((ctx) => {
+    ctx.fillStyle = "#101014"; ctx.fillRect(0, 0, 16, 16);
+    pxNoise(ctx, [16, 16, 20], 12);
+  }),
   glass: canvasTex((ctx) => {
     ctx.fillStyle = "rgba(190,230,255,0.55)"; ctx.fillRect(0, 0, 16, 16);
     ctx.strokeStyle = "rgba(255,255,255,0.9)"; ctx.lineWidth = 1.5;
@@ -470,6 +490,7 @@ function materialsFor(id) {
     case FLOWER: return faceTex(TEX.flower, { transparent: true });
     case TNT:   return [material(TEX.tnt_side), material(TEX.tnt_side), material(TEX.tnt_top), material(TEX.tnt_top), material(TEX.tnt_side), material(TEX.tnt_side)];
     case MEGA_TNT: return [material(TEX.mega_side), material(TEX.mega_side), material(TEX.mega_top), material(TEX.mega_top), material(TEX.mega_side), material(TEX.mega_side)];
+    case ULTRA_TNT: return [material(TEX.ultra_side), material(TEX.ultra_side), material(TEX.ultra_top), material(TEX.ultra_top), material(TEX.ultra_side), material(TEX.ultra_side)];
     case PORTAL: return faceTex(TEX.portal, { transparent: false, opacity: 1, side: THREE.DoubleSide });
     case ENDSTONE: return faceTex(TEX.endstone);
     case CLOUD: return faceTex(TEX.cloud);
@@ -636,7 +657,7 @@ const worldGlowstoneSets = new WeakMap([
   [worlds.nether, glowstoneBlockSets.nether],
 ]);
 
-// Same trick for TNT/MEGA_TNT blocks so TNT flood-fill queries iterate just
+// Same trick for TNT/MEGA_TNT/ULTRA_TNT blocks so TNT flood-fill queries iterate just
 // the live TNT cells instead of scanning blast-radius spheres per member.
 const tntBlockSets = { over: new Set(), end: new Set(), nether: new Set() };
 const worldTntSets = new WeakMap([
@@ -1362,7 +1383,7 @@ function rebuildPortalBlocks() {
     for (const [k, id] of worlds[name]) {
       if (id === PORTAL || id === OBSIDIAN) set.add(k);
       if (id === GLOWSTONE) gs.add(k);
-      if (id === TNT || id === MEGA_TNT) ts.add(k);
+      if (id === TNT || isMegaLike(id)) ts.add(k);
     }
   }
 }
@@ -1389,7 +1410,7 @@ function setBlock(x, y, z, id) {
     if (id === PORTAL || id === OBSIDIAN) pb.add(k); else pb.delete(k);
     if (id === GLOWSTONE) gs.add(k); else gs.delete(k);
     if (id !== GLOWSTONE) gv.delete(k);
-    if (id === TNT || id === MEGA_TNT) ts.add(k); else ts.delete(k);
+    if (id === TNT || isMegaLike(id)) ts.add(k); else ts.delete(k);
   }
   if (id !== FLOWER) placedFlowers.delete(k);
   if (id !== DIRT && growableSoils.has(soilKey(dim, x, y, z))) releaseGrowable(soilKey(dim, x, y, z));
@@ -17330,6 +17351,7 @@ function getSingleMat(id) {
     case SOULSAND: m = material(TEX.soulsand); break;
     case MOON: m = basicMat(TEX.moon, { fog: false }); break;
     case MEGA_TNT: m = basicMat(TEX.mega_side, { fog: false }); break;
+    case ULTRA_TNT: m = basicMat(TEX.ultra_side, { fog: false }); break;
   }
   singleMats.set(id, m);
   return m;
@@ -17373,10 +17395,17 @@ function rebuildChunk(cx, cz) {
   const wetDirts = [];
   const liquidSkip = [];
   const litMegas = [];
+  const litUltras = [];
   let litMegaKeys = null;
+  let litUltraKeys = null;
   if (tntLit.size) {
     litMegaKeys = new Set();
-    for (const [k, t] of tntLit) if (t.mega && !t.mesh) litMegaKeys.add(k);
+    litUltraKeys = new Set();
+    for (const [k, t] of tntLit) {
+      if (!t.mega || t.mesh) continue;
+      if (t.ultra) litUltraKeys.add(k);
+      else litMegaKeys.add(k);
+    }
   }
   for (let x = x0; x <= x1; x++)
     for (let z = z0; z <= z1; z++) {
@@ -17400,8 +17429,8 @@ function rebuildChunk(cx, cz) {
           if (isExposed(x, y, z)) wetDirts.push([x, y, z]);
           continue;
         }
-        if (id === MEGA_TNT && litMegaKeys && litMegaKeys.has(key(x, y, z))) {
-          if (isExposed(x, y, z)) litMegas.push([x, y, z]);
+        if (isMegaLike(id) && ((litMegaKeys && litMegaKeys.has(key(x, y, z))) || (litUltraKeys && litUltraKeys.has(key(x, y, z))))) {
+          if (isExposed(x, y, z)) (id === ULTRA_TNT ? litUltras : litMegas).push([x, y, z]);
           continue;
         }
         if (isLiquid(id)) { liquidSkip.push([x, y, z, id]); continue; }
@@ -17596,11 +17625,12 @@ function rebuildChunk(cx, cz) {
     if (wetBlue.length) placeShell(wetBlue, getWetShellMat(), "wetshell");
     if (wetGrey.length) placeShell(wetGrey, getWetShellMatMoon(), "wetshellMoon");
   }
-  if (litMegas.length) {
-    const mesh = new THREE.InstancedMesh(boxGeo, getLitMegaMat(), litMegas.length);
-    mesh.count = litMegas.length;
+  const placeLitBucket = (list, mat, veilMat, titKey, veilKey) => {
+    if (!list.length) return;
+    const mesh = new THREE.InstancedMesh(boxGeo, mat, list.length);
+    mesh.count = list.length;
     let i = 0;
-    for (const [x, y, z] of litMegas) {
+    for (const [x, y, z] of list) {
       dummy.position.set(x + 0.5, y + 0.5, z + 0.5);
       dummy.rotation.set(0, 0, 0);
       dummy.scale.set(1, 1, 1);
@@ -17610,11 +17640,11 @@ function rebuildChunk(cx, cz) {
     mesh.instanceMatrix.needsUpdate = true;
     mesh.computeBoundingSphere();
     scene.add(mesh);
-    meshes.set("megatit", mesh);
-    const veil = new THREE.InstancedMesh(boxGeo, getLitMegaVeilMat(), litMegas.length);
-    veil.count = litMegas.length;
+    meshes.set(titKey, mesh);
+    const veil = new THREE.InstancedMesh(boxGeo, veilMat, list.length);
+    veil.count = list.length;
     let j = 0;
-    for (const [x, y, z] of litMegas) {
+    for (const [x, y, z] of list) {
       dummy.position.set(x + 0.5, y + 0.5, z + 0.5);
       dummy.rotation.set(0, 0, 0);
       dummy.scale.set(1.06, 1.06, 1.06);
@@ -17625,8 +17655,10 @@ function rebuildChunk(cx, cz) {
     veil.computeBoundingSphere();
     veil.renderOrder = 1;
     scene.add(veil);
-    meshes.set("megaveil", veil);
-  }
+    meshes.set(veilKey, veil);
+  };
+  placeLitBucket(litMegas, getLitMegaMat(), getLitMegaVeilMat(), "megatit", "megaveil");
+  placeLitBucket(litUltras, getLitUltraMat(), getLitUltraVeilMat(), "ultratit", "ultraveil");
   chunkMeshes.set(ck, meshes);
 }
 
@@ -17707,17 +17739,21 @@ function rebuildMeshes() {
 // Rebuild just the chunk(s) holding the given blocks (plus neighbours across
 // a chunk border), so editing cost stays tiny even in a 2x world.
 let refreshDefer = null;
+function columnKeys(x, z) {
+  const cx = chunkOf(x), cz = chunkOf(z);
+  const out = [cx + "_" + cz];
+  const rx = ((x % CHUNK) + CHUNK) % CHUNK;
+  const rz = ((z % CHUNK) + CHUNK) % CHUNK;
+  if (rx === 0) out.push(cx - 1 + "_" + cz);
+  if (rx === CHUNK - 1) out.push(cx + 1 + "_" + cz);
+  if (rz === 0) out.push(cx + "_" + (cz - 1));
+  if (rz === CHUNK - 1) out.push(cx + "_" + (cz + 1));
+  return out;
+}
 function refreshChunkKeys(coords) {
   const keys = new Set();
   for (const [x, , z] of coords) {
-    const cx = chunkOf(x), cz = chunkOf(z);
-    keys.add(cx + "_" + cz);
-    const rx = ((x % CHUNK) + CHUNK) % CHUNK;
-    const rz = ((z % CHUNK) + CHUNK) % CHUNK;
-    if (rx === 0) keys.add(cx - 1 + "_" + cz);
-    if (rx === CHUNK - 1) keys.add(cx + 1 + "_" + cz);
-    if (rz === 0) keys.add(cx + "_" + (cz - 1));
-    if (rz === CHUNK - 1) keys.add(cx + "_" + (cz + 1));
+    for (const ck of columnKeys(x, z)) keys.add(ck);
   }
   return keys;
 }
@@ -17731,15 +17767,36 @@ function refreshBlocks(coords) {
     rebuildChunk(+cx, +cz);
   }
 }
-const poolRefreshQueue = new Set();
+const poolRefreshQueue = new Map();
+let carveSlice = 0;
+const POOL_SLICE_LAG = 3;
+const remeshCounts = new Map();
 function drainPoolRefresh() {
   if (!poolRefreshQueue.size) return;
-  const deadline = performance.now() + CHUNK_BUDGET_MS;
-  for (const ck of poolRefreshQueue) {
+  const deadline = performance.now() + remeshBudgetMs();
+  const gating = megaCarveJobs.length > 0 && poolRefreshQueue.size <= 300;
+  const pcx = chunkOf(freeCam ? camPos.x : pos.x), pcz = chunkOf(freeCam ? camPos.z : pos.z);
+  const arr = [];
+  for (const [ck, stamp] of poolRefreshQueue) {
+    if (!gating || stamp < 0 || carveSlice - stamp >= POOL_SLICE_LAG) arr.push(ck);
+  }
+  if (!arr.length) return;
+  let sorted = arr;
+  if (arr.length > 1) {
+    const dist = new Array(arr.length);
+    for (let i = 0; i < arr.length; i++) {
+      const u = arr[i].indexOf("_");
+      const ddx = (+arr[i].slice(0, u)) - pcx, ddz = (+arr[i].slice(u + 1)) - pcz;
+      dist[i] = ddx * ddx + ddz * ddz;
+    }
+    sorted = arr.map((_, i) => i).sort((a, b) => dist[a] - dist[b]).map((i) => arr[i]);
+  }
+  for (const ck of sorted) {
     poolRefreshQueue.delete(ck);
     if (!chunkMeshes.has(ck)) continue;
-    const [cx, cz] = ck.split("_");
-    rebuildChunk(+cx, +cz);
+    const u = ck.indexOf("_");
+    rebuildChunk(+ck.slice(0, u), +ck.slice(u + 1));
+    remeshCounts.set(ck, (remeshCounts.get(ck) || 0) + 1);
     if (performance.now() >= deadline) break;
   }
 }
@@ -18054,6 +18111,12 @@ function moveMobAxisZ(mob, dz) {
   return false;
 }
 function moveMobAxisY(mob, dy) {
+  const n = Math.max(1, Math.ceil(Math.abs(dy) / 0.5));
+  const s = dy / n;
+  for (let i = 0; i < n; i++) if (moveMobAxisYStep(mob, s)) return true;
+  return false;
+}
+function moveMobAxisYStep(mob, dy) {
   mob.pos.y += dy;
   mob.onGround = false;
   const onRoof = isMobOnRoof(mob);
@@ -18139,6 +18202,12 @@ function tryMobWaterStep(mob, bx, by, bz) {
   return mobWaterExitJump(mob, bx, by, bz);
 }
 function wolfMoveAxisY(mob, dy) {
+  const n = Math.max(1, Math.ceil(Math.abs(dy) / 0.5));
+  const s = dy / n;
+  for (let i = 0; i < n; i++) { if (wolfMoveAxisYStep(mob, s)) return true; if (mob.onGround) break; }
+  return false;
+}
+function wolfMoveAxisYStep(mob, dy) {
   mob.pos.y += dy;
   mob.onGround = false;
   const onRoof = isMobOnRoof(mob);
@@ -18436,6 +18505,14 @@ function moveAxisZ(dz) {
   }
 }
 function moveAxisY(dy) {
+  const n = Math.max(1, Math.ceil(Math.abs(dy) / 0.5));
+  const s = dy / n;
+  for (let i = 0; i < n; i++) {
+    moveAxisYStep(s);
+    if (onGround || vel.y === 0) break;
+  }
+}
+function moveAxisYStep(dy) {
   pos.y += dy;
   onGround = false;
   const top = pos.y + PLAYER_H, feet = pos.y;
@@ -19751,6 +19828,7 @@ function breakBlockAt(x, y, z) {
   if (y === 0) return;
   if (getBlock(x, y, z) === TNT) { igniteTNT(x, y, z); return; }
   if (getBlock(x, y, z) === MEGA_TNT) { igniteTNT(x, y, z, MEGA_FUSE_TIME); return; }
+  if (getBlock(x, y, z) === ULTRA_TNT) { igniteTNT(x, y, z, ULTRA_FUSE_TIME); return; }
   const bid = getBlock(x, y, z);
   if (bid === WATER || bid === LAVA || bid === MOON_WATER) return;
   const pineOwner = (bid === LOG || bid === LEAVES) ? pineAt(x, y, z) : null;
@@ -20053,7 +20131,7 @@ function lineStep(fx, fy, fz, dx, dy, dz) {
 // flattens and chainStep resumes normal plateauing.
 function chainStep() {
   const liveId = chainId ?? hotbarList()[selected];
-  if (liveId === MEGA_TNT) return;
+  if (isMegaLike(liveId)) return;
   if (!chainHome) return;
   const dest = feetDest();
   if (!dest) return;
@@ -20166,6 +20244,23 @@ const FUSE_TIME = 3;
 const BLAST_RADIUS = 3;
 const MEGA_BLAST_RADIUS = BLAST_RADIUS * 5;
 const MEGA_FUSE_TIME = 8;
+const ULTRA_FUSE_TIME = 8;
+const ULTRA_BAND1_HI = 90;
+const ULTRA_BAND2_HI = CLOUD_TOP + 1;
+const ULTRA_FULL_R = WORLD_RADIUS * 2 * Math.SQRT2;
+const ULTRA_SHAKE_AMP = 3;
+const ULTRA_SHAKE_TIME = 2;
+function ultraBandY(by) {
+  if (by < ULTRA_BAND1_HI + 1) return { lo: 1, hi: ULTRA_BAND1_HI, band: 1 };
+  if (by <= ULTRA_BAND2_HI) return { lo: ULTRA_BAND1_HI + 1, hi: ULTRA_BAND2_HI, band: 2 };
+  return { lo: ULTRA_BAND2_HI + 1, hi: null, band: 3 };
+}
+function ultraBandOf(by) {
+  if (dim !== "over") return 0;
+  if (by < ULTRA_BAND1_HI + 1) return 1;
+  if (by <= ULTRA_BAND2_HI) return 2;
+  return 3;
+}
 const MEGA_KNOCK_RADIUS = MEGA_BLAST_RADIUS * 2;
 const MEGA_KNOCK_SPEED = 30;
 const MEGA_QUIET = false;
@@ -20173,6 +20268,7 @@ const MEGA_DEBUG_UNLOCKED = false;
 const MEGA_FX_T = 0.5;
 let camTrauma = 0;
 function addCamShake(a) { camTrauma = Math.min(1.5, camTrauma + a); }
+let ultraTrauma = 0;
 // Blink choreography for lit TNT: deterministic phase from remaining fuse.
 // Frequency ramps exponentially from ~1 Hz at full fuse to ~14 Hz at
 // detonation (perceptually saturated over the final second); output is a
@@ -20244,6 +20340,30 @@ function clearTNTVisual(t) {
     t.spr = null;
   }
   if (t.mesh) { scene.remove(t.mesh); t.mesh = null; }
+  if (t.halo) { scene.remove(t.halo); t.halo.material.dispose(); t.halo = null; }
+  if (t.haloOuter) { scene.remove(t.haloOuter); t.haloOuter.material.dispose(); t.haloOuter = null; }
+}
+const haloGeo = new THREE.CircleGeometry(1, 48);
+function attachUltraHalo(t) {
+  for (let gy = t.by - 1; gy >= 1; gy--) {
+    if (isSolid(t.bx, gy, t.bz)) {
+      const hm = new THREE.Mesh(haloGeo, new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.3, fog: false, toneMapped: false, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 }));
+      hm.rotation.x = -Math.PI / 2;
+      hm.position.set(t.bx + 0.5, gy + 1.01, t.bz + 0.5);
+      hm.renderOrder = 2;
+      hm.scale.setScalar(3);
+      scene.add(hm);
+      t.halo = hm;
+      const ho = new THREE.Mesh(haloGeo, new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.1, fog: false, toneMapped: false, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 }));
+      ho.rotation.x = -Math.PI / 2;
+      ho.position.set(t.bx + 0.5, gy + 1.03, t.bz + 0.5);
+      ho.renderOrder = 1;
+      ho.scale.setScalar(3);
+      scene.add(ho);
+      t.haloOuter = ho;
+      break;
+    }
+  }
 }
 
 const megaWhiteHeat = new THREE.Color(0xffffff);
@@ -20291,14 +20411,59 @@ function getLitMegaMat() {
 }
 let litMegaVeilMat = null;
 function getLitMegaVeilMat() {
-  if (!litMegaVeilMat) litMegaVeilMat = new THREE.MeshBasicMaterial({ color: 0xff2211, transparent: true, opacity: 0.05, fog: false, toneMapped: false, depthWrite: false, blending: THREE.AdditiveBlending, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 });
+  if (!litMegaVeilMat) litMegaVeilMat = new THREE.MeshBasicMaterial({ color: MEGA_BLINK, transparent: true, opacity: 0.05, fog: false, toneMapped: false, depthWrite: false, blending: THREE.AdditiveBlending, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 });
   return litMegaVeilMat;
+}
+let litUltraTex = null;
+let litUltraTexCtx = null;
+let litUltraTexEff = -1;
+function getLitUltraTex() {
+  if (!litUltraTex) {
+    const c = document.createElement("canvas");
+    c.width = c.height = 64;
+    litUltraTexCtx = c.getContext("2d");
+    litUltraTexCtx.drawImage(TEX.ultra_side.image, 0, 0);
+    litUltraTex = new THREE.CanvasTexture(c);
+    litUltraTex.magFilter = THREE.NearestFilter;
+    litUltraTex.minFilter = THREE.LinearMipmapLinearFilter;
+    litUltraTex.generateMipmaps = true;
+    litUltraTex.anisotropy = 4;
+    litUltraTex.colorSpace = THREE.SRGBColorSpace;
+    litUltraTexEff = 0;
+  }
+  return litUltraTex;
+}
+function tickLitUltraTex(eff) {
+  getLitUltraTex();
+  const e = Math.max(0, Math.min(MEGA_WHITE_TEX_CAP, eff));
+  if (Math.abs(e - litUltraTexEff) < 0.002) return;
+  litUltraTexEff = e;
+  litUltraTexCtx.globalCompositeOperation = "source-over";
+  litUltraTexCtx.globalAlpha = 1;
+  litUltraTexCtx.drawImage(TEX.ultra_side.image, 0, 0);
+  if (e > 0) {
+    litUltraTexCtx.globalAlpha = e;
+    litUltraTexCtx.fillStyle = "#ffffff";
+    litUltraTexCtx.fillRect(0, 0, 64, 64);
+    litUltraTexCtx.globalAlpha = 1;
+  }
+  litUltraTex.needsUpdate = true;
+}
+let litUltraMat = null;
+function getLitUltraMat() {
+  if (!litUltraMat) litUltraMat = new THREE.MeshBasicMaterial({ map: getLitUltraTex(), fog: false, toneMapped: false });
+  return litUltraMat;
+}
+let litUltraVeilMat = null;
+function getLitUltraVeilMat() {
+  if (!litUltraVeilMat) litUltraVeilMat = new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.25, fog: false, toneMapped: false, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 });
+  return litUltraVeilMat;
 }
 
 const MEGA_LIGHT_MAX = 8;
 const MEGA_LIGHT_CELL = 5;
 const MEGA_LIGHT_REFRESH = 0.5;
-let megaLightClusters = [];   // [{ck, x, y, z, fuse}] centroid + min fuse per cell
+let megaLightClusters = [];   // [{ck, x, y, z, fuse, ultra}] centroid + min fuse per cell
 let megaLightBeats = new Map(); // ck -> {beats, blinkWas}
 let megaLights = [];          // pooled PointLights, each {ck, light}
 let megaLightT = 0;           // countdown until the next light re-assignment
@@ -20313,14 +20478,14 @@ function recomputeMegaLightClusters() {
     if (!t.mega || t.mesh) continue;
     const ck = megaBucketCk(t.bx, t.by, t.bz);
     let g = groups.get(ck);
-    if (!g) { g = { n: 0, sx: 0, sy: 0, sz: 0, fuse: Infinity }; groups.set(ck, g); }
-    g.n++; g.sx += t.bx; g.sy += t.by; g.sz += t.bz;
+    if (!g) { g = { n: 0, nu: 0, sx: 0, sy: 0, sz: 0, fuse: Infinity }; groups.set(ck, g); }
+    g.n++; if (t.ultra) g.nu++; g.sx += t.bx; g.sy += t.by; g.sz += t.bz;
     if (t.fuse < g.fuse) g.fuse = t.fuse;
   }
   megaLightClusters = [];
   const sig = [...groups.keys()].sort((a, b) => a - b).join(",");
   for (const [ck, g] of groups) {
-    megaLightClusters.push({ ck, x: g.sx / g.n + 0.5, y: g.sy / g.n + 1.5, z: g.sz / g.n + 0.5, fuse: g.fuse });
+    megaLightClusters.push({ ck, x: g.sx / g.n + 0.5, y: g.sy / g.n + 1.5, z: g.sz / g.n + 0.5, fuse: g.fuse, ultra: g.nu === g.n });
   }
   for (const ck of [...megaLightBeats.keys()]) if (!groups.has(ck)) megaLightBeats.delete(ck);
   if (sig !== megaLightCkSig) {
@@ -20348,7 +20513,7 @@ function syncMegaLights(dt = 0) {
     if (d2 <= GLOW_LIGHT_DIST * GLOW_LIGHT_DIST) ranked.push([d2, c.ck]);
   }
   ranked.sort((a, b) => a[0] - b[0]);
-  const want = Math.min(MEGA_LIGHT_MAX, qualityLights(), ranked.length);
+  const want = Math.min(megaCarveJobs.length ? 3 : MEGA_LIGHT_MAX, qualityLights(), ranked.length);
   const active = new Set();
   for (let i = 0; i < megaLights.length; i++) {
     const L = megaLights[i];
@@ -20384,12 +20549,14 @@ function syncMegaLights(dt = 0) {
   }
 }
 function tickMegaLights() {
-  if (!megaLights.length && !litMegaMat) return;
+  if (!megaLights.length && !litMegaMat && !litUltraMat) return;
   const fuseByCk = new Map();
-  let minFuseAll = Infinity;
+  let minFuseMega = Infinity;
+  let minFuseUltra = Infinity;
   for (const t of tntLit.values()) {
     if (!t.mega || t.mesh) continue;
-    if (t.fuse < minFuseAll) minFuseAll = t.fuse;
+    if (!t.ultra && t.fuse < minFuseMega) minFuseMega = t.fuse;
+    if (t.ultra && t.fuse < minFuseUltra) minFuseUltra = t.fuse;
     const ck = megaBucketCk(t.bx, t.by, t.bz);
     const f = fuseByCk.get(ck);
     if (f === undefined || t.fuse < f) fuseByCk.set(ck, t.fuse);
@@ -20397,17 +20564,38 @@ function tickMegaLights() {
   const cmap = new Map(megaLightClusters.map((c) => [c.ck, c]));
   const nowL = performance.now();
   if (litMegaMat) {
-    litMegaMat.color.setHex(MEGA_BLINK).lerp(megaWhiteHeat, megaWhiteEff(minFuseAll, MEGA_FUSE_TIME));
+    litMegaMat.color.setHex(MEGA_BLINK).lerp(megaWhiteHeat, megaWhiteEff(minFuseMega, MEGA_FUSE_TIME));
   }
   if (litMegaVeilMat) {
-    const vf = minFuseAll === Infinity ? 8 : minFuseAll;
-    const wAll = blinkWhite(minFuseAll);
-    const effAll = megaWhiteEff(minFuseAll, MEGA_FUSE_TIME);
+    const vf = minFuseMega === Infinity ? 8 : minFuseMega;
+    const wAll = blinkWhite(minFuseMega);
+    const effAll = megaWhiteEff(minFuseMega, MEGA_FUSE_TIME);
     litMegaVeilMat.color.setHex(MEGA_BLINK).lerp(megaWhiteHeat, effAll);
     litMegaVeilMat.opacity = 0.05 + 0.45 * blinkSmooth(vf, MEGA_FUSE_TIME) * wAll + 0.1 * effAll;
-    tickLitMegaTex(minFuseAll === Infinity ? 0 : effAll);
+    tickLitMegaTex(minFuseMega === Infinity ? 0 : effAll);
   } else {
     tickLitMegaTex(0);
+  }
+  if (litUltraVeilMat) {
+    const vf = minFuseUltra === Infinity ? 8 : minFuseUltra;
+    tickLitUltraTex(0);
+    litUltraVeilMat.color.setHex(0x000000);
+    litUltraVeilMat.opacity = 0.25 + 0.5 * blinkSmooth(vf, MEGA_FUSE_TIME);
+  } else {
+    tickLitUltraTex(0);
+  }
+  for (const t of tntLit.values()) {
+    if (!t.ultra || !t.halo || t.mesh) continue;
+    const uf = Math.max(0, t.fuse);
+    const up = 1 - uf / ULTRA_FUSE_TIME;
+    const upe = up * up;
+    const ub = blinkSmooth(uf, MEGA_FUSE_TIME) * up;
+    t.halo.scale.setScalar(Math.max(0.5, 3 + upe * (ULTRA_FULL_R - 3)));
+    t.halo.material.opacity = (0.08 + 0.22 * up) + 0.25 * ub;
+    if (t.haloOuter) {
+      t.haloOuter.scale.setScalar(Math.max(0.5, 3 + upe * (ULTRA_FULL_R * 1.2 - 3)));
+      t.haloOuter.material.opacity = (0.04 + 0.10 * up) + 0.12 * ub;
+    }
   }
   for (const L of megaLights) {
     if (!L || !L.light.visible || L.ck < 0) continue;
@@ -20421,14 +20609,26 @@ function tickMegaLights() {
     const effW = megaWhiteEff(fuse, MEGA_FUSE_TIME);
     const flicker = 8 * Math.sin(nowL * 0.011 + 2);
     L.light.position.set(c.x, c.y, c.z);
-    L.light.intensity = 30 + b * (50 + 90 * k) + effW * 60 + flicker;
+    if (c.ultra) {
+      L.light.color.setHex(0xffffff);
+      L.light.intensity = -(30 + b * (50 + 90 * k) + flicker);
+    } else {
+      L.light.intensity = 30 + b * (50 + 90 * k) + effW * 60 + flicker;
+    }
     const wasOn = st.blinkWas >= 0.5;
     if (b >= 0.5 && !wasOn) {
       st.beats++;
       L.light.distance = Math.min(34, 7 + 1.5 * st.beats + 12 * k);
     }
     st.blinkWas = b;
-    L.light.color.setHex(MEGA_BLINK).lerp(megaWhiteHeat, effW);
+    if (c.ultra) {
+      const uu = 1 - Math.max(0, fuse) / ULTRA_FUSE_TIME;
+      L.light.distance = (7 + uu * uu * (ULTRA_FULL_R - 7)) * (0.85 + 0.3 * b);
+      L.light.decay = 0;
+    } else {
+      L.light.decay = 1;
+    }
+    if (!c.ultra) L.light.color.setHex(MEGA_BLINK).lerp(megaWhiteHeat, effW);
   }
 }
 function makeMegaLight() {
@@ -20460,6 +20660,7 @@ function purgeLiveTNT() {
   }
   megaEject.length = 0;
   megaNoPerchUntil = 0;
+  ultraTrauma = 0;
 }
 
 function purgeLiveEffects() {
@@ -20589,7 +20790,7 @@ function restoreLiveTNT(savedBombs, savedQueue, savedEtas) {
       }
       explosionQueue.push({
         x: e.x, y: e.y, z: e.z,
-        pointBlank: !!e.pointBlank, homing: !!e.homing, mega: !!e.mega,
+        pointBlank: !!e.pointBlank, homing: !!e.homing, mega: !!e.mega, ultra: !!e.ultra,
         due: e.remain > 0.01 ? now + e.remain * 1000 : 0,
         ...(bird ? { bird } : {}),
       });
@@ -20621,10 +20822,11 @@ function restoreLiveTNT(savedBombs, savedQueue, savedEtas) {
         bx: e.bx, by: e.by, bz: e.bz,
         px: e.px, py: e.py, pz: e.pz,
         fuse: e.fuse, life: e.life,
-        spr, mesh, stuck: !!e.stuck, mega: !!e.mega,
+        spr, mesh, stuck: !!e.stuck, mega: !!e.mega, ultra: !!e.ultra, halo: null,
         ax: e.ax, ay: e.ay, az: e.az,
         bird,
       };
+      if (t.ultra) attachUltraHalo(t);
       tntLit.set(e.fly ? ("fly" + (tntFlySeq++)) : key(e.bx, e.by, e.bz), t);
     }
   }
@@ -20694,7 +20896,7 @@ function igniteTNT(bx, by, bz, fuse = FUSE_TIME) {
       clearTNTVisual(t);
       tntLit.delete(k);
       chainPending.add(k);
-      enqueueExplosion(bx, by, bz, t.stuck, false, 0, true, true);
+      enqueueExplosion(bx, by, bz, t.stuck, false, 0, true, true, !!t.ultra);
       return;
     }
     clearTNTVisual(t);
@@ -20703,18 +20905,21 @@ function igniteTNT(bx, by, bz, fuse = FUSE_TIME) {
       fizzleTNT(bx, by, bz);
       return;
     }
-    explodeTNT(bx, by, bz, t.stuck, false, !!t.mega);
+    explodeTNT(bx, by, bz, t.stuck, false, !!t.mega, !!t.ultra);
     return;
   }
-  const mega = getBlock(bx, by, bz) === MEGA_TNT;
+  const ignId = getBlock(bx, by, bz);
+  const mega = isMegaLike(ignId);
+  const ultra = ignId === ULTRA_TNT;
   if (mega && megaAimOnMob(bx, by, bz)) return;
   const spr = mega ? null : makeFuseSprite();
   if (spr) {
     spr.position.set(bx + 0.5, by + 1.35, bz + 0.5);
     scene.add(spr);
   }
-  const t = { bx, by, bz, px: bx + 0.5, py: by + 1.1, pz: bz + 0.5, fuse, life: fuse + 2, spr, mesh: null, stuck: false, ax: 0, ay: 0, az: 0, bird: null, mega };
+  const t = { bx, by, bz, px: bx + 0.5, py: by + 1.1, pz: bz + 0.5, fuse, life: fuse + 2, spr, mesh: null, stuck: false, ax: 0, ay: 0, az: 0, bird: null, mega, ultra, halo: null };
   if (mega) {
+    if (ultra) attachUltraHalo(t);
     tntLit.set(k, t);
     refreshBlocks([[bx, by, bz]]);
     panicMegaIgnite(bx + 0.5, by + 0.5, bz + 0.5);
@@ -21132,7 +21337,7 @@ function tickTNT(dt) {
       tntLit.delete(k);
       if (t.mega) {
         chainPending.add(k);
-        enqueueExplosion(t.bx, t.by, t.bz, t.stuck, false, 0, true, false);
+        enqueueExplosion(t.bx, t.by, t.bz, t.stuck, false, 0, true, false, !!t.ultra);
       }
       else enqueueExplosion(t.bx, t.by, t.bz, t.stuck, false);
     } else if (!t.mega) {
@@ -21143,14 +21348,14 @@ function tickTNT(dt) {
 }
 
 const CHAIN_DELAY = 50;
-function enqueueExplosion(x, y, z, pointBlank, homing = false, delay = 0, mega = false, front = false) {
+function enqueueExplosion(x, y, z, pointBlank, homing = false, delay = 0, mega = false, front = false, ultra = false) {
   const due = delay ? performance.now() + delay : 0;
-  const e = { x, y, z, pointBlank, homing, due, mega: !!mega };
+  const e = { x, y, z, pointBlank, homing, due, mega: !!mega, ultra: !!ultra };
   if (front) explosionQueue.unshift(e);
   else explosionQueue.push(e);
 }
-function explodeTNT(x, y, z, pointBlank, homing = false, mega = false) {
-  enqueueExplosion(x, y, z, pointBlank, homing, 0, mega);
+function explodeTNT(x, y, z, pointBlank, homing = false, mega = false, ultra = false) {
+  enqueueExplosion(x, y, z, pointBlank, homing, 0, mega, false, ultra);
 }
 function explodeBird(x, y, z, pointBlank) {
   explosionQueue.push({ x, y, z, pointBlank, homing: true, due: 0, bird: true });
@@ -21176,15 +21381,51 @@ function scanBlastSphere(cx, cy, cz, R, fn) {
     }
   }
 }
-function carveBlastCell(gx, gy, gz, mega, batchKeys) {
+function carveDeleteCell(gx, gy, gz, kk, id) {
+  if (gy < 0 || gy > MAX_Y) return;
+  world.delete(kk);
+  if (id === GLOWSTONE) {
+    if (worldGlowstoneSets.get(world).delete(kk)) {
+      worldGlowVariants.get(world).delete(kk);
+      glowDirtyDeferred = true;
+    }
+  } else if (id === PORTAL || id === OBSIDIAN) {
+    worldPortalSets.get(world).delete(kk);
+  } else if (id === TNT || isMegaLike(id)) {
+    worldTntSets.get(world).delete(kk);
+  }
+  if (id === FLOWER) placedFlowers.delete(kk);
+  else if (id === DIRT) {
+    const sk = soilKey(dim, gx, gy, gz);
+    if (growableSoils.has(sk)) releaseGrowable(sk);
+  }
+  endMemo.dim = "";
+  netherMemo.dim = "";
+  worldDirty = true;
+}
+function carveBlastCell(gx, gy, gz, mega, batchKeys, ultra = false, deferCell = true) {
   const kk = key(gx, gy, gz);
   if (batchKeys.has(kk)) return false;
   const id = getBlock(gx, gy, gz);
   if (id === AIR) return false;
   if (gy === 0) return false;
   if (protectedBlocks.has(dim + ":" + kk)) return false;
-  if ((id === TNT || id === MEGA_TNT) && !(poolConsumed && poolConsumed.has(kk))) {
-    const isMega = id === MEGA_TNT;
+  if (ultra && (id === TNT || isMegaLike(id))) {
+    const lt = tntLit.get(kk);
+    if (lt) {
+      if (lt.mesh) return false;
+      clearTNTVisual(lt);
+      tntLit.delete(kk);
+    }
+    if (chainPending.has(kk)) chainPending.delete(kk);
+    batchKeys.add(kk);
+    setBlock(gx, gy, gz, AIR);
+    if (deferCell && refreshDefer) refreshDefer.push([gx, gy, gz]);
+    return false;
+  }
+  if ((id === TNT || isMegaLike(id)) && !(poolConsumed && poolConsumed.has(kk))) {
+    const isUltraCell = id === ULTRA_TNT;
+    const isMega = isMegaLike(id);
     const instant = mega || isMega;
     if (tntLit.has(kk)) {
       const lt = tntLit.get(kk);
@@ -21193,25 +21434,25 @@ function carveBlastCell(gx, gy, gz, mega, batchKeys) {
         clearTNTVisual(lt);
         tntLit.delete(kk);
         chainPending.add(kk);
-        if (isMega) enqueueExplosion(gx, gy, gz, lt.stuck, false, 0, true, true);
+        if (isMega) enqueueExplosion(gx, gy, gz, lt.stuck, false, 0, true, true, isUltraCell);
         else enqueueExplosion(gx, gy, gz, lt.stuck, false, instant ? 0 : CHAIN_DELAY, false, instant);
       }
     } else {
       if (chainPending.has(kk)) return false;
       chainPending.add(kk);
-      if (isMega) enqueueExplosion(gx, gy, gz, false, false, 0, true, true);
+      if (isMega) enqueueExplosion(gx, gy, gz, false, false, 0, true, true, isUltraCell);
       else enqueueExplosion(gx, gy, gz, false, false, instant ? 0 : CHAIN_DELAY, false, instant);
     }
     return false;
   }
   batchKeys.add(kk);
-  const blastPineOwner = (id === LOG || id === LEAVES) && plantedPines.size ? pineAt(gx, gy, gz) : null;
+  const blastPineOwner = !ultra && (id === LOG || id === LEAVES) && plantedPines.size ? pineAt(gx, gy, gz) : null;
   if (blastPineOwner) {
     const bk = soilKey(dim, blastPineOwner.x, blastPineOwner.y, blastPineOwner.z) + "|" + gx + "," + gy + "," + gz;
     brokenPineCells.add(bk);
   }
-  setBlock(gx, gy, gz, AIR);
-  refreshDefer.push([gx, gy, gz]);
+  carveDeleteCell(gx, gy, gz, kk, id);
+  if (deferCell && refreshDefer) refreshDefer.push([gx, gy, gz]);
   return blastPineOwner ? true : false;
 }
 function carveBlastSphere(bx, by, bz, mega, batchKeys, radiusMul = 1) {
@@ -21233,9 +21474,47 @@ function carveBlastSphere(bx, by, bz, mega, batchKeys, radiusMul = 1) {
   return brokePine;
 }
 const MEGA_CARVE_BUDGET_MS = 6;
+let drainThrottle = 1;
+function carveBudgetMs() { const b = qualityTier === 0 ? 12 : qualityTier === 1 ? MEGA_CARVE_BUDGET_MS : 4; return megaCarveJobs.length ? Math.max(b, 6) : b; }
+function remeshBudgetMs() { const b = qualityTier === 0 ? 6 : qualityTier === 1 ? CHUNK_BUDGET_MS : 2; return megaCarveJobs.length ? Math.max(b, 4) : b; }
 const megaCarveJobs = [];
-function clearMegaCarveJobs() { megaCarveJobs.length = 0; }
-function enqueueMegaCarveJob(spheres, R, set, seed) {
+function clearMegaCarveJobs() {
+  for (const job of megaCarveJobs) disposeJobFireball(job);
+  megaCarveJobs.length = 0;
+}
+const fireballGeo = new THREE.SphereGeometry(1, 24, 16);
+const fireballMatOuter = new THREE.MeshBasicMaterial({ color: 0xffd9a0, transparent: true, opacity: 0.7, fog: false, toneMapped: false, depthWrite: false });
+const fireballMatInner = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.8, fog: false, toneMapped: false, depthWrite: false });
+function attachJobFireball(job) {
+  if (MEGA_QUIET) return;
+  const outer = new THREE.Mesh(fireballGeo, fireballMatOuter);
+  const inner = new THREE.Mesh(fireballGeo, fireballMatInner);
+  outer.position.set(job.ccx, job.ccy, job.ccz);
+  inner.position.set(job.ccx, job.ccy, job.ccz);
+  outer.scale.setScalar(0.5);
+  inner.scale.setScalar(0.31);
+  outer.renderOrder = 3; inner.renderOrder = 4;
+  outer.frustumCulled = false; inner.frustumCulled = false;
+  scene.add(outer); scene.add(inner);
+  job.fire = { outer, inner };
+}
+function disposeJobFireball(job) {
+  if (!job.fire) return;
+  scene.remove(job.fire.outer); scene.remove(job.fire.inner);
+  job.fire = null;
+}
+function spawnFrontEmbers(job) {
+  const r = Math.max(1, Math.sqrt(job.front2));
+  const yLo = Math.max(1, job.yLo ?? 1);
+  const yHi = Math.min(MAX_Y - 1, job.yHi ?? MAX_Y - 1);
+  megaCloud(job.ccx, job.ccy, job.ccz, 10, 2, 0.7, 6, true,
+    () => { const k = 0.9 + Math.random() * 0.2; return [k, 0.45 * k, 0.1 * k]; },
+    () => { const a = Math.random() * Math.PI * 2; return [job.ccx + Math.cos(a) * r, Math.min(yHi, Math.max(yLo, job.ccy + (Math.random() - 0.5) * r * 0.6)), job.ccz + Math.sin(a) * r]; },
+    (i, p) => { const dx = p[0] - job.ccx, dz = p[2] - job.ccz; const dl = Math.hypot(dx, dz) || 1; return [dx / dl * 3, 2 + Math.random() * 3, dz / dl * 3]; }
+  );
+  job.emberT = performance.now();
+}
+function enqueueMegaCarveJob(spheres, R, set, seed, opts = {}) {
   let xLo = Infinity, xHi = -Infinity, zLo = Infinity, zHi = -Infinity;
   for (const s of spheres) {
     if (s.x - R < xLo) xLo = s.x - R;
@@ -21243,85 +21522,178 @@ function enqueueMegaCarveJob(spheres, R, set, seed) {
     if (s.z - R < zLo) zLo = s.z - R;
     if (s.z + R > zHi) zHi = s.z + R;
   }
+  xLo = Math.max(-WORLD_RADIUS, Math.ceil(xLo)); xHi = Math.min(WORLD_RADIUS, Math.floor(xHi));
+  zLo = Math.max(-WORLD_RADIUS, Math.ceil(zLo)); zHi = Math.min(WORLD_RADIUS, Math.floor(zHi));
+  const R2 = R * R;
+  let ccx = 0, ccy = 0, ccz = 0;
+  for (const s of spheres) { ccx += s.x; ccy += s.y; ccz += s.z; }
+  ccx /= spheres.length; ccy /= spheres.length; ccz /= spheres.length;
+  const order = [];
+  for (let gx = xLo; gx <= xHi; gx++) {
+    for (let gz = zLo; gz <= zHi; gz++) {
+      const dx = gx - ccx, dz = gz - ccz;
+      order.push([dx * dx + dz * dz, gx, gz]);
+    }
+  }
+  order.sort((a, b) => a[0] - b[0]);
+  const cols = order.map((e) => [e[1], e[2]]);
+  const colsD2 = order.map((e) => e[0]);
+  const chunkMax = new Map();
+  for (let i = 0; i < cols.length; i++) {
+    for (const ck of columnKeys(cols[i][0], cols[i][1])) {
+      if ((chunkMax.get(ck) ?? -1) < i) chunkMax.set(ck, i);
+    }
+  }
   megaCarveJobs.push({
-    dim, spheres, R, R2: R * R, set, seed,
-    xLo: Math.max(-WORLD_RADIUS, Math.ceil(xLo)), xHi: Math.min(WORLD_RADIUS, Math.floor(xHi)),
-    zLo: Math.max(-WORLD_RADIUS, Math.ceil(zLo)), zHi: Math.min(WORLD_RADIUS, Math.floor(zHi)),
-    gx: 0, gz: 0, started: false, brokePine: false, ivF: [],
+    dim, spheres, R, R2, set, seed,
+    yLo: opts.yLo ?? null, yHi: opts.yHi ?? null, ultra: !!opts.ultra,
+    cols, colsD2, ci: 0, cells: opts.cells || null, celli: 0,
+    ccx, ccy, ccz, front2: 0, fire: null, finalFx: null, emberT: 0,
+    started: false, brokePine: false, ivF: [],
+    iv: null, ivX: 0, ivZ: 0, ivI: 0, ivY: 0, deadline: 0,
+    chunkMax, hot: new Set(),
   });
+  applyQualityTier(Math.max(qualityTier, 1));
+}
+function flushJobHot(job) {
+  if (!job.hot.size) return;
+  for (const ck of job.hot) if (chunkMeshes.has(ck)) poolRefreshQueue.set(ck, carveSlice);
+  job.hot.clear();
 }
 function carveMegaUnionColumn(job, gx, gz) {
-  const F = job.ivF;
-  F.length = 0;
-  const R2 = job.R2;
-  for (let i = 0; i < job.spheres.length; i++) {
-    const s = job.spheres[i];
-    const dx = gx - s.x, dz = gz - s.z;
-    const r2xz = dx * dx + dz * dz;
-    if (r2xz > R2) continue;
-    const dyMax = Math.sqrt(R2 - r2xz);
-    F.push(Math.ceil(s.y - dyMax), Math.floor(s.y + dyMax));
+  if (!job.iv || job.ivX !== gx || job.ivZ !== gz) {
+    const F = job.ivF;
+    F.length = 0;
+    const R2 = job.R2;
+    for (let i = 0; i < job.spheres.length; i++) {
+      const s = job.spheres[i];
+      const dx = gx - s.x, dz = gz - s.z;
+      const r2xz = dx * dx + dz * dz;
+      if (r2xz > R2) continue;
+      const dyMax = Math.sqrt(R2 - r2xz);
+      F.push(Math.ceil(s.y - dyMax), Math.floor(s.y + dyMax));
+    }
+    if (!F.length) return true;
+    for (let i = 2; i < F.length; i += 2) {
+      const lo = F[i], hi = F[i + 1];
+      let j = i - 2;
+      while (j >= 0 && F[j] > lo) { F[j + 2] = F[j]; F[j + 3] = F[j + 1]; j -= 2; }
+      F[j + 2] = lo; F[j + 3] = hi;
+    }
+    const iv = [];
+    let clo = F[0], chi = F[1];
+    for (let i = 2; i < F.length; i += 2) {
+      const lo = F[i], hi = F[i + 1];
+      if (lo <= chi + 1) { if (hi > chi) chi = hi; }
+      else { iv.push(clo, chi); clo = lo; chi = hi; }
+    }
+    iv.push(clo, chi);
+    job.iv = iv; job.ivX = gx; job.ivZ = gz; job.ivI = 0; job.ivY = iv[0];
   }
-  if (!F.length) return;
-  for (let i = 2; i < F.length; i += 2) {
-    const lo = F[i], hi = F[i + 1];
-    let j = i - 2;
-    while (j >= 0 && F[j] > lo) { F[j + 2] = F[j]; F[j + 3] = F[j + 1]; j -= 2; }
-    F[j + 2] = lo; F[j + 3] = hi;
-  }
-  const ct = colTops[job.dim];
-  const top = ct[colTopIdx(gx, gz)];
-  let clo = F[0], chi = F[1];
-  const emit = (lo, hi) => {
-    const yLo = Math.max(0, lo);
-    let yHi = Math.min(MAX_Y, hi);
+  const iv = job.iv;
+  const top = colTops[job.dim][colTopIdx(gx, gz)];
+  const yLoMin = Math.max(0, job.yLo ?? 0);
+  const yHiMax = Math.min(job.yHi ?? MAX_Y, MAX_Y);
+  let n = 0;
+  while (job.ivI < iv.length) {
+    let yHi = iv[job.ivI + 1];
+    if (yHi > yHiMax) yHi = yHiMax;
     if (top < yHi) yHi = top;
-    for (let gy = yLo; gy <= yHi; gy++) if (carveBlastCell(gx, gy, gz, true, job.set)) job.brokePine = true;
-  };
-  for (let i = 2; i < F.length; i += 2) {
-    const lo = F[i], hi = F[i + 1];
-    if (lo <= chi + 1) { if (hi > chi) chi = hi; }
-    else { emit(clo, chi); clo = lo; chi = hi; }
+    const yStart = Math.max(yLoMin, job.ivY);
+    for (let gy = yStart; gy <= yHi; gy++) {
+      if (carveBlastCell(gx, gy, gz, true, job.set, job.ultra, false)) job.brokePine = true;
+      if ((++n & 31) === 0 && performance.now() >= job.deadline) { job.ivY = gy + 1; return false; }
+    }
+    job.ivI += 2;
+    if (job.ivI < iv.length) job.ivY = iv[job.ivI];
   }
-  emit(clo, chi);
+  job.iv = null;
+  return true;
 }
 function drainMegaCarveJobs() {
   if (!megaCarveJobs.length) return;
-  const deadline = performance.now() + MEGA_CARVE_BUDGET_MS;
+  carveSlice++;
+  if (dt > 0.026) drainThrottle = Math.max(0.5, drainThrottle * 0.85);
+  else if (dt < 0.012) drainThrottle = Math.min(1, drainThrottle + 0.15);
+  const deadline = performance.now() + carveBudgetMs() * drainThrottle;
   let cols = 0;
   glowDefer++;
   try {
     while (megaCarveJobs.length) {
       const job = megaCarveJobs[0];
-      if (job.dim !== dim) { megaCarveJobs.shift(); continue; }
-      if (!job.started) { job.gx = job.xLo; job.gz = job.zLo; job.started = true; }
+      if (job.dim !== dim) { flushJobHot(job); disposeJobFireball(job); megaCarveJobs.shift(); if (!megaCarveJobs.length) applyQualityTier(0); continue; }
+      if (!job.started) { job.ci = 0; job.celli = 0; job.started = true; }
+      job.deadline = deadline;
       refreshDefer = [];
       try {
-        while (job.gx <= job.xHi) {
-          while (job.gz <= job.zHi) {
-            carveMegaUnionColumn(job, job.gx, job.gz);
-            job.gz++;
+        while (job.ci < job.cols.length) {
+          const [gx, gz] = job.cols[job.ci];
+          if (!job.iv) refreshDefer.push([gx, 0, gz]);
+          if (!carveMegaUnionColumn(job, gx, gz)) break;
+          const d2 = job.colsD2[job.ci++];
+          if (d2 > job.front2) job.front2 = d2;
+          if ((++cols & 7) === 0 && performance.now() >= deadline) break;
+        }
+        if (job.cells) {
+          while (job.celli < job.cells.length) {
+            const [cx, cy, cz] = job.cells[job.celli++];
+            if (carveBlastCell(cx, cy, cz, true, job.set, job.ultra)) job.brokePine = true;
             if ((++cols & 7) === 0 && performance.now() >= deadline) break;
           }
-          if (job.gz <= job.zHi) break;
-          job.gz = job.zLo;
-          job.gx++;
+        }
+        if (job.fire) {
+          const fr = Math.max(0.5, Math.sqrt(job.front2));
+          job.fire.outer.scale.setScalar(fr);
+          job.fire.inner.scale.setScalar(fr * 0.62);
+          if (!MEGA_QUIET && performance.now() - job.emberT > 120) spawnFrontEmbers(job);
         }
       } finally {
         const carved = refreshDefer;
         refreshDefer = null;
+        if (job.hot.size) {
+          for (const ck of job.hot) {
+            if ((job.chunkMax.get(ck) ?? -1) < job.ci) {
+              job.hot.delete(ck);
+              if (chunkMeshes.has(ck)) poolRefreshQueue.set(ck, carveSlice);
+            }
+          }
+        }
         if (carved.length) {
-          for (const c of purgeFloatingLiquidsAround(carved)) carved.push(c);
-          for (const ck of refreshChunkKeys(carved)) {
-            if (chunkMeshes.has(ck)) poolRefreshQueue.add(ck);
+          let real = null;
+          for (const [mx, my, mz] of carved) {
+            if (my !== 0) { (real || (real = [])).push([mx, my, mz]); continue; }
+            for (const ck of columnKeys(mx, mz)) {
+              if ((job.chunkMax.get(ck) ?? -1) < job.ci) {
+                if (chunkMeshes.has(ck)) poolRefreshQueue.set(ck, carveSlice);
+              } else job.hot.add(ck);
+            }
+          }
+          if (real) {
+            for (const ck of refreshChunkKeys(real)) {
+              if (chunkMeshes.has(ck)) poolRefreshQueue.set(ck, carveSlice);
+            }
           }
           if (plantedPines.size) garlandDirty = true;
+          portalDirty = true;
           queueSave();
         }
       }
-      if (job.gx > job.xHi) {
+      const colsDone = job.ci >= job.cols.length && (!job.cells || job.celli >= job.cells.length);
+      if (colsDone) {
         megaCarveJobs.shift();
+        flushJobHot(job);
+        disposeJobFireball(job);
+        drainThrottle = 1;
+        if (!megaCarveJobs.length) applyQualityTier(0);
+        if (!MEGA_QUIET && job.finalFx) {
+          const f = job.finalFx;
+          spawnMegaUnion(f.members, f.ccx, f.ccy, f.ccz, f.r);
+        }
         if (job.brokePine && job.seed) cullSmallChainsNear(job.seed.x, job.seed.y, job.seed.z, 3, 8);
+        if (job.ultra) {
+          if (job.seed) cullSmallChainsNear(job.seed.x, job.seed.y, job.seed.z, 3, 8);
+          purgeUltraPines(job.dim);
+        }
       } else break;
       if (performance.now() >= deadline) break;
     }
@@ -21333,17 +21705,25 @@ function drainMegaCarveJobs() {
   }
 }
 function processMegaPool(seeds, batchKeys) {
-  // One single explosion: transitively-close TNT/MEGA_TNT are discovered live
+  // One single explosion: transitively-close TNT/MEGA_TNT/ULTRA_TNT are discovered live
   // over the TNT index (catches blocks placed after lighting) and union-carved
   // once. Consumed members are carved inline below, never re-enqueued.
+  // (ULTRA_TNT chains out to its own wipe instead of joining the pool.)
   const members = [];
   const memberSet = new Set();
   const takeLive = (bx, by, bz) => {
     const k = key(bx, by, bz);
     if (memberSet.has(k)) return null;
     const id = getBlock(bx, by, bz);
-    if (id !== TNT && id !== MEGA_TNT) return null;
+    if (id !== TNT && !isMegaLike(id)) return null;
     if (protectedBlocks.has(dim + ":" + k)) return null;
+    if (id === ULTRA_TNT) {
+      const ltu = tntLit.get(k);
+      if (ltu && !ltu.mesh) { clearTNTVisual(ltu); tntLit.delete(k); }
+      if (chainPending.has(k)) chainPending.delete(k);
+      enqueueExplosion(bx, by, bz, false, false, 0, true, true, true);
+      return null;
+    }
     const lt = tntLit.get(k);
     if (lt) {
       if (lt.mesh) return null;
@@ -21377,8 +21757,20 @@ function processMegaPool(seeds, batchKeys) {
           const dx = cell.x - m.x, dy = cell.y - m.y, dz = cell.z - m.z;
           if (dx * dx + dy * dy + dz * dz > R2) continue;
           const id = getBlock(cell.x, cell.y, cell.z);
-          if (id !== TNT && id !== MEGA_TNT) { cells.splice(j, 1); continue; }
+          if (id !== TNT && !isMegaLike(id)) { cells.splice(j, 1); continue; }
           if (protectedBlocks.has(dim + ":" + cell.k)) { cells.splice(j, 1); continue; }
+          if (id === ULTRA_TNT) {
+            cells.splice(j, 1);
+            const ltu = tntLit.get(cell.k);
+            if (ltu) {
+              if (ltu.mesh) continue;
+              clearTNTVisual(ltu);
+              tntLit.delete(cell.k);
+            }
+            if (chainPending.has(cell.k)) chainPending.delete(cell.k);
+            enqueueExplosion(cell.x, cell.y, cell.z, false, false, 0, true, true, true);
+            continue;
+          }
           cells.splice(j, 1);
           const lt = tntLit.get(cell.k);
           if (lt) {
@@ -21429,7 +21821,7 @@ function processMegaPool(seeds, batchKeys) {
     for (const k of memberSet) {
       const [bx, by, bz] = keyXYZ(k);
       const id = getBlock(bx, by, bz);
-      if (id !== TNT && id !== MEGA_TNT) continue;
+      if (id !== TNT && !isMegaLike(id)) continue;
       const lt = tntLit.get(k);
       if (lt && lt.mesh) continue;
       batchKeys.add(k);
@@ -21445,6 +21837,9 @@ function processMegaPool(seeds, batchKeys) {
       : megas;
     const seed0 = members[0];
     enqueueMegaCarveJob(spheres, R, new Set(memberSet), { x: Math.floor(seed0.x), y: Math.floor(seed0.y), z: Math.floor(seed0.z) });
+    const pj = megaCarveJobs[megaCarveJobs.length - 1];
+    attachJobFireball(pj);
+    pj.finalFx = { members, ccx, ccy, ccz, r: poolR };
   } else {
     try {
       for (const m of members) {
@@ -21454,7 +21849,6 @@ function processMegaPool(seeds, batchKeys) {
       poolConsumed = null;
     }
   }
-  if (!MEGA_QUIET) spawnMegaUnion(members, ccx, ccy, ccz, poolR);
   recordCraterAvoid(ccx, ccz, maxDist + MEGA_BLAST_RADIUS * poolR + 2);
   const megaUnion = [];
   const megaMembers3 = [];
@@ -21466,6 +21860,91 @@ function processMegaPool(seeds, batchKeys) {
   applyMegaKnockback(ccx, ccy, ccz, megaMembers3.length ? megaMembers3 : null, poolR);
   panicMegaBlast(ccx, ccy, ccz, 0, megaUnion, touchXYZ);
   return brokePine;
+}
+function ultraOverhangCells() {
+  const out = [];
+  const seen = new Set();
+  const stack = [];
+  for (let gx = -WORLD_RADIUS; gx <= WORLD_RADIUS; gx++)
+    for (let gz = -WORLD_RADIUS; gz <= WORLD_RADIUS; gz++)
+      if (getBlock(gx, ULTRA_BAND1_HI, gz) === LOG) stack.push([gx, ULTRA_BAND1_HI, gz]);
+  while (stack.length && out.length < 20000) {
+    const [x, y, z] = stack.pop();
+    const k = key(x, y, z);
+    if (seen.has(k)) continue;
+    seen.add(k);
+    if (y < ULTRA_BAND1_HI + 1) continue;
+    const id = getBlock(x, y, z);
+    if (id !== LOG && id !== LEAVES) continue;
+    if (protectedBlocks.has(dim + ":" + k)) continue;
+    out.push([x, y, z]);
+    stack.push([x + 1, y, z], [x - 1, y, z], [x, y + 1, z], [x, y - 1, z], [x, y, z + 1], [x, y, z - 1]);
+  }
+  return out;
+}
+function processUltraBlast(bx, by, bz, batchKeys) {
+  const band = ultraBandOf(by);
+  const set = worldTntSets.get(world);
+  if (set && set.size) {
+    for (const k of [...set]) {
+      if (batchKeys.has(k)) continue;
+      const [x, y, z] = keyXYZ(k);
+      const id = getBlock(x, y, z);
+      if (id !== TNT && !isMegaLike(id)) continue;
+      if (id === ULTRA_TNT && ultraBandOf(y) !== band) continue;
+      if (protectedBlocks.has(dim + ":" + k)) continue;
+      const lt = tntLit.get(k);
+      if (lt) {
+        if (lt.mesh) continue;
+        clearTNTVisual(lt);
+        tntLit.delete(k);
+      }
+      if (chainPending.has(k)) chainPending.delete(k);
+      batchKeys.add(k);
+      setBlock(x, y, z, AIR);
+      refreshDefer.push([x, y, z]);
+    }
+  }
+  for (let i = explosionQueue.length - 1; i >= 0; i--) {
+    const q = explosionQueue[i];
+    if (q.bird || q.homing) continue;
+    if (q.ultra && ultraBandOf(Math.floor(q.y)) !== band) continue;
+    explosionQueue.splice(i, 1);
+    const qk = key(Math.floor(q.x), Math.floor(q.y), Math.floor(q.z));
+    if (chainPending.has(qk)) chainPending.delete(qk);
+  }
+  const w = dim === "over" ? ultraBandY(by) : { lo: null, hi: null };
+  const cells = (dim === "over" && band === 1) ? ultraOverhangCells() : null;
+  enqueueMegaCarveJob(
+    [{ x: bx + 0.5, y: by + 0.5, z: bz + 0.5 }],
+    ULTRA_FULL_R,
+    new Set(batchKeys),
+    { x: bx, y: by, z: bz },
+    { yLo: w.lo, yHi: w.hi, ultra: true, cells }
+  );
+  const uj = megaCarveJobs[megaCarveJobs.length - 1];
+  attachJobFireball(uj);
+  uj.finalFx = { members: [{ x: bx, y: by, z: bz }], ccx: bx + 0.5, ccy: by + 0.5, ccz: bz + 0.5, r: 10 };
+  if (!MEGA_QUIET) ultraTrauma = 1.5;
+  if (mobs.length) handleMobExplosion(bx + 0.5, by + 0.5, bz + 0.5);
+  megaNoPerchUntil = Math.max(megaNoPerchUntil, performance.now() / 1000 + PANIC_TIME);
+  cullSmallChainsNear(bx, by, bz, 3, 8);
+}
+function purgeUltraPines(jobDim) {
+  for (const [sk, p] of [...plantedPines]) {
+    if ((p.dim || "over") !== jobDim) continue;
+    if (getBlock(p.x, p.y, p.z) === AIR) {
+      plantedPines.delete(sk);
+      for (const bk of [...brokenPineCells]) if (bk.startsWith(sk + "|")) brokenPineCells.delete(bk);
+    } else {
+      for (const c of pineCellsFor(p.x, p.y, p.z, p.m, p.e)) {
+        if (getBlock(c.x, c.y, c.z) === AIR) brokenPineCells.add(sk + "|" + c.x + "," + c.y + "," + c.z);
+      }
+    }
+  }
+  garlandDirty = true;
+  rebuildColTops(jobDim);
+  queueSave();
 }
 function processExplosionQueue() {
   if (!explosionQueue.length) return;
@@ -21484,14 +21963,19 @@ function processExplosionQueue() {
     }
     const peek = explosionQueue[0];
     if (peek.due && peek.due > performance.now()) break;
-    const { x, y, z, pointBlank, homing, bird, mega } = explosionQueue.shift();
+    const { x, y, z, pointBlank, homing, bird, mega, ultra } = explosionQueue.shift();
     const kShift = key(Math.floor(x), Math.floor(y), Math.floor(z));
     if (chainPending.has(kShift)) chainPending.delete(kShift);
+    if (mega && ultra && !homing && !bird) {
+      processUltraBlast(Math.floor(x), Math.floor(y), Math.floor(z), batchKeys);
+      processed++;
+      continue;
+    }
     if (mega && !homing && !bird) {
       const members = [{ x, y, z }];
       while (members.length < 12 && explosionQueue.length) {
         const q = explosionQueue[0];
-        if (!(q.mega && !q.due && !q.homing && !q.bird)) break;
+        if (!(q.mega && !q.ultra && !q.due && !q.homing && !q.bird)) break;
         const thr = MEGA_BLAST_RADIUS * clusterRadius(members.length);
         let near = false;
         for (const m of members) {
@@ -21551,7 +22035,7 @@ function processExplosionQueue() {
   refreshDefer = null;
   if (toRefresh.length) {
     for (const ck of refreshChunkKeys(toRefresh)) {
-      if (chunkMeshes.has(ck)) poolRefreshQueue.add(ck);
+      if (chunkMeshes.has(ck)) poolRefreshQueue.set(ck, -1);
     }
     if (plantedPines.size) garlandDirty = true;
     queueSave();
@@ -21748,11 +22232,14 @@ function clusterRadius(n) {
   return 1 + (Math.min(Math.max(n, 1), 10) - 1) * (MEGA_CLUSTER_MAX - 1) / 9;
 }
 function megaFxSingle(cx, cy, cz, radiusMul = 1, density = 1.6) {
-  const LIFE = 3 * MEGA_FX_T;
+  const big = radiusMul > 3;
+  const LIFE = (big ? 2 : 3) * MEGA_FX_T;
   const CR = MEGA_BLAST_RADIUS * radiusMul;
-  megaFlashBall(cx, cy, cz, 0xffd9a0, CR, 0.6 * MEGA_FX_T, 0.55);
-  megaFlashBall(cx, cy, cz, 0xffffff, CR * 0.62, 0.4 * MEGA_FX_T, 0.8);
-  megaCloud(cx, cy, cz, Math.round(1400 * density), 2.8 * radiusMul, LIFE, 0, false,
+  megaFlashBall(cx, cy, cz, 0xffd9a0, CR, 0.6 * MEGA_FX_T * (big ? 0.7 : 1), big ? 0.45 : 0.55);
+  megaFlashBall(cx, cy, cz, 0xffffff, CR * 0.62, 0.4 * MEGA_FX_T * (big ? 0.7 : 1), big ? 0.65 : 0.8);
+  const ff = Math.min(density, 5);
+  const cap = (s) => Math.min(6, s);
+  megaCloud(cx, cy, cz, Math.round(1400 * ff), cap(2.8 * radiusMul), LIFE, 0, false,
     () => {
       const r = Math.random();
       if (r < 0.3) return [0.7, 0.07 + Math.random() * 0.05, 0.02];
@@ -21770,7 +22257,7 @@ function megaFxSingle(cx, cy, cz, radiusMul = 1, density = 1.6) {
       const s = (1 + Math.random() * 2) * radiusMul;
       return [dx / dl * s, dy / dl * s, dz / dl * s];
     });
-  megaCloud(cx, cy, cz, Math.round(400 * density), 2.2 * radiusMul, LIFE, 0, true,
+  megaCloud(cx, cy, cz, Math.round(400 * ff), cap(2.2 * radiusMul), LIFE, 0, true,
     () => {
       const r = Math.random();
       if (r < 0.5) return [1, 1, 1];
@@ -21788,7 +22275,7 @@ function megaFxSingle(cx, cy, cz, radiusMul = 1, density = 1.6) {
       const s = (3 + Math.random() * 3) * radiusMul;
       return [dx / dl * s, dy / dl * s, dz / dl * s];
     });
-  megaCloud(cx, cy, cz, Math.round(400 * density), 2.4 * radiusMul, LIFE, -1, false,
+  megaCloud(cx, cy, cz, Math.round(400 * ff), cap(2.4 * radiusMul), LIFE, -1, false,
     () => {
       const g = 0.22 + Math.random() * 0.16;
       return [g + 0.12, g * 0.9, g * 0.7];
@@ -21804,7 +22291,7 @@ function megaFxSingle(cx, cy, cz, radiusMul = 1, density = 1.6) {
       const s = (0.5 + Math.random()) * radiusMul;
       return [dx / dl * s, dy / dl * s, dz / dl * s];
     });
-  megaCloud(cx, cy, cz, Math.round(250 * density), 1.4 * radiusMul, LIFE, -3, true,
+  megaCloud(cx, cy, cz, Math.round(250 * ff), cap(1.4 * radiusMul), LIFE, -3, true,
     () => [1, 0.4 + Math.random() * 0.2, 0.12],
     () => {
       const th = Math.random() * Math.PI * 2, ph = Math.acos(2 * Math.random() - 1);
@@ -22600,10 +23087,19 @@ const protectedBlocks = new Set();
 const protKey = (x, y, z) => dim + ":" + key(x, y, z);
 let endCleared = false;
 let megaUnlocked = MEGA_DEBUG_UNLOCKED;
+let ultraUnlocked = false;
+let dragonKillsSession = 0;
 function unlockMegaTNT() {
   if (megaUnlocked) return false;
   megaUnlocked = true;
   rebuildHotbar(MEGA_TNT);
+  queueSave();
+  return true;
+}
+function unlockUltraTNT() {
+  if (ultraUnlocked) return false;
+  ultraUnlocked = true;
+  rebuildHotbar(ULTRA_TNT);
   queueSave();
   return true;
 }
@@ -24166,6 +24662,8 @@ function updateDragon(dt) {
       spawnDragonDeath(dx, dy, dz);
       showMsg("Ender Dragon is defeated");
       unlockMegaTNT();
+      dragonKillsSession++;
+      if (dragonKillsSession >= 3 && unlockUltraTNT()) showMsg("Ultra TNT unlocked");
     }
     return;
   }
@@ -24979,7 +25477,7 @@ function serialize() {
   const dv = new DataView(buf);
   let o = 0;
   new Uint8Array(buf, o, 9).set(SAVE_MAGIC); o += 9;
-  dv.setUint8(o++, 46); // format version
+  dv.setUint8(o++, 47); // format version
   dv.setUint8(o++, dim === "end" ? 1 : dim === "nether" ? 2 : 0);
   dv.setInt32(o, seed, true); o += 4;
   dv.setInt32(o, endSeed, true); o += 4;
@@ -25152,6 +25650,7 @@ function serialize() {
   dv.setUint8(o++, carriedDim & 255);
   dv.setUint8(o++, endCleared ? 1 : 0);
   dv.setUint8(o++, megaUnlocked ? 1 : 0);
+  dv.setUint8(o++, ultraUnlocked ? 1 : 0);
   dv.setFloat32(o, villagePanicRemain, true); o += 4;
   const writeExit = (ex) => {
     if (!ex) { dv.setUint8(o++, 0); return; }
@@ -25201,6 +25700,7 @@ function serialize() {
     dv.setUint8(o++, t.mesh ? 1 : 0);
     dv.setUint8(o++, t.by < 0 ? 1 : 0);
     dv.setUint8(o++, t.mega ? 1 : 0);
+    dv.setUint8(o++, t.ultra ? 1 : 0);
     dv.setUint8(o++, b.targetKind & 255);
     if (b.targetKind === 2) {
       dv.setUint8(o++, b.tkind & 255);
@@ -25218,6 +25718,7 @@ function serialize() {
     dv.setUint8(o++, q.pointBlank ? 1 : 0);
     dv.setUint8(o++, q.homing ? 1 : 0);
     dv.setUint8(o++, q.mega ? 1 : 0);
+    dv.setUint8(o++, q.ultra ? 1 : 0);
     dv.setUint8(o++, e.qKind & 255);
     if (e.qKind === 2) {
       dv.setUint8(o++, e.qk & 255);
@@ -25256,7 +25757,7 @@ function deserialize(buf) {
   for (let i = 0; i < 9; i++) if (new Uint8Array(buf, o, 9)[i] !== SAVE_MAGIC[i]) throw new Error("Not a MiniCraft save");
   o += 9;
   const ver = dv.getUint8(o++);
-  if (ver !== 1 && ver !== 2 && ver !== 3 && ver !== 4 && ver !== 5 && ver !== 6 && ver !== 7 && ver !== 8 && ver !== 9 && ver !== 10 && ver !== 11 && ver !== 12 && ver !== 13 && ver !== 14 && ver !== 15 && ver !== 16 && ver !== 17 && ver !== 18 && ver !== 19 && ver !== 20 && ver !== 21 && ver !== 22 && ver !== 23 && ver !== 24 && ver !== 25 && ver !== 26 && ver !== 27 && ver !== 28 && ver !== 29 && ver !== 30 && ver !== 31 && ver !== 32 && ver !== 33 && ver !== 34 && ver !== 35 && ver !== 36 && ver !== 37 && ver !== 38 && ver !== 39 && ver !== 40 && ver !== 41 && ver !== 42 && ver !== 43 && ver !== 44 && ver !== 45 && ver !== 46) throw new Error("Unsupported save version");
+  if (ver !== 1 && ver !== 2 && ver !== 3 && ver !== 4 && ver !== 5 && ver !== 6 && ver !== 7 && ver !== 8 && ver !== 9 && ver !== 10 && ver !== 11 && ver !== 12 && ver !== 13 && ver !== 14 && ver !== 15 && ver !== 16 && ver !== 17 && ver !== 18 && ver !== 19 && ver !== 20 && ver !== 21 && ver !== 22 && ver !== 23 && ver !== 24 && ver !== 25 && ver !== 26 && ver !== 27 && ver !== 28 && ver !== 29 && ver !== 30 && ver !== 31 && ver !== 32 && ver !== 33 && ver !== 34 && ver !== 35 && ver !== 36 && ver !== 37 && ver !== 38 && ver !== 39 && ver !== 40 && ver !== 41 && ver !== 42 && ver !== 43 && ver !== 44 && ver !== 45 && ver !== 46 && ver !== 47) throw new Error("Unsupported save version");
   const yWidth = ver >= 8 ? 2 : 1;
   const readY = () => { const y = yWidth === 2 ? dv.getUint16(o, true) : dv.getUint8(o); o += yWidth; return y; };
   placedFlowers.clear();
@@ -25289,6 +25790,8 @@ function deserialize(buf) {
   endExit = null;
   endCleared = false;
   megaUnlocked = MEGA_DEBUG_UNLOCKED;
+  ultraUnlocked = false;
+  dragonKillsSession = 0;
   pendingDragon = null;
   pendingTNTBombs = null;
   pendingTNTQueue = null;
@@ -25629,7 +26132,9 @@ function deserialize(buf) {
     pendingCarriedDim = cd === 1 ? 1 : cd === 2 ? 2 : 0;
     endCleared = dv.getUint8(o++) === 1;
     const savedMega = ver >= 40 ? dv.getUint8(o++) === 1 : false;
+    const savedUltra = ver >= 47 ? dv.getUint8(o++) === 1 : false;
     megaUnlocked = MEGA_DEBUG_UNLOCKED ? true : (savedMega || endCleared);
+    ultraUnlocked = savedUltra;
     if (ver >= 21) {
       const vp = dv.getFloat32(o, true); o += 4;
       pendingVillagePanic = isFinite(vp) ? Math.min(Math.max(0, vp), VILLAGE_PANIC_TIME) : 0;
@@ -25694,6 +26199,7 @@ function deserialize(buf) {
         const hasMesh = dv.getUint8(o++) === 1;
         const flyFlag = ver >= 18 ? dv.getUint8(o++) === 1 : by < 0;
         const megaFlag = ver >= 39 ? dv.getUint8(o++) === 1 : false;
+        const ultraFlag = ver >= 47 ? dv.getUint8(o++) === 1 : false;
         const targetKind = dv.getUint8(o++);
         let tkind = 0, tx = 0, ty = 0, tz = 0;
         if (targetKind === 2) {
@@ -25703,7 +26209,7 @@ function deserialize(buf) {
           tz = dv.getFloat32(o, true); o += 4;
         }
         if (![px, py, pz, fuse, life].every(isFinite)) continue;
-        arr.push({ bx, by, bz, px, py, pz, fuse, life, stuck, ax, ay, az, hasMesh, fly: flyFlag, mega: megaFlag, targetKind, tkind, tx, ty, tz });
+        arr.push({ bx, by, bz, px, py, pz, fuse, life, stuck, ax, ay, az, hasMesh, fly: flyFlag, mega: megaFlag, ultra: ultraFlag, targetKind, tkind, tx, ty, tz });
       }
       return arr;
     };
@@ -25717,6 +26223,7 @@ function deserialize(buf) {
         const pointBlank = dv.getUint8(o++) === 1;
         const homing = dv.getUint8(o++) === 1;
         const megaQ = ver >= 39 ? dv.getUint8(o++) === 1 : false;
+        const ultraQ = ver >= 47 ? dv.getUint8(o++) === 1 : false;
         const qKind = dv.getUint8(o++);
         let qk = 0, qx = 0, qy = 0, qz = 0;
         if (qKind === 2) {
@@ -25727,7 +26234,7 @@ function deserialize(buf) {
         }
         const remain = dv.getFloat32(o, true); o += 4;
         if (![x, y, z].every(isFinite)) continue;
-        arr.push({ x, y, z, pointBlank, homing, mega: megaQ, qKind, qk, qx, qy, qz, remain: isFinite(remain) ? remain : 0 });
+        arr.push({ x, y, z, pointBlank, homing, mega: megaQ, ultra: ultraQ, qKind, qk, qx, qy, qz, remain: isFinite(remain) ? remain : 0 });
       }
       return arr;
     };
@@ -26326,6 +26833,8 @@ function resetDims() {
   overPortalDir = null;
   endCleared = false;
   megaUnlocked = MEGA_DEBUG_UNLOCKED;
+  ultraUnlocked = false;
+  dragonKillsSession = 0;
   netReturnWin = null;
   endReturnWin = null;
   netherExit = null;
@@ -26496,7 +27005,7 @@ document.addEventListener("visibilitychange", () => { if (document.hidden && can
 // ---------------------------------------------------------------------------
 // UI / hotbar
 // ---------------------------------------------------------------------------
-const HOTBAR = [GRASS, DIRT, STONE, SAND, LOG, PLANKS, GLASS, LEAVES, WATER, FLOWER, TNT, MEGA_TNT, PORTAL, OBSIDIAN];
+const HOTBAR = [GRASS, DIRT, STONE, SAND, LOG, PLANKS, GLASS, LEAVES, WATER, FLOWER, TNT, MEGA_TNT, ULTRA_TNT, PORTAL, OBSIDIAN];
 let selected = 0;
 const hotbarEl = document.getElementById("hotbar");
 const dangerEl = document.getElementById("danger");
@@ -26532,11 +27041,13 @@ function onMoon() {
 function hotbarList() {
   let list;
   if (dim === "nether" || dim === "end")
-    list = [GRASS, DIRT, STONE, SAND, LOG, PLANKS, GLASS, LEAVES, LAVA, GLOWSTONE, TNT, MEGA_TNT, PORTAL, OBSIDIAN];
+    list = [GRASS, DIRT, STONE, SAND, LOG, PLANKS, GLASS, LEAVES, LAVA, GLOWSTONE, TNT, MEGA_TNT, ULTRA_TNT, PORTAL, OBSIDIAN];
   else if (hotbarMoon)
-    list = [GRASS, DIRT, STONE, SAND, LOG, PLANKS, GLASS, LEAVES, MOON_WATER, GLOWSTONE, TNT, MEGA_TNT, PORTAL, OBSIDIAN];
+    list = [GRASS, DIRT, STONE, SAND, LOG, PLANKS, GLASS, LEAVES, MOON_WATER, GLOWSTONE, TNT, MEGA_TNT, ULTRA_TNT, PORTAL, OBSIDIAN];
   else list = HOTBAR.slice();
-  return megaUnlocked ? list : list.filter((id) => id !== MEGA_TNT);
+  if (!megaUnlocked) return list.filter((id) => !isMegaLike(id));
+  if (!ultraUnlocked) return list.filter((id) => id !== ULTRA_TNT);
+  return list;
 }
 function rebuildHotbar(popId = -1) {
   selected = Math.min(selected, hotbarList().length - 1);
@@ -26544,7 +27055,7 @@ function rebuildHotbar(popId = -1) {
 }
 let hotbarCacheList = null, hotbarCacheKey = "";
 function hotbarListCached() {
-  const k = dim + (hotbarMoon ? "M" : "") + (megaUnlocked ? "U" : "");
+  const k = dim + (hotbarMoon ? "M" : "") + (megaUnlocked ? "U" : "") + (ultraUnlocked ? "X" : "");
   if (hotbarCacheList && hotbarCacheKey === k) return hotbarCacheList;
   hotbarCacheKey = k;
   hotbarCacheList = hotbarList();
@@ -26859,8 +27370,12 @@ addEventListener("resize", () => {
 // Main loop
 // ---------------------------------------------------------------------------
 let last = performance.now();
+let mobTickFlip = false;
 let simActivePrev = true;
 let fpsEMA = 60, perfLogT = 0;
+let phaseT = { player: 0, tnt: 0, fx: 0, mobs: 0, sim: 0, mesh: 0, render: 0 };
+let phaseN = 0;
+function phAcc(k, t0) { phaseT[k] += performance.now() - t0; }
 let debugHud = false, debugHudT = 0;
 let qualityTier = 0, qualityLowT = 0, qualityHighT = 0, qualityCheckT = 0;
 const QUALITY_DPR = [2, 1.25, 1];
@@ -26898,7 +27413,11 @@ function loop(now) {
   perfLogT += dt;
   if (perfLogT >= 5) {
     perfLogT = 0;
-    if (typeof console !== "undefined") console.log("[perf] fps~" + Math.round(fpsEMA) + " q=" + qualityTier + " dim=" + dim + " chunks=" + chunkMeshes.size + " mobs=" + mobs.length + " bursts=" + (typeof bursts !== "undefined" ? bursts.length : 0));
+    const pn = Math.max(1, phaseN);
+    const pf = (k) => (phaseT[k] / pn).toFixed(1);
+    if (typeof console !== "undefined") console.log("[perf] fps~" + Math.round(fpsEMA) + " q=" + qualityTier + " dim=" + dim + " chunks=" + chunkMeshes.size + " mobs=" + mobs.length + " bursts=" + (typeof bursts !== "undefined" ? bursts.length : 0) + " ms tnt=" + pf("tnt") + " fx=" + pf("fx") + " mobs=" + pf("mobs") + " sim=" + pf("sim") + " player=" + pf("player") + " mesh=" + pf("mesh") + " render=" + pf("render"));
+    for (const k in phaseT) phaseT[k] = 0;
+    phaseN = 0;
   }
   if (debugHud && started) {
     debugHudT += dt;
@@ -26918,6 +27437,7 @@ function loop(now) {
       simPauseStart = 0;
     }
     simActivePrev = simActive;
+    let pPlayer = performance.now();
     if (freeCam && !flingActive) {
       if (simActive) updateFreeCam(dt);
       camera.position.copy(camPos);
@@ -26936,9 +27456,10 @@ function loop(now) {
       if (freeCam) camPos.copy(camera.position);
     }
     camera.rotation.set(pitch, yaw, 0);
-    if (camTrauma > 0) {
+    if (simActive) ultraTrauma = Math.max(0, ultraTrauma - dt * 1.4 / ULTRA_SHAKE_TIME);
+    if (camTrauma > 0 || ultraTrauma > 0) {
       if (simActive) camTrauma = Math.max(0, camTrauma - dt * 1.4);
-      const sh = Math.pow(camTrauma, 1.5);
+      const sh = Math.pow(camTrauma, 1.5) + ULTRA_SHAKE_AMP * Math.pow(ultraTrauma, 1.5);
       const st = performance.now() / 1000;
       camera.rotation.x += Math.sin(st * 61.7) * 0.22 * sh;
       camera.rotation.y += Math.sin(st * 53.3 + 1.7) * 0.22 * sh;
@@ -26953,9 +27474,10 @@ function loop(now) {
     updateCarry(dt);
     if (simActive) updateCarryGrapple(dt);
     if (simActive) rodTick(dt);
+    phAcc("player", pPlayer);
     if (locked) {
       if (editHold[0].down) {
-        if (!leftStairs && !leftEverMoved && (chainId ?? hotbarList()[selected]) !== MEGA_TNT) {
+        if (!leftStairs && !leftEverMoved && !isMegaLike(chainId ?? hotbarList()[selected])) {
           if (!leftMoved) {
             leftTimer += dt;
             if (leftTimer >= 1) {
@@ -27148,10 +27670,13 @@ function loop(now) {
       carryGrappleHead.visible = false;
     }
     if (simActive) {
+      let pTnt = performance.now();
       tickTNT(dt);
       processExplosionQueue();
       drainMegaCarveJobs();
+      phAcc("tnt", pTnt);
     }
+    let pFx = performance.now();
     tickEffects(dt, simActive);
     syncGlowLights(dt);
     recomputeMegaLightClusters();
@@ -27161,12 +27686,20 @@ function loop(now) {
     updatePortalVisual();
     if (simActive) checkPortal();
     if (dim === "end" && simActive) updateDragon(dt);
-    if (locked && started && !helpOpen) updateMobs(dt);
+    phAcc("fx", pFx);
+    let pMobs = performance.now();
+    if (locked && started && !helpOpen) {
+      if (megaCarveJobs.length) { mobTickFlip = !mobTickFlip; if (mobTickFlip) updateMobs(dt); }
+      else updateMobs(dt);
+    }
+    phAcc("mobs", pMobs);
+    let pSim = performance.now();
     if (simActive) { tickSoilTimers(dt); tickPineGrowths(dt); tickPineFailBlinks(dt); }
     if (locked && started && !helpOpen) updateChains(dt);
     tickMegaEject(dt);
     if (toastTimer > 0) { toastTimer -= dt; if (toastTimer <= 0) toastEl.style.opacity = "0"; }
     updateMegaDanger(dt);
+    phAcc("sim", pSim);
 
     if (dim === "over") {
       const y = camera.position.y;
@@ -27292,12 +27825,19 @@ function loop(now) {
       const pk = 0.92 + 0.08 * Math.sin(now * 0.0025);
       mm.color.setRGB(pk, pk, 1);
     }
+    if (singleMats.has(ULTRA_TNT) && singleMats.get(ULTRA_TNT)) {
+      const um = singleMats.get(ULTRA_TNT);
+      const uk = 0.9 + 0.1 * Math.sin(now * 0.0025 + 1.3);
+      um.color.setRGB(1, uk, 1);
+    }
 
     const pcx = chunkOf(freeCam ? camPos.x : pos.x);
     const pcz = chunkOf(freeCam ? camPos.z : pos.z);
+    let pMesh = performance.now();
     if (pcx !== meshCx || pcz !== meshCz) streamChunks();
     drainChunkQueue();
     drainPoolRefresh();
+    phAcc("mesh", pMesh);
   }
 
   if (skyDome.visible) {
@@ -27305,7 +27845,10 @@ function loop(now) {
     skyDome.rotation.y += dt * 0.01;
   }
 
+  let pRender = performance.now();
   renderer.render(scene, camera);
+  phAcc("render", pRender);
+  phaseN++;
 }
 
 const SVGNS = "http://www.w3.org/2000/svg";
@@ -27318,7 +27861,7 @@ requestAnimationFrame(loop);
 if (location.search.includes('test')) {
   window._test = {
     get world(){ return world; }, get worlds(){ return worlds; }, get mobs(){ return mobs; },
-    getBlock, setBlock, handleMobExplosion, processExplosionQueue, carveBlastSphere, processMegaPool, spawnMegaUnion, isMobStandingOn, intersectsMob, key, BLAST_RADIUS, MEGA_BLAST_RADIUS, MEGA_KNOCK_RADIUS, MEGA_FUSE_TIME, MEGA_EJECT_DUR, MEGA_FLY_TIME, TNT, MEGA_TNT, spawnMegaExplosion, applyMegaKnockback, addCamShake, tickMegaEject, tickBallisticMob, megaFlyLand, megaOutsideTarget, distToMegaUnion, distToMegaUnion3D, nearestMegaOf, spotOutsideMegaUnion, litMegaMembers, litMegaTouch, megaTouchesVillage, megaCraterRespawn, endermanMegaSpot, megaTeleportEnderman, birdMegaFleeTarget, megaFleePointUnion, clampMegaXZ, megaAirBand, outOfLevel, endMegaBallistic, clampMegaMob, getMegaNoPerchUntil(){ return megaNoPerchUntil; }, resolveEmbedded, get megaEject(){ return megaEject; }, STONE, AIR, get SAND(){ return SAND; }, get WATER(){ return WATER; }, get VILLAGE_POOL_W(){ return VILLAGE_POOL_W; }, get VILLAGE_POOL_D(){ return VILLAGE_POOL_D; }, get VILLAGE_POOL_DEPTH(){ return VILLAGE_POOL_DEPTH; }, get VILLAGE_PEN_POOL_W(){ return VILLAGE_PEN_POOL_W; }, get VILLAGE_PEN_POOL_D(){ return VILLAGE_PEN_POOL_D; }, get VILLAGE_PEN_POOL_DEPTH(){ return VILLAGE_PEN_POOL_DEPTH; },
+    getBlock, setBlock, handleMobExplosion, processExplosionQueue, carveBlastSphere, processMegaPool, processUltraBlast, purgeUltraPines, spawnMegaUnion, isMobStandingOn, intersectsMob, key, BLAST_RADIUS, MEGA_BLAST_RADIUS, MEGA_KNOCK_RADIUS, MEGA_FUSE_TIME, MEGA_EJECT_DUR, MEGA_FLY_TIME, TNT, MEGA_TNT, ULTRA_TNT, isMegaLike, get MEGA_BLINK(){ return MEGA_BLINK; }, getLitMegaMat, getLitUltraMat, ultraBandY, get ULTRA_BAND1_HI(){ return ULTRA_BAND1_HI; }, get ULTRA_BAND2_HI(){ return ULTRA_BAND2_HI; }, get ULTRA_FULL_R(){ return ULTRA_FULL_R; }, get ULTRA_FUSE_TIME(){ return ULTRA_FUSE_TIME; }, spawnMegaExplosion, applyMegaKnockback, addCamShake, tickMegaEject, tickBallisticMob, megaFlyLand, megaOutsideTarget, distToMegaUnion, distToMegaUnion3D, nearestMegaOf, spotOutsideMegaUnion, litMegaMembers, litMegaTouch, megaTouchesVillage, megaCraterRespawn, endermanMegaSpot, megaTeleportEnderman, birdMegaFleeTarget, megaFleePointUnion, clampMegaXZ, megaAirBand, outOfLevel, endMegaBallistic, clampMegaMob, get ultraTrauma(){ return ultraTrauma; }, get ULTRA_SHAKE_AMP(){ return ULTRA_SHAKE_AMP; }, get ULTRA_SHAKE_TIME(){ return ULTRA_SHAKE_TIME; }, ultraHaloR(){ const r = []; for (const t of tntLit.values()) if (t.ultra) r.push({ fuse: t.fuse, halo: t.halo ? t.halo.scale.x : null, haloOuter: t.haloOuter ? t.haloOuter.scale.x : null }); return r; }, ultraLightInfo(){ const cmap = new Map(megaLightClusters.map((c) => [c.ck, c])); const r = []; for (const L of megaLights) { if (!L || !L.light.visible || L.ck < 0) continue; const c = cmap.get(L.ck); r.push({ ultra: !!(c && c.ultra), distance: L.light.distance, decay: L.light.decay, intensity: L.light.intensity }); } return r; }, getMegaNoPerchUntil(){ return megaNoPerchUntil; }, resolveEmbedded, get megaEject(){ return megaEject; }, STONE, AIR, get SAND(){ return SAND; }, get WATER(){ return WATER; }, get VILLAGE_POOL_W(){ return VILLAGE_POOL_W; }, get VILLAGE_POOL_D(){ return VILLAGE_POOL_D; }, get VILLAGE_POOL_DEPTH(){ return VILLAGE_POOL_DEPTH; }, get VILLAGE_PEN_POOL_W(){ return VILLAGE_PEN_POOL_W; }, get VILLAGE_PEN_POOL_D(){ return VILLAGE_PEN_POOL_D; }, get VILLAGE_PEN_POOL_DEPTH(){ return VILLAGE_PEN_POOL_DEPTH; },
     get villageCenter(){ return villageCenter; }, get villageHouses(){ return villageHouses; }, get villagePen(){ return villagePen; }, get villagePool(){ return villagePool; }, get isInsidePen(){ return isInsidePen; }, get isInsidePool(){ return isInsidePool; }, get isInsidePenPool(){ return isInsidePenPool; }, get poolExitTarget(){ return poolExitTarget; }, get penPoolExitTarget(){ return penPoolExitTarget; }, get LOG(){ return LOG; }, findPenGaps, nearestPenGap, penGapInside, penGapOutside, hasMobGround, mobBlockedAt, aabbCollidesWorld, mobProbeFree, randomPenPoint, randomAroundPenPoint, groundYForMob, get CLOUD_BASE(){ return CLOUD_BASE; }, get CLOUD_TOP(){ return CLOUD_TOP; }, get MAX_Y(){ return MAX_Y; },
     getTypeMats, get typeMats(){ return typeMats; }, buildWorld, generateWorld, generateMoonLakes, get moonLakesGenerated(){ return moonLakesGenerated; }, computeVillageLayout, spawnVillagers, refreshBlocks, rebuildMeshes, get chunkMeshes(){ return chunkMeshes; }, get boxGeo(){ return boxGeo; }, THREE,
     get pos(){ return pos; }, get vel(){ return vel; }, get camera(){ return camera; }, get scene(){ return scene; }, get freeCam(){ return freeCam; }, set freeCam(v){ freeCam = v; }, get camPos(){ return camPos; }, get yaw(){ return yaw; }, set yaw(v){ yaw=v; }, get pitch(){ return pitch; }, set pitch(v){ pitch=v; },
@@ -27330,7 +27873,7 @@ if (location.search.includes('test')) {
     get PORTAL(){ return PORTAL; }, get OBSIDIAN(){ return OBSIDIAN; }, get WORLD_RADIUS(){ return WORLD_RADIUS; }, get PLAYER_HW(){ return PLAYER_HW; }, get PLAYER_H(){ return PLAYER_H; },     get MOON(){ return MOON; }, get MOON_WATER(){ return MOON_WATER; }, get MOON_Y(){ return MOON_Y; }, get MOON_R(){ return MOON_R; }, inMoonZone, get CLOUD(){ return CLOUD; }, get GRASS(){ return GRASS; }, get STONE(){ return STONE; }, get ENDSTONE(){ return ENDSTONE; }, get NETHERRACK(){ return NETHERRACK; }, get dim(){ return dim; },
     serialize, deserialize, restoreSave, snapshotOverworldMobs, restoreOverworldMobs, get overworldMobCache(){ return overworldMobCache; }, get pendingOverworldMobs(){ return pendingOverworldMobs; }, get pendingChainLinks(){ return pendingChainLinks; }, get pendingCarriedIdx(){ return pendingCarriedIdx; },
     snapshotMobsForDim, snapshotChainPairsForDim, DRAGON_CHAIN_CARRIER, restoreDimMobs, relinkDimChainsByIds, mobDimOf, suspendLiveDim, placeMobExact, mobRestoreOverlapsPlaced, settleMobSpot, restoreInitialTarget, aabbOverlaps,
-    get endMobCache(){ return endMobCache; }, get netherMobCache(){ return netherMobCache; }, get pendingEndMobs(){ return pendingEndMobs; }, get pendingNetherMobs(){ return pendingNetherMobs; },     get netherExit(){ return netherExit; }, get endExit(){ return endExit; }, get endCleared(){ return endCleared; }, get megaUnlocked(){ return megaUnlocked; }, set megaUnlocked(v){ megaUnlocked = !!v; }, unlockMegaTNT,
+    get endMobCache(){ return endMobCache; }, get netherMobCache(){ return netherMobCache; }, get pendingEndMobs(){ return pendingEndMobs; }, get pendingNetherMobs(){ return pendingNetherMobs; },     get netherExit(){ return netherExit; }, get endExit(){ return endExit; }, get endCleared(){ return endCleared; }, get megaUnlocked(){ return megaUnlocked; }, set megaUnlocked(v){ megaUnlocked = !!v; }, unlockMegaTNT, get ultraUnlocked(){ return ultraUnlocked; }, set ultraUnlocked(v){ ultraUnlocked = !!v; }, unlockUltraTNT, get dragonKillsSession(){ return dragonKillsSession; },
     goToDimension, removeVillagers,
     get DEV_START_DIM(){ return DEV_START_DIM; },
     get dragon(){ return dragon; }, spawnDragon, removeDragon, updateDragon, paintDragon, damageDragon, dragonShotsCap, aimedDragon, get DRAGON_FULL_DMG(){ return DRAGON_FULL_DMG; }, get DRAGON_SPEED(){ return DRAGON_SPEED; }, get DRAGON_FOLLOW_DIST(){ return DRAGON_FOLLOW_DIST; },
@@ -27380,6 +27923,9 @@ if (location.search.includes('test')) {
   });
   Object.assign(window._test, {
     drainMegaCarveJobs, clearMegaCarveJobs, megaFxLod, carveMegaUnionColumn,
+    carveJobsPending(){ return megaCarveJobs.length; }, poolRefreshPending(){ return poolRefreshQueue.size; },
+    carveJobsProgress(){ return megaCarveJobs.map((j) => ({ ci: j.ci, total: j.cols.length, celli: j.celli, cellsTotal: j.cells ? j.cells.length : 0 })); },
+    remeshStats(){ const r = [...remeshCounts.entries()]; remeshCounts.clear(); return r; },
     get megaCarveJobs(){ return megaCarveJobs; },
     get MEGA_CARVE_BUDGET_MS(){ return MEGA_CARVE_BUDGET_MS; },
     chickenAirProbe, chickenHeightAbove, chickenGlideSink, chickenGlideRange, chickenPickGlideSpot, chickenCommitGlide, chickenGlideActive,
