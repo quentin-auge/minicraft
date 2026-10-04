@@ -287,33 +287,22 @@ const TEX = {
     pxNoise(ctx, [192, 57, 43], 12);
   }),
   mega_side: canvasTex((ctx) => {
-    ctx.fillStyle = "#c01808"; ctx.fillRect(0, 0, 64, 64);
-    ctx.fillStyle = "#a01206"; ctx.fillRect(0, 12, 64, 40);
+    ctx.fillStyle = "#1e3fae"; ctx.fillRect(0, 0, 64, 64);
+    ctx.fillStyle = "#ece6d0"; ctx.fillRect(0, 16, 64, 32);
     for (let y = 0; y < 64; y++) for (let x = 0; x < 64; x++) {
-      const band = y >= 12 && y <= 51;
-      const base = band ? [160, 18, 6] : [192, 24, 8];
-      const d = (Math.random() - 0.5) * 12;
+      const blue = y < 16 || y > 47;
+      const base = blue ? [30, 63, 174] : [236, 230, 208];
+      const d = (Math.random() - 0.5) * (blue ? 14 : 8);
       ctx.fillStyle = `rgb(${base[0] + d},${base[1] + d},${base[2] + d})`;
       ctx.fillRect(x, y, 1, 1);
     }
-    ctx.fillStyle = "#f4eedd";
-    ctx.beginPath(); ctx.arc(32, 29, 15, 0, Math.PI * 2); ctx.fill();
-    ctx.fillRect(20, 36, 24, 11);
-    ctx.fillStyle = "#0d0d0d";
-    ctx.beginPath(); ctx.arc(25.5, 29, 5.4, 0, Math.PI * 2); ctx.fill();
-    ctx.beginPath(); ctx.arc(38.5, 29, 5.4, 0, Math.PI * 2); ctx.fill();
-    ctx.fillRect(30, 36, 4, 5);
-    for (let i = 0; i < 4; i++) ctx.fillRect(21.5 + i * 5.6, 42, 2.2, 5);
-    ctx.fillStyle = "#ffd75e";
-    ctx.beginPath(); ctx.arc(25.5, 29, 2.2, 0, Math.PI * 2); ctx.fill();
-    ctx.beginPath(); ctx.arc(38.5, 29, 2.2, 0, Math.PI * 2); ctx.fill();
-    ctx.fillStyle = "#f4eedd";
-    ctx.font = "bold 12px sans-serif"; ctx.textAlign = "center"; ctx.textBaseline = "middle";
-    ctx.fillText("TNT", 32, 6);
+    ctx.fillStyle = "#101828";
+    ctx.font = "bold 24px sans-serif"; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+    ctx.fillText("TNT", 32, 32);
   }, 64),
   mega_top: canvasTex((ctx) => {
-    ctx.fillStyle = "#5a130c"; ctx.fillRect(0, 0, 16, 16);
-    pxNoise(ctx, [90, 19, 12], 12);
+    ctx.fillStyle = "#1e3fae"; ctx.fillRect(0, 0, 16, 16);
+    pxNoise(ctx, [30, 63, 174], 12);
   }),
   glass: canvasTex((ctx) => {
     ctx.fillStyle = "rgba(190,230,255,0.55)"; ctx.fillRect(0, 0, 16, 16);
@@ -20258,6 +20247,7 @@ function clearTNTVisual(t) {
 }
 
 const megaWhiteHeat = new THREE.Color(0xffffff);
+const MEGA_BLINK = 0x2255ff;
 const MEGA_WHITE_TEX_CAP = 0.9;
 let litMegaTex = null;
 let litMegaTexCtx = null;
@@ -20407,13 +20397,13 @@ function tickMegaLights() {
   const cmap = new Map(megaLightClusters.map((c) => [c.ck, c]));
   const nowL = performance.now();
   if (litMegaMat) {
-    litMegaMat.color.setHex(0xff2211).lerp(megaWhiteHeat, megaWhiteEff(minFuseAll, MEGA_FUSE_TIME));
+    litMegaMat.color.setHex(MEGA_BLINK).lerp(megaWhiteHeat, megaWhiteEff(minFuseAll, MEGA_FUSE_TIME));
   }
   if (litMegaVeilMat) {
     const vf = minFuseAll === Infinity ? 8 : minFuseAll;
     const wAll = blinkWhite(minFuseAll);
     const effAll = megaWhiteEff(minFuseAll, MEGA_FUSE_TIME);
-    litMegaVeilMat.color.setHex(0xff2211).lerp(megaWhiteHeat, effAll);
+    litMegaVeilMat.color.setHex(MEGA_BLINK).lerp(megaWhiteHeat, effAll);
     litMegaVeilMat.opacity = 0.05 + 0.45 * blinkSmooth(vf, MEGA_FUSE_TIME) * wAll + 0.1 * effAll;
     tickLitMegaTex(minFuseAll === Infinity ? 0 : effAll);
   } else {
@@ -20438,11 +20428,11 @@ function tickMegaLights() {
       L.light.distance = Math.min(34, 7 + 1.5 * st.beats + 12 * k);
     }
     st.blinkWas = b;
-    L.light.color.setHex(0xff2211).lerp(megaWhiteHeat, effW);
+    L.light.color.setHex(MEGA_BLINK).lerp(megaWhiteHeat, effW);
   }
 }
 function makeMegaLight() {
-  const light = new THREE.PointLight(0xff2211, 60, 7, 1);
+  const light = new THREE.PointLight(MEGA_BLINK, 60, 7, 1);
   scene.add(light);
   return { ck: -1, light };
 }
@@ -27299,8 +27289,8 @@ function loop(now) {
     }
     if (singleMats.has(MEGA_TNT) && singleMats.get(MEGA_TNT)) {
       const mm = singleMats.get(MEGA_TNT);
-      const pk = 0.9 + 0.1 * Math.sin(now * 0.0025);
-      mm.color.setRGB(1, pk, pk * 0.96);
+      const pk = 0.92 + 0.08 * Math.sin(now * 0.0025);
+      mm.color.setRGB(pk, pk, 1);
     }
 
     const pcx = chunkOf(freeCam ? camPos.x : pos.x);

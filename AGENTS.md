@@ -454,10 +454,10 @@ stays bright at distance, `placeable: true` so it
   it never destroys terrain, so no crater is left where the TNT launched; a
   homing bomb that never sticks fizzles in air after `life` (3s fuse + 2s chase)
   with no dragon damage. A second **Mega TNT** block (`MEGA_TNT` id 22,
-  giant high-contrast skull `TEX.mega_side` texture with glowing eyes on a
-  vivid-red block) sits in the hotbar right after regular TNT in every
+  dark-blue TNT-band `TEX.mega_side` texture — same layout as regular TNT,
+  blue instead of red) sits in the hotbar right after regular TNT in every
   dimension — always present from the start (see hotbar): single cell, unlit full-bright (`getSingleMat`, 1 draw call
-  instead of 6) with a lava-style per-frame red throb, so it menaces at
+  instead of 6) with a subtle per-frame blue throb, so it menaces at
   render distance. No cooldown, no placement limit: the hotbar slot is a plain
   slot. Breaking one lights a slow 8s fuse (`MEGA_FUSE_TIME`, regular TNT stays
   3s) so the pressure has time to build — lit TNT blinks red on a deterministic
@@ -465,24 +465,25 @@ stays bright at distance, `placeable: true` so it
   sine-faded not strobed, pause/save-safe, phase-identical after reload), whitening via `blinkWhite`
   over the last 5s (`megaWhiteEff` pulses the white with the blink: `w*(f+(1-f)*b)`
   with the floor `f` rising smoothly 0.3→1, so block and emitted light whiten on one
-  shared smooth factor; tinting alone can't whiten the saturated-red skull texture,
+  shared smooth factor; tinting alone can't whiten the saturated-blue TNT band,
   so the lit material uses an animated 64×64 clone (`getLitMegaTex`/`tickLitMegaTex`,
   same filters/sRGB as `canvasTex`) alpha-blended toward white by the same factor,
-  capped at `MEGA_WHITE_TEX_CAP` 0.9 — the skull stays a slight ghost;
+  capped at `MEGA_WHITE_TEX_CAP` 0.9 — the band stays a slight ghost;
   shared mats unlit `toneMapped: false` to pure
   `0xffffff`); the lit shell stays opaque
-  (skull always readable, tinted red→white) under a breathing additive glow,
+  (band always readable, tinted blue→white) under a breathing additive glow,
   pooled lights breathe intensity, regular fuse sprites
   breathe opacity (numbers kept), and the `#danger` vignette throbs on the same
    blink (beat/distance edge detection kept on blink crossings). No countdown numbers on mega fuses, only the light. Breaking a placed TNT
   lights only that block — regulars and megas fuse identically (own 3s/8s fuse,
   own visuals and ticking, same save/portal-cross behaviour); each mega blinks
   on its own fuse timeline — lit megas leave the normal chunk bucket for a dedicated
-  `megatit` mesh (`getLitMegaMat`: opaque skull-textured unit boxes, no relief
-  shell) whose shared material tints red→white with the light timeline so the
-  skull stays readable, plus a 1.06-shell additive `megaveil` glow
+  `megatit` mesh (`getLitMegaMat`: opaque blue-band unit boxes, no relief
+  shell) whose shared material tints blue→white (`MEGA_BLINK` 0x2255ff base)
+  with the light timeline so the
+  band stays readable, plus a 1.06-shell additive `megaveil` glow
   (`getLitMegaVeilMat`, same boxes, polygonOffset, opacity 0.05–0.6 white-gated
-  red→white in phase) shining over the skull without ever hiding it, so the
+  blue→white in phase) shining over the band without ever hiding it, so the
   block itself reads white-hot at distance. Breaking one panics everything at fuse-light   (`panicMegaIgnite`: every mob within
   one crater radius of the lit-mega cluster's edge flees away from the whole
   cluster — ground and flying kinds alike, held/chained/grappled ones tagged too
@@ -491,9 +492,9 @@ stays bright at distance, `placeable: true` so it
   their blast-time teleport instead of fleeing; when any lit mega sits in the
   village square (`litMegaTouch`) the standard square rally fires already at
   fuse time, and square mobs keep it instead of the outside-flee), and a lit mega carries a
-  flickering red pool (`recomputeMegaLightClusters`/`syncMegaLights`/
+  flickering blue pool (`recomputeMegaLightClusters`/`syncMegaLights`/
   `tickMegaLights`, mirroring the glowstone system: lit megas bucketed into
-  5-block cells, a fixed pool of 8 red `PointLight`s assigned nearest-first
+  5-block cells, a fixed pool of 8 blue `PointLight`s assigned nearest-first
   with keep-phase stability, throttled re-slots, quality-governor cap, and
   per-cluster beat/distance/white-hot flicker — never one light per block),
   disposed in `clearTNTVisual` (shells; lights are pooled)
