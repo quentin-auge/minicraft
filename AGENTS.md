@@ -627,7 +627,9 @@ stays bright at distance, `placeable: true` so it
   one column marker per visited column instead of one array per cell, so the drain
   runs ~5x faster (headless ultra band-1 A/B: 3.5 s → 0.7 s pure carve);
   single-mega pools
-  keep the synchronous `carveBlastSphere` sphere. Compact
+  keep the synchronous `carveBlastSphere` sphere plus an instant `spawnMegaUnion`
+  fireball at the same radius (the sync path has no carve job, so no `finalFx`
+  payoff — without it a solo mega carved silently with shake but no fireball). Compact
   mega pools (members within R of the mega centroid) carve one centroid sphere
   at exactly that radius via integer `scanBlastSphere` scanlines clamped per
   column to `colTops` — crater and fireball match perfectly and scan cost is

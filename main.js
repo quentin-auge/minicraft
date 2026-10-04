@@ -21849,6 +21849,7 @@ function processMegaPool(seeds, batchKeys) {
     } finally {
       poolConsumed = null;
     }
+    if (megaCount > 0) spawnMegaUnion(members, ccx, ccy, ccz, poolR);
   }
   recordCraterAvoid(ccx, ccz, maxDist + MEGA_BLAST_RADIUS * poolR + 2);
   const megaUnion = [];
