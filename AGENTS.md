@@ -59,8 +59,8 @@ small Python server for saving/loading worlds.
    carve slice, `remeshBudgetMs` drain next to `drainChunkQueue`, nearest-to-camera chunks
    first — while a job drains only chunks whose columns are all carved rebuild
    (exact per-chunk frontier `chunkMax` + `hot` hold-back, plus a 3-slice hysteresis),
-   so each chunk rebuilds ~once behind the front instead of once per slice; a max pool remeshes over
-   ~9 frames behind its own flash instead of one hitch, so scan cost is
+  so each chunk rebuilds ~once behind the front instead of once per slice; a max pool remeshes over
+  ~9 frames behind the drain front instead of one hitch, so scan cost is
    independent of member count AND frame cost stays flat);
   multi-mega pool carves drain as sliced union jobs (`enqueueMegaCarveJob`/
   `drainMegaCarveJobs`, adaptive budgets `carveBudgetMs`/`remeshBudgetMs` tied to
@@ -605,11 +605,11 @@ stays bright at distance, `placeable: true` so it
   adjacency; chained hordes collapse into the first pool — replays finding no
   live members return early instead of firing NaN visuals;
   the fireball itself is sized to the crater exactly — `megaFxSingle` derives
-  `CR = MEGA_BLAST_RADIUS × r` and fills every element to it: two translucent
-  `megaFlashBall` spheres (orange at `CR`, white core at `0.62·CR`, depthWrite
-  off) plus the fire/heart/smoke/spark clouds spawned out to `CR`, so the
-  visible explosion equals the crater, and
-  spawn radii, radial velocities, flash sizes and point sizes all scale with
+  `CR = MEGA_BLAST_RADIUS × r` and fills every particle element to it (fire/
+  heart/smoke/spark clouds spawned out to `CR`, so the visible explosion equals
+  the crater; the translucent flash spheres are gone — particles only, near or
+  far the far-LOD keeps its single flash blob), and
+  spawn radii, radial velocities and point sizes all scale with
   the radius factor, so the ball reads crater-sized at every step). Multi-mega
   pools carve as one sliced union job (`enqueueMegaCarveJob`/`drainMegaCarveJobs`,
   adaptive `carveBudgetMs`): member blocks vanish the same tick while the
@@ -667,11 +667,9 @@ stays bright at distance, `placeable: true` so it
   drain never double-enqueues it, cleared once the pool owns it; the drain
   resets its globals in a `finally` and extra mega pools defer past the frame
   budget instead of blowing it, pools always completing atomically),
-  with a union visual (`spawnMegaUnion`:
-  one centroid flash + one cylindrical radial shockwave + one crater-sized
-  radial fireball shell per member — R = its own blast radius, merged by
-  overlap — sharing a ~3000-point shell budget plus the fire/smoke
-  distribution; far/off-screen pools degrade to one flash blob via `megaFxLod`) and one mob pass with per-victim nearest-member
+  with a union visual (`spawnMegaUnion`: one particles-only fireball at the
+  centroid — fire/heart/smoke/spark clouds sized to the crater exactly, no flash
+  spheres; far/off-screen pools degrade to one flash blob via `megaFxLod`) and one mob pass with per-victim nearest-member
   directions (`applyMegaKnockback` members arg) and one union avoid disc. Any
   mega blast — pooled or single — detonates every regular TNT in radius
   instantly too (no more 50ms stagger under mega fire). Re-breaking a lit
@@ -727,23 +725,32 @@ stays bright at distance, `placeable: true` so it
   pre-sorts columns by centroid XZ distance (`job.cols`/`colsD2`/`job.ci`, mega
   pools included — the ring expands from the centroid instead of an x/z scan)
   with `ULTRA_FULL_R` (map diagonal, so corner seeds still cover the far
-  corner); a shared-geometry fireball sphere (`attachJobFireball`, orange +
-  white core at 0.85/0.9 opacity so it masks the remesh popping behind the front,
-  zero per-frame allocation) rides the live carve front
-  (`job.front2`, mega pools too) with capped front embers (10 per ~120 ms on
-  the ring, band-clamped in Y), then the payoff burst fires at drain
-  completion (`job.finalFx` — the pool/ultra `spawnMegaUnion` moved from
-  detonation to completion; dim-drops dispose silently; solo-mega sync path
-  keeps its instant flash); `carveBlastCell` skips per-cell pine bookkeeping in ultra mode
+  corner); no drain spheres ride the carve front (removed — chunk remesh popping
+  stays visible behind the front while a job drains, by choice); capped front
+  embers (10 per ~120 ms on the ring, band-clamped in Y) still mark the front,
+  and ultra jobs additionally wear a persistent resampled exterior fireball skin
+  (`ultraShell`, one `THREE.Points`, ~12000 pts, X-ray): per-particle direction +
+  trailing offset persist (`ultraShellDir`/`ultraShellOff`, `off` in `[-15, 0]`,
+  `r = max(0, front + off)`, Y-clamped to the band, ~4 % respawned per frame biased 65 %
+  into a ~28° cone toward the camera with uniform fallback at `bl < 0.5`) so only
+  the sphere's burning skin glows — 80 % mega fire shades orange-dominant (thin deep-red
+  sliver, wide lifted orange branch, yellow top) + 20 % exact mega smoke shade; point size follows
+  the front `clamp(2 + front×0.03, 2, 8)` (mega sizes near the bomb, apparent
+  density held as it grows) and opacity dips to 0.12 as the skin sits on the
+  camera (`|front − camD| / 8`, no saturation white-out at pass-through)
+  (transient, 6000 pts at tier 2, never saved, hidden when no ultra job
+  drains — no payoff burst at completion for ultra jobs, the skin is the visual;
+  mega pools keep theirs); `carveBlastCell` skips per-cell pine bookkeeping in ultra mode
   (perf: no `pineAt` scan per carved cell) and `purgeUltraPines` at job end
   purges soil-dead pines, trims partial survivors into `brokenPineCells` and
-  rebuilds `colTops`/`garlandDirty` for the dimension. The final blast draws a ×10
-  fireball (`spawnMegaUnion` at `r=10`: R150 flash + ~12k points, same 6-burst
-  cap and far-degradation — `megaFxSingle` scales sub-linearly past r=3: counts
-  capped (density factor ≤5), point sizes ≤6, shorter lives, so only the ultra
-  payoff shrinks while singles/pools render pixel-identical) and a dedicated shake channel (`ultraTrauma`, peak
-  1.5 like mega but `ULTRA_SHAKE_AMP` 3× amplitude and `ULTRA_SHAKE_TIME` 2×
-  duration ≈2.1 s, Mega shake untouched, reset in `purgeLiveTNT`, still gated by
+  rebuilds `colTops`/`garlandDirty` for the dimension. Mega pools still draw their
+  completion payoff (`spawnMegaUnion` at pool radius; the old ultra ×10 R150
+  payoff is gone — the growing ball is the visual) and a dedicated shake channel
+  (`ultraTrauma`: fired only when the fireball front crosses the camera
+  (`ultraShellCross`: `ultraTrauma` re-topped to 1.14 every drain frame while the
+  camera sits inside the ball for a 2×-mega-violent same-length shake, decaying
+  naturally once outside; no shake
+  at detonation anymore, Mega shake untouched, reset in `purgeLiveTNT`, still gated by
   `MEGA_QUIET`). Persisted in save v47 (unlock byte + 1 ultra byte per bomb
   + queue entry; pre-v47 loads with Ultra locked and ultra flags off).
 - **Portals / dimensions**: portal frames are detected in either orientation —

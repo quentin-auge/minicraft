@@ -20250,7 +20250,7 @@ const ULTRA_BAND1_HI = 90;
 const ULTRA_BAND2_HI = CLOUD_TOP + 1;
 const ULTRA_FULL_R = WORLD_RADIUS * 2 * Math.SQRT2;
 const ULTRA_SHAKE_AMP = 3;
-const ULTRA_SHAKE_TIME = 2;
+const ULTRA_SHAKE_TIME = 1;
 function ultraBandY(by) {
   if (by < ULTRA_BAND1_HI + 1) return { lo: 1, hi: ULTRA_BAND1_HI, band: 1 };
   if (by <= ULTRA_BAND2_HI) return { lo: ULTRA_BAND1_HI + 1, hi: ULTRA_BAND2_HI, band: 2 };
@@ -21480,29 +21480,100 @@ function carveBudgetMs() { const b = qualityTier === 0 ? 12 : qualityTier === 1 
 function remeshBudgetMs() { const b = qualityTier === 0 ? 6 : qualityTier === 1 ? CHUNK_BUDGET_MS : 2; return megaCarveJobs.length ? Math.max(b, 4) : b; }
 const megaCarveJobs = [];
 function clearMegaCarveJobs() {
-  for (const job of megaCarveJobs) disposeJobFireball(job);
   megaCarveJobs.length = 0;
+  hideUltraShell();
 }
-const fireballGeo = new THREE.SphereGeometry(1, 24, 16);
-const fireballMatOuter = new THREE.MeshBasicMaterial({ color: 0xffd9a0, transparent: true, opacity: 0.7, fog: false, toneMapped: false, depthWrite: false });
-const fireballMatInner = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.8, fog: false, toneMapped: false, depthWrite: false });
-function attachJobFireball(job) {
-  if (MEGA_QUIET) return;
-  const outer = new THREE.Mesh(fireballGeo, fireballMatOuter);
-  const inner = new THREE.Mesh(fireballGeo, fireballMatInner);
-  outer.position.set(job.ccx, job.ccy, job.ccz);
-  inner.position.set(job.ccx, job.ccy, job.ccz);
-  outer.scale.setScalar(0.5);
-  inner.scale.setScalar(0.31);
-  outer.renderOrder = 3; inner.renderOrder = 4;
-  outer.frustumCulled = false; inner.frustumCulled = false;
-  scene.add(outer); scene.add(inner);
-  job.fire = { outer, inner };
+const ULTRA_SHELL_N = 12000;
+const ultraShellGeo = new THREE.BufferGeometry();
+const ultraShellPos = new Float32Array(ULTRA_SHELL_N * 3);
+const ultraShellCol = new Float32Array(ULTRA_SHELL_N * 3);
+ultraShellGeo.setAttribute("position", new THREE.BufferAttribute(ultraShellPos, 3));
+ultraShellGeo.setAttribute("color", new THREE.BufferAttribute(ultraShellCol, 3));
+const ultraShellMat = new THREE.PointsMaterial({ size: 3, vertexColors: true, transparent: true, opacity: 1, depthWrite: false, depthTest: false, blending: THREE.AdditiveBlending });
+const ultraShell = new THREE.Points(ultraShellGeo, ultraShellMat);
+ultraShell.frustumCulled = false;
+ultraShell.renderOrder = 5;
+ultraShell.visible = false;
+scene.add(ultraShell);
+// Persistent per-particle direction + radial offset: the wall translates with
+// the front instead of flickering (full reshuffles read as noise, never as an
+// approaching sphere). Only a few % respawn per frame.
+const ultraShellDir = new Float32Array(ULTRA_SHELL_N * 3);
+const ultraShellOff = new Float32Array(ULTRA_SHELL_N);
+function seedUltraShellParticle(i, bx, by, bz) {
+  const bl = bx === undefined ? 0 : Math.hypot(bx, by, bz);
+  if (bl >= 0.5 && Math.random() < 0.65) {
+    const dx = bx / bl, dy = by / bl, dz = bz / bl;
+    const cosM = Math.cos(0.49);
+    const cost = 1 - Math.random() * (1 - cosM), sint = Math.sqrt(Math.max(0, 1 - cost * cost));
+    const ph = Math.random() * Math.PI * 2;
+    let hx = 0, hy = 1, hz = 0;
+    if (Math.abs(dy) > 0.9) { hx = 1; hy = 0; }
+    let t1x = dy * hz - dz * hy, t1y = dz * hx - dx * hz, t1z = dx * hy - dy * hx;
+    const t1l = Math.hypot(t1x, t1y, t1z) || 1;
+    t1x /= t1l; t1y /= t1l; t1z /= t1l;
+    const t2x = dy * t1z - dz * t1y, t2y = dz * t1x - dx * t1z, t2z = dx * t1y - dy * t1x;
+    const cp = Math.cos(ph), sp = Math.sin(ph);
+    ultraShellDir[i * 3] = dx * cost + sint * (cp * t1x + sp * t2x);
+    ultraShellDir[i * 3 + 1] = dy * cost + sint * (cp * t1y + sp * t2y);
+    ultraShellDir[i * 3 + 2] = dz * cost + sint * (cp * t1z + sp * t2z);
+  } else {
+    const u = Math.random() * 2 - 1, a = Math.random() * Math.PI * 2;
+    const s = Math.sqrt(Math.max(0, 1 - u * u));
+    ultraShellDir[i * 3] = s * Math.cos(a);
+    ultraShellDir[i * 3 + 1] = u;
+    ultraShellDir[i * 3 + 2] = s * Math.sin(a);
+  }
+  ultraShellOff[i] = -Math.random() * 15;
 }
-function disposeJobFireball(job) {
-  if (!job.fire) return;
-  scene.remove(job.fire.outer); scene.remove(job.fire.inner);
-  job.fire = null;
+for (let i = 0; i < ULTRA_SHELL_N; i++) seedUltraShellParticle(i);
+function hideUltraShell() { ultraShell.visible = false; }
+function updateUltraShell(job) {
+  const front = Math.sqrt(job.front2);
+  const yLo = Math.max(1, job.yLo ?? 1), yHi = Math.min(MAX_Y - 1, job.yHi ?? MAX_Y - 1);
+  const n = qualityTier === 2 ? 6000 : ULTRA_SHELL_N;
+  const { ccx, ccy, ccz } = job;
+  const bdx = camera.position.x - ccx, bdy = camera.position.y - ccy, bdz = camera.position.z - ccz;
+  ultraShellMat.size = Math.min(8, Math.max(2, 2 + front * 0.03));
+  ultraShellMat.opacity = Math.min(1, Math.max(0.12, Math.abs(front - Math.hypot(bdx, bdy, bdz)) / 8));
+  for (let i = 0; i < n; i++) {
+    if (Math.random() < 0.04) seedUltraShellParticle(i, bdx, bdy, bdz);
+    const off = ultraShellOff[i];
+    const r = Math.max(0, front + off);
+    const dx = ultraShellDir[i * 3], dy = ultraShellDir[i * 3 + 1], dz = ultraShellDir[i * 3 + 2];
+    let py = ccy + dy * r;
+    if (py < yLo) py = yLo; else if (py > yHi) py = yHi;
+    ultraShellPos[i * 3] = ccx + dx * r;
+    ultraShellPos[i * 3 + 1] = py;
+    ultraShellPos[i * 3 + 2] = ccz + dz * r;
+    const pr = Math.random();
+    if (pr < 0.8) {
+      // Mega fire shades, orange-dominant.
+      const fr = Math.random();
+      if (fr < 0.1) {
+        ultraShellCol[i * 3] = 0.7; ultraShellCol[i * 3 + 1] = 0.07 + Math.random() * 0.05; ultraShellCol[i * 3 + 2] = 0.02;
+      } else if (fr < 0.8) {
+        ultraShellCol[i * 3] = 1; ultraShellCol[i * 3 + 1] = 0.42 + Math.random() * 0.16; ultraShellCol[i * 3 + 2] = 0.05;
+      } else {
+        ultraShellCol[i * 3] = 1; ultraShellCol[i * 3 + 1] = 0.7 + Math.random() * 0.2; ultraShellCol[i * 3 + 2] = 0.12;
+      }
+    } else {
+      // Mega smoke shade, exact (megaFxSingle smoke cloud).
+      const g = 0.22 + Math.random() * 0.16;
+      ultraShellCol[i * 3] = g + 0.12; ultraShellCol[i * 3 + 1] = g * 0.9; ultraShellCol[i * 3 + 2] = g * 0.7;
+    }
+  }
+  ultraShellGeo.setDrawRange(0, n);
+  ultraShellGeo.attributes.position.needsUpdate = true;
+  ultraShellGeo.attributes.color.needsUpdate = true;
+  ultraShell.visible = true;
+}
+function ultraShellCross(job) {
+  // Sustained shake while the camera sits inside the ball (re-topped every
+  // drain frame); decays naturally once outside.
+  const front = Math.sqrt(job.front2);
+  const dx = camera.position.x - job.ccx, dy = camera.position.y - job.ccy, dz = camera.position.z - job.ccz;
+  if (front > 0 && Math.hypot(dx, dy, dz) < front) ultraTrauma = 1.14;
 }
 function spawnFrontEmbers(job) {
   const r = Math.max(1, Math.sqrt(job.front2));
@@ -21549,7 +21620,7 @@ function enqueueMegaCarveJob(spheres, R, set, seed, opts = {}) {
     dim, spheres, R, R2, set, seed,
     yLo: opts.yLo ?? null, yHi: opts.yHi ?? null, ultra: !!opts.ultra,
     cols, colsD2, ci: 0, cells: opts.cells || null, celli: 0,
-    ccx, ccy, ccz, front2: 0, fire: null, finalFx: null, emberT: 0,
+    ccx, ccy, ccz, front2: 0, finalFx: null, emberT: 0,
     started: false, brokePine: false, ivF: [],
     iv: null, ivX: 0, ivZ: 0, ivI: 0, ivY: 0, deadline: 0,
     chunkMax, hot: new Set(),
@@ -21622,7 +21693,7 @@ function drainMegaCarveJobs() {
   try {
     while (megaCarveJobs.length) {
       const job = megaCarveJobs[0];
-      if (job.dim !== dim) { flushJobHot(job); disposeJobFireball(job); megaCarveJobs.shift(); if (!megaCarveJobs.length) applyQualityTier(0); continue; }
+      if (job.dim !== dim) { flushJobHot(job); megaCarveJobs.shift(); if (!megaCarveJobs.length) applyQualityTier(0); continue; }
       if (!job.started) { job.ci = 0; job.celli = 0; job.started = true; }
       job.deadline = deadline;
       refreshDefer = [];
@@ -21642,12 +21713,7 @@ function drainMegaCarveJobs() {
             if ((++cols & 7) === 0 && performance.now() >= deadline) break;
           }
         }
-        if (job.fire) {
-          const fr = Math.max(0.5, Math.sqrt(job.front2));
-          job.fire.outer.scale.setScalar(fr);
-          job.fire.inner.scale.setScalar(fr * 0.62);
-          if (!MEGA_QUIET && performance.now() - job.emberT > 120) spawnFrontEmbers(job);
-        }
+        if (!MEGA_QUIET && performance.now() - job.emberT > 120) spawnFrontEmbers(job);
       } finally {
         const carved = refreshDefer;
         refreshDefer = null;
@@ -21683,10 +21749,9 @@ function drainMegaCarveJobs() {
       if (colsDone) {
         megaCarveJobs.shift();
         flushJobHot(job);
-        disposeJobFireball(job);
         drainThrottle = 1;
         if (!megaCarveJobs.length) applyQualityTier(0);
-        if (!MEGA_QUIET && job.finalFx) {
+        if (!MEGA_QUIET && job.finalFx && !job.ultra) {
           const f = job.finalFx;
           spawnMegaUnion(f.members, f.ccx, f.ccy, f.ccz, f.r);
         }
@@ -21698,6 +21763,9 @@ function drainMegaCarveJobs() {
       } else break;
       if (performance.now() >= deadline) break;
     }
+    const j0 = megaCarveJobs[0];
+    if (!MEGA_QUIET && j0 && j0.ultra && j0.dim === dim) { updateUltraShell(j0); ultraShellCross(j0); }
+    else hideUltraShell();
   } finally {
     refreshDefer = null;
     poolConsumed = null;
@@ -21839,7 +21907,6 @@ function processMegaPool(seeds, batchKeys) {
     const seed0 = members[0];
     enqueueMegaCarveJob(spheres, R, new Set(memberSet), { x: Math.floor(seed0.x), y: Math.floor(seed0.y), z: Math.floor(seed0.z) });
     const pj = megaCarveJobs[megaCarveJobs.length - 1];
-    attachJobFireball(pj);
     pj.finalFx = { members, ccx, ccy, ccz, r: poolR };
   } else {
     try {
@@ -21924,10 +21991,6 @@ function processUltraBlast(bx, by, bz, batchKeys) {
     { x: bx, y: by, z: bz },
     { yLo: w.lo, yHi: w.hi, ultra: true, cells }
   );
-  const uj = megaCarveJobs[megaCarveJobs.length - 1];
-  attachJobFireball(uj);
-  uj.finalFx = { members: [{ x: bx, y: by, z: bz }], ccx: bx + 0.5, ccy: by + 0.5, ccz: bz + 0.5, r: 10 };
-  if (!MEGA_QUIET) ultraTrauma = 1.5;
   if (mobs.length) handleMobExplosion(bx + 0.5, by + 0.5, bz + 0.5);
   megaNoPerchUntil = Math.max(megaNoPerchUntil, performance.now() / 1000 + PANIC_TIME);
   cullSmallChainsNear(bx, by, bz, 3, 8);
@@ -22237,8 +22300,6 @@ function megaFxSingle(cx, cy, cz, radiusMul = 1, density = 1.6) {
   const big = radiusMul > 3;
   const LIFE = (big ? 2 : 3) * MEGA_FX_T;
   const CR = MEGA_BLAST_RADIUS * radiusMul;
-  megaFlashBall(cx, cy, cz, 0xffd9a0, CR, 0.6 * MEGA_FX_T * (big ? 0.7 : 1), big ? 0.45 : 0.55);
-  megaFlashBall(cx, cy, cz, 0xffffff, CR * 0.62, 0.4 * MEGA_FX_T * (big ? 0.7 : 1), big ? 0.65 : 0.8);
   const ff = Math.min(density, 5);
   const cap = (s) => Math.min(6, s);
   megaCloud(cx, cy, cz, Math.round(1400 * ff), cap(2.8 * radiusMul), LIFE, 0, false,
