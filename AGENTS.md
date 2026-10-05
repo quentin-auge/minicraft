@@ -1466,7 +1466,7 @@ or phase. Step-up is root-gated by jumping leadership: when the chain root is a 
   white; the dragon's own
   purple `spawnDragonBurst` is untouched) and a
   replacement respawns out of view (`pigeonSpotOutOfView`, >130 blocks and off-camera,
-  back in band); non-aimed TNT never locks. Mob grapple (ENTER) grabs/carries them like
+  back in band); non-aimed TNT never locks. A gliding chicken counts as flying for TNT (`chickenTntFlying`: own `_glide`, or chained under a gliding chicken root): aimed like a bird (`aimedBird`/`igniteTNT`/`tntFizzleAim`, same lock/burst/fizzle rules, grounded solo chickens stay unaimable), solo gliders explode via `killChicken` and respawn in the pen (`spawnChickenInPen`, validated interior spot), chained gliders explode via `killChainMob` with pen respawn (`respawnChainMob` chicken branch, downstream survives), grounded chained chickens keep the harmless sever. Mob grapple (ENTER) grabs/carries them like
   other mobs and `releaseCarriedMobAt` drops them at any height in free air, from where
   band steering pulls them back to 50–200. Displacement grapple latches on
   (`fireGrapple`/`updateGrapple` homing on the hit point) and reels the player in

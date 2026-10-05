@@ -7039,6 +7039,43 @@ function killBird(m) {
   mobs.splice(i, 1);
   spawnSingleBird(true, null, null, null, m.kind, m.parrotVar);
 }
+function spawnChickenInPen() {
+  if (dim !== "over" || !villagePen) return null;
+  let sx = villagePen.cx + 0.5, sz = villagePen.cz + 0.5;
+  for (let t = 0; t < 30; t++) {
+    const p = randomPenPoint();
+    if (mobBlockedAt(p.x, p.z, CHICKEN_HW, villageCenter.y + 1)) continue;
+    if (aabbCollidesWorld(p.x, villageCenter.y + 1, p.z, CHICKEN_HW, CHICKEN_HH)) continue;
+    let overlap = false;
+    for (const o of mobs) {
+      if (o.dim !== undefined && o.dim !== dim) continue;
+      if (Math.abs(o.pos.y - (villageCenter.y + 1)) > 1.5) continue;
+      const need = CHICKEN_HW + (o.hw || 0.27) + 0.1;
+      const dx = p.x - o.pos.x, dz = p.z - o.pos.z;
+      if (dx * dx + dz * dz < need * need) { overlap = true; break; }
+    }
+    if (overlap) continue;
+    sx = p.x; sz = p.z;
+    break;
+  }
+  const m = spawnChainMob("chicken", sx, villageCenter.y + 1, sz);
+  m.mode = "wander";
+  m.target = randomPenPoint();
+  m.wanderT = 3 + Math.random() * 4;
+  m.villageBound = false;
+  m.penBound = true;
+  return m;
+}
+function killChicken(m) {
+  const i = mobs.indexOf(m);
+  if (i < 0) return;
+  if (m === carryMob) return;
+  if (birdLock === m) birdLock = null;
+  if (m.mesh) scene.remove(m.mesh);
+  mobById.delete(m.id);
+  mobs.splice(i, 1);
+  spawnChickenInPen();
+}
 function chainRespawnFree(x, y, z, hw, h, selfId) {
   if (aabbCollidesWorld(x, y, z, hw, h)) return false;
   for (const o of mobs) {
@@ -7151,6 +7188,7 @@ function severGroundedChainVictim(m, fizzleKey) {
   for (const d of downstream) if (d && d.kind === "fish") panicFish(d, sx, sy, sz);
 }
 function respawnChainMob(snap) {
+  if (snap.kind === "chicken") return spawnChickenInPen();
   const hw = snap.hw || 0.27, h = snap.h || 1.82;
   const rdim = snap.dim || "over";
   let px = snap.ox, py = snap.oy, pz = snap.oz;
@@ -8557,6 +8595,7 @@ function chainLeadConeDeflect(m, dx, dz) {
 }
 function isGroundedChainVictim(m) {
   if (!m || (!isChained(m) && !isChainCarrier(m))) return false;
+  if (m.kind === "chicken" && chickenTntFlying(m)) return false;
   if (!isFlyingKind(m.kind)) return true;
   if (!isBirdKind(m.kind)) return false;
   return m.onGround === true || m.mode === "perch" || m.mode === "toPerch" || m.mode === "sit" || m.mode === "cooped";
@@ -8581,6 +8620,12 @@ function chainRootOf(m) {
     cur = p;
   }
   return cur;
+}
+function chickenTntFlying(m) {
+  if (!m || m.kind !== "chicken" || m.onGround) return false;
+  if (m._glide) return true;
+  const r = chainRootOf(m);
+  return !!r && r !== m && r.kind === "chicken" && !!r._glide;
 }
 function chainHasJumping(m) {
   let cur = m;
@@ -21456,7 +21501,7 @@ function tntFizzleAim(bx, by, bz) {
   if (!mob) return null;
   if (mob.kind === "dragon") {
     if (dim !== "end" || !dragon.mesh || !dragon.mob) return null;
-  } else if (!isFlyingKind(mob.kind) && !isChained(mob) && !isChainCarrier(mob)) return null;
+  } else if (!isFlyingKind(mob.kind) && !chickenTntFlying(mob) && !isChained(mob) && !isChainCarrier(mob)) return null;
   const off = getMobHitOffset(eye, dir, mob, mobInWater(mob) ? FISH_GRAB_TOL : 0);
   const hx = off ? mob.pos.x + off.x : mob.pos.x, hy = off ? mob.pos.y + off.y : mob.pos.y + mob.h * 0.5, hz = off ? mob.pos.z + off.z : mob.pos.z;
   const mobT = Math.hypot(hx - eye.x, hy - eye.y, hz - eye.z);
@@ -21527,7 +21572,7 @@ function igniteTNT(bx, by, bz, fuse = FUSE_TIME) {
     camera.getWorldDirection(dir);
     const eye = camera.position;
     const mob = pickMob(dir, BIRD_AIM_DIST, true);
-    if (mob && (isFlyingKind(mob.kind) || isChained(mob) || isChainCarrier(mob)) && (dim === "over" || mob.kind !== "dragon")) {
+    if (mob && (isFlyingKind(mob.kind) || chickenTntFlying(mob) || isChained(mob) || isChainCarrier(mob)) && (dim === "over" || mob.kind !== "dragon")) {
       const off = getMobHitOffset(eye, dir, mob, mobInWater(mob) ? FISH_GRAB_TOL : 0);
       const hx = off ? mob.pos.x + off.x : mob.pos.x, hy = off ? mob.pos.y + off.y : mob.pos.y + mob.h * 0.5, hz = off ? mob.pos.z + off.z : mob.pos.z;
       const mobT = Math.hypot(hx - eye.x, hy - eye.y, hz - eye.z);
@@ -21635,8 +21680,8 @@ function aimedBird() {
   const mob = pickMob(dir, BIRD_AIM_DIST, true);
   if (!mob) return null;
   if (dim === "end") {
-    if (mob.kind === "dragon" || (!isFlyingKind(mob.kind) && !isChained(mob) && !isChainCarrier(mob))) return null;
-  } else if (!isFlyingKind(mob.kind) && !isChained(mob) && !isChainCarrier(mob)) return null;
+    if (mob.kind === "dragon" || (!isFlyingKind(mob.kind) && !chickenTntFlying(mob) && !isChained(mob) && !isChainCarrier(mob))) return null;
+  } else if (!isFlyingKind(mob.kind) && !chickenTntFlying(mob) && !isChained(mob) && !isChainCarrier(mob)) return null;
   const off = getMobHitOffset(eye, dir, mob, mobInWater(mob) ? FISH_GRAB_TOL : 0);
   const hx = off ? mob.pos.x + off.x : mob.pos.x, hy = off ? mob.pos.y + off.y : mob.pos.y + mob.h * 0.5, hz = off ? mob.pos.z + off.z : mob.pos.z;
   const mobT = Math.hypot(hx - eye.x, hy - eye.y, hz - eye.z);
@@ -21659,7 +21704,7 @@ function tntChainAimMob() {
   if (!mob || !mobs.includes(mob) || mob.kind === "dragon") return null;
   if (isGroundedChainVictim(mob)) return mob;
   if (liveBirdLock() === mob) return mob;
-  if (!isFlyingKind(mob.kind) && tntTargeted(mob)) return mob;
+  if (!isFlyingKind(mob.kind) && !chickenTntFlying(mob) && tntTargeted(mob)) return mob;
   return null;
 }
 function aimOnMob() {
@@ -21861,7 +21906,7 @@ function tickTNT(dt) {
         tntLit.delete(k);
         tntSyncClear(t.bird);
         const v = t.bird;
-        const victimChained = v && v.kind !== "dragon" && (!isFlyingKind(v.kind) || isChained(v) || isChainCarrier(v));
+        const victimChained = v && v.kind !== "dragon" && ((!isFlyingKind(v.kind) && !chickenTntFlying(v)) || isChained(v) || isChainCarrier(v));
         const downstream = victimChained && mobs.includes(v) ? chainDownstreamOf(v) : null;
         const frontId = victimChained && mobs.includes(v) ? chainParent.get(v.id) : undefined;
         const front = frontId !== undefined && frontId !== PLAYER_CHAIN_ID ? mobById.get(frontId) : null;
@@ -21873,12 +21918,13 @@ function tickTNT(dt) {
           explodeBird(t.px, t.py, t.pz, true);
         } else {
           if (victimChained && mobs.includes(v)) {
-            if (isFlyingKind(v.kind)) killChainMob(v);
+            if (isFlyingKind(v.kind) || chickenTntFlying(v)) killChainMob(v);
             else unchainMob(v, k);
           }
           else {
             const isBirdBomb = t.bird && isFlyingKind(t.bird.kind) && t.bird.kind !== "dragon";
             if (isBirdBomb && mobs.includes(t.bird)) killBird(t.bird);
+            else if (t.bird && t.bird.kind === "chicken" && mobs.includes(t.bird) && chickenTntFlying(t.bird)) killChicken(t.bird);
           }
           if (t.bird && t.bird.kind !== "dragon") explodeBird(t.px, t.py, t.pz, true);
           else enqueueExplosion(t.px, t.py, t.pz, true, true);
@@ -21888,7 +21934,7 @@ function tickTNT(dt) {
         if (front) panicSingleMob(front, t.px, t.py, t.pz);
       } else if (t.bird) {
         const v = t.bird;
-        const victimChained = v.kind !== "dragon" && (!isFlyingKind(v.kind) || isChained(v) || isChainCarrier(v));
+        const victimChained = v.kind !== "dragon" && ((!isFlyingKind(v.kind) && !chickenTntFlying(v)) || isChained(v) || isChainCarrier(v));
         const downstream = victimChained && mobs.includes(v) ? chainDownstreamOf(v) : null;
         const frontId = victimChained && mobs.includes(v) ? chainParent.get(v.id) : undefined;
         const front = frontId !== undefined && frontId !== PLAYER_CHAIN_ID ? mobById.get(frontId) : null;
@@ -21904,7 +21950,7 @@ function tickTNT(dt) {
             explodeBird(t.px, t.py, t.pz, false);
           } else {
             if (victimChained && mobs.includes(v)) {
-              if (isFlyingKind(v.kind)) killChainMob(v);
+              if (isFlyingKind(v.kind) || chickenTntFlying(v)) killChainMob(v);
               else unchainMob(v, k);
             }
             if (v.kind === "dragon") enqueueExplosion(t.px, t.py, t.pz, false, true);
@@ -28588,7 +28634,7 @@ if (location.search.includes('test')) {
     drainMegaCarveJobs, clearMegaCarveJobs, megaFxLod, carveMegaUnionColumn,
     get megaCarveJobs(){ return megaCarveJobs; },
     get MEGA_CARVE_BUDGET_MS(){ return MEGA_CARVE_BUDGET_MS; },
-    chickenAirProbe, chickenHeightAbove, chickenGlideSink, chickenGlideRange, chickenPickGlideSpot, chickenCommitGlide, chickenGlideActive,
+    chickenAirProbe, chickenHeightAbove, chickenGlideSink, chickenGlideRange, chickenPickGlideSpot, chickenCommitGlide, chickenGlideActive, chickenTntFlying, killChicken, spawnChickenInPen,
     get CHICKEN_GLIDE_V(){ return CHICKEN_GLIDE_V; }, get CHICKEN_GLIDE_SINK_K(){ return CHICKEN_GLIDE_SINK_K; },
     get CHICKEN_GLIDE_SINK_MIN(){ return CHICKEN_GLIDE_SINK_MIN; }, get CHICKEN_GLIDE_SINK_MAX(){ return CHICKEN_GLIDE_SINK_MAX; },
     get CHICKEN_GLIDE_TURN(){ return CHICKEN_GLIDE_TURN; },
