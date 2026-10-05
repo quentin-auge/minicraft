@@ -363,7 +363,7 @@ stays bright at distance, `placeable: true` so it
   flip it to `true` to force-unlock everywhere for debugging). The ULTRA_TNT slot is
   kill-gated: it appears only after 3 Ender Dragon kills in the session
   (`dragonKillsSession`, reset on load/new world, `unlockUltraTNT()` at the third
-  kill; the unlock itself persists in save v47).
+  kill; the unlock itself persists in save v47). Debug unlock: `Z` calls `unlockMegaTNT()` and `unlockUltraTNT()` (toast when each unlocks).
 - **Player**: AABB collision, gravity (`GRAVITY = 37.44`, +20% twice; halved
   in the Overworld once the player rises to the bottom of the Moon sphere,
   `pos.y >= MOON_Y - MOON_R`), jump (Shift/Space), walk/sprint (/), fly mode, swimming,
@@ -687,7 +687,7 @@ stays bright at distance, `placeable: true` so it
 - **Ultra TNT**: a third TNT block (`ULTRA_TNT` id 23, black TNT-band
   `TEX.ultra_side` texture — same layout as regular TNT, black instead of red,
   violet per-frame throb via `getSingleMat`) in the hotbar right after Mega TNT
-  once unlocked (3 session dragon kills). Breaking one lights
+  once unlocked (3 session dragon kills, or `Z` for debug). Breaking one lights
   the same 8s fuse (`ULTRA_FUSE_TIME`) in matte black (`t.mega` set, `t.ultra`
   carried alongside: dedicated `ultratit`/`ultraveil` chunk buckets, texture
   whitening held at 0 so the block stays pure black, `NormalBlending` black

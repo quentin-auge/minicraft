@@ -27382,6 +27382,7 @@ document.addEventListener("keydown", (e) => {
   if (e.code === "KeyL" && !loading) select(selected + 1);
   if (e.code === "KeyF") { freeCam = !freeCam; if (freeCam) camPos.copy(camera.position); else exitFreeCam(); }
   if (e.code === "KeyV" && !loading) { spawnBirdChain(); }
+  if (e.code === "KeyZ" && !loading && !e.repeat) { if (unlockMegaTNT()) showMsg("Mega TNT unlocked (debug)"); if (unlockUltraTNT()) showMsg("Ultra TNT unlocked (debug)"); }
   if (e.code === "Equal" && !loading && !e.repeat) { debugHud = !debugHud; }
   if (e.code === "Escape") {
     if (started) {
