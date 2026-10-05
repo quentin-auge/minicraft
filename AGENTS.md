@@ -18,7 +18,11 @@ small Python server for saving/loading worlds.
   executed. Verify game logic in the browser.
 - Performance: the main loop logs `[perf] fps~N q=T ...` to the console every 5s
   (`fpsEMA`, auto-quality tier, dim, chunks, mobs, bursts, plus per-phase frame
-  ms `tnt`/`fx`/`mobs`/`sim`/`player`/`mesh`/`render` averaged over the window). An auto-quality
+  ms `tnt`/`fx`/`mobs`/`sim`/`player`/`mesh`/`render` averaged over the window, with the
+  `mobs` share split into `birds`/`fish`/`ender`/`passes` plus a `ground` remainder,
+  itself split into `phys` (both physics steps) and an `ai` remainder; every new
+  mob class gets its own `phAcc` bucket wired into this decomposition, so the
+  `mobs` share stays fully attributed). An auto-quality
   governor (`qualityTier` 0/1/2, `tickQuality`/`applyQualityTier` in `main.js`)
   degrades pixel ratio (2→1.25→1), glow lights (16→8→4) and star matrix rate
   (60→15→8 Hz) when FPS stays <45, and steps back up above 58. Enqueuing a blast
@@ -1697,6 +1701,8 @@ or phase. Step-up is root-gated by jumping leadership: when the chain root is a 
   machinery keyed on `canStep`, not wolf-only code — only `isJumpingKind`
   maps species to capability. Adding a jumping kind means extending
   `isJumpingKind` plus spawn `canStep`, sizes, save kind code and mesh.
+  Adding a mob class means also giving its tick its own `phAcc` bucket and
+  wiring it into the `[perf]` `mobs` decomposition above.
 - Do not add code comments unless the surrounding code already explains itself.
 - `window._test` uses `Object.assign`, which evaluates `get` accessors into frozen snapshots: expose live `let` primitives as methods (`getFoo(){...}`), never as getters.
 - After any rename/removal, grep the old identifier across `main.js` + `index.html` (`node --check` can't catch runtime-only `ReferenceError`s) and run a bird-active headless smoke test — a throw inside `loop` freezes the tab dead.

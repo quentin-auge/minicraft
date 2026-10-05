@@ -13722,6 +13722,7 @@ function updateMobs(dt) {
     fillCacheT = mobNowS; fillCacheDim = dim; fillCacheSize = portalFills.size; fillCacheCleared = !!endCleared;
   }
   const over = (dim === "over" && villageHouses.length) || dim === "nether";
+  let pPasses = performance.now();
   if (over) {
     mobTick++;
     buildMobGrid();
@@ -13732,11 +13733,13 @@ function updateMobs(dt) {
     buildMobGrid();
     resolveHeadOn();
   }
+  phAcc("passes", pPasses);
   if (mobStats) mobStats.frames++;
   const g = GRAVITY;
   for (let idx = mobs.length - 1; idx >= 0; idx--) {
     const m = mobs[idx];
-    if (m.kind === "enderman" && (m === carryMob || isMobFrozenByGrapple(m))) { updateEnderman(m, dt); continue; }
+    const mT0 = performance.now();
+    if (m.kind === "enderman" && (m === carryMob || isMobFrozenByGrapple(m))) { const pEnder = performance.now(); updateEnderman(m, dt); phAcc("ender", pEnder); continue; }
     if (isMobHeld(m)) continue;
     if (isChained(m)) { m.mesh.position.copy(m.pos); continue; }
     if (isMobFrozenByGrapple(m)) continue;
@@ -13806,7 +13809,7 @@ function updateMobs(dt) {
     }
     const now = performance.now() / 1000;
     if (m.kind === "dragon") continue;
-    if (m.kind === "enderman") { updateEnderman(m, dt); continue; }
+    if (m.kind === "enderman") { const pEnder = performance.now(); updateEnderman(m, dt); phAcc("ender", pEnder); continue; }
     if (isBirdKind(m.kind)) {
       if (dim !== "over" && dim !== "end" && dim !== "nether") { m.mesh.position.copy(m.pos); continue; }
       if (m._chainFall) {
@@ -13832,10 +13835,12 @@ function updateMobs(dt) {
         continue;
       }
       updateBird(m, dt);
+      phAcc("birds", mT0);
       continue;
     }
     if (m.kind === "fish") {
       updateFish(m, dt);
+      phAcc("fish", mT0);
       continue;
     }
     if (m.pos.y < -15) {
@@ -18144,6 +18149,7 @@ function moveMobAxisYStep(mob, dy) {
   return false;
 }
 function mobPhysicsStep(mob, dt, g) {
+  const pPhys = performance.now();
   const grav = g != null ? g : GRAVITY;
   const useGrav = mob.pos.y >= MOON_Y - MOON_R ? grav * 0.5 : grav;
   const inWater = mobInWater(mob);
@@ -18187,6 +18193,7 @@ function mobPhysicsStep(mob, dt, g) {
   if(isPenMob(mob) && !chickenFenceHop(mob) && villagePen && pigOverlapsFence(mob.pos.x, mob.pos.z, mob.hw)){
     pigFenceSlideOut(mob);
   }
+  phAcc("phys", pPhys);
 }
 function tryWolfStep(mob, bx, by, bz) {
   if (mobInWater(mob)) return mobWaterExitJump(mob, bx, by, bz);
@@ -18342,6 +18349,7 @@ function wolfMoveAxisZ(mob, dz) {
   return false;
 }
 function wolfPhysicsStep(mob, dt, g) {
+  const pPhys = performance.now();
   const grav = g != null ? g : GRAVITY;
   const useGrav = mob.pos.y >= MOON_Y - MOON_R ? grav * 0.5 : grav;
   const inWater = mobInWater(mob);
@@ -18395,6 +18403,7 @@ function wolfPhysicsStep(mob, dt, g) {
       if (mob.pos.z > maxZ) { mob.pos.z = maxZ; mob.vel.z = 0; }
     }
   }
+  phAcc("phys", pPhys);
 }
 
 function tryStep(bx, by, bz) {
@@ -27436,7 +27445,7 @@ let last = performance.now();
 let mobTickFlip = false;
 let simActivePrev = true;
 let fpsEMA = 60, perfLogT = 0;
-let phaseT = { player: 0, tnt: 0, fx: 0, mobs: 0, sim: 0, mesh: 0, render: 0 };
+let phaseT = { player: 0, tnt: 0, fx: 0, mobs: 0, sim: 0, mesh: 0, render: 0, birds: 0, fish: 0, ender: 0, passes: 0, phys: 0 };
 let phaseN = 0;
 function phAcc(k, t0) { phaseT[k] += performance.now() - t0; }
 let debugHud = false, debugHudT = 0;
@@ -27478,7 +27487,10 @@ function loop(now) {
     perfLogT = 0;
     const pn = Math.max(1, phaseN);
     const pf = (k) => (phaseT[k] / pn).toFixed(1);
-    if (typeof console !== "undefined") console.log("[perf] fps~" + Math.round(fpsEMA) + " q=" + qualityTier + " dim=" + dim + " chunks=" + chunkMeshes.size + " mobs=" + mobs.length + " bursts=" + (typeof bursts !== "undefined" ? bursts.length : 0) + " ms tnt=" + pf("tnt") + " fx=" + pf("fx") + " mobs=" + pf("mobs") + " sim=" + pf("sim") + " player=" + pf("player") + " mesh=" + pf("mesh") + " render=" + pf("render"));
+    const gMob = Math.max(0, phaseT.mobs - phaseT.birds - phaseT.fish - phaseT.ender - phaseT.passes);
+    const gPhys = Math.min(phaseT.phys, phaseT.mobs);
+    const gAi = Math.max(0, gMob - gPhys);
+    if (typeof console !== "undefined") console.log("[perf] fps~" + Math.round(fpsEMA) + " q=" + qualityTier + " dim=" + dim + " chunks=" + chunkMeshes.size + " mobs=" + mobs.length + " bursts=" + (typeof bursts !== "undefined" ? bursts.length : 0) + " ms tnt=" + pf("tnt") + " fx=" + pf("fx") + " mobs=" + pf("mobs") + "(birds=" + pf("birds") + " fish=" + pf("fish") + " ender=" + pf("ender") + " passes=" + pf("passes") + " ground=" + (gMob / pn).toFixed(1) + "[phys=" + (gPhys / pn).toFixed(1) + " ai=" + (gAi / pn).toFixed(1) + "]" + ")" + " sim=" + pf("sim") + " player=" + pf("player") + " mesh=" + pf("mesh") + " render=" + pf("render"));
     for (const k in phaseT) phaseT[k] = 0;
     phaseN = 0;
   }
