@@ -1534,8 +1534,11 @@ const wobA = 0.4 + hash2(0, 0, rs + 3) * 0.3;
   buildRiverFlowTables();
 }
 let riverFlowTables = [];
+let riverSampleGrid = new Map();
+const RIVER_GRID_CELL = 8;
 function buildRiverFlowTables() {
   riverFlowTables = [];
+  riverSampleGrid = new Map();
   for (let i = 0; i < riverPaths.length; i++) {
     const pts = riverPaths[i];
     const samples = [];
@@ -1561,21 +1564,30 @@ function buildRiverFlowTables() {
       const dl = Math.hypot(b.x - a.x, b.z - a.z) || 1;
       samples[j].tx = (b.x - a.x) / dl;
       samples[j].tz = (b.z - a.z) / dl;
+      const rv = nearestRiver(samples[j].x, samples[j].z);
+      samples[j].w = rv ? rv.w : RIVER_W;
+      const gx = Math.floor(samples[j].x / RIVER_GRID_CELL), gz = Math.floor(samples[j].z / RIVER_GRID_CELL);
+      const gk = gx + "," + gz;
+      let cell = riverSampleGrid.get(gk);
+      if (!cell) { cell = []; riverSampleGrid.set(gk, cell); }
+      cell.push({ id: i, idx: j });
     }
     riverFlowTables.push({ samples, total: s });
   }
 }
 function fishRiverNear(x, z) {
   if (!riverFlowTables.length) return null;
+  const gx = Math.floor(x / RIVER_GRID_CELL), gz = Math.floor(z / RIVER_GRID_CELL);
   let best = null;
-  for (let i = 0; i < riverFlowTables.length; i++) {
-    const samples = riverFlowTables[i].samples;
-    for (let j = 0; j < samples.length; j++) {
-      const dx = x - samples[j].x, dz = z - samples[j].z;
+  for (let ax = gx - 1; ax <= gx + 1; ax++) for (let az = gz - 1; az <= gz + 1; az++) {
+    const cell = riverSampleGrid.get(ax + "," + az);
+    if (!cell) continue;
+    for (let c = 0; c < cell.length; c++) {
+      const smp = riverFlowTables[cell[c].id].samples[cell[c].idx];
+      const dx = x - smp.x, dz = z - smp.z;
       const d2 = dx * dx + dz * dz;
       if (!best || d2 < best.d2) {
-        const rv = nearestRiver(samples[j].x, samples[j].z);
-        best = { id: i, idx: j, d2, cx: samples[j].x, cz: samples[j].z, tx: samples[j].tx, tz: samples[j].tz, s: samples[j].s, total: riverFlowTables[i].total, w: rv ? rv.w : RIVER_W };
+        best = { id: cell[c].id, idx: cell[c].idx, d2, cx: smp.x, cz: smp.z, tx: smp.tx, tz: smp.tz, s: smp.s, total: riverFlowTables[cell[c].id].total, w: smp.w };
       }
     }
   }
@@ -4533,7 +4545,7 @@ const CHAIN_SPAWN_KINDS = ["villager", "pig", "cow", "chicken", "wolf", "cat"];
 // on land they fall, then flop for FISH_FLOP_TIME once grounded, then fade
 // and respawn in water. Carry-only: never chain, never portal-travel.
 // ---------------------------------------------------------------------------
-const FISH_COUNT = 25;
+const FISH_COUNT = 100;
 const FISH_SPEED = 2.5;
 const FISH_FLOP_TIME = 3;
 const FISH_FADE_TIME = 0.7;
@@ -5753,8 +5765,7 @@ function spawnRiverFish(fishVar = null) {
     const samples = riverFlowTables[ri].samples;
     if (!samples.length) continue;
     const smp = samples[(Math.random() * samples.length) | 0];
-    const rv = nearestRiver(smp.x, smp.z);
-    const w = rv ? rv.w : RIVER_W;
+    const w = smp.w != null ? smp.w : RIVER_W;
     const bx = Math.floor(smp.x + (Math.random() * 2 - 1) * w * 0.25);
     const bz = Math.floor(smp.z + (Math.random() * 2 - 1) * w * 0.25);
     if (isInsidePool(bx + 0.5, bz + 0.5) || isInsidePenPool(bx + 0.5, bz + 0.5)) continue;
