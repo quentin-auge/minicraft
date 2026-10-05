@@ -6869,6 +6869,35 @@ function spawnAimChain(aimed) {
   queueSave();
   return true;
 }
+function spawnChickenInHand() {
+  if (!started || loading || helpOpen) return false;
+  if (carryMob || carryGrappleActive || carryGrapplePulling || carryGrappleRetracting || carryGrappleMob) {
+    showMsg("Hands full");
+    return false;
+  }
+  const fwd = new THREE.Vector3();
+  camera.getWorldDirection(fwd);
+  let sx = camera.position.x + fwd.x * 2;
+  let sy = camera.position.y + fwd.y * 2;
+  let sz = camera.position.z + fwd.z * 2;
+  sx = Math.max(-WORLD_RADIUS + 2, Math.min(WORLD_RADIUS - 2, sx));
+  sz = Math.max(-WORLD_RADIUS + 2, Math.min(WORLD_RADIUS - 2, sz));
+  sy = Math.max(1, Math.min(MAX_Y - 2, sy));
+  const m = spawnChainMob("chicken", sx, sy, sz);
+  for (let t = 0; t < 8 && aabbCollidesWorld(m.pos.x, m.pos.y, m.pos.z, m.hw, m.h); t++) m.pos.y++;
+  m.mesh.position.copy(m.pos);
+  carryMob = m;
+  m.mode = "carried";
+  m.vel.set(0, 0, 0);
+  m.target = null;
+  m.path = null;
+  m.blockedT = 0; m._stuckT = 0;
+  m.mesh.visible = true;
+  setMobTransparent(m, 0.35);
+  worldDirty = true;
+  queueSave();
+  return true;
+}
 function spawnBirdChain() {
   if (dim !== "over" && dim !== "end" && dim !== "nether") { showMsg("Bird chains can't take off here"); return false; }
   const _vDir = new THREE.Vector3();
@@ -27939,6 +27968,7 @@ document.addEventListener("keydown", (e) => {
   if (e.code === "KeyL" && !loading) select(selected + 1);
   if (e.code === "KeyF") { freeCam = !freeCam; if (freeCam) camPos.copy(camera.position); else exitFreeCam(); }
   if (e.code === "KeyV" && !loading) { spawnBirdChain(); }
+  if (e.code === "KeyB" && !loading && !e.repeat) { spawnChickenInHand(); }
   if (e.code === "KeyZ" && !loading && !e.repeat) { if (unlockMegaTNT()) showMsg("Mega TNT unlocked (debug)"); if (unlockUltraTNT()) showMsg("Ultra TNT unlocked (debug)"); }
   if (e.code === "Equal" && !loading && !e.repeat) { debugHud = !debugHud; }
   if (e.code === "Escape") {
@@ -28529,7 +28559,7 @@ if (location.search.includes('test')) {
     get PIGEON_COL_HW(){ return BIRD_COL_HW; }, get PIGEON_COL_H(){ return BIRD_COL_H; },
     get NETHER_PIGEON_MIN_Y(){ return NETHER_BIRD_MIN_Y; }, get NETHER_PIGEON_MAX_Y(){ return NETHER_BIRD_MAX_Y; },
     makePigeonMesh: makeBirdMesh, spawnPigeons: spawnBirds, spawnSinglePigeon: spawnSingleBird, removePigeons: removeBirds,
-    spawnPigeonChain: spawnBirdChain, updatePigeon: updateBird, updatePerchedPigeon: updatePerchedBird,
+    spawnPigeonChain: spawnBirdChain, spawnChickenInHand, updatePigeon: updateBird, updatePerchedPigeon: updatePerchedBird,
     updateToPerchPigeon: updateToPerchBird, pigeonTakeoff: birdTakeoff, pigeonNextLeg: birdNextLeg,
     pigeonFindPerchSpot: birdFindPerchSpot, pigeonCloudTopAt: birdCloudTopAt, pigeonTreeTopAt: birdTreeTopAt,
     pigeonRoofTopAt: birdRoofTopAt, pigeonPerchBand: birdPerchBand, pigeonPerchSupports: birdPerchSupports,
