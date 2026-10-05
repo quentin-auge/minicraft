@@ -4925,6 +4925,33 @@ function fishAvoidCommit(m, now, lockTime) {
   if (lh) return { tgt: lh, lock: 1.5 };
   return null;
 }
+function fishFleeTarget(m) {
+  let dx = m.pos.x - (m._fleeSrcX != null ? m._fleeSrcX : m.pos.x);
+  let dz = m.pos.z - (m._fleeSrcZ != null ? m._fleeSrcZ : m.pos.z);
+  let dl = Math.hypot(dx, dz);
+  if (dl < 0.5) {
+    const a = Math.random() * Math.PI * 2;
+    dx = Math.sin(a); dz = Math.cos(a); dl = 1;
+  } else { dx /= dl; dz /= dl; }
+  const hh = m.h || FISH_HH, hw = m.hw || FISH_HW;
+  for (const d of [10, 7, 5, 3]) {
+    let tx = Math.max(-WORLD_RADIUS + 2, Math.min(WORLD_RADIUS - 2, m.pos.x + dx * d));
+    let tz = Math.max(-WORLD_RADIUS + 2, Math.min(WORLD_RADIUS - 2, m.pos.z + dz * d));
+    tx = Math.floor(tx) + 0.5; tz = Math.floor(tz) + 0.5;
+    const bed = fishBedY(tx, tz, m.pos.y, hh);
+    const sTop = waterTopAt(tx, tz, m.pos.y + 4);
+    const pref = fishPreferDepth(m, tx, tz, hh);
+    let ty = pref != null ? pref : m.pos.y;
+    ty = Math.max(bed + 0.5, Math.min(sTop != null ? sTop - hh - FISH_SUBMERGE_GAP : ty, ty));
+    if (aabbCollidesWorld(tx, ty, tz, hw, hh)) continue;
+    if (!fishBodyWetLoose(tx, ty, tz, hw, hh)) continue;
+    if (!fishSegmentWet(m.pos.x, m.pos.y, m.pos.z, tx, ty, tz, hw, hh)) continue;
+    const tgt = { x: tx, y: ty, z: tz };
+    tgt._fishFlee = true;
+    return tgt;
+  }
+  return null;
+}
 function fishLooseHop(m) {
   const dirs = [[1, 0, 0], [-1, 0, 0], [0, 0, 1], [0, 0, -1], [0, 1, 0], [0, -1, 0]];
   const vl = Math.hypot(m.vel.x, m.vel.y, m.vel.z);
@@ -5863,8 +5890,10 @@ function updateFish(m, dt) {
   }
   fishEaseScale(m, dt);
   const _riverLure = m._lured || (m.target && (m.target._rodLure || m.target._fishWater));
+  const fleeing0 = m.fleeUntil != null && now < m.fleeUntil && !m._hooked && !isMobHeld(m) &&
+    !(m._lured && m.target && m.target._rodLure);
   let _riverTgt = null;
-  if (!_riverLure && (m.dim || "over") === "over" && dim === "over") {
+  if (!_riverLure && !fleeing0 && (m.dim || "over") === "over" && dim === "over") {
     _riverTgt = fishRiverFlowTarget(m, now);
   } else if (m._flowing) {
     m._flowing = false;
@@ -5907,9 +5936,10 @@ function updateFish(m, dt) {
       if (now - n.t <= 8 && getBlock(n.bx, n.by, n.bz) === WATER) live = true;
       break;
     }
-    if (!live || td < 1.0) { fishWaterGiveUp(m); m.target = null; m._swimT0 = now; t = null; }
+    if (!live || td < 1.0 || fleeing0) { fishWaterGiveUp(m); m.target = null; m._swimT0 = now; t = null; }
   }
-  if (!seekLure && (!t || isWaterChase)) {
+  if (!fleeing0 && t && t._fishFlee) { m.target = null; t = null; }
+  if (!seekLure && (!t || isWaterChase) && !fleeing0) {
     const fresh = fishFreshWaterFor(m, now, FISH_OPEN_WATER_LURE_R);
     if (fresh) {
       const wt = { x: fresh.x, y: fresh.y, z: fresh.z };
@@ -5927,7 +5957,11 @@ function updateFish(m, dt) {
   if (!t || (td < 1.0 && !isLure && !isWaterChase) || (m._swimT0 && now - m._swimT0 > 14)) {
     if (!seekLure && !(m.target && m.target._fishWater) && !lockHeld) {
       let nt = null;
-      if (!_riverLure && (m.dim || "over") === "over" && dim === "over") {
+      if (!nt && fleeing0 && !seekLure) {
+        nt = fishFleeTarget(m);
+        if (nt) { m._fishLockUntil = 0; }
+      }
+      if (!nt && !fleeing0 && !_riverLure && (m.dim || "over") === "over" && dim === "over") {
         nt = fishRiverFlowTarget(m, now);
         if (nt) { m._fishLockUntil = 0; }
       }
@@ -5993,7 +6027,7 @@ function updateFish(m, dt) {
     const chh = Math.cos(m._pitch);
     dx = Math.sin(m.yaw) * chh; dy = -Math.sin(m._pitch); dz = Math.cos(m.yaw) * chh;
   }
-  const spd0 = (m.speed || FISH_SPEED);
+  const spd0 = (m.speed || FISH_SPEED) * (fleeing0 ? 2 : 1);
   const k = Math.min(1, dt * 3);
   m.vel.x += (dx * spd0 - m.vel.x) * k;
   m.vel.y += (dy * spd0 - m.vel.y) * k;
@@ -7068,6 +7102,8 @@ function severGroundedChainVictim(m, fizzleKey) {
   if (!mobs.includes(m)) return;
   if (m === carryMob || m === carryGrappleMob) return;
   if (m.kind === "dragon") return;
+  const sx = m.pos.x, sy = m.pos.y, sz = m.pos.z;
+  const downstream = chainDownstreamOf(m);
   fishPromoteCancelFor(m);
   severChainMob(m);
   resumeChainedMob(m);
@@ -7082,6 +7118,8 @@ function severGroundedChainVictim(m, fizzleKey) {
     explodeBird(t.px, t.py, t.pz, false);
   }
   tntSyncClear(m);
+  if (m.kind === "fish") panicFish(m, sx, sy, sz);
+  for (const d of downstream) if (d && d.kind === "fish") panicFish(d, sx, sy, sz);
 }
 function respawnChainMob(snap) {
   const hw = snap.hw || 0.27, h = snap.h || 1.82;
@@ -10817,7 +10855,7 @@ function chainAttachTarget() {
   if (carryMob && carryMob.kind === "fish" && dim !== "over") return null;
   const dir = new THREE.Vector3();
   camera.getWorldDirection(dir);
-  const mob = pickMob(dir, Infinity);
+  const mob = pickMob(dir, Infinity, true);
   if (!mob || mob === carryMob || mob === carryGrappleMob) return null;
   if ((mob.dim || "over") !== dim) return null;
   if ((carryMob && carryMob.kind === "fish") || mob.kind === "fish") {
@@ -11224,10 +11262,19 @@ function handleCarryEnterDown() {
     if (aim && aim.surf != null && Math.abs(aim.py - aim.surf) < 0.001) {
       const dir = new THREE.Vector3();
       camera.getWorldDirection(dir);
+      const eye = camera.position;
       const mob = pickMob(dir, Infinity);
       let mobDist = Infinity;
       if (mob) {
         mobDist = Math.hypot(mob.pos.x - camera.position.x, (mob.pos.y + mob.h * 0.5) - camera.position.y, mob.pos.z - camera.position.z);
+        if (mobInWater(mob)) {
+          const hit = getMobHitOffset(eye, dir, mob, FISH_GRAB_TOL);
+          if (hit) {
+            const hitDist = Math.hypot(mob.pos.x + hit.x - eye.x, mob.pos.y + hit.y - eye.y, mob.pos.z + hit.z - eye.z);
+            const waterDist = Math.hypot(aim.x + 0.5 - camera.position.x, aim.surf - camera.position.y, aim.z + 0.5 - camera.position.z);
+            if (hitDist <= waterDist + 0.5 && hitDist <= solidRayT(eye, dir) + 0.5) { startCarryGrabGrapple(mob); return; }
+          }
+        }
       }
       const waterDist = Math.hypot(aim.x + 0.5 - camera.position.x, aim.surf - camera.position.y, aim.z + 0.5 - camera.position.z);
       if (mobDist >= waterDist) { deployRod(aim); return; }
@@ -11823,6 +11870,16 @@ function panicMegaBlast(cx, cy, cz, preFuse = 0, union = null, villageTouch = nu
     if (!m || m.kind === "dragon" || m.kind === "iron_golem" || m.kind === "enderman") continue;
     if (isFlyingKind(m.kind)) continue;
     if (mobDimOf(m) !== dim) continue;
+    if (m.kind === "fish") {
+      if (union && union.length) {
+        if (m.pos.x < pbx0 || m.pos.x > pbx1 || m.pos.z < pbz0 || m.pos.z > pbz1) continue;
+        if (distToMegaUnion(m.pos.x, m.pos.z, union) > MEGA_BLAST_RADIUS) continue;
+      } else {
+        if (Math.hypot(m.pos.x - cx, m.pos.y - cy, m.pos.z - cz) > MEGA_KNOCK_RADIUS) continue;
+      }
+      panicFish(m, cx, cy, cz, preFuse > 0 ? preFuse + 8 : PANIC_TIME);
+      continue;
+    }
     let go = null;
     if (union && union.length) {
       if (m.pos.x < pbx0 || m.pos.x > pbx1 || m.pos.z < pbz0 || m.pos.z > pbz1) continue;
@@ -15349,6 +15406,14 @@ function resumeMobPanic(m, e) {
   const sx = isFinite(e.panicSrcX) ? e.panicSrcX : m.pos.x;
   const sz = isFinite(e.panicSrcZ) ? e.panicSrcZ : m.pos.z;
   const flags = (e.panicFlags & 255) || 0;
+  if (m.kind === "fish") {
+    if (fleeRemain <= 0.05) return false;
+    m.fleeUntil = now + fleeRemain;
+    if (flags & 1) { m._outsideFlee = true; m._fleeSrcX = sx; m._fleeSrcZ = sz; }
+    else { delete m._outsideFlee; delete m._fleeSrcX; delete m._fleeSrcZ; }
+    m.target = null; m._swimT0 = 0; m._fishLockUntil = 0;
+    return true;
+  }
   if (isBirdKind(m.kind)) {
     if (pT <= 0.05 && pUntil <= 0.05) return false;
     m.perchSpot = null; m.perchGroup = null; m.perchT = 0; m.perchWander = null; m.perchWanderT = 0; m.perchTimeout = 0; m.perchRetry = 0;
@@ -15634,6 +15699,26 @@ function groundFlee2s(m, cx, cz, now, dur) {
   m.target = fleePointAway(m, cx, cz);
   m.wanderT = 1.2 + Math.random() * 0.8; m.steerCooldown = 0; m.path = null; m.pathKey = null;
 }
+function panicFish(m, cx, cy, cz, dur = PANIC_TIME) {
+  if (!m || m.kind !== "fish") return;
+  if (!mobs.includes(m)) return;
+  if (isMobHeld(m) || m._hooked) return;
+  if ((m.dim || "over") !== dim) return;
+  if (!fishInWater(m)) return;
+  const now = performance.now() / 1000;
+  m.fleeUntil = Math.max(m.fleeUntil || 0, now + dur);
+  m._outsideFlee = true; m._fleeSrcX = cx; m._fleeSrcZ = cz;
+  m.target = null; m._swimT0 = 0; m._fishLockUntil = 0;
+}
+function panicFishes(cx, cy, cz) {
+  for (const m of mobs) {
+    if (!m || m.kind !== "fish") continue;
+    if ((m.dim || "over") !== dim) continue;
+    const dx = m.pos.x - cx, dy = m.pos.y - cy, dz = m.pos.z - cz;
+    if (Math.hypot(dx, dy, dz) > OUTSIDE_PANIC_DIST) continue;
+    panicFish(m, cx, cy, cz);
+  }
+}
 function panicLeaveDir(mx, mz, cx, cz) {
   const dx = mx - cx, dz = mz - cz;
   if (Math.hypot(dx, dz) < 0.15) { const a = Math.random() * Math.PI * 2; return [Math.cos(a), Math.sin(a)]; }
@@ -15816,6 +15901,7 @@ function handleMobExplosion(cx, cy, cz) {
   if (blastInVillageSq(cx, cy, cz)) villagePanicUntil = performance.now() / 1000 + VILLAGE_PANIC_TIME;
   if (dim === "over" || dim === "nether") { panicVillagers(cx, cy, cz); panicCats(cx, cy, cz); panicPenMobs(cx, cy, cz); panicWolves(cx, cy, cz); }
   panicGeneric(cx, cy, cz);
+  panicFishes(cx, cy, cz);
 }
 
 function generateWorld() {
@@ -21337,7 +21423,7 @@ function tntFizzleAim(bx, by, bz) {
   const dir = new THREE.Vector3();
   camera.getWorldDirection(dir);
   const eye = camera.position;
-  const mob = pickMob(dir, BIRD_AIM_DIST);
+  const mob = pickMob(dir, BIRD_AIM_DIST, true);
   if (!mob) return null;
   if (mob.kind === "dragon") {
     if (dim !== "end" || !dragon.mesh || !dragon.mob) return null;
@@ -21411,7 +21497,7 @@ function igniteTNT(bx, by, bz, fuse = FUSE_TIME) {
     const dir = new THREE.Vector3();
     camera.getWorldDirection(dir);
     const eye = camera.position;
-    const mob = pickMob(dir, BIRD_AIM_DIST);
+    const mob = pickMob(dir, BIRD_AIM_DIST, true);
     if (mob && (isFlyingKind(mob.kind) || isChained(mob) || isChainCarrier(mob)) && (dim === "over" || mob.kind !== "dragon")) {
       const off = getMobHitOffset(eye, dir, mob, mobInWater(mob) ? FISH_GRAB_TOL : 0);
       const hx = off ? mob.pos.x + off.x : mob.pos.x, hy = off ? mob.pos.y + off.y : mob.pos.y + mob.h * 0.5, hz = off ? mob.pos.z + off.z : mob.pos.z;
@@ -21434,7 +21520,7 @@ function igniteTNT(bx, by, bz, fuse = FUSE_TIME) {
     const dir = new THREE.Vector3();
     camera.getWorldDirection(dir);
     const eye = camera.position;
-    const mob = pickMob(dir, BIRD_AIM_DIST);
+    const mob = pickMob(dir, BIRD_AIM_DIST, true);
     if (mob && mob.kind === "dragon") {
       const off = getMobHitOffset(eye, dir, mob);
       const hx = off ? mob.pos.x + off.x : mob.pos.x, hy = off ? mob.pos.y + off.y : mob.pos.y + mob.h * 0.5, hz = off ? mob.pos.z + off.z : mob.pos.z;
@@ -21517,7 +21603,7 @@ function aimedBird() {
   const dir = new THREE.Vector3();
   camera.getWorldDirection(dir);
   const eye = camera.position;
-  const mob = pickMob(dir, BIRD_AIM_DIST);
+  const mob = pickMob(dir, BIRD_AIM_DIST, true);
   if (!mob) return null;
   if (dim === "end") {
     if (mob.kind === "dragon" || (!isFlyingKind(mob.kind) && !isChained(mob) && !isChainCarrier(mob))) return null;
@@ -21540,7 +21626,7 @@ function tntChainAimMob() {
   if (dim !== "over" && dim !== "end" && dim !== "nether") return null;
   const dir = new THREE.Vector3();
   camera.getWorldDirection(dir);
-  const mob = pickMob(dir, BIRD_AIM_DIST);
+  const mob = pickMob(dir, BIRD_AIM_DIST, true);
   if (!mob || !mobs.includes(mob) || mob.kind === "dragon") return null;
   if (isGroundedChainVictim(mob)) return mob;
   if (liveBirdLock() === mob) return mob;
@@ -28412,7 +28498,7 @@ if (location.search.includes('test')) {
     get villageCenter(){ return villageCenter; }, get villageHouses(){ return villageHouses; }, get villagePen(){ return villagePen; }, get villagePool(){ return villagePool; }, get isInsidePen(){ return isInsidePen; }, get isInsidePool(){ return isInsidePool; }, get isInsidePenPool(){ return isInsidePenPool; }, get poolExitTarget(){ return poolExitTarget; }, get penPoolExitTarget(){ return penPoolExitTarget; }, get LOG(){ return LOG; }, findPenGaps, nearestPenGap, penGapInside, penGapOutside, hasMobGround, mobBlockedAt, aabbCollidesWorld, mobProbeFree, randomPenPoint, randomAroundPenPoint, groundYForMob, get CLOUD_BASE(){ return CLOUD_BASE; }, get CLOUD_TOP(){ return CLOUD_TOP; }, get MAX_Y(){ return MAX_Y; },
     getTypeMats, get typeMats(){ return typeMats; }, buildWorld, generateWorld, generateMoonLakes, get moonLakesGenerated(){ return moonLakesGenerated; }, computeVillageLayout, spawnVillagers, refreshBlocks, rebuildMeshes, get chunkMeshes(){ return chunkMeshes; }, get boxGeo(){ return boxGeo; }, THREE,
     get pos(){ return pos; }, get vel(){ return vel; }, get camera(){ return camera; }, get scene(){ return scene; }, get freeCam(){ return freeCam; }, set freeCam(v){ freeCam = v; }, get camPos(){ return camPos; }, get yaw(){ return yaw; }, set yaw(v){ yaw=v; }, get pitch(){ return pitch; }, set pitch(v){ pitch=v; },
-    get carryMob(){ return carryMob; }, set carryMob(v){ carryMob = v; }, handleCarryEnterDown, handleCarryEnterUp, pickMob, getMobHitOffset, solidRayT, eyeInWater, get carryGrappleActive(){ return carryGrappleActive; }, get carryGrapplePulling(){ return carryGrapplePulling; }, get carryGrappleMob(){ return carryGrappleMob; }, get carryGrappleBlock(){ return carryGrappleBlock; }, get carryGrappleHookPos(){ return carryGrappleHookPos; }, get carryGrappleOffset(){ return carryGrappleOffset; }, get carryGrappleMode(){ return carryGrappleMode; }, get isMobFrozenByGrapple(){ return isMobFrozenByGrapple; }, isChained, isChainCarrier, chainRootOf, chainTailOf, linkChain, dropChainFrom, chainTakeForCarry, severChainMob, groundChainFrom, insertChainBefore, insertChainBehind, insertBehindRide, prependChainLead, clearChains, pruneChains, updateChains, syncChainLinkColor, syncChainLinkColors, syncGrappleColor, stampSpawn, get mobById(){ return mobById; }, chainAttachTarget, startCarryGrabGrapple, startCarryAttachGrapple, killChainMob, respawnChainMob, unchainMob, severGroundedChainVictim, isGroundedChainVictim, get chainLinks(){ return chainLinks; }, get chainParent(){ return chainParent; }, get chainChild(){ return chainChild; }, playerChainAvatar, playerInChain, PLAYER_CHAIN_ID, spliceChainLink, chainHasJumping, chainPushCrumb, chainTrailTarget, latchPlayerTo, latchPlayerInMiddle, playerInsertCutAndLink, insertChainAheadOfPlayer, insertChainBehindPlayer, playerLeadLink, dropPlayerLeadEntry, readyLeadForLatch, leadAwareLatchInsert, appendCutFollowerBehindLeadTail, grabRideForCarry, fireGrapple, detachDisplacementGrapple, pickStar, get grappleStar(){ return grappleStar; }, get grappleActive(){ return grappleActive; }, get grappleHooked(){ return grappleHooked; }, get grappleRetracting(){ return grappleRetracting; }, get grappleMob(){ return grappleMob; }, get grappleMobOffset(){ return grappleMobOffset; }, get grappleHookPos(){ return grappleHookPos; }, get grappleTarget(){ return grappleTarget; },     updateCarryGrapple, updateCarry, releaseCarriedMobAt, releaseCarriedMob, get currentBlock(){ return currentBlock; }, updateTarget, hotbarList, placeBlock, breakBlock, get selected(){ return selected; }, set selected(v){ selected=v; }, toggleCarry: handleCarryEnterDown, findNearestMobForGrab: (...a)=>{ const d=new THREE.Vector3(); camera.getWorldDirection(d); return pickMob(d); }, get playerArms(){ return playerArms; }, get started(){ return started; }, set started(v){ started=v; }, get loading(){ return loading; }, get freeCam(){ return freeCam; }, set freeCam(v){ freeCam=v; }, get helpOpen(){ return helpOpen; },
+    get carryMob(){ return carryMob; }, set carryMob(v){ carryMob = v; }, handleCarryEnterDown, handleCarryEnterUp, pickMob, getMobHitOffset, solidRayT, eyeInWater, mobPanicSnapshot, resumeMobPanic, panicFish, panicFishes, panicSingleMob, get PANIC_TIME(){ return PANIC_TIME; }, get OUTSIDE_PANIC_DIST(){ return OUTSIDE_PANIC_DIST; }, get carryGrappleActive(){ return carryGrappleActive; }, get carryGrapplePulling(){ return carryGrapplePulling; }, get carryGrappleMob(){ return carryGrappleMob; }, get carryGrappleBlock(){ return carryGrappleBlock; }, get carryGrappleHookPos(){ return carryGrappleHookPos; }, get carryGrappleOffset(){ return carryGrappleOffset; }, get carryGrappleMode(){ return carryGrappleMode; }, get isMobFrozenByGrapple(){ return isMobFrozenByGrapple; }, isChained, isChainCarrier, chainRootOf, chainTailOf, linkChain, dropChainFrom, chainTakeForCarry, severChainMob, groundChainFrom, insertChainBefore, insertChainBehind, insertBehindRide, prependChainLead, clearChains, pruneChains, updateChains, syncChainLinkColor, syncChainLinkColors, syncGrappleColor, stampSpawn, get mobById(){ return mobById; }, chainAttachTarget, startCarryGrabGrapple, startCarryAttachGrapple, killChainMob, respawnChainMob, unchainMob, severGroundedChainVictim, isGroundedChainVictim, get chainLinks(){ return chainLinks; }, get chainParent(){ return chainParent; }, get chainChild(){ return chainChild; }, playerChainAvatar, playerInChain, PLAYER_CHAIN_ID, spliceChainLink, chainHasJumping, chainPushCrumb, chainTrailTarget, latchPlayerTo, latchPlayerInMiddle, playerInsertCutAndLink, insertChainAheadOfPlayer, insertChainBehindPlayer, playerLeadLink, dropPlayerLeadEntry, readyLeadForLatch, leadAwareLatchInsert, appendCutFollowerBehindLeadTail, grabRideForCarry, fireGrapple, detachDisplacementGrapple, pickStar, get grappleStar(){ return grappleStar; }, get grappleActive(){ return grappleActive; }, get grappleHooked(){ return grappleHooked; }, get grappleRetracting(){ return grappleRetracting; }, get grappleMob(){ return grappleMob; }, get grappleMobOffset(){ return grappleMobOffset; }, get grappleHookPos(){ return grappleHookPos; }, get grappleTarget(){ return grappleTarget; },     updateCarryGrapple, updateCarry, releaseCarriedMobAt, releaseCarriedMob, get currentBlock(){ return currentBlock; }, updateTarget, hotbarList, placeBlock, breakBlock, get selected(){ return selected; }, set selected(v){ selected=v; }, toggleCarry: handleCarryEnterDown, findNearestMobForGrab: (...a)=>{ const d=new THREE.Vector3(); camera.getWorldDirection(d); return pickMob(d); }, get playerArms(){ return playerArms; }, get started(){ return started; }, set started(v){ started=v; }, get loading(){ return loading; }, get freeCam(){ return freeCam; }, set freeCam(v){ freeCam=v; }, get helpOpen(){ return helpOpen; },
     get WOLF_COUNT(){ return WOLF_COUNT; }, get GOLEM_COUNT(){ return GOLEM_COUNT; }, get GOLEM_HW(){ return GOLEM_HW; }, get GOLEM_HH(){ return GOLEM_HH; }, get CAT_COUNT(){ return CAT_COUNT; }, get CAT_HW(){ return CAT_HW; }, get CAT_HH(){ return CAT_HH; }, makeWolfMesh, makeCatMesh, pickCatRobe, catParentFor, catTrailSpot, panicCats, makeIronGolemMesh, villagerHW, villagerH, wolfHasMobGround, wolfBlockedAt, wolfProbeFree, wanderGoalForWolf, wolfFindPath, wolfFlatSpot, wolfLeaveTarget, panicLeaveDir, panicWolves, wolfInWater, mobInWater, waterSurfaceForMob, mobPhysicsStep, wolfPhysicsStep, updateMobs, obstacleTurnDir, buildMobGrid,     get isPenMob(){ return isPenMob; }, get pigOverlapsFence(){ return pigOverlapsFence; }, pigFenceSlideOut, get MOB_FLOAT_FRAC(){ return MOB_FLOAT_FRAC; }, mobFloatTargetY, mobWaterExitJump, poolExitTarget, penPoolExitTarget, isInsidePenPool, moonLakeExitTarget, isMobInPoolWater, isMobInMoonLake, get BATH_MIN_T(){ return BATH_MIN_T; }, get BATH_MAX_T(){ return BATH_MAX_T; },
     get BIRD_COUNT(){ return BIRD_COUNT; }, get BIRD_MIN_Y(){ return BIRD_MIN_Y; }, get BIRD_MAX_Y(){ return BIRD_MAX_Y; }, get BIRD_SPEED(){ return BIRD_SPEED; }, get TNT_HOME_SPEED(){ return TNT_HOME_SPEED; }, get BIRD_AIM_DIST(){ return BIRD_AIM_DIST; }, get BIRD_LOCK_TIME(){ return BIRD_LOCK_TIME; }, get birdLock(){ return birdLock; }, get birdLockT(){ return birdLockT; }, set birdLockT(v){ birdLockT = v; }, get birdLockShots(){ return birdLockShots; }, liveBirdLock, tntTargeted, tryFireLockedTNT, tntChainAimMob, aimOnMob, aimOnStar, aimOnStarFor, get chainBreaking(){ return chainBreaking; }, set chainBreaking(v){ chainBreaking = v; },     makeBirdMesh, spawnBirds, spawnSingleBird, removeBirds, spawnBirdChain, updateBird, updatePerchedBird, updateToPerchBird, birdTakeoff, birdNextLeg, birdFindPerchSpot, birdCloudTopAt, birdTreeTopAt, birdRoofTopAt, birdPerchBand, birdPerchSupports, killBird, birdSpotOutOfView, birdProbeFree, birdRandomTarget, birdSeparate,     makeFishMesh, spawnFishes, spawnSingleFish, spawnRiverFish, spawnAimChain, fishIsInRiver, updateFish, killFish, fishInWater, fishRandomTarget, tryPlace, get FISH_COUNT(){ return FISH_COUNT; }, get FISH_SPEED(){ return FISH_SPEED; }, get FISH_RIVER_FRAC(){ return FISH_RIVER_FRAC; }, get riverFlowTables(){ return riverFlowTables; }, buildRiverFlowTables, fishRiverNear, fishRiverFlowTarget, nearestRiver, generateRivers, get riverPaths(){ return riverPaths; }, fishRollDepth, fishPreferDepth,     fishWaterSurface, waterTopAt, fishNarrow, fishColHW, fishColH, fishEaseScale, fishProbeFree, fishSegmentFree, fishIsConfined, fishHoleCell, fishMillHop, fishMoveSlide, fishTunnelPlan, updateTunnelFish, fishAnimate, fishSidestep, fishNoticeWater, fishOdometerWatch, fishFreestHeading,     pickFishDirect, fishDirectGrabOk, fishEntryViaTop, fishGrabOffset, rayLastWaterCell, get FISH_DIRECT_GRAB_DEPTH(){ return FISH_DIRECT_GRAB_DEPTH; }, get FISH_GRAB_TOL(){ return FISH_GRAB_TOL; },     fishWaterLiveKeys, fishFreshWaterFor, fishWaterGiveUp, fishResolvePenetration, fishBodyWetFull, fishProbeDims, fishAngDiff, fishDirToYawPitch, fishFreeRun, fishStraightTarget, fishChannelAxis, fishAvoidTarget, fishAvoidCommit, fishLooseHop, get FISH_YAW_RATE(){ return FISH_YAW_RATE; }, get FISH_PITCH_RATE(){ return FISH_PITCH_RATE; }, get FISH_PROBE_DIST(){ return FISH_PROBE_DIST; }, get FISH_STRAIGHT_MIN(){ return FISH_STRAIGHT_MIN; }, get FISH_COMMIT_TIME(){ return FISH_COMMIT_TIME; }, get FISH_STALL_TIME(){ return FISH_STALL_TIME; }, tunnelFindStart, tunnelBFSWalk, tunnelBuildPath, tunnelAxisStep, get FISH_NARROW_SCALE(){ return FISH_NARROW_SCALE; }, get FISH_TUNNEL_HW(){ return FISH_TUNNEL_HW; }, get FISH_SUBMERGE_GAP(){ return FISH_SUBMERGE_GAP; }, get FISH_LURE_DEPTH(){ return FISH_LURE_DEPTH; }, get FISH_TUNNEL_WATER_NEAR(){ return FISH_TUNNEL_WATER_NEAR; }, get FISH_OPEN_WATER_LURE_R(){ return FISH_OPEN_WATER_LURE_R; }, get fishNotices(){ return fishNotices; },     deployRod, stowRod, rodStartRetract, rodTick, rodAimWater, buildRodMesh, updateRodBeam, renderRodRope, renderRodStraight, rodRopeEnd, get rodOut(){ return rodOut; }, get rodFish(){ return rodFish; }, get rodHasCast(){ return rodHasCast; },     get rodBob(){ return rodBob; }, get rodTipW(){ return rodTipW; }, get rodBobber(){ return rodBobber; }, get rodBeam(){ return rodBeam; }, get rodLine(){ return rodLine; }, get rodAnim(){ return rodAnim; }, get rodCastF(){ return rodCastF; }, get rodDunked(){ return rodDunked; }, get ROD_BOB_SMOOTH(){ return ROD_BOB_SMOOTH; }, get ROD_BITE_MAX_T(){ return ROD_BITE_MAX_T; }, get ROD_BITE_LAMBDA(){ return ROD_BITE_LAMBDA; }, get ROD_ORBIT_R(){ return ROD_ORBIT_R; }, rodClearTimers, rodDropBite, pickFishVariant, fishComboFor, fishSizeFor, get FISH_VARIANT_COUNT(){ return FISH_VARIANT_COUNT; },     houseInteriorFor, houseMouths, birdCoopTarget,     birdSegmentFree, birdClearance, birdBestSteer, birdMillHop, birdConfinedSteer, birdMoveSlide, bandReturnTarget, birdNoticeBreak, setMobTransparent, birdIsConfined, birdHoleCell, chainSegmentFree, chainThreadRide, chainFindRejoinPath, chainDriveRejoin, chainRejoinSlot, birdTunnelPlan, updateTunnelBird, birdTunnelSeparate, birdSkyClear, birdSidestep, birdUTurn, birdNarrow, birdColHW, birdColH,     get BIRD_NARROW_SCALE(){ return BIRD_NARROW_SCALE; }, get BIRD_SKY_CLEAR(){ return BIRD_SKY_CLEAR; }, get NETHER_BIRD_MIN_Y(){ return NETHER_BIRD_MIN_Y; }, get NETHER_BIRD_MAX_Y(){ return NETHER_BIRD_MAX_Y; }, birdDimOf, birdBandMinFor, birdBandMaxFor, birdBandMin, birdBandMax, birdNetherLegY, netherBirdCeiling, birdLavaAt, get BIRD_TUNNEL_SCALE(){ return BIRD_TUNNEL_SCALE; }, get BIRD_COL_HW(){ return BIRD_COL_HW; }, get BIRD_COL_H(){ return BIRD_COL_H; },     get tntLit(){ return tntLit; }, get explosionQueue(){ return explosionQueue; }, get tntEta(){ return tntEta; }, tickLitMegaTex, getLitMegaTex, getLitMegaTexEff(){ return litMegaTexEff; }, megaWhiteEff, get MEGA_WHITE_TEX_CAP(){ return MEGA_WHITE_TEX_CAP; }, get pendingTNTBombs(){ return pendingTNTBombs; }, get pendingTNTEta(){ return pendingTNTEta; }, get bursts(){ return bursts; }, get flashes(){ return flashes; }, snapshotLiveFx, replayLiveFx, spawnExplosion, igniteTNT, fireTNTAtBird, purgeLiveTNT, tickTNT, snapshotLiveTNT, restoreLiveTNT, get pendingDragon(){ return pendingDragon; }, get tntEta(){ return tntEta; }, igniteTNT, aimedBird, fireTNTAtBird, explodeBird, spawnBirdBurst, get bursts(){ return bursts; }, get flashes(){ return flashes; }, updateTNTTarget, tickTNT, fireGrapple, updateGrapple, updatePlayer, get grappleActive(){ return grappleActive; }, get grapplePulling(){ return grapplePulling; }, get grappleHooked(){ return grappleHooked; },
     get overPortalWin(){ return overPortalWin; }, get overPortalDir(){ return overPortalDir; }, get overPortalSpawn(){ return overPortalSpawn; }, get overPortalFace(){ return overPortalFace; },
