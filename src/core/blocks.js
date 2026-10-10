@@ -23,8 +23,6 @@ export const SOULSAND = 18;
 export const MOON = 19;
 export const GLOWSTONE = 20;
 export const MOON_WATER = 21;
-export const MEGA_TNT = 22;
-export const ULTRA_TNT = 23;
 
 export const BLOCK_INFO = {
   [GRASS]: { name: "Grass", solid: true, opaque: true, placeable: true },
@@ -37,8 +35,6 @@ export const BLOCK_INFO = {
   [PLANKS]: { name: "Planks", solid: true, opaque: true, placeable: true },
   [GLASS]: { name: "Glass", solid: true, opaque: false, placeable: true },
   [TNT]: { name: "TNT", solid: true, opaque: true, placeable: true },
-  [MEGA_TNT]: { name: "Mega TNT", solid: true, opaque: true, placeable: true },
-  [ULTRA_TNT]: { name: "Ultra TNT", solid: true, opaque: true, placeable: true },
   [FLOWER]: { name: "Flower", solid: false, opaque: false, placeable: true },
   [PORTAL]: { name: "Portal", solid: true, opaque: false, placeable: true },
   [ENDSTONE]: { name: "End Stone", solid: true, opaque: true, placeable: false },
@@ -62,5 +58,5 @@ export function isLiquid(id) {
 }
 
 export function isTntLike(id) {
-  return id === TNT || id === MEGA_TNT || id === ULTRA_TNT;
+  return id === TNT;
 }

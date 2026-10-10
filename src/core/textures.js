@@ -4,7 +4,7 @@
 import * as THREE from "three";
 import {
   GRASS, DIRT, STONE, SAND, LOG, LEAVES, WATER, PLANKS, GLASS,
-  TNT, MEGA_TNT, ULTRA_TNT, FLOWER, PORTAL, OBSIDIAN,
+  TNT, FLOWER, PORTAL, OBSIDIAN,
 } from "./blocks.js";
 
 export function canvasTex(draw, size = 16) {
@@ -105,42 +105,6 @@ export const TEX = {
     ctx.fillStyle = "#c0392b"; ctx.fillRect(0, 0, 16, 16);
     pxNoise(ctx, [192, 57, 43], 12);
   }),
-  mega_side: canvasTex((ctx) => {
-    ctx.fillStyle = "#1e3fae"; ctx.fillRect(0, 0, 64, 64);
-    ctx.fillStyle = "#ece6d0"; ctx.fillRect(0, 16, 64, 32);
-    for (let y = 0; y < 64; y++) for (let x = 0; x < 64; x++) {
-      const blue = y < 16 || y > 47;
-      const base = blue ? [30, 63, 174] : [236, 230, 208];
-      const d = (Math.random() - 0.5) * (blue ? 14 : 8);
-      ctx.fillStyle = `rgb(${base[0] + d},${base[1] + d},${base[2] + d})`;
-      ctx.fillRect(x, y, 1, 1);
-    }
-    ctx.fillStyle = "#101828";
-    ctx.font = "bold 24px sans-serif"; ctx.textAlign = "center"; ctx.textBaseline = "middle";
-    ctx.fillText("TNT", 32, 32);
-  }, 64),
-  mega_top: canvasTex((ctx) => {
-    ctx.fillStyle = "#1e3fae"; ctx.fillRect(0, 0, 16, 16);
-    pxNoise(ctx, [30, 63, 174], 12);
-  }),
-  ultra_side: canvasTex((ctx) => {
-    ctx.fillStyle = "#101014"; ctx.fillRect(0, 0, 64, 64);
-    ctx.fillStyle = "#ece6d0"; ctx.fillRect(0, 16, 64, 32);
-    for (let y = 0; y < 64; y++) for (let x = 0; x < 64; x++) {
-      const black = y < 16 || y > 47;
-      const base = black ? [16, 16, 20] : [236, 230, 208];
-      const d = (Math.random() - 0.5) * (black ? 14 : 8);
-      ctx.fillStyle = `rgb(${base[0] + d},${base[1] + d},${base[2] + d})`;
-      ctx.fillRect(x, y, 1, 1);
-    }
-    ctx.fillStyle = "#101014";
-    ctx.font = "bold 24px sans-serif"; ctx.textAlign = "center"; ctx.textBaseline = "middle";
-    ctx.fillText("TNT", 32, 32);
-  }, 64),
-  ultra_top: canvasTex((ctx) => {
-    ctx.fillStyle = "#101014"; ctx.fillRect(0, 0, 16, 16);
-    pxNoise(ctx, [16, 16, 20], 12);
-  }),
   glass: canvasTex((ctx) => {
     ctx.fillStyle = "rgba(190,230,255,0.55)"; ctx.fillRect(0, 0, 16, 16);
     ctx.strokeStyle = "rgba(255,255,255,0.9)"; ctx.lineWidth = 1.5;
@@ -208,10 +172,6 @@ export function materialsFor(id) {
     case FLOWER: return faceTex(TEX.flower, { transparent: true, alphaTest: 0.5, side: THREE.DoubleSide });
     case TNT:
       return [material(TEX.tnt_side), material(TEX.tnt_side), material(TEX.tnt_top), material(TEX.tnt_top), material(TEX.tnt_side), material(TEX.tnt_side)];
-    case MEGA_TNT:
-      return [material(TEX.mega_side), material(TEX.mega_side), material(TEX.mega_top), material(TEX.mega_top), material(TEX.mega_side), material(TEX.mega_side)];
-    case ULTRA_TNT:
-      return [material(TEX.ultra_side), material(TEX.ultra_side), material(TEX.ultra_top), material(TEX.ultra_top), material(TEX.ultra_side), material(TEX.ultra_side)];
     case PORTAL: return faceTex(TEX.portal);
     case OBSIDIAN: return faceTex(TEX.obsidian);
     default: return faceTex(TEX.dirt);

@@ -18,10 +18,12 @@ stored, how it flows, and how each system works. Read this before changing code.
 - `src/world/spawn.js` — spawn selection on finished voxels (`findSpawn`): firm open ground with a frustum-wide clear vista.
 - `src/player/physics.js` — player state, movement, shared axis movers (`collideBody`); `spawnPlayer` applies the `findSpawn` pick.
 - `src/player/fly.js` — fly mode (pitch-aware thrust, no gravity) on the shared movers.
+- `src/fx/tnt.js` — blast-kind registry (`TNT_TYPES`, normal first), fuses, countdown sprite, spherical blasts, TNT chaining.
+- `src/fx/particles.js` — generic burst/flash effects backend (`spawnBurst`, `spawnFlash`, `tickFx`).
 
 ## Data model
 
-- Block ids are stable integers (`AIR = 0` … `ULTRA_TNT = 23`); new blocks only append.
+- Block ids are stable integers (`AIR = 0` … `MOON_WATER = 21`); new blocks only append.
 - `BLOCK_INFO[id]` carries `solid`, `opaque`, `placeable`. Physics and meshing both derive from it.
 - Voxel key: `(x + 1024) * 2048² + y * 2048 + (z + 1024)`; one `Map` per dimension in `worlds`.
 - `MAX_Y = 256` world ceiling; `dim`/`world` point at the active dimension's map and tops.
@@ -31,6 +33,7 @@ stored, how it flows, and how each system works. Read this before changing code.
 - Village state is a single `village` object: center, bounds, houses, pen, pool, radius/houseCount tunables.
 - Player state is module-level: `pos`/`vel` vectors, `yaw`/`pitch`, `onGround`,
   step-up/step-down flags, jump buffer/rebound trackers, shared `keys` map.
+- Lit TNT lives in a `lit` map (`"x,y,z"` → fuse); the blast refresh callback is injected by the caller.
 
 ## Data flow (generation)
 
@@ -66,6 +69,11 @@ No clouds, no moon.
   start height. No jump streak speed boost.
 - Fly (`KeyF`): pitch-aware thrust through the shared axis movers
   (`collideBody` with stepping off), no gravity or swimming.
+- TNT: breaking or clicking a TNT block lights a 2 s fuse, shown as a
+  world-space countdown sprite (white, orange-red under 1 s, accelerating
+  blink); the blast clears a sphere (radius 4), throws a yellow flash plus a
+  64-point burst, and chain-detonates neighboring TNT. Village houses
+  are spared.
 
 ## Tuning (world specs, not constants)
 
@@ -81,6 +89,7 @@ No clouds, no moon.
 
 - `WALK = 4.4`, `SPRINT = 7.2`, `GRAVITY = 37.44`, `JUMP_MIN = 8.2`, `FLY = 10` (3x with sprint).
 - `JUMP_HOLD_TIME = 0.7`, `JUMP_THRUST = 45`, `JUMP_RAMP = 0.25`, `JUMP_BUFFER = 0.2`.
+- Blast kinds: `TNT_TYPES` (normal: fuse 2.0, radius 4, `mode:"sphere"`); new tiers register a spec.
 
 ## Tuning constants (render)
 
@@ -93,7 +102,7 @@ Every variant family follows the same shape — new variants are registry
 entries, never framework forks:
 
 - One exported registry array of spec objects, each with a `key`
-  (`TREE_TYPES`, `FLOWER_VARIANTS`; TNT and hooks follow in their commits).
+  (`TREE_TYPES`, `FLOWER_VARIANTS`, `TNT_TYPES`; hooks follow in their commit).
 - Shared properties live once in a module-local `*_DEFAULTS` object;
   entries spread it first and override only what differs.
 - Differing numbers are entry properties; differing behavior is a
@@ -109,7 +118,8 @@ entries, never framework forks:
 Single-anatomy numbers stay plain constants: world dimensions, body
 physics, render budgets. Single-spec systems (`TERRAIN`, `VILLAGE_SPEC`) become registries only when a second variant arrives.
 
-Shipped here: trees (oak; pines later), flowers (7 variants).
+Shipped: trees (oak; pines later), flowers (7 variants), TNT (normal,
+`mode:"sphere"`; tiers later).
 Specified, code-free: mobs (locomotion/perch/water/hookability axes),
 `PORTAL_TYPES` (frame block, sizes, fill material, sealed-when rule,
 arrival mapper, mob policy), `DIMENSIONS` (generator, env preset, spawn,
@@ -128,4 +138,3 @@ interface, bar binding, death/cleared flag).
 Saves and server API, mobs, grapple, jump streak boost, hold-chain
 paint/bridge editing, clouds/moon, portals,
 boss bar.
-
