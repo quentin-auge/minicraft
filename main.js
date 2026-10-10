@@ -15,6 +15,7 @@ import { initRenderer, rebuildAll, maybeStream, refreshBlocks, drainChunkQueue, 
 import { buildHotbar, select, selected, selectedId, initHotbarInput } from "./src/ui/hotbar.js";
 import { initMenu, enterGame, started, isLocked } from "./src/ui/menu.js";
 import { initHelp, openHelp, closeHelp, isHelpOpen } from "./src/ui/help.js";
+import { toggleDebug, tickDebug } from "./src/ui/debug.js";
 import { CHUNK, RENDER_DIST } from "./src/core/store.js";
 import { EYE } from "./src/player/physics.js";
 
@@ -185,6 +186,7 @@ document.addEventListener("keydown", (e) => {
     return;
   }
   if (e.code === "KeyH" && !keys[e.code]) { openHelp(); e.preventDefault(); return; }
+  if (e.code === "Equal" && !e.repeat) { toggleDebug(); return; }
   if (e.code === "KeyF" && !e.repeat && started && !isHelpOpen()) {
     setFly(!flyOn);
     e.preventDefault();
@@ -222,6 +224,7 @@ function loop(now) {
     return;
   }
   tickFx(dt);
+  tickDebug(dt);
   // Streaming fog first, so the loader sees the tightened range.
   if (!building) updateStreamingFog();
   const simActive = isLocked() && !isHelpOpen();
