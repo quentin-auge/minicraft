@@ -3,6 +3,22 @@
 Agent guide to the MiniCraft static rewrite: what lives where, how data is
 stored, how it flows, and how each system works. Read this before changing code.
 
+## Tree
+
+- `index.html` — static shell: menu, help, hotbar DOM, Three.js import map.
+- `src/core/blocks.js` — block ids, BLOCK_INFO (solid/opaque/placeable), liquid/TNT predicates.
+- `src/core/noise.js` — deterministic hash2/valueNoise/fbm.
+- `src/core/store.js` — voxel storage, one Map per dimension, column tops.
+- `src/core/textures.js` — procedural canvas textures, per-block materials.
+
+## Data model
+
+- Block ids are stable integers (`AIR = 0` … `ULTRA_TNT = 23`); new blocks only append.
+- `BLOCK_INFO[id]` carries `solid`, `opaque`, `placeable`. Physics and meshing both derive from it.
+- Voxel key: `(x + 1024) * 2048² + y * 2048 + (z + 1024)`; one `Map` per dimension in `worlds`.
+- `MAX_Y = 256` world ceiling; `dim`/`world` point at the active dimension's map and tops.
+- `colTops[dim]` (Int16Array) tracks the highest non-air block per column for meshing and spawn.
+
 ## Extension pattern
 
 Every variant family follows the same shape — new variants are registry

@@ -8,7 +8,9 @@ MiniCraft — a Minecraft-style game that runs in the browser.
 
 ## Commands
 
-No run, build, lint, or test commands configured yet — extend this section as the rewrite grows.
+- Serve statically: `python3 -m http.server 8383` (no backend; any static host works, e.g. GitHub Pages).
+- Syntax-check JS: copy the file to `/tmp/*.mjs` first when it uses ESM `import`, then `node --check`.
+- Headless world-gen check: copy `src/core/*` + `src/world/*` to a temp dir with `{"type":"module"}` and run the seed/houses/catacomb assertions there (three-free modules only).
 
 ## Conventions
 

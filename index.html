@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>MiniCraft</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body { width: 100%; height: 100%; overflow: hidden; font-family: "Segoe UI", system-ui, sans-serif; }
+    body { background: #87ceeb; }
+    #game { position: fixed; inset: 0; }
+    #crosshair {
+      position: fixed; left: 50%; top: 50%;
+      width: 22px; height: 22px;
+      transform: translate(-50%, -50%);
+      pointer-events: none;
+      display: none;
+    }
+    #crosshair::before, #crosshair::after {
+      content: ""; position: absolute; background: rgba(255,255,255,0.9);
+      box-shadow: 0 0 2px rgba(0,0,0,0.8);
+    }
+    #crosshair::before { left: 50%; top: 0; width: 2px; height: 100%; transform: translateX(-50%); }
+    #crosshair::after  { top: 50%; left: 0; height: 2px; width: 100%; transform: translateY(-50%); }
+    #hotbar {
+      position: fixed; bottom: 14px; left: 50%;
+      transform: translateX(-50%);
+      display: flex; gap: 4px; padding: 4px;
+      background: rgba(0,0,0,0.45);
+      border: 2px solid rgba(0,0,0,0.6);
+      border-radius: 6px;
+      display: none;
+    }
+    #hotbar .slot {
+      width: 46px; height: 46px;
+      border: 2px solid rgba(255,255,255,0.25);
+      background: rgba(0,0,0,0.5);
+      border-radius: 4px;
+      display: flex; align-items: center; justify-content: center;
+      position: relative;
+      cursor: pointer;
+    }
+    #hotbar .slot img { width: 34px; height: 34px; image-rendering: pixelated; pointer-events: none; }
+    #hotbar .slot.selected {
+      border-color: #fff; border-width: 3px;
+      box-shadow: 0 0 10px 2px rgba(255,255,255,0.9), inset 0 0 8px rgba(255,255,255,0.5);
+      transform: translateY(-4px);
+    }
+    #help {
+      position: fixed; inset: 0; z-index: 30; display: none;
+      align-items: center; justify-content: center;
+      background: rgba(0,0,0,0.6);
+    }
+    #help .panel {
+      background: #1c2030; color: #e8edf5; padding: 26px 32px; border-radius: 14px;
+      border: 2px solid rgba(255,255,255,0.18); max-width: 560px; line-height: 1.6;
+      font-size: 14px; box-shadow: 0 12px 40px rgba(0,0,0,0.6);
+    }
+    #help h2 { margin-bottom: 12px; font-size: 22px; color: #fff; }
+    #help h3 { margin: 16px 0 6px; font-size: 15px; color: #9bd; }
+    #help table { width: 100%; border-collapse: collapse; margin-top: 4px; }
+    #help td { padding: 3px 8px; border-top: 1px solid rgba(255,255,255,0.1); vertical-align: top; }
+    #help td:first-child { color: #fff; font-weight: 600; white-space: nowrap; width: 42%; }
+    #help .hint { margin-top: 16px; font-size: 12px; color: #aab8c4; text-align: center; }
+    #help .closebtn {
+      margin-top: 14px; display: block; width: 100%; font: inherit; font-size: 15px; font-weight: 600;
+      color: #fff; background: #3a8; border: 2px solid #4c9; border-radius: 8px; padding: 10px; cursor: pointer;
+    }
+    #overlay {
+      position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
+      background: linear-gradient(180deg, #4a90d9, #87ceeb);
+      z-index: 10; cursor: pointer;
+    }
+    #overlay .panel {
+      background: rgba(0,0,0,0.6); color: #fff;
+      padding: 40px 56px; border-radius: 14px; text-align: center;
+      border: 2px solid rgba(255,255,255,0.2);
+    }
+    #overlay h1 { font-size: 44px; margin-bottom: 6px; letter-spacing: 2px; }
+    #overlay h1 span { color: #7bc043; }
+    #overlay .menu { margin-top: 26px; display: flex; gap: 12px; justify-content: center; }
+    #overlay .menu-btn {
+      font: inherit; font-size: 17px; font-weight: 600; color: #fff;
+      background: rgba(255,255,255,0.12); border: 2px solid rgba(255,255,255,0.35);
+      padding: 12px 22px; border-radius: 8px;
+      transition: background .15s, transform .15s;
+    }
+    #overlay .menu-btn:hover { background: rgba(255,255,255,0.22); transform: translateY(-2px); }
+    #overlay .menu-resume {
+      display: none;
+      font-size: 24px; font-weight: 800; letter-spacing: 1px;
+      padding: 16px 48px; color: #fff;
+      background: #2e8a4e; border: 2px solid #4ecb71;
+      box-shadow: 0 6px 18px rgba(0,0,0,0.35);
+    }
+    #overlay .menu-resume:hover { background: #35a05c; }
+    #overlay .hint { margin-top: 14px; font-size: 12px; color: #aab8c4; }
+    #loading {
+      margin-top: 42px;
+      display: flex; flex-direction: column; align-items: center; gap: 12px;
+      color: #fff;
+      font-size: 14px; letter-spacing: 1px;
+    }
+    #loading .spinner {
+      width: 36px; height: 36px; border-radius: 50%;
+      border: 4px solid rgba(255,255,255,0.2);
+      border-top-color: #7bc043;
+      animation: spin 0.9s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    #toast {
+      position: fixed; top: 22%; left: 50%; transform: translateX(-50%);
+      color: #fff; font-size: 20px; font-weight: 700; text-shadow: 1px 1px 3px #000;
+      background: rgba(0,0,0,0.5); padding: 12px 22px; border-radius: 10px;
+      opacity: 0; transition: opacity .4s; pointer-events: none; text-align: center;
+    }
+  </style>
+</head>
+<body>
+  <div id="game"></div>
+  <div id="crosshair"></div>
+  <div id="hotbar"></div>
+  <div id="toast"></div>
+  <div id="help">
+    <div class="panel">
+      <h2>Help</h2>
+      <h3>Controls</h3>
+      <table>
+        <tr><td>Arrows / WASD</td><td>Move</td></tr>
+        <tr><td>Space / Shift</td><td>Jump (hold to jump higher)</td></tr>
+        <tr><td>/</td><td>Sprint</td></tr>
+        <tr><td>Left Click</td><td>Place block</td></tr>
+        <tr><td>Right Click</td><td>Break block</td></tr>
+        <tr><td>Wheel / K / L</td><td>Select block</td></tr>
+        <tr><td>H</td><td>Help</td></tr>
+      </table>
+      <p class="hint">Walk into a 1-block step to climb it. Hold jump while landing in water to bounce back out.</p>
+      <button class="closebtn" id="btnHelpClose">Close</button>
+    </div>
+  </div>
+
+  <div id="overlay">
+    <div class="panel">
+      <h1>Mini<span>Craft</span></h1>
+      <div class="menu">
+        <button class="menu-btn menu-resume" id="btnResume">Resume</button>
+        <button class="menu-btn" id="btnPlay">Play</button>
+      </div>
+      <div class="hint">Press H for help</div>
+      <div id="loading" style="display:none">
+        <div class="spinner"></div>
+        <div class="label">Loading world…</div>
+      </div>
+    </div>
+  </div>
+
+  <script type="importmap">
+    { "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js" } }
+  </script>
+  <script type="module" src="main.js"></script>
+</body>
+</html>
