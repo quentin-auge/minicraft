@@ -22,6 +22,7 @@ stored, how it flows, and how each system works. Read this before changing code.
 - `src/player/edit.js` — DDA raycast, place/break, floating-liquid purge.
 - `src/fx/tnt.js` — blast-kind registry (`TNT_TYPES`, normal first), fuses, countdown sprite, spherical blasts, TNT chaining.
 - `src/fx/particles.js` — generic burst/flash effects backend (`spawnBurst`, `spawnFlash`, `tickFx`).
+- `src/render/mesher.js` — chunked InstancedMesh renderer, streaming, local refresh.
 
 ## Data model
 
@@ -36,6 +37,8 @@ stored, how it flows, and how each system works. Read this before changing code.
 - Player state is module-level: `pos`/`vel` vectors, `yaw`/`pitch`, `onGround`,
   step-up/step-down flags, jump buffer/rebound trackers, shared `keys` map.
 - Lit TNT lives in a `lit` map (`"x,y,z"` → fuse); the blast refresh callback is injected by the caller.
+- Render state: `chunkMeshes` (`"cx_cz"` → per-id InstancedMesh), a build queue,
+  shared materials cache. Scene, camera, and renderer are owned by `main.js`.
 
 ## Data flow (generation)
 
@@ -47,6 +50,16 @@ nearest firm open ground to the origin whose vista stays clear 50 blocks ahead
 across the whole FOV swath and 12 rows above the eye — no wall, trunk, hillside,
 or canopy anywhere in the frame. Pen cells excluded, liquids never qualify.
 No clouds, no moon.
+
+## Data flow (meshing)
+
+Per chunk: scan columns up to `colTops`, keep exposed blocks only (any neighbor
+non-opaque), group by id into one InstancedMesh each (flowers skip the cube
+bucket: per-variant cluster meshes with a hash-spun Y rotation, water and
+glass transparent). Chunks within `RENDER_DIST` build nearest-first under a
+per-frame budget; edits rebuild only touching chunks via `refreshBlocks`. The
+first build is staged: the spawn neighborhood builds synchronously, the rest
+streams in over following frames.
 
 ## Broad logic (world)
 
@@ -103,7 +116,7 @@ No clouds, no moon.
 
 ## Tuning constants (render)
 
-- `CHUNK = 16`, `RENDER_DIST = 8`.
+- `CHUNK = 16`, `RENDER_DIST = 8`, chunk build budget 6 ms/frame, spawn sync radius 3.
 - Fog 60–160, sky `#87ceeb`, sun + hemisphere lighting.
 
 ## Extension pattern
