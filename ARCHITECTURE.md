@@ -19,6 +19,7 @@ stored, how it flows, and how each system works. Read this before changing code.
 - `src/world/spawn.js` — spawn selection on finished voxels (`findSpawn`): firm open ground with a frustum-wide clear vista.
 - `src/player/physics.js` — player state, movement, shared axis movers (`collideBody`); `spawnPlayer` applies the `findSpawn` pick.
 - `src/player/fly.js` — fly mode (pitch-aware thrust, no gravity) on the shared movers.
+- `src/player/edit.js` — DDA raycast, place/break, floating-liquid purge.
 - `src/fx/tnt.js` — blast-kind registry (`TNT_TYPES`, normal first), fuses, countdown sprite, spherical blasts, TNT chaining.
 - `src/fx/particles.js` — generic burst/flash effects backend (`spawnBurst`, `spawnFlash`, `tickFx`).
 
@@ -70,6 +71,12 @@ No clouds, no moon.
   start height. No jump streak speed boost.
 - Fly (`KeyF`): pitch-aware thrust through the shared axis movers
   (`collideBody` with stepping off), no gravity or swimming.
+- Editing: DDA raycast (Left = place, Right = break) with a highlight target.
+  Breaking TNT ignites it instead, leaving the block for the blast to clear.
+  Live edits purge floating liquid: any
+  same-liquid group left without a solid 6-neighbor returns to air. Bedrock
+  (`y = 0`) and liquids are unbreakable; solid placement refuses the player's
+  own AABB.
 - TNT: breaking or clicking a TNT block lights a 2 s fuse, shown as a
   world-space countdown sprite (white, orange-red under 1 s, accelerating
   blink); the blast clears a sphere (radius 4), throws a yellow flash plus a
