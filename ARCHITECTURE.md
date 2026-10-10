@@ -17,6 +17,7 @@ stored, how it flows, and how each system works. Read this before changing code.
 - `src/world/village.js` — village layout and structure placement (houses, pen, pool).
 - `src/world/spawn.js` — spawn selection on finished voxels (`findSpawn`): firm open ground with a frustum-wide clear vista.
 - `src/player/physics.js` — player state, movement, shared axis movers (`collideBody`); `spawnPlayer` applies the `findSpawn` pick.
+- `src/player/fly.js` — fly mode (pitch-aware thrust, no gravity) on the shared movers.
 
 ## Data model
 
@@ -63,6 +64,8 @@ No clouds, no moon.
 - Water: swim toward surface-drift speed with deep accel and near-surface brake;
   jumping toward water while holding jump rebounds ballistically to the jump's
   start height. No jump streak speed boost.
+- Fly (`KeyF`): pitch-aware thrust through the shared axis movers
+  (`collideBody` with stepping off), no gravity or swimming.
 
 ## Tuning (world specs, not constants)
 
@@ -76,7 +79,7 @@ No clouds, no moon.
 
 ## Tuning constants (player)
 
-- `WALK = 4.4`, `SPRINT = 7.2`, `GRAVITY = 37.44`, `JUMP_MIN = 8.2`.
+- `WALK = 4.4`, `SPRINT = 7.2`, `GRAVITY = 37.44`, `JUMP_MIN = 8.2`, `FLY = 10` (3x with sprint).
 - `JUMP_HOLD_TIME = 0.7`, `JUMP_THRUST = 45`, `JUMP_RAMP = 0.25`, `JUMP_BUFFER = 0.2`.
 
 ## Tuning constants (render)
