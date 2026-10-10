@@ -6,6 +6,7 @@ stored, how it flows, and how each system works. Read this before changing code.
 ## Tree
 
 - `index.html` — static shell: menu, help, hotbar DOM, Three.js import map.
+- `main.js` — bootstrap: scene, input wiring, main loop, world startup.
 - `src/core/blocks.js` — block ids, BLOCK_INFO (solid/opaque/placeable), liquid/TNT predicates.
 - `src/core/noise.js` — deterministic hash2/valueNoise/fbm.
 - `src/core/store.js` — voxel storage, one Map per dimension, column tops.
@@ -15,6 +16,7 @@ stored, how it flows, and how each system works. Read this before changing code.
 - `src/render/flowers.js` — flower-variant registry, baked voxel-cluster geometries (stem/leaves/disc bloom).
 - `src/world/village.js` — village layout and structure placement (houses, pen, pool).
 - `src/world/spawn.js` — spawn selection on finished voxels (`findSpawn`): firm open ground with a frustum-wide clear vista.
+- `src/player/physics.js` — player state, movement, shared axis movers (`collideBody`); `spawnPlayer` applies the `findSpawn` pick.
 
 ## Data model
 
@@ -26,6 +28,8 @@ stored, how it flows, and how each system works. Read this before changing code.
   bilinear blend — required for a sane land/water ratio, do not "fix".
 - `colTops[dim]` (Int16Array) tracks the highest non-air block per column for meshing and spawn.
 - Village state is a single `village` object: center, bounds, houses, pen, pool, radius/houseCount tunables.
+- Player state is module-level: `pos`/`vel` vectors, `yaw`/`pitch`, `onGround`,
+  step-up/step-down flags, jump buffer/rebound trackers, shared `keys` map.
 
 ## Data flow (generation)
 
@@ -50,6 +54,16 @@ No clouds, no moon.
   guards: grass, above the waterline, river-bank margin, slope tolerance.
   New types register a spec; the placement loop is type-agnostic.
 
+## Broad logic (player)
+
+- Movement is a ground/swim state machine. Ground: walk/sprint speeds, held-jump
+  thrust with ramp and boost, jump buffer, air steering. One-block steps climb
+  automatically via `tryStep` (glide to `stepUpClearY`); walking off edges sets
+  `stepDown` for smooth descent.
+- Water: swim toward surface-drift speed with deep accel and near-surface brake;
+  jumping toward water while holding jump rebounds ballistically to the jump's
+  start height. No jump streak speed boost.
+
 ## Tuning (world specs, not constants)
 
 - `TERRAIN`: land raise 20, basin (shore 1.5, depth 2.2), rivers (3 paths,
@@ -59,6 +73,16 @@ No clouds, no moon.
   2×2×1 (see `configureVillage` to grow).
 - Spawn: feet inside radius 48, vista 50 ahead / 12 up across the FOV swath
   (`VIEW_HALF_TAN` from the 75° FOV), pen margin 1.
+
+## Tuning constants (player)
+
+- `WALK = 4.4`, `SPRINT = 7.2`, `GRAVITY = 37.44`, `JUMP_MIN = 8.2`.
+- `JUMP_HOLD_TIME = 0.7`, `JUMP_THRUST = 45`, `JUMP_RAMP = 0.25`, `JUMP_BUFFER = 0.2`.
+
+## Tuning constants (render)
+
+- `CHUNK = 16`, `RENDER_DIST = 8`.
+- Fog 60–160, sky `#87ceeb`, sun + hemisphere lighting.
 
 ## Extension pattern
 
@@ -89,3 +113,16 @@ arrival mapper, mob policy), `DIMENSIONS` (generator, env preset, spawn,
 cleared flag + respawn policy, fly band, hazards, hotbar),
 `BOSS_SPECS` (anchor dim, hp-as-hits, path builder, hit palette, weapon
 interface, bar binding, death/cleared flag).
+
+## Extension points (Nether/End)
+
+- `worlds`/`colTops` already carry per-dimension maps; `setDimension` switches
+  the active one. New dimensions add a generator module beside `overworld.js`.
+- Block ids append-only; dimension-specific blocks slot into BLOCK_INFO.
+
+## Dropped from master (kept out on purpose)
+
+Saves and server API, mobs, grapple, jump streak boost, hold-chain
+paint/bridge editing, clouds/moon, portals,
+boss bar.
+
