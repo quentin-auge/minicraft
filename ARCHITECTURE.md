@@ -7,6 +7,7 @@ stored, how it flows, and how each system works. Read this before changing code.
 
 - `index.html` — static shell: menu, help, hotbar DOM, Three.js import map.
 - `main.js` — bootstrap: scene, input wiring, main loop, world startup.
+- `src/ui/hotbar.js` — full static item list, selection.
 - `src/core/blocks.js` — block ids, BLOCK_INFO (solid/opaque/placeable), liquid/TNT predicates.
 - `src/core/noise.js` — deterministic hash2/valueNoise/fbm.
 - `src/core/store.js` — voxel storage, one Map per dimension, column tops.
@@ -74,6 +75,8 @@ No clouds, no moon.
   blink); the blast clears a sphere (radius 4), throws a yellow flash plus a
   64-point burst, and chain-detonates neighboring TNT. Village houses
   are spared.
+- Hotbar: 13 placeable overworld items (`GRASS` … `OBSIDIAN`), texture-icon
+  slots; wheel, `K`/`L`, and click all select with wraparound.
 
 ## Tuning (world specs, not constants)
 
@@ -132,6 +135,7 @@ interface, bar binding, death/cleared flag).
 - `worlds`/`colTops` already carry per-dimension maps; `setDimension` switches
   the active one. New dimensions add a generator module beside `overworld.js`.
 - Block ids append-only; dimension-specific blocks slot into BLOCK_INFO.
+- The hotbar is a static list today; dimension swaps (if wanted) go in `hotbar.js`.
 
 ## Dropped from master (kept out on purpose)
 
