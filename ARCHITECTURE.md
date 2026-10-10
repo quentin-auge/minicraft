@@ -23,6 +23,8 @@ stored, how it flows, and how each system works. Read this before changing code.
 - `src/fx/tnt.js` — blast-kind registry (`TNT_TYPES`, normal first), fuses, countdown sprite, spherical blasts, TNT chaining.
 - `src/fx/particles.js` — generic burst/flash effects backend (`spawnBurst`, `spawnFlash`, `tickFx`).
 - `src/render/mesher.js` — chunked InstancedMesh renderer, streaming, local refresh.
+- `src/ui/menu.js` — Play/Resume/New-World overlay, pointer-lock wiring (no saves). Play hides after first click; New World only once started; Esc unlock shows Resume + New World.
+- `src/ui/help.js` — help overlay open/close. Shortcut table: Move, Jump, Sprint, Place, Break, Select, Fly, Help.
 
 ## Data model
 
@@ -60,6 +62,15 @@ glass transparent). Chunks within `RENDER_DIST` build nearest-first under a
 per-frame budget; edits rebuild only touching chunks via `refreshBlocks`. The
 first build is staged: the spawn neighborhood builds synchronously, the rest
 streams in over following frames.
+
+## Data flow (runtime)
+
+`main.js` loop: always render + camera follow; when started and loaded, TNT
+tick and `updatePlayer(dt)` while locked and help closed → raycast target +
+highlight → stream nearby chunks. Boot generates a full world behind the
+translucent blue menu; Play enters it instantly, Esc shows Resume + New World
+(fresh seed, same full-build flow). Every chunk in range builds before the
+first playable frame, so blocks never pop in. There is no persistence.
 
 ## Broad logic (world)
 

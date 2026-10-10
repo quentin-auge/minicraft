@@ -52,15 +52,15 @@
       background: rgba(0,0,0,0.6);
     }
     #help .panel {
-      background: #1c2030; color: #e8edf5; padding: 26px 32px; border-radius: 14px;
-      border: 2px solid rgba(255,255,255,0.18); max-width: 560px; line-height: 1.6;
+      background: #1c2030; color: #e8edf5; padding: 18px 20px; border-radius: 14px;
+      border: 2px solid rgba(255,255,255,0.18); max-width: 340px; line-height: 1.6;
       font-size: 14px; box-shadow: 0 12px 40px rgba(0,0,0,0.6);
     }
     #help h2 { margin-bottom: 12px; font-size: 22px; color: #fff; }
     #help h3 { margin: 16px 0 6px; font-size: 15px; color: #9bd; }
     #help table { width: 100%; border-collapse: collapse; margin-top: 4px; }
     #help td { padding: 3px 8px; border-top: 1px solid rgba(255,255,255,0.1); vertical-align: top; }
-    #help td:first-child { color: #fff; font-weight: 600; white-space: nowrap; width: 42%; }
+    #help td:first-child { color: #fff; font-weight: 600; white-space: nowrap; width: 36%; }
     #help .hint { margin-top: 16px; font-size: 12px; color: #aab8c4; text-align: center; }
     #help .closebtn {
       margin-top: 14px; display: block; width: 100%; font: inherit; font-size: 15px; font-weight: 600;
@@ -68,7 +68,7 @@
     }
     #overlay {
       position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
-      background: linear-gradient(180deg, #4a90d9, #87ceeb);
+      background: linear-gradient(180deg, rgba(74,144,217,0.55), rgba(135,206,235,0.55));
       z-index: 10; cursor: pointer;
     }
     #overlay .panel {
@@ -127,7 +127,7 @@
       <h3>Controls</h3>
       <table>
         <tr><td>Arrows / WASD</td><td>Move</td></tr>
-        <tr><td>Space / Shift</td><td>Jump (hold to jump higher)</td></tr>
+        <tr><td>Space / Shift</td><td>Jump</td></tr>
         <tr><td>/</td><td>Sprint</td></tr>
         <tr><td>Left Click</td><td>Place</td></tr>
         <tr><td>Right Click</td><td>Break</td></tr>
@@ -135,7 +135,6 @@
         <tr><td>F</td><td>Fly</td></tr>
         <tr><td>H</td><td>Help</td></tr>
       </table>
-      <p class="hint">Walk into a 1-block step to climb it. Hold jump while landing in water to bounce back out.</p>
       <button class="closebtn" id="btnHelpClose">Close</button>
     </div>
   </div>
@@ -146,6 +145,7 @@
       <div class="menu">
         <button class="menu-btn menu-resume" id="btnResume">Resume</button>
         <button class="menu-btn" id="btnPlay">Play</button>
+        <button class="menu-btn" id="btnNew" style="display:none">New World</button>
       </div>
       <div class="hint">Press H for help</div>
       <div id="loading" style="display:none">
