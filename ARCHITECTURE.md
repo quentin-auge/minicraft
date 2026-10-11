@@ -126,8 +126,11 @@ persistence.
   friction-free glide, so jump + arrows chains momentum. Grapple:
   middle-click, solid blocks only, pull at 26, early release flings at 34;
   refused while flying, cancelled by fly toggle.
-- Editing: DDA raycast (Left = place, Right = break) with a highlight target.
-  Breaking TNT ignites it instead, leaving the block for the blast to clear.
+- Editing: DDA raycast (Left = place, Right = break) with a highlight target
+  and unlimited reach across the world; the grapple picker caps at 64.
+  Placement targeting passes through liquids except when a liquid is selected
+  (`isLiquid`) and the eye is outside liquid — then the first hit wins (liquid
+  or solid); break and grapple always skip liquids. Breaking TNT ignites it instead, leaving the block for the blast to clear.
   Live edits purge floating liquid: any
   same-liquid group left without a solid 6-neighbor returns to air. Bedrock
   (`y = 0`) and liquids are unbreakable; solid placement refuses the player's

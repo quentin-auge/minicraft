@@ -9,7 +9,7 @@ import { igniteTNT } from "../fx/tnt.js";
 export let currentBlock = null;
 const _dir = new THREE.Vector3();
 
-export function pickBlock(origin, dir, skipLiquid) {
+export function pickBlock(origin, dir, skipLiquid, maxDist = Infinity) {
   let x = Math.floor(origin.x), y = Math.floor(origin.y), z = Math.floor(origin.z);
   const stepX = dir.x > 0 ? 1 : -1, stepY = dir.y > 0 ? 1 : -1, stepZ = dir.z > 0 ? 1 : -1;
   const tDeltaX = dir.x !== 0 ? Math.abs(1 / dir.x) : Infinity;
@@ -19,7 +19,7 @@ export function pickBlock(origin, dir, skipLiquid) {
   let tMaxY = dir.y !== 0 ? ((stepY > 0 ? Math.floor(origin.y) + 1 - origin.y : origin.y - Math.floor(origin.y)) / Math.abs(dir.y)) : Infinity;
   let tMaxZ = dir.z !== 0 ? ((stepZ > 0 ? Math.floor(origin.z) + 1 - origin.z : origin.z - Math.floor(origin.z)) / Math.abs(dir.z)) : Infinity;
   let face = [0, 0, 0];
-  for (let i = 0; i < 256; i++) {
+  for (let i = 0; i < 1024; i++) {
     const out = x < -WORLD_RADIUS || x > WORLD_RADIUS || z < -WORLD_RADIUS || z > WORLD_RADIUS || y < 0 || y > MAX_Y;
     if (!out) {
       const id = getBlock(x, y, z);
@@ -32,14 +32,21 @@ export function pickBlock(origin, dir, skipLiquid) {
     } else {
       z += stepZ; tMaxZ += tDeltaZ; face = [0, 0, -stepZ];
     }
-    if (Math.min(tMaxX, tMaxY, tMaxZ) > 64) break;
+    if (Math.min(tMaxX, tMaxY, tMaxZ) > maxDist) break;
   }
   return null;
 }
 
-export function updateTarget(camera, selectedId) {
+export function eyeInLiquid(position) {
+  return isLiquid(getBlock(Math.floor(position.x), Math.floor(position.y), Math.floor(position.z)));
+}
+
+export function updateTarget(camera, selectedId, eyeLiquid = eyeInLiquid(camera.position)) {
   camera.getWorldDirection(_dir);
-  const skip = selectedId !== 7 && selectedId !== 16 && selectedId !== 21;
+  // Placement targeting through liquids: non-liquid selection always
+  // passes through; liquid selection passes through only while the eye
+  // sits inside liquid, otherwise the ray stops at liquid.
+  const skip = !isLiquid(selectedId) || eyeLiquid;
   currentBlock = pickBlock(camera.position, _dir, skip);
   return currentBlock;
 }

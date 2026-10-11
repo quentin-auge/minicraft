@@ -57,7 +57,7 @@ export function hookActive() {
 // Block picker for the grapple: DDA hit → descriptor. Mob pickers return
 // { kind: "mob", ref } and plug into fireHookTarget the same way.
 export function grappleBlockPick(origin, dir) {
-  const hit = pickBlock(origin, dir, true);
+  const hit = pickBlock(origin, dir, true, 64);
   return hit ? { kind: "block", x: hit.x, y: hit.y, z: hit.z, id: hit.id } : null;
 }
 
