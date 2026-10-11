@@ -6,16 +6,18 @@
 //   - the per-kind filter resolves it to an anchor point + landing.
 // Hook kinds are data: shared flight/pull numbers live in HOOK_DEFAULTS,
 // entries override only what differs — a new kind (grab-grapple, ...) is one
-// registry entry with its own speeds, pull mode, and landing, never a fork.
+// registry entry with its own speeds, pull mode, ghost, and retarget,
+// never a fork.
 // Grapple (middle-click block hook) is the first specialization. The head is
-// a visible projectile: it flies out at throw speed, latches, then rides
-// back to the eye on release. The pull runs through the shared axis movers
-// in small substeps with the anchor column ghosted, so the player passes
-// through it and lands on top.
-import { pos, vel, playerBody, collideBody, headInWater, setOnGround, setGhostPass, setLandGlide } from "./physics.js";
+// a visible projectile: it flies out boosted to the aimed face, latches
+// visibly onto it, then rides back to the eye on release. The pull runs
+// through the shared axis movers in small substeps with the anchor column
+// ghosted, landing the player top-or-before while the rope stays on the
+// face; the rope stays pinned until mouse-up.
+import { pos, vel, playerBody, collideBody, headInWater, setOnGround, setGhostPass, setHookPlanar, setHookWet, PLAYER_HW, PLAYER_H, EYE } from "./physics.js";
 import { isSolid } from "../core/store.js";
 import { isSolidId } from "../core/blocks.js";
-import { showRope, hideRope } from "./rope.js";
+import { showRope, showPinnedRope, showTip, hideRope, hideLine, hideTip } from "./rope.js";
 import { pickBlock } from "./edit.js";
 import { flyOn } from "./fly.js";
 
@@ -25,9 +27,21 @@ const HOOK_DEFAULTS = {
   // Minimum visible retract time: close shots slow to dist/minTime so the
   // ride back always spans a few frames instead of snapping in one step.
   retractMinTime: 0.08,
-  arriveDist: 1.1,
   substep: 0.4,
-  chest: 1.3,
+  eyeDy: 0.3,
+  // Uniform head boost in all directions (launch + retract).
+  boost: 2,
+  // Head surface offset: 0 centers the latched cube on the aimed face
+  // plane, so half its volume sits buried in the block.
+  headOff: 0,
+  // Face-arrival backoff: face hooks stop this far off the aimed face along
+  // its outward normal, so the latched cube clears the body and reads
+  // clearly. Top landings snap exact (no hover).
+  arriveGap: 0.15,
+  // Under-ceiling hang: bottom-face arrivals dangle this far below the
+  // latched cube (cube-to-eye clearance), so the mark reads looking up
+  // instead of sitting inside the camera near plane.
+  hangClear: 0.6,
 };
 
 export const HOOK_TYPES = [
@@ -36,7 +50,9 @@ export const HOOK_TYPES = [
     key: "grapple",
     pullSpeed: 26,
     flingSpeed: 34,
-    landGlide: 0.5,
+    // Pull mode, dispatched live by updateHook: "self-to-anchor" yanks the
+    // player to the landing; a mob kind registers "anchor-to-self" to haul
+    // the anchor instead.
     pull: "self-to-anchor",
     ghost: grappleGhost,
     retarget: retargetBlock,
@@ -47,18 +63,19 @@ function hookKindOf(key) {
   return HOOK_TYPES.find((h) => h.key === key) ?? HOOK_TYPES[0];
 }
 
-let hook = null; // logic: { kind, spec, bx, by, bz, topY, tx, ty, tz, hx, hy, hz, flying }
-let line = null; // visual rope: { spec, hx, hy, hz, stuck, retracting, total? }
+let hook = null; // logic: { kind, spec, bx, by, bz, topY, topLand, fx, fy, fz, sx, sy, sz, tx, ty, tz, px, py, pz, ax, ay, az, hx, hy, hz, fly, dist, flying, arrived, hang, pulling, stuck }
+let line = null; // visual rope: { spec, hx, hy, hz, retracting, total? }
 
 export function hookActive() {
   return !!hook;
 }
 
-// Block picker for the grapple: DDA hit → descriptor. Mob pickers return
+// Block picker for the grapple: unbounded DDA hit → descriptor (edit and
+// highlight picks are unlimited too). Mob pickers return
 // { kind: "mob", ref } and plug into fireHookTarget the same way.
 export function grappleBlockPick(origin, dir) {
-  const hit = pickBlock(origin, dir, true, 64);
-  return hit ? { kind: "block", x: hit.x, y: hit.y, z: hit.z, id: hit.id } : null;
+  const hit = pickBlock(origin, dir, true, Infinity, 1024);
+  return hit ? { kind: "block", x: hit.x, y: hit.y, z: hit.z, id: hit.id, face: hit.face } : null;
 }
 
 export function fireHookTarget(pick, origin, dir, kindKey = "grapple") {
@@ -67,140 +84,267 @@ export function fireHookTarget(pick, origin, dir, kindKey = "grapple") {
   if (!target) return false;
   // Registry dispatch, no kind-name switches: the filter table resolves the
   // target kind to an anchor. Unknown kinds (mob, ...) have no entry yet and
-  // refuse, until they ship as table entries with follow-pull behavior.
+  // refuse, until they ship as table entries with a following retarget and
+  // their own pull mode.
   const fire = TARGET_FILTERS[target.kind];
   if (!fire) return false;
   return fire(target, hookKindOf(kindKey));
 }
 
-// Only standable blocks anchor: non-solid hits (flowers, liquids) have no
-// top to land on.
+// Any solid block anchors (ground, wall, ceiling — liquids never do):
+// the landing resolves to its top or to the free cell before it.
 function fireBlock(t, spec) {
   if (!isSolidId(t.id)) return false;
-  const a = { kind: "block", bx: t.x, by: t.y, bz: t.z };
+  const face = t.face ?? [0, 1, 0];
+  const a = { kind: "block", spec, bx: t.x, by: t.y, bz: t.z, fx: face[0], fy: face[1], fz: face[2] };
   spec.retarget(a);
-  const tx = a.tx, ty = a.ty, tz = a.tz;
-  if (Math.hypot(tx - pos.x, ty - pos.y, tz - pos.z) < 0.3) return false;
-  hook = { ...a, spec, tx, ty, tz, hx: pos.x, hy: pos.y + spec.chest, hz: pos.z, flying: true };
-  line = { spec, hx: pos.x, hy: pos.y + spec.chest, hz: pos.z, stuck: false, retracting: false };
-  setGhostPass((bx, by, bz) => !!hook && hook.spec.ghost(bx, by, bz, hook));
-  vel.set(0, 0, 0);
+  const sx = pos.x, sy = pos.y + spec.eyeDy, sz = pos.z;
+  if (Math.hypot(a.tx - sx, a.ty - sy, a.tz - sz) < 0.3) return false;
+  const dist = Math.hypot(a.ax - sx, a.ay - sy, a.az - sz);
+  hook = { ...a, spec, sx, sy, sz, tx: a.tx, ty: a.ty, tz: a.tz, hx: sx, hy: sy, hz: sz, fly: 0, dist, flying: true, arrived: false, hang: false, pulling: false, stuck: 0 };
+  line = { spec, hx: sx, hy: sy, hz: sz, retracting: false };
+  setGhostPass((bx, by, bz) => !!hook && !hook.arrived && hook.spec.ghost(bx, by, bz, hook));
   return true;
 }
 
 const TARGET_FILTERS = { block: fireBlock };
 
-// Re-resolve a block anchor every pull step: ride a 1-block stack up
-// (master parity); taller pillars keep the base as the target and the
-// landing gate below turns the pull into a hang instead of a clip.
+// Re-resolve every frame (flight and pull): the rope anchor sits centered
+// on the aimed face plane (top faces: column-top surface point;
+// side/bottom faces: face-centered), so the latched cube sits half-buried
+// in the block, while the player landing resolves top-or-before —
+// a short stack rides up onto the anchor top, taller faces land in the
+// free cell before the hit, feet at its bottom. Re-resolving in flight
+// tracks column edits under a flying head; mob kinds track mob.pos here.
 function retargetBlock(h) {
+  const off = h.spec.headOff;
   let q = 0;
   while (isSolid(h.bx, h.by + q + 1, h.bz)) q++;
-  h.topY = q <= 1 ? h.by + q : h.by;
-  h.tx = h.bx + 0.5; h.ty = h.topY + 1.001; h.tz = h.bz + 0.5;
+  h.topLand = q <= 1;
+  if (h.topLand) {
+    h.topY = h.by + q;
+    h.tx = h.bx + 0.5; h.ty = h.topY + 1.001; h.tz = h.bz + 0.5;
+    h.ax = h.bx + 0.5; h.ay = h.topY + 1 + off; h.az = h.bz + 0.5;
+  } else {
+    h.tx = h.bx + h.fx + 0.5; h.ty = h.by + h.fy + 0.001; h.tz = h.bz + h.fz + 0.5;
+    h.ax = h.bx + 0.5 + h.fx * (0.5 + off);
+    h.ay = h.by + 0.5 + h.fy * (0.5 + off);
+    h.az = h.bz + 0.5 + h.fz * (0.5 + off);
+  }
 }
 
-// The anchor column is passable while pulling through it.
+// The anchor column is passable only for top landings (riding up to stand
+// on top of it). Face landings run pure collision + slide, so the body
+// never enters solid — not even transiently.
 function grappleGhost(bx, by, bz, h) {
-  return !h.flying && h.kind === "block" &&
+  return !h.flying && h.kind === "block" && h.topLand &&
     bx === h.bx && bz === h.bz && by >= h.by && by <= h.topY;
-}
-
-// Landing needs two free cells above the anchor top (air or liquid).
-function anchorPass(a) {
-  return !isSolid(a.bx, a.topY + 1, a.bz) && !isSolid(a.bx, a.topY + 2, a.bz);
 }
 
 function clearHook() {
   hook = null;
   setGhostPass(null);
+  setHookPlanar(false);
+  setHookWet(false);
+}
+
+// Sever: instant silent teardown for teleports (out-of-level respawn, New
+// World) — no fling, no retract ride across the jump. Release paths use
+// cancelHook instead.
+export function severHook() {
+  hook = null;
+  line = null;
+  hideRope();
+  setGhostPass(null);
+  setHookPlanar(false);
+  setHookWet(false);
+}
+
+// True when a player body fits at (tx, ty, tz): feet + head cells free.
+function landingFree(tx, ty, tz) {
+  const y0 = Math.floor(ty + 0.001), y1 = Math.floor(ty + PLAYER_H - 0.01);
+  for (let y = y0; y <= y1; y++)
+    for (let bx = Math.floor(tx - PLAYER_HW); bx <= Math.floor(tx + PLAYER_HW); bx++)
+      for (let bz = Math.floor(tz - PLAYER_HW); bz <= Math.floor(tz + PLAYER_HW); bz++)
+        if (isSolid(bx, y, bz)) return false;
+  return true;
+}
+
+// True when solid ground sits directly under (tx, ty, tz).
+function landingSupported(tx, ty, tz) {
+  const fy = Math.floor(ty - 0.001);
+  for (let bx = Math.floor(tx - PLAYER_HW); bx <= Math.floor(tx + PLAYER_HW); bx++)
+    for (let bz = Math.floor(tz - PLAYER_HW); bz <= Math.floor(tz + PLAYER_HW); bz++)
+      if (isSolid(bx, fy, bz)) return true;
+  return false;
 }
 
 function arrive() {
-  // Rope stays pinned to the anchor (drawn by tickHookFx) until release.
-  // Horizontal pull speed carries into a short glide (see spec landGlide).
-  const spec = hook.spec;
-  line = { spec, hx: hook.tx, hy: hook.ty, hz: hook.tz, stuck: true, retracting: false };
+  // Reached the landing: snap onto it and stop dead — the next jump is a
+  // plain regular jump. Rope stays pinned on the face anchor until
+  // mouse-up. Top-of-block hooks stand plane-locked with physics live;
+  // face hooks hang frozen until release (plain drop).
   pos.set(hook.tx, hook.ty, hook.tz);
-  setOnGround(true);
-  clearHook();
-  const sp = Math.hypot(vel.x, vel.z);
-  if (sp > spec.pullSpeed) { vel.x *= spec.pullSpeed / sp; vel.z *= spec.pullSpeed / sp; }
-  vel.y = 0;
-  setLandGlide(spec.landGlide);
+  settleArrival();
 }
 
-// Release: fling along the head direction (plain pull-through in liquid,
-// no fling). The head rides back to the eye; movement resumes at once.
+// Face arrivals clear the anchor surface so the latched cube sits in a
+// visible gap instead of inside the body or the camera near plane: side
+// faces back off along the outward normal, bottom faces dangle to a fixed
+// cube-to-eye clearance. Applied only when the offset fits, else the exact
+// stop is kept. Top landings snap exact.
+function applyArriveGap() {
+  if (hook.topLand) return;
+  if (hook.fy === -1) {
+    const oy = hook.ay - EYE - hook.spec.hangClear;
+    if (landingFree(pos.x, oy, pos.z)) pos.y = oy;
+    return;
+  }
+  const g = hook.spec.arriveGap;
+  const ox = pos.x + hook.fx * g, oy = pos.y + hook.fy * g, oz = pos.z + hook.fz * g;
+  if (landingFree(ox, oy, oz)) pos.set(ox, oy, oz);
+}
+
+// Still against the arrival point (never displaced past this): tip mark
+// alone. Past it, the rope stays up until release.
+const ARRIVAL_EPS = 0.05;
+
+// Shared ending: clear the anchor surface, pin the rope, stop dead, arm
+// the plane-lock. Movement at destination is allowed only for top-of-block
+// hooks; face hooks hang.
+function settleArrival() {
+  applyArriveGap();
+  hook.arrived = true;
+  hook.pulling = false;
+  // Rest spot: the rope shows from here on — tip alone until displaced.
+  hook.px = pos.x; hook.py = pos.y; hook.pz = pos.z;
+  line = { spec: hook.spec, hx: hook.ax, hy: hook.ay, hz: hook.az, retracting: false };
+  vel.set(0, 0, 0);
+  hook.hang = !hook.topLand;
+  setOnGround(hook.topLand && landingSupported(pos.x, pos.y, pos.z));
+  setHookPlanar(true);
+  setHookWet(headInWater());
+}
+
+// Release (middle mouse-up): mid-pull yank flings along the launch
+// direction (pull speed in liquid, no fling); flying, hanging, or standing
+// releases just retract fast. Ground contact is re-measured so a hang-drop
+// never inherits a stale grounded jump. The head rides back to the eye;
+// movement resumes at once. The mark detaches from the anchor with the
+// head, so nothing stays welded on the face during the ride back.
 export function cancelHook(fling = true) {
   if (!hook && !line) return;
   const spec = (hook && hook.spec) || (line && line.spec) || HOOK_TYPES[0];
-  const ax = hook ? (hook.flying ? hook.hx : hook.tx) : line.hx;
-  const ay = hook ? (hook.flying ? hook.hy : hook.ty) : line.hy;
-  const az = hook ? (hook.flying ? hook.hz : hook.tz) : line.hz;
-  const dx = ax - pos.x, dy = ay - pos.y, dz = az - pos.z;
-  const dist = Math.hypot(dx, dy, dz) || 1;
-  if (fling && !headInWater()) {
-    vel.set(dx / dist * spec.flingSpeed, dy / dist * spec.flingSpeed, dz / dist * spec.flingSpeed);
-  } else if (headInWater()) {
-    vel.set(dx / dist * spec.pullSpeed, dy / dist * spec.pullSpeed, dz / dist * spec.pullSpeed);
-  } else {
-    vel.set(0, 0, 0);
+  const pulling = hook ? !!hook.pulling : false;
+  if (pulling) {
+    const dx = hook.tx - hook.sx, dy = hook.ty - hook.sy, dz = hook.tz - hook.sz;
+    const dist = Math.hypot(dx, dy, dz) || 1;
+    if (fling && !headInWater()) {
+      vel.set(dx / dist * spec.flingSpeed, dy / dist * spec.flingSpeed, dz / dist * spec.flingSpeed);
+    } else if (headInWater()) {
+      vel.set(dx / dist * spec.pullSpeed, dy / dist * spec.pullSpeed, dz / dist * spec.pullSpeed);
+    }
+  } else if (hook) {
+    setOnGround(landingSupported(pos.x, pos.y, pos.z));
   }
-  if (line) line.retracting = true;
+  if (hook) {
+    line = { spec, hx: hook.flying ? hook.hx : hook.ax, hy: hook.flying ? hook.hy : hook.ay, hz: hook.flying ? hook.hz : hook.az, retracting: true };
+  } else if (line) {
+    line.retracting = true;
+  }
   clearHook();
 }
 
-// Runs in place of updatePlayer while the hook is live: fly the head out,
-// then yank toward the anchor top until close, hanging when the landing is
-// blocked instead of clipping in.
+// Runs alongside updatePlayer while the hook is live: fly the head out,
+// then yank toward the landing until close (dispatched through spec.pull).
+// Only the pull owns the frame (velocity driven toward the landing,
+// sliding along obstacles); head flight and standing arrivals yield so
+// normal physics runs — falls continue under a flying head. Face stops
+// hang frozen, jump inert, until mouse-up; stalled pulls stop in place
+// the same way.
+// Returns true when the hook owns the frame (pulling/hanging); false
+// otherwise, so the caller runs normal player physics with the visuals drawn.
 export function updateHook(dt) {
-  if (!hook) return;
+  if (!hook) return false;
+  if (hook.arrived) {
+    if (hook.hang) { vel.set(0, 0, 0); hook.pulling = false; return true; }
+    hook.pulling = false;
+    return false;
+  }
   const spec = hook.spec;
   if (hook.flying) {
-    const dx = hook.tx - hook.hx, dy = hook.ty - hook.hy, dz = hook.tz - hook.hz;
-    const dist = Math.hypot(dx, dy, dz);
-    const step = spec.throwSpeed * dt;
-    if (dist <= step) {
-      hook.hx = hook.tx; hook.hy = hook.ty; hook.hz = hook.tz;
+    spec.retarget(hook); // track column edits (mob kinds: mob.pos) mid-flight
+    const step = spec.throwSpeed * spec.boost * dt;
+    hook.fly += step / hook.dist;
+    if (hook.fly >= 1) {
+      hook.fly = 1;
+      hook.hx = hook.ax; hook.hy = hook.ay; hook.hz = hook.az;
       hook.flying = false;
-      line = { spec, hx: hook.tx, hy: hook.ty, hz: hook.tz, stuck: true, retracting: false };
-      return;
+      hook.pulling = false;
+      line = { spec, hx: hook.ax, hy: hook.ay, hz: hook.az, retracting: false };
+      return false;
     }
-    hook.hx += dx / dist * step;
-    hook.hy += dy / dist * step;
-    hook.hz += dz / dist * step;
+    hook.hx = hook.sx + (hook.ax - hook.sx) * hook.fly;
+    hook.hy = hook.sy + (hook.ay - hook.sy) * hook.fly;
+    hook.hz = hook.sz + (hook.az - hook.sz) * hook.fly;
     line.hx = hook.hx; line.hy = hook.hy; line.hz = hook.hz;
-    return;
+    hook.pulling = false;
+    return false;
   }
-  hook.spec.retarget(hook);
-  line.hx = hook.tx; line.hy = hook.ty; line.hz = hook.tz;
-  if (!anchorPass(hook)) { vel.set(0, 0, 0); return; }
+  // Pull-mode dispatch: grapple yanks the player to the landing; future
+  // kinds (mob grab: "anchor-to-self") add their branch beside it.
+  if (spec.pull === "self-to-anchor") return pullSelfToAnchor(dt);
+  return hook.hang;
+}
+
+// "self-to-anchor": drive the player toward the landing in substepped
+// collision + slide until close, then stand or hang by targeting.
+function pullSelfToAnchor(dt) {
+  const spec = hook.spec;
+  spec.retarget(hook);
+  line.hx = hook.ax; line.hy = hook.ay; line.hz = hook.az;
   const dx = hook.tx - pos.x, dy = hook.ty - pos.y, dz = hook.tz - pos.z;
   const dist = Math.hypot(dx, dy, dz);
-  if (dist < spec.arriveDist) { arrive(); return; }
+  const step = spec.pullSpeed * dt;
+  if (dist <= step + 0.001) {
+    if (landingFree(hook.tx, hook.ty, hook.tz)) arrive();
+    else settleArrival(); // landing area reached but blocked: stop against it
+    return hook.hang;
+  }
   const px = pos.x, py = pos.y, pz = pos.z;
-  const step = Math.min(dist, spec.pullSpeed * dt);
   const n = Math.max(1, Math.ceil(step / spec.substep));
   vel.set(dx / dist * spec.pullSpeed, dy / dist * spec.pullSpeed, dz / dist * spec.pullSpeed);
   for (let i = 0; i < n; i++) collideBody(dt / n, playerBody, true);
   const moved = Math.hypot(pos.x - px, pos.y - py, pos.z - pz);
-  if (moved < step * 0.25) { arrive(); return; }
+  if (moved < step * 0.25) {
+    if (++hook.stuck >= 3) { settleArrival(); return hook.hang; } // stalled: stop in place
+    hook.pulling = false;
+    return true;
+  }
+  hook.stuck = 0;
+  hook.pulling = true;
+  return true;
 }
 
-// Visual tick, runs every frame even while walking: draws the live rope
-// and rides a released head back to the eye.
+// Visual tick, runs every frame even while walking: full rope while the
+// head travels (fly/pull/retract); once pinned, always the mark on the
+// anchor (dark cube + cross on the face) — alone while still against the
+// arrival point, plus the S-wobble rope, clamped above its segment, from
+// the first step away until mouse-up.
 export function tickHookFx(dt) {
   if (!line) return;
   const spec = line.spec;
-  const cx = pos.x, cy = pos.y + spec.chest, cz = pos.z;
+  const cx = pos.x, cy = pos.y + spec.eyeDy, cz = pos.z;
   if (line.retracting) {
+    // Detach the mark from the anchor on arrival here, so the cross and dark
+    // head follow the moving tip instead of staying pinned to the face.
+    hideTip();
     const dx = cx - line.hx, dy = cy - line.hy, dz = cz - line.hz;
     const dist = Math.hypot(dx, dy, dz);
     // Constant slowed speed from the initial gap: far shots keep full
     // speed, close ones ride at total/minTime so the trip lasts minTime.
     if (line.total == null) line.total = dist;
-    const fullSpeed = spec.retractSpeed;
+    const fullSpeed = spec.retractSpeed * spec.boost;
     const speed = Math.min(fullSpeed, line.total / (spec.retractMinTime || 0.08));
     const step = speed * dt;
     if (dist <= step + 0.05) {
@@ -211,6 +355,16 @@ export function tickHookFx(dt) {
     line.hx += dx / dist * step;
     line.hy += dy / dist * step;
     line.hz += dz / dist * step;
+    showRope(cx, cy, cz, line.hx, line.hy, line.hz);
+    return;
+  }
+  if (hook && hook.arrived) {
+    const n = hook.topLand ? [0, 1, 0] : [hook.fx, hook.fy, hook.fz];
+    showTip(line.hx, line.hy, line.hz, n[0], n[1], n[2]);
+    const displaced = Math.hypot(pos.x - hook.px, pos.y - hook.py, pos.z - hook.pz) > ARRIVAL_EPS;
+    if (displaced) showPinnedRope(cx, cy, cz, line.hx, line.hy, line.hz);
+    else hideLine();
+    return;
   }
   showRope(cx, cy, cz, line.hx, line.hy, line.hz);
 }

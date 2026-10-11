@@ -9,15 +9,16 @@ import {
 import * as player from "./src/player/physics.js";
 import { flyOn, setFly, updateFly } from "./src/player/fly.js";
 import { updateTarget, breakTarget, placeAtSelection, breakBlockAt } from "./src/player/edit.js";
-import { fireHookTarget, grappleBlockPick, cancelHook, updateHook, hookActive, tickHookFx } from "./src/player/hook.js";
+import { fireHookTarget, grappleBlockPick, cancelHook, severHook, updateHook, hookActive, tickHookFx } from "./src/player/hook.js";
 import { initRope } from "./src/player/rope.js";
 import { tickTNT, initTNTFx } from "./src/fx/tnt.js";
 import { initFx, tickFx } from "./src/fx/particles.js";
-import { initRenderer, rebuildAll, maybeStream, refreshBlocks, drainChunkQueue, hasPendingChunks, UNLOAD_MARGIN } from "./src/render/mesher.js";
+import { initRenderer, rebuildAll, maybeStream, refreshBlocks, drainChunkQueue, setEyeMedium, UNLOAD_MARGIN } from "./src/render/mesher.js";
 import { buildHotbar, select, selected, selectedId, initHotbarInput } from "./src/ui/hotbar.js";
 import { initMenu, enterGame, started, isLocked } from "./src/ui/menu.js";
 import { initHelp, openHelp, closeHelp, isHelpOpen } from "./src/ui/help.js";
 import { toggleDebug, tickDebug } from "./src/ui/debug.js";
+import { tickWaterFog, eyeMediumId } from "./src/render/waterfog.js";
 import { CHUNK, RENDER_DIST } from "./src/core/store.js";
 import { EYE } from "./src/player/physics.js";
 
@@ -84,6 +85,7 @@ let building = false;
 async function buildWorld() {
   if (building) return;
   building = true;
+  severHook();
   scene.fog.near = LOAD_FOG_NEAR;
   scene.fog.far = LOAD_FOG_FAR;
   await new Promise((r) => setTimeout(r, 30));
@@ -241,15 +243,26 @@ function loop(now) {
   tickFx(dt);
   tickDebug(dt);
   tickHookFx(dt);
-  // Streaming fog first, so the loader sees the tightened range.
+  // Streaming fog first, so the loader sees the tightened range; dive murk
+  // after (gated on building so it never fights the reveal), restoring the
+  // tracked air baseline on resurface. The pocket veil gate rides along:
+  // water-side white shows only for divers, the tinted veil only for
+  // open-air eyes, flipping together with the murk.
   if (!building) updateStreamingFog();
+  if (worldReady && !building) {
+    tickWaterFog(scene, camera, dt, envAir);
+    setEyeMedium(eyeMediumId(camera.position.x, camera.position.y, camera.position.z));
+  }
   const simActive = isLocked() && !isHelpOpen();
   if (simActive) {
-    if (hookActive()) updateHook(dt);
-    else if (flyOn) updateFly(dt);
-    else updatePlayer(dt);
+    const hookOwnsFrame = hookActive() ? updateHook(dt) : false;
+    if (!hookOwnsFrame) {
+      if (flyOn) updateFly(dt);
+      else updatePlayer(dt);
+    }
     if (pos.y < -20) {
       vel.set(0, 0, 0);
+      severHook();
       spawnPlayer();
     }
     tickTNT(dt, (touched) => refreshBlocks(touched));

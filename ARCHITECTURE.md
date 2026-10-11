@@ -11,7 +11,8 @@ stored, how it flows, and how each system works. Read this before changing code.
 - `src/core/blocks.js` — block ids, BLOCK_INFO (solid/opaque/placeable), liquid/TNT predicates.
 - `src/core/noise.js` — deterministic hash2/valueNoise/fbm.
 - `src/core/store.js` — voxel storage, one Map per dimension, column tops.
-- `src/core/textures.js` — procedural canvas textures, per-block materials.
+- `src/core/textures.js` — procedural canvas textures, per-block materials, liquid two-role surface materials.
+- `src/render/waterfog.js` — eye-in-liquid (or pocketed-air) fog/background murk while submerged.
 - `src/world/overworld.js` — height field, rivers, terrain fill, generation orchestrator.
 - `src/world/trees.js` — tree-type registry (`TREE_TYPES`, oak first), generic growth and ground guards.
 - `src/render/flowers.js` — flower-variant registry, baked voxel-cluster geometries (stem/leaves/disc bloom).
@@ -60,8 +61,55 @@ No clouds, no moon.
 
 Per chunk: scan columns up to `colTops`, keep exposed blocks only (any neighbor
 non-opaque), group by id into one InstancedMesh each (flowers skip the cube
-bucket: per-variant cluster meshes with a hash-spun Y rotation, water and
-glass transparent). Chunks within `RENDER_DIST` build nearest-first (3D distance to the
+bucket: per-variant cluster meshes with a hash-spun Y rotation, glass
+transparent). Liquids skip cubes entirely: one merged InstancedMesh per
+(liquid id, side) of full-block 1x1 boundary faces exactly on the cell
+bounds. Faces against same-liquid or opaque neighbors are culled so adjacent
+liquid merges into one volume and solid walls (wells, shores) show their own
+faces; every bound emits the blue pair — an `outside` quad (`FrontSide`,
+renderOrder 10; tops stronger via `topOpacity`, since they read against
+bright ground showing through) plus a coplanar blue `inner` quad (`BackSide`,
+renderOrder 11, same `outside` color/opacity) — so water reads regular blue
+from everywhere and the original material is never replaced. Pocket bounds
+(opposite-hemmed shaft air, enclosed bubbles) use depth-writing blue variants plus
+gated white veils (renderOrder 12, after the blue): the near wall
+depth-occludes the far wall, so each pocket shows exactly one face. One exception:
+a surface liquid cell (open air above) with a broken sheet around it (air on
+a side: player bumps, edges) also seals its column with a blue floor at the
+foot of the exposed run (deepest same-liquid cell below the surface that
+still sees lateral air, the lateral air followed down to its own foot), so
+1-high and N-high bumps cap exactly the same plane and read solid from above
+instead of showing the depths through
+the transparent stack; the side air must sit on liquid, so well rims keep
+regular water and shafts read hollow; unbroken sheet water stays merged. The
+seal emits only the blue BackSide shutter: bumps read solid from above while
+divers below see the uniform surface backs with no doubling rectangles. What
+sits beneath neighboring air decides floors, laterally hemming air decides
+veils: air on liquid gets a seal floor, air hemmed by the same
+liquid on opposite same-level sides (or 3+ sides) or enclosed gets white
+pocket veils over the unchanged blue pair, everything else stays plain blue
+(diagonal L corners see liquid on two merely adjacent sides and stay plain
+blue). Each viewpoint
+sees exactly one blue sheet per quad (backface culling), so coplanar pairs
+never z-fight, and stacked boundaries (water-air-water, air-water-air)
+compose through blending in a fixed deterministic order instead of viewpoint
+re-sorting, so nothing flickers. Pocket veils gate on the eye
+medium via `setEyeMedium`: plain white (0.3, no ring patterns anywhere) shows
+only while the eye sits inside the same liquid, always over its unchanged blue
+backing, so every ring composites identically (uniform water filter, never bare
+white on bright backdrops); the tinted veil (0.35, 0.65
+toward the liquid color, `DoubleSide`) only while the eye sits in open air —
+so divers see white, shore viewers see blue front faces plus light blue
+(darker than diver white), and pocket interiors see pure blue. Veils emit on opposite-hemmed air (same liquid on
+opposite same-level sides or 3+ sides: wells read like pockets from inside water, top ring included) or
+enclosed air (bubbles); bumps, shores, diagonals, and sky stay blue, the opposition pair running before the flood so open air skips it. Only
+pocket-bound sheets write depth; open-sea sheets never do, keeping shallows
+see-through. Blue sheets are never gated.
+Pocket detection is a bounded air-only flood with a colTop fast path for open sky: meshing (`isEnclosedAir`) counts budget exhaustion as open, so only small pockets veil; the eye medium (`isEyePocketed`) adds a per-cell sky escape and counts budget exhaustion as pocketed, so big sealed halls murk like divers instead of reading clear air. One `LIQUID_SURFACE` spec per
+liquid in `textures.js` (defaults plus overrides, stable keys) supplies both
+roles — color, opacity, and grain, so retinting never touches paint
+code — new liquids register a spec without framework forks. Surfaces
+stay unlit; glass draws last (renderOrder 13). Chunks within `RENDER_DIST` build nearest-first (3D distance to the
 eye) under a
 per-frame budget; edits rebuild only touching chunks via `refreshBlocks`. The
 first build is fully synchronous: every chunk in range meshes before the
@@ -80,7 +128,14 @@ smoothstep reveal — the reveal is pure fog motion over a finished world,
 never ghost clarify. A tightening-only runtime fog guard caps fog far by
 the 3D distance to the nearest evictable slab (minus margin) and shrinks
 the clear bubble with speed, so loading and unloading stay hidden at any
-altitude or pace; the dive-murk baseline tracks the guard. Once voxel data exists, input is fully live — move, look,
+altitude or pace; the dive-murk baseline tracks the guard. The loop
+ticks a light underwater murk after the build settles (`waterfog.js`,
+eye-gated on the camera cell — divers and pocket-sitters murk alike with
+the hemming liquid's tint, so pockets never see out clearer than divers do;
+pockets stack a deeper tier (half range, stronger tint), like deeper water —
+per-liquid tint, fog 2–30) plus the pocket-veil
+eye-medium gate (liquid/diver, open air, pocket air, flipped only on change):
+the only murk, since surfaces are flat unlit sheets. Once voxel data exists, input is fully live — move, look,
 place/break, grapple, fly, hotbar; edits
 to unmeshed chunks persist in the voxel store and appear when their chunk
 builds (`refreshBlocks` skips queued chunks, rebuilds built ones). TNT
@@ -117,17 +172,41 @@ persistence.
 - Hook framework (`hook.js`): pick → filter → fly → pull → arrive/release →
   retract. `fireHookTarget` dispatches through the spec — no kind-name
   switches: the filter table resolves target kinds to anchors, and the
-  active `HOOK_TYPES` entry supplies speeds, pull mode, ghost, and
-  retarget. A mob grapple adds a filter entry, a grab-grapple a kind
-  entry, with no physics changes. The head flies out at 70 and retracts
-  at 275, slowed to last `retractMinTime` when close; the pull ghosts the anchor column through `setGhostPass` and
-  lands on the anchor top (1-block stack-up, hang when the landing is
-  blocked). Arrival keeps horizontal pull speed with a 0.5 s
-  friction-free glide, so jump + arrows chains momentum. Grapple:
-  middle-click, solid blocks only, pull at 26, early release flings at 34;
+  active `HOOK_TYPES` entry supplies speeds, pull mode, ghost, and retarget.
+  A mob grab adds a filter entry (`{ kind: "mob", ref }` from a mob picker)
+  plus a kind entry with `pull: "anchor-to-self"` and a following `retarget`
+  (anchor tracks `mob.pos` + offset every frame, flight included); release
+  and sever paths are shared, with no physics changes. Grapple (middle-click): any solid block (ground, wall, ceiling —
+  never liquid), unbounded DDA pick (`Infinity`, 1024 steps, like edit picks), eye anchor `0.3`; refused while flying, hooked, or in fly
+  mode. Head flies parametric (`fly 0→1` at `throw × boost`) onto the aimed
+  face plane (`headOff` 0: cube centered on the surface, half-buried), physics live underneath so falls continue. The
+  pull owns the frame (dispatched through `spec.pull`: velocity toward the
+  landing, substepped collision +
+  slide), ghosts the anchor column only for top landings (`topLand`: stack
+  rides up to stand on top; taller faces land in the free cell before the
+  hit); stalls stop in place after 3 stuck frames. Arrivals stop dead (next
+  jump is plain): top hooks stand plane-locked (`hookPlanar` — walk/swim
+  horizontally, gravity on drops, never up: no jump, rebound, or auto-step;
+  `hookWet` arrivals sink, dry ones float), face hooks hang frozen, jump
+  inert, until mouse-up plain-drops. Face arrivals back off the aimed face
+  (`arriveGap` along the outward normal, when it fits) so the latched cube
+  clears the body; bottom faces dangle to a fixed cube-to-eye clearance
+  (`hangClear`) so the mark reads looking up; top landings snap exact. Mid-pull release flings at 34 along the
+  launch direction (26 in liquid); other releases just retract boosted
+  (`retract × boost`) at the plain head speed, slowed to last `retractMinTime`
+  when close, the mark detaching from
+  the anchor with the head so nothing stays welded on the face. Rope stays
+  pinned until mouse-up; teleports sever it
+  silently (`severHook` on out-of-level respawn and New World). Pinned visual
+  is the mark alone, half-buried in the surface (dark head cube + 4 rope squares in a
+  cross lying on the face) while still against the arrival point, plus the
+  S-wobble eye→anchor rope from the first step away until mouse-up,
+  clamped above its segment (level walks read clean; drops and bumps off
+  the segment may clip); flight, pull, and retract draw the wobbling thin rope. All
+  depth-tested, walls occlude normally.
   refused while flying, cancelled by fly toggle.
 - Editing: DDA raycast (Left = place, Right = break) with a highlight target
-  and unlimited reach across the world; the grapple picker caps at 64.
+  and unlimited reach across the world (grapple picker unbounded too).
   Placement targeting passes through liquids except when a liquid is selected
   (`isLiquid`) and the eye is outside liquid — then the first hit wins (liquid
   or solid); break and grapple always skip liquids. Breaking TNT ignites it instead, leaving the block for the blast to clear.
@@ -156,7 +235,7 @@ persistence.
 ## Tuning constants (player)
 
 - `WALK = 4.4`, `SPRINT = 7.2`, `GRAVITY = 37.44`, `JUMP_MIN = 8.2`, `FLY = 10` (3x with sprint).
-- Hook kinds: `HOOK_TYPES` (grapple: pull 26, fling 34, throw 70, retract 275, retract mini 0.08 s, glide 0.5); new kinds register a spec.
+- Hook kinds: `HOOK_TYPES` (grapple: pull 26, fling 34, throw 70, retract 275, uniform boost 2, retract mini 0.08 s, eye 0.3, head 0, face gap 0.15, hang clear 0.6); new kinds register a spec.
 - `JUMP_HOLD_TIME = 0.7`, `JUMP_THRUST = 45`, `JUMP_RAMP = 0.25`, `JUMP_BUFFER = 0.2`.
 - Blast kinds: `TNT_TYPES` (normal: fuse 2.0, radius 4, `mode:"sphere"`); new tiers register a spec.
 
@@ -173,7 +252,13 @@ persistence.
   caps it by the 3D unload distance minus margin, clear bubble shrinks 20%
   at full sprint speed), so loading chunks debut fully fogged and evicted
   chunks are fully fogged first. First load builds everything synchronously,
-  then closed-in fog (12–30) expands over `REVEAL_MS = 700`.
+  then closed-in fog (12–30) expands over `REVEAL_MS = 1200`.
+- Liquid surfaces: unlit two-role sheets (blue 0.7 / top 0.9 on both sides,
+  orders 10/11; pocket bounds use depth-writing blue + veils order 12: plain
+  white 0.3 gated to divers over unchanged blue backs / plain light-blue 0.35 tinted 0.65 for open-air
+  eyes, hidden in pocket air; glass 13) plus
+  per-liquid dive murk (fog 2–30, tint 0.55; pocketed eyes stack a deeper tier: fog 1–15, tint 0.75). Blue sheets stay always on; veils flip only on eye-medium
+  change (`POCKET_FLOOD_LIMIT = 512`).
 
 ## Extension pattern
 
@@ -199,7 +284,7 @@ physics, render budgets. Single-spec systems (`TERRAIN`, `VILLAGE_SPEC`) become 
 
 Shipped: trees (oak; pines later), flowers (7 variants), TNT (normal,
 `mode:"sphere"`; tiers later), hooks (grapple, `pull:"self-to-anchor"`;
-grab later).
+grab later), liquids (water outside-blue + pocket-white roles).
 Specified, code-free: mobs (locomotion/perch/water/hookability axes),
 `PORTAL_TYPES` (frame block, sizes, fill material, sealed-when rule,
 arrival mapper, mob policy), `DIMENSIONS` (generator, env preset, spawn,

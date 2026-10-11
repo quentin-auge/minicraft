@@ -21,11 +21,6 @@ export const JUMP_BOOST_TIME = 0.15;
 export const JUMP_BUFFER = 0.2;
 export const AIR_STEER = 2.5;
 export const AIR_SPRINT = 1.35;
-// Post-hook glide: arrival keeps horizontal speed this long before
-// ground friction resumes. Set by hook arrival from the hook spec;
-// jumping inside the window preserves it, so jump + arrows chains momentum.
-let landGlide = 0;
-export function setLandGlide(t) { landGlide = t; }
 export const STEP_SPEED = 9.5;
 export const STEP_UP = 12;
 export const STEP_UP_EASE = 0.03;
@@ -69,6 +64,17 @@ let jumpPeakY = null;
 let jumpHoldContinuous = false;
 let lastSpaceDownY = null;
 let prevSpace = false;
+
+// Hook plane-lock: while a grapple arrival is pinned (not hanging), the
+// player is locked to the horizontal plane — horizontal moves, regular
+// gravity on drops, never up. Armed by hook arrival, cleared on release.
+let hookPlanar = false;
+export function setHookPlanar(v) { hookPlanar = v; }
+// Hook wet snapshot: whether the arrival itself was in liquid. A wet
+// arrival sinks and stays down (horizontal swim only); a dry arrival that
+// walks into water floats normally.
+let hookWet = false;
+export function setHookWet(v) { hookWet = v; }
 
 export const keys = {};
 
@@ -114,6 +120,7 @@ function waterSurfaceTop() {
 
 function tryStep(bx, by, bz) {
   if (stepDown) return false;
+  if (hookPlanar) return false; // plane-locked: blocked, never climb
   if (!stepFromWater) {
     if (!onGround) return false;
     if (by !== Math.floor(pos.y)) return false;
@@ -237,6 +244,10 @@ const _right = new THREE.Vector3();
 const _move = new THREE.Vector3();
 
 export function updatePlayer(dt) {
+  // Plane-locked (pinned grapple): never climb — drop any pending step-up
+  // before the movement logic runs. The pull phase never passes through
+  // here, so its stepping is unaffected.
+  if (hookPlanar) stepUp = false;
   _fwd.set(-Math.sin(yaw), 0, -Math.cos(yaw));
   _right.set(Math.cos(yaw), 0, -Math.sin(yaw));
   _move.set(0, 0, 0);
@@ -274,7 +285,7 @@ export function updatePlayer(dt) {
   // Rebound: jumping toward water while holding jump bounces back out to the
   // height the jump started from.
   let bounced = false;
-  if (enteredWater && spaceNow && (jumpOriginY !== null || lastSpaceDownY !== null)) {
+  if (enteredWater && spaceNow && !hookPlanar && (jumpOriginY !== null || lastSpaceDownY !== null)) {
     const surface = waterSurfaceTop();
     let liquid = false;
     for (let bx = Math.floor(pos.x - PLAYER_HW); bx <= Math.floor(pos.x + PLAYER_HW); bx++)
@@ -330,6 +341,10 @@ export function updatePlayer(dt) {
         stepUp = false;
         onGround = true;
       }
+    } else if (hookPlanar && hookWet) {
+      // Pinned wet arrival: sink by gravity, horizontal only.
+      vel.y -= GRAVITY * dt;
+      vel.y = Math.min(Math.max(vel.y, -SWIM_MAX), SWIM_MAX);
     } else {
       const surface = waterSurfaceTop();
       if (surface === -Infinity) {
@@ -348,11 +363,10 @@ export function updatePlayer(dt) {
     }
   } else {
     stepFromWater = false;
-    if (landGlide > 0) landGlide = Math.max(0, landGlide - dt);
     const sprint = sprintKey && _move.lengthSq() > 0;
     const speed = sprint ? SPRINT : WALK;
     if (_move.lengthSq() > 0) _move.normalize().multiplyScalar(speed);
-    if ((!onGround && !stepUp) || landGlide > 0) {
+    if ((!onGround && !stepUp)) {
       if (_move.lengthSq() > 0) {
         const k = Math.min(1, AIR_STEER * dt);
         const curSpd = Math.hypot(vel.x, vel.z);
@@ -395,7 +409,7 @@ export function updatePlayer(dt) {
         if (airT <= JUMP_BOOST_TIME) vel.y += JUMP_BOOST_ACCEL * dt;
       }
     }
-    if (jumpBuffer > 0 && onGround) {
+    if (jumpBuffer > 0 && onGround && !hookPlanar) {
       jumpBuffer = 0;
       vel.y = JUMP_MIN; onGround = false; stepDown = false; stepUp = false;
       jumpOriginY = pos.y; jumpPeakY = pos.y; jumpHoldContinuous = true; lastSpaceDownY = pos.y; airT = 0;

@@ -36,6 +36,17 @@ const makeTex = (base, amount = 24) => canvasTex((ctx) => {
   pxNoise(ctx, base, amount);
 });
 
+function hexToRgb(hex) {
+  const n = parseInt(hex.slice(1), 16);
+  return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+}
+
+// Linear mix of two rgb triples; tints the outward pocket veil toward the
+// liquid color so every liquid tints its own ghosts without per-kind forks.
+function mixRgb(a, b, t) {
+  return [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t];
+}
+
 export const TEX = {
   grass_top: canvasTex((ctx) => {
     ctx.fillStyle = "#6ab04c"; ctx.fillRect(0, 0, 16, 16);
@@ -74,11 +85,6 @@ export const TEX = {
     ctx.fillStyle = "#2e7d32"; ctx.fillRect(0, 0, 16, 16);
     pxNoise(ctx, [46, 125, 50], 22);
     for (let i = 0; i < 14; i++) { ctx.fillStyle = Math.random() < 0.5 ? "#3f9145" : "#256a2a"; ctx.fillRect(Math.random() * 16, Math.random() * 16, 1, 1); }
-  }),
-  water: canvasTex((ctx) => {
-    ctx.fillStyle = "#3a6fd8"; ctx.fillRect(0, 0, 16, 16);
-    ctx.fillStyle = "rgba(255,255,255,0.25)";
-    for (let y = 0; y < 4; y++) for (let x = 0; x < 16; x++) if ((x + y * 5) % 6 === 0) ctx.fillRect(x, y * 4 + 2, 1, 1);
   }),
   planks: canvasTex((ctx) => {
     ctx.fillStyle = "#b98a4e"; ctx.fillRect(0, 0, 16, 16);
@@ -145,6 +151,82 @@ export const TEX = {
 
 export function material(map, opts = {}) {
   return new THREE.MeshLambertMaterial({ map, ...opts });
+}
+
+// Liquid surfaces: two roles, one registry. `outside` is the liquid color,
+// drawn blue on both sides of every bound (FrontSide outside sheet +
+// coplanar blue BackSide sheet, tops stronger since they read against
+// bright ground showing through); pocket bounds use depth-writing blue
+// variants so the near wall occludes the far wall. `pocket` is trapped air:
+// a plain white inward veil for divers, a plain light-blue outward veil
+// (`outOpacity`, `outTint` toward the liquid color) for open-air eyes — no
+// ring patterns anywhere. Both veils gate on the eye medium in mesher.js, so
+// pocket interiors keep pure blue. All unlit
+// so tone is identical from every angle. Open-sea sheets keep no depth write
+// so shallows stay see-through; only pocket-bound sheets write depth, so each
+// pocket shows exactly one face.
+// New liquids register a spec; the mesher dispatches through it without
+// framework forks.
+const LIQUID_DEFAULTS = {
+  outside: { color: "#2f66cc", opacity: 0.7, topOpacity: 0.9, grain: 16 },
+  pocket: { color: "#f2fcff", opacity: 0.3, outOpacity: 0.35, outTint: 0.65, grain: 5 },
+};
+export const LIQUID_SURFACE = [
+  { liquid: WATER, key: "water" },
+];
+const liquidSpecById = new Map(LIQUID_SURFACE.map((s) => [s.liquid, s]));
+// One table maps every visual role to its look: which side renders, which
+// registry spec supplies color/opacity (`spec`), which painted texture
+// (`tex`, keyed `<liquid>_<tex>` below), whether the sheet writes depth
+// (pocket bounds only, so each pocket shows one face; open-sea sheets stay
+// depthless to keep shallows see-through), and whether opacity comes from
+// `outOpacity` (`out`, the open-air veil only).
+const ROLE_STYLE = {
+  outside: { side: THREE.FrontSide, spec: "outside", tex: "outside", depthWrite: false },
+  inner: { side: THREE.BackSide, spec: "outside", tex: "outside", depthWrite: false },
+  pocketblue: { side: THREE.FrontSide, spec: "outside", tex: "outside", depthWrite: true },
+  pocketblueback: { side: THREE.BackSide, spec: "outside", tex: "outside", depthWrite: true },
+  "pocket-out": { side: THREE.DoubleSide, spec: "pocket", tex: "pocketout", depthWrite: true, out: true },
+  "pocket-in": { side: THREE.BackSide, spec: "pocket", tex: "pocket", depthWrite: true },
+};
+function liquidSpec(id, specKey) {
+  const entry = liquidSpecById.get(id) || liquidSpecById.get(WATER);
+  return { ...LIQUID_DEFAULTS[specKey], ...(entry[specKey] || {}) };
+}
+// Paint every liquid × role texture from the registry above, keyed
+// `<key>_<role>`. The water outside texture keeps its short alias since the
+// hotbar icon reads TEX.water. `inner` and both pocket-blue variants reuse
+// the outside texture (blue everywhere); `pocket` stays plain white while
+// `pocketout` mixes white toward the liquid color (plain light blue outside).
+for (const entry of LIQUID_SURFACE) {
+  const outSpec = { ...LIQUID_DEFAULTS.outside, ...(entry.outside || {}) };
+  const pocketSpec = { ...LIQUID_DEFAULTS.pocket, ...(entry.pocket || {}) };
+  const outBase = hexToRgb(outSpec.color);
+  TEX[entry.key + "_outside"] = makeTex(outBase, outSpec.grain);
+  TEX[entry.key + "_pocket"] = makeTex(hexToRgb(pocketSpec.color), pocketSpec.grain);
+  TEX[entry.key + "_pocketout"] = makeTex(
+    mixRgb(hexToRgb(pocketSpec.color), outBase, pocketSpec.outTint ?? 0.65),
+    pocketSpec.grain);
+}
+TEX.water = TEX.water_outside;
+const liquidMatCache = new Map();
+export function liquidSurfaceMat(id, role, top = false) {
+  const k = id + ":" + role + (top ? ":top" : "");
+  if (!liquidMatCache.has(k)) {
+    const entry = liquidSpecById.get(id) || liquidSpecById.get(WATER);
+    const style = ROLE_STYLE[role];
+    const spec = liquidSpec(id, style.spec);
+    const opacity = style.out ? spec.outOpacity ?? spec.opacity
+      : top ? spec.topOpacity ?? spec.opacity : spec.opacity;
+    liquidMatCache.set(k, new THREE.MeshBasicMaterial({
+      map: TEX[entry.key + "_" + style.tex],
+      transparent: true,
+      opacity,
+      depthWrite: style.depthWrite,
+      side: style.side,
+    }));
+  }
+  return liquidMatCache.get(k);
 }
 
 export function faceTex(map, opts = {}) {
