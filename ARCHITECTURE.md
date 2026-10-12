@@ -58,10 +58,15 @@ No clouds, no moon.
 Per chunk: scan columns up to `colTops`, keep exposed blocks only (any neighbor
 non-opaque), group by id into one InstancedMesh each (flowers skip the cube
 bucket: per-variant cluster meshes with a hash-spun Y rotation, water and
-glass transparent). Chunks within `RENDER_DIST` build nearest-first under a
+glass transparent). Chunks within `RENDER_DIST` build nearest-first (3D distance to the
+eye) under a
 per-frame budget; edits rebuild only touching chunks via `refreshBlocks`. The
-first build is staged: the spawn neighborhood builds synchronously, the rest
-streams in over following frames.
+first build is fully synchronous: every chunk in range meshes before the
+first frame, then closed-in fog expands to reveal the finished world.
+Eviction waits for both the loose ring and the fogged range: a chunk outside
+`RENDER_DIST + UNLOAD_MARGIN` disposes only once its slab also clears fog
+far plus margin, and anything still queued inside the clear bubble builds
+synchronously before the frame renders.
 
 ## Data flow (runtime)
 
@@ -137,8 +142,18 @@ persistence.
 
 ## Tuning constants (render)
 
-- `CHUNK = 16`, `RENDER_DIST = 8`, chunk build budget 6 ms/frame, spawn sync radius 3.
-- Fog 60–160, sky `#87ceeb`, sun + hemisphere lighting.
+- `CHUNK = 16`, `RENDER_DIST = 8`, chunk build budget 6 ms/frame, spawn sync radius 3. Unload lags
+  load by three rings (`UNLOAD_MARGIN = 3`, free: the rings clip to the
+  finite world) and past the fogged range
+  (`DISPOSE_MARGIN = 10` beyond fog far, 3D slab distance), so border
+  crossings never pop; anything queued inside the clear bubble builds
+  synchronously before the frame renders.
+- Fog 60–160, sky `#87ceeb`, sun + hemisphere lighting. Fog far stays inside
+  the nearest evictable slab distance at any altitude (tightening-only guard
+  caps it by the 3D unload distance minus margin, clear bubble shrinks 20%
+  at full sprint speed), so loading chunks debut fully fogged and evicted
+  chunks are fully fogged first. First load builds everything synchronously,
+  then closed-in fog (12–30) expands over `REVEAL_MS = 700`.
 
 ## Extension pattern
 

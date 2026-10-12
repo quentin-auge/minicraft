@@ -9,6 +9,18 @@ import { getSeed } from "../world/overworld.js";
 
 const boxGeo = new THREE.BoxGeometry(1, 1, 1);
 const dummy = new THREE.Object3D();
+// Chunks load within RENDER_DIST but unload three rings later, so fog far
+// stays inside the nearest evictable slab and border crossings never
+// dispose a visible row before its replacement streams in. The rings clip
+// to the finite world, so the extra margin costs no extra chunks.
+export const UNLOAD_MARGIN = 3;
+// A chunk past the loose ring still renders while its slab sits inside the
+// fogged range, so eviction additionally waits until it clears fog far.
+const DISPOSE_MARGIN = 10;
+// Terrain reference height for 3D chunk distances: chunks are ground slabs,
+// so a high camera's distance to one is horizontal offset plus vertical drop
+// below the eye. Column tops refine it per chunk; this floors the estimate.
+const TERRAIN_REF_Y = 20;
 const chunkMeshes = new Map(); // "cx_cz" -> Map<id, InstancedMesh>
 const matCache = new Map();
 let sceneRef = null;
@@ -116,6 +128,31 @@ export function rebuildChunk(cx, cz) {
 
 const chunkQueue = [];
 
+// Highest surface in a chunk's bounds (world-clipped), for 3D distances.
+function chunkTopMax(cx, cz) {
+  let top = 0;
+  const x0 = Math.max(cx * CHUNK, -WORLD_RADIUS);
+  const x1 = Math.min(cx * CHUNK + CHUNK - 1, WORLD_RADIUS);
+  const z0 = Math.max(cz * CHUNK, -WORLD_RADIUS);
+  const z1 = Math.min(cz * CHUNK + CHUNK - 1, WORLD_RADIUS);
+  const tops = colTops[dim];
+  for (let x = x0; x <= x1; x++)
+    for (let z = z0; z <= z1; z++) {
+      const t = tops[(x + 1024) * 2048 + (z + 1024)];
+      if (t > top) top = t;
+    }
+  return top;
+}
+
+// 3D distance from the eye to a chunk's ground slab: horizontal distance to
+// the chunk center, plus the drop when the eye flies above its surface.
+function chunkDist3(px, eyeY, pz, wx, wz) {
+  const dx = wx * CHUNK + CHUNK / 2 - px;
+  const dz = wz * CHUNK + CHUNK / 2 - pz;
+  const drop = Math.max(0, eyeY - Math.max(chunkTopMax(wx, wz), TERRAIN_REF_Y));
+  return Math.sqrt(dx * dx + dz * dz + drop * drop);
+}
+
 export function rebuildAll(px, pz, syncRadius = 3) {
   disposeAll();
   streamChunks(px, pz);
@@ -138,18 +175,27 @@ export function rebuildAll(px, pz, syncRadius = 3) {
   lastStream.cz = cz;
 }
 
-export function streamChunks(px, pz) {
+export function streamChunks(px, pz, eyeY = TERRAIN_REF_Y, fogFar = Infinity) {
   const cx = chunkOf(px), cz = chunkOf(pz);
   const keep = new Set();
-  for (let dx = -RENDER_DIST; dx <= RENDER_DIST; dx++)
-    for (let dz = -RENDER_DIST; dz <= RENDER_DIST; dz++) {
+  const keepLoose = new Set();
+  for (let dx = -RENDER_DIST - UNLOAD_MARGIN; dx <= RENDER_DIST + UNLOAD_MARGIN; dx++)
+    for (let dz = -RENDER_DIST - UNLOAD_MARGIN; dz <= RENDER_DIST + UNLOAD_MARGIN; dz++) {
       const wx = cx + dx, wz = cz + dz;
       if (wx * CHUNK > WORLD_RADIUS || wx * CHUNK + CHUNK - 1 < -WORLD_RADIUS) continue;
       if (wz * CHUNK > WORLD_RADIUS || wz * CHUNK + CHUNK - 1 < -WORLD_RADIUS) continue;
-      keep.add(wx + "_" + wz);
+      const ck = wx + "_" + wz;
+      keepLoose.add(ck);
+      if (Math.abs(dx) <= RENDER_DIST && Math.abs(dz) <= RENDER_DIST) keep.add(ck);
     }
+  // Dispose only outside the loose ring, and only once the slab also clears
+  // the fogged range: border crossings never flicker a row while its
+  // replacement streams in, and high flight never exposes an eviction.
   for (const ck of [...chunkMeshes.keys()]) {
-    if (!keep.has(ck)) disposeChunk(ck);
+    if (keepLoose.has(ck)) continue;
+    const [wx, wz] = ck.split("_").map(Number);
+    if (chunkDist3(px, eyeY, pz, wx, wz) <= fogFar + DISPOSE_MARGIN) continue;
+    disposeChunk(ck);
   }
   for (let i = chunkQueue.length - 1; i >= 0; i--) {
     if (!keep.has(chunkQueue[i]) || chunkMeshes.has(chunkQueue[i])) chunkQueue.splice(i, 1);
@@ -159,7 +205,7 @@ export function streamChunks(px, pz) {
   for (const ck of keep) {
     if (chunkMeshes.has(ck) || queued.has(ck)) continue;
     const [wx, wz] = ck.split("_").map(Number);
-    missing.push([ck, (wx - cx) ** 2 + (wz - cz) ** 2]);
+    missing.push([ck, chunkDist3(px, eyeY, pz, wx, wz)]);
   }
   missing.sort((a, b) => a[1] - b[1]);
   for (const [ck] of missing) chunkQueue.push(ck);
@@ -169,16 +215,32 @@ export function streamChunks(px, pz) {
 
 const lastStream = { cx: Infinity, cz: Infinity };
 
-export function maybeStream(px, pz) {
+export function maybeStream(px, pz, eyeY = TERRAIN_REF_Y, fogNear = 0, fogFar = Infinity) {
   const cx = chunkOf(px), cz = chunkOf(pz);
-  if (lastStream.cx === cx && lastStream.cz === cz) {
-    if (chunkQueue.length) drainChunkQueue(false);
-    return;
+  if (lastStream.cx !== cx || lastStream.cz !== cz) {
+    lastStream.cx = cx;
+    lastStream.cz = cz;
+    streamChunks(px, pz, eyeY, fogFar);
   }
-  lastStream.cx = cx;
-  lastStream.cz = cz;
-  streamChunks(px, pz);
-  drainChunkQueue(false);
+  if (chunkQueue.length) drainChunkQueue(false);
+  // Clear-bubble guard: anything still queued inside the clear bubble would
+  // pop in plain sight, so it builds synchronously no matter the budget.
+  // Nearest first, so the closest hole always fills even if more remain.
+  if (fogNear > 0) {
+    for (;;) {
+      let best = -1, bestD = fogNear;
+      for (let i = 0; i < chunkQueue.length; i++) {
+        const [wx, wz] = chunkQueue[i].split("_").map(Number);
+        const d = chunkDist3(px, eyeY, pz, wx, wz);
+        if (d < bestD) { bestD = d; best = i; }
+      }
+      if (best < 0) break;
+      const [ck] = chunkQueue.splice(best, 1);
+      if (chunkMeshes.has(ck)) continue;
+      const [wx, wz] = ck.split("_").map(Number);
+      rebuildChunk(wx, wz);
+    }
+  }
 }
 
 const CHUNK_BUDGET_MS = 6;

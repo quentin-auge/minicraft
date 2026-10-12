@@ -11,7 +11,7 @@ import { flyOn, setFly, updateFly } from "./src/player/fly.js";
 import { updateTarget, breakTarget, placeAtSelection, breakBlockAt } from "./src/player/edit.js";
 import { tickTNT, initTNTFx } from "./src/fx/tnt.js";
 import { initFx, tickFx } from "./src/fx/particles.js";
-import { initRenderer, rebuildAll, maybeStream, refreshBlocks, drainChunkQueue, hasPendingChunks } from "./src/render/mesher.js";
+import { initRenderer, rebuildAll, maybeStream, refreshBlocks, drainChunkQueue, hasPendingChunks, UNLOAD_MARGIN } from "./src/render/mesher.js";
 import { buildHotbar, select, selected, selectedId, initHotbarInput } from "./src/ui/hotbar.js";
 import { initMenu, enterGame, started, isLocked } from "./src/ui/menu.js";
 import { initHelp, openHelp, closeHelp, isHelpOpen } from "./src/ui/help.js";
@@ -115,12 +115,10 @@ async function buildWorld() {
 // hidden at any altitude or speed. Fog is spherical while chunk rings are
 // cylindrical, so the far plane is capped by the 3D distance to the nearest
 // evictable slab (minus margin); the clear bubble shrinks further with
-// speed so fast flight never outruns the loader into clear view. The loose
-// ring is one wide here; the unload tuning in the next commit widens it so
-// the cap rests past the tuned range.
+// speed so fast flight never outruns the loader into clear view.
 function updateStreamingFog() {
   const dh = Math.max(0, camera.position.y - FOG_GROUND_REF);
-  const unloadHoriz = (RENDER_DIST + 1) * CHUNK;
+  const unloadHoriz = (RENDER_DIST + UNLOAD_MARGIN) * CHUNK;
   const limitFar = Math.sqrt(unloadHoriz * unloadHoriz + dh * dh) - FOG_MARGIN;
   const targetFar = Math.max(Math.min(readyFog.far, limitFar), LOAD_FOG_FAR);
   const ratio = readyFog.near / readyFog.far;
