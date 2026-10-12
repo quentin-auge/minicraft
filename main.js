@@ -9,6 +9,8 @@ import {
 import * as player from "./src/player/physics.js";
 import { flyOn, setFly, updateFly } from "./src/player/fly.js";
 import { updateTarget, breakTarget, placeAtSelection, breakBlockAt } from "./src/player/edit.js";
+import { fireHookTarget, grappleBlockPick, cancelHook, updateHook, hookActive, tickHookFx } from "./src/player/hook.js";
+import { initRope } from "./src/player/rope.js";
 import { tickTNT, initTNTFx } from "./src/fx/tnt.js";
 import { initFx, tickFx } from "./src/fx/particles.js";
 import { initRenderer, rebuildAll, maybeStream, refreshBlocks, drainChunkQueue, hasPendingChunks, UNLOAD_MARGIN } from "./src/render/mesher.js";
@@ -56,6 +58,7 @@ scene.add(new THREE.HemisphereLight(0xbfd4ff, 0x5a6a4a, 0.75));
 initRenderer(scene);
 initFx(scene);
 initTNTFx(scene);
+initRope(scene);
 
 const highlight = new THREE.LineSegments(
   new THREE.EdgesGeometry(new THREE.BoxGeometry(1.002, 1.002, 1.002)),
@@ -64,6 +67,7 @@ const highlight = new THREE.LineSegments(
 highlight.visible = false;
 highlight.renderOrder = 999;
 scene.add(highlight);
+const _hookDir = new THREE.Vector3();
 
 function updateCamera() {
   camera.position.set(pos.x, pos.y + EYE, pos.z);
@@ -174,7 +178,13 @@ document.addEventListener("mousedown", (e) => {
       const changed = breakBlockAt(bt.x, bt.y, bt.z);
       if (changed.length) refreshBlocks(changed);
     }
+  } else if (e.button === 1) {
+    camera.getWorldDirection(_hookDir);
+    fireHookTarget(grappleBlockPick, camera.position, _hookDir);
   }
+});
+document.addEventListener("mouseup", (e) => {
+  if (e.button === 1 && hookActive()) cancelHook(true);
 });
 document.addEventListener("contextmenu", (e) => e.preventDefault());
 
@@ -188,7 +198,12 @@ document.addEventListener("keydown", (e) => {
   if (e.code === "KeyH" && !keys[e.code]) { openHelp(); e.preventDefault(); return; }
   if (e.code === "Equal" && !e.repeat) { toggleDebug(); return; }
   if (e.code === "KeyF" && !e.repeat && started && !isHelpOpen()) {
-    setFly(!flyOn);
+    if (!flyOn) {
+      setFly(true);
+      cancelHook(false);
+    } else {
+      setFly(false);
+    }
     e.preventDefault();
     return;
   }
@@ -225,11 +240,13 @@ function loop(now) {
   }
   tickFx(dt);
   tickDebug(dt);
+  tickHookFx(dt);
   // Streaming fog first, so the loader sees the tightened range.
   if (!building) updateStreamingFog();
   const simActive = isLocked() && !isHelpOpen();
   if (simActive) {
-    if (flyOn) updateFly(dt);
+    if (hookActive()) updateHook(dt);
+    else if (flyOn) updateFly(dt);
     else updatePlayer(dt);
     if (pos.y < -20) {
       vel.set(0, 0, 0);

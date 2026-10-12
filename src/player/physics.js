@@ -21,6 +21,11 @@ export const JUMP_BOOST_TIME = 0.15;
 export const JUMP_BUFFER = 0.2;
 export const AIR_STEER = 2.5;
 export const AIR_SPRINT = 1.35;
+// Post-hook glide: arrival keeps horizontal speed this long before
+// ground friction resumes. Set by hook arrival from the hook spec;
+// jumping inside the window preserves it, so jump + arrows chains momentum.
+let landGlide = 0;
+export function setLandGlide(t) { landGlide = t; }
 export const STEP_SPEED = 9.5;
 export const STEP_UP = 12;
 export const STEP_UP_EASE = 0.03;
@@ -41,6 +46,15 @@ export function setYaw(v) { yaw = v; }
 export function setPitch(v) { pitch = v; }
 export let onGround = false;
 export function setOnGround(v) { onGround = v; }
+
+// Ghost pass: a movement mode (hook pull-through, future mob phases) can
+// exempt cells from collision without touching the voxel store. Ground
+// support scans keep using isSolid; only the axis movers consult this.
+let ghostPass = null;
+export function setGhostPass(fn) { ghostPass = fn; }
+function solidForMove(bx, by, bz) {
+  return isSolid(bx, by, bz) && !(ghostPass && ghostPass(bx, by, bz));
+}
 
 let stepDown = false;
 let wasOnGround = false;
@@ -103,14 +117,14 @@ function tryStep(bx, by, bz) {
   if (!stepFromWater) {
     if (!onGround) return false;
     if (by !== Math.floor(pos.y)) return false;
-    if (isSolid(bx, by + 1, bz)) return false;
+    if (solidForMove(bx, by + 1, bz)) return false;
     stepUp = true;
     stepUpClearY = by + 1;
     vel.y = STEP_UP;
   } else {
     const fy = Math.floor(pos.y);
     if (by !== fy && by !== fy + 1) return false;
-    if (isSolid(bx, by + 1, bz)) return false;
+    if (solidForMove(bx, by + 1, bz)) return false;
     stepUp = true;
     stepUpClearY = by + 1;
     vel.y = STEP_UP;
@@ -128,7 +142,7 @@ function moveAxisX(dx, body = playerBody, step = true) {
   const cellX = Math.floor(edge);
   for (let by = Math.floor(body.pos.y + PLAYER_H); by >= Math.floor(body.pos.y); by--)
     for (let bz = Math.floor(body.pos.z - PLAYER_HW); bz <= Math.floor(body.pos.z + PLAYER_HW); bz++) {
-      if (!isSolid(cellX, by, bz)) continue;
+      if (!solidForMove(cellX, by, bz)) continue;
       if (dir > 0 && edge > cellX) {
         if (step) { if (!tryStep(cellX, by, bz)) body.vel.x = 0; }
         else body.vel.x = 0;
@@ -150,7 +164,7 @@ function moveAxisZ(dz, body = playerBody, step = true) {
   const cellZ = Math.floor(edge);
   for (let by = Math.floor(body.pos.y + PLAYER_H); by >= Math.floor(body.pos.y); by--)
     for (let bx = Math.floor(body.pos.x - PLAYER_HW); bx <= Math.floor(body.pos.x + PLAYER_HW); bx++) {
-      if (!isSolid(bx, by, cellZ)) continue;
+      if (!solidForMove(bx, by, cellZ)) continue;
       if (dir > 0 && edge > cellZ) {
         if (step) { if (!tryStep(bx, by, cellZ)) body.vel.z = 0; }
         else body.vel.z = 0;
@@ -170,10 +184,10 @@ function moveAxisYStep(dy, body = playerBody, step = true) {
   const top = body.pos.y + PLAYER_H, feet = body.pos.y;
   for (let bx = Math.floor(body.pos.x - PLAYER_HW); bx <= Math.floor(body.pos.x + PLAYER_HW); bx++)
     for (let bz = Math.floor(body.pos.z - PLAYER_HW); bz <= Math.floor(body.pos.z + PLAYER_HW); bz++) {
-      if (body.vel.y > 0 && isSolid(bx, Math.floor(top), bz) && top > Math.floor(top)) {
+      if (body.vel.y > 0 && solidForMove(bx, Math.floor(top), bz) && top > Math.floor(top)) {
         body.pos.y = Math.floor(top) - PLAYER_H - 0.001; body.vel.y = 0; return;
       }
-      if (body.vel.y <= 0 && isSolid(bx, Math.floor(feet), bz)) {
+      if (body.vel.y <= 0 && solidForMove(bx, Math.floor(feet), bz)) {
         body.pos.y = Math.floor(feet) + 1 + 0.001; body.vel.y = 0;
         if (step) { onGround = true; stepDown = false; stepUp = false; }
         return;
@@ -334,10 +348,11 @@ export function updatePlayer(dt) {
     }
   } else {
     stepFromWater = false;
+    if (landGlide > 0) landGlide = Math.max(0, landGlide - dt);
     const sprint = sprintKey && _move.lengthSq() > 0;
     const speed = sprint ? SPRINT : WALK;
     if (_move.lengthSq() > 0) _move.normalize().multiplyScalar(speed);
-    if (!onGround && !stepUp) {
+    if ((!onGround && !stepUp) || landGlide > 0) {
       if (_move.lengthSq() > 0) {
         const k = Math.min(1, AIR_STEER * dt);
         const curSpd = Math.hypot(vel.x, vel.z);

@@ -19,13 +19,15 @@ stored, how it flows, and how each system works. Read this before changing code.
 - `src/world/spawn.js` — spawn selection on finished voxels (`findSpawn`): firm open ground with a frustum-wide clear vista.
 - `src/player/physics.js` — player state, movement, shared axis movers (`collideBody`); `spawnPlayer` applies the `findSpawn` pick.
 - `src/player/fly.js` — fly mode (pitch-aware thrust, no gravity) on the shared movers.
+- `src/player/hook.js` — hook-kind registry (`HOOK_TYPES`, grapple first); framework (fire → pull → arrive/release) dispatches through the spec.
+- `src/player/rope.js` — rope-render backend (instanced cube rope, swappable).
 - `src/player/edit.js` — DDA raycast, place/break, floating-liquid purge.
 - `src/fx/tnt.js` — blast-kind registry (`TNT_TYPES`, normal first), fuses, countdown sprite, spherical blasts, TNT chaining.
 - `src/fx/particles.js` — generic burst/flash effects backend (`spawnBurst`, `spawnFlash`, `tickFx`).
 - `src/render/mesher.js` — chunked InstancedMesh renderer, streaming, local refresh.
 - `src/ui/menu.js` — Play/Resume/New-World overlay, pointer-lock wiring (no saves). Play is clickable from the first frame and enters a finished world fading in through expanding fog; New World only once started and never during a build; Esc unlock shows Resume + New World. Boot builds instantly behind the menu; no spinner anywhere.
 - `src/ui/debug.js` — `=` FPS readout (`fps~N`, exponential moving average, quarter-second refresh, hidden until started).
-- `src/ui/help.js` — help overlay open/close. Shortcut table: Move, Jump, Sprint, Place, Break, Select, Fly, Help, Debug.
+- `src/ui/help.js` — help overlay open/close. Shortcut table: Move, Jump, Sprint, Place, Break, Select, Fly, Grapple, Help, Debug.
 
 ## Data model
 
@@ -82,8 +84,9 @@ altitude or pace; the dive-murk baseline tracks the guard. Once voxel data exist
 place/break, grapple, fly, hotbar; edits
 to unmeshed chunks persist in the voxel store and appear when their chunk
 builds (`refreshBlocks` skips queued chunks, rebuilds built ones). TNT
-tick and `updatePlayer(dt)` while locked and help closed → raycast target +
-highlight → stream nearby chunks. Play enters a finished world fading in through expanding fog; Esc
+tick and simulation while locked and help closed (hook, else fly, else walk)
+→ raycast target + highlight → stream nearby chunks. Falling below `y = -20`
+respawns. Play enters a finished world fading in through expanding fog; Esc
 shows Resume + New World (fresh seed, same instant-load flow, the only action
 that waits on a build). There is no
 persistence.
@@ -111,6 +114,18 @@ persistence.
   start height. No jump streak speed boost.
 - Fly (`KeyF`): pitch-aware thrust through the shared axis movers
   (`collideBody` with stepping off), no gravity or swimming.
+- Hook framework (`hook.js`): pick → filter → fly → pull → arrive/release →
+  retract. `fireHookTarget` dispatches through the spec — no kind-name
+  switches: the filter table resolves target kinds to anchors, and the
+  active `HOOK_TYPES` entry supplies speeds, pull mode, ghost, and
+  retarget. A mob grapple adds a filter entry, a grab-grapple a kind
+  entry, with no physics changes. The head flies out at 70 and retracts
+  at 275, slowed to last `retractMinTime` when close; the pull ghosts the anchor column through `setGhostPass` and
+  lands on the anchor top (1-block stack-up, hang when the landing is
+  blocked). Arrival keeps horizontal pull speed with a 0.5 s
+  friction-free glide, so jump + arrows chains momentum. Grapple:
+  middle-click, solid blocks only, pull at 26, early release flings at 34;
+  refused while flying, cancelled by fly toggle.
 - Editing: DDA raycast (Left = place, Right = break) with a highlight target.
   Breaking TNT ignites it instead, leaving the block for the blast to clear.
   Live edits purge floating liquid: any
@@ -138,6 +153,7 @@ persistence.
 ## Tuning constants (player)
 
 - `WALK = 4.4`, `SPRINT = 7.2`, `GRAVITY = 37.44`, `JUMP_MIN = 8.2`, `FLY = 10` (3x with sprint).
+- Hook kinds: `HOOK_TYPES` (grapple: pull 26, fling 34, throw 70, retract 275, retract mini 0.08 s, glide 0.5); new kinds register a spec.
 - `JUMP_HOLD_TIME = 0.7`, `JUMP_THRUST = 45`, `JUMP_RAMP = 0.25`, `JUMP_BUFFER = 0.2`.
 - Blast kinds: `TNT_TYPES` (normal: fuse 2.0, radius 4, `mode:"sphere"`); new tiers register a spec.
 
@@ -162,7 +178,7 @@ Every variant family follows the same shape — new variants are registry
 entries, never framework forks:
 
 - One exported registry array of spec objects, each with a `key`
-  (`TREE_TYPES`, `FLOWER_VARIANTS`, `TNT_TYPES`; hooks follow in their commit).
+  (`TREE_TYPES`, `FLOWER_VARIANTS`, `TNT_TYPES`, `HOOK_TYPES`).
 - Shared properties live once in a module-local `*_DEFAULTS` object;
   entries spread it first and override only what differs.
 - Differing numbers are entry properties; differing behavior is a
@@ -179,7 +195,8 @@ Single-anatomy numbers stay plain constants: world dimensions, body
 physics, render budgets. Single-spec systems (`TERRAIN`, `VILLAGE_SPEC`) become registries only when a second variant arrives.
 
 Shipped: trees (oak; pines later), flowers (7 variants), TNT (normal,
-`mode:"sphere"`; tiers later).
+`mode:"sphere"`; tiers later), hooks (grapple, `pull:"self-to-anchor"`;
+grab later).
 Specified, code-free: mobs (locomotion/perch/water/hookability axes),
 `PORTAL_TYPES` (frame block, sizes, fill material, sealed-when rule,
 arrival mapper, mob policy), `DIMENSIONS` (generator, env preset, spawn,
@@ -196,6 +213,6 @@ interface, bar binding, death/cleared flag).
 
 ## Dropped from master (kept out on purpose)
 
-Saves and server API, mobs, grapple, jump streak boost, hold-chain
+Saves and server API, mobs, jump streak boost, hold-chain
 paint/bridge editing, clouds/moon, portals,
 boss bar.
