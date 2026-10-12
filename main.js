@@ -13,13 +13,31 @@ import { tickTNT, initTNTFx } from "./src/fx/tnt.js";
 import { initFx, tickFx } from "./src/fx/particles.js";
 import { initRenderer, rebuildAll, maybeStream, refreshBlocks, drainChunkQueue, hasPendingChunks } from "./src/render/mesher.js";
 import { buildHotbar, select, selected, selectedId, initHotbarInput } from "./src/ui/hotbar.js";
-import { initMenu, enterGame, setLoading, started, loading, isLocked } from "./src/ui/menu.js";
+import { initMenu, enterGame, started, isLocked } from "./src/ui/menu.js";
 import { initHelp, openHelp, closeHelp, isHelpOpen } from "./src/ui/help.js";
+import { CHUNK, RENDER_DIST } from "./src/core/store.js";
 import { EYE } from "./src/player/physics.js";
 
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x87ceeb);
 scene.fog = new THREE.Fog(0x87ceeb, 60, 160);
+// Steady-state visibility, whatever the tuned range is: saved here so the
+// closed-in load fog below always relaxes back to it.
+const readyFog = { near: scene.fog.near, far: scene.fog.far };
+// Air baseline for the dive murk: tracks the fog controller below, so the
+// murk always relaxes back to current visibility instead of a stale range.
+const envAir = { background: scene.background.clone(), near: readyFog.near, far: readyFog.far };
+// Closed-in fog for the instant-load reveal: the world is already fully
+// built behind it, so the reveal is pure fog expansion, never ghost clarify.
+const LOAD_FOG_NEAR = 12;
+const LOAD_FOG_FAR = 30;
+// Reveal duration: the closed-in fog eases open over this long, no snapping.
+const REVEAL_MS = 1200;
+// The fog controller only ever tightens past the tuned range, never loosens.
+// Margin between the fog far plane and the nearest evictable chunk slab.
+const FOG_MARGIN = 10;
+// Typical surface height: the controller measures altitude above this.
+const FOG_GROUND_REF = 20;
 
 const camera = new THREE.PerspectiveCamera(75, innerWidth / innerHeight, 0.1, 1500);
 camera.rotation.order = "YXZ";
@@ -52,27 +70,69 @@ function updateCamera() {
 }
 
 let worldReady = false;
+let building = false;
 
+// The level loads instantly behind the translucent menu: voxels generate,
+// every chunk in range builds synchronously (a short freeze is accepted),
+// and only then does closed-in fog expand to reveal the finished world.
+// Play enters a solid world from the first frame — nothing ever pops in.
 async function buildWorld() {
-  setLoading(true);
+  if (building) return;
+  building = true;
+  scene.fog.near = LOAD_FOG_NEAR;
+  scene.fog.far = LOAD_FOG_FAR;
   await new Promise((r) => setTimeout(r, 30));
   try {
     generateOverworld(Math.floor(Math.random() * 100000));
     spawnPlayer();
     rebuildAll(pos.x, pos.z);
-    // Drain every chunk in range before the first playable frame so no
-    // blocks pop in; yield between slices to keep the spinner animating.
-    while (hasPendingChunks()) {
-      drainChunkQueue(false);
-      await new Promise((r) => requestAnimationFrame(r));
-    }
+    drainChunkQueue(true);
     buildHotbar();
     select(0);
     updateCamera();
     worldReady = true;
+    // Expanding-fog reveal: ease from closed-in to the tuned range on a
+    // smoothstep over REVEAL_MS, then hand off to the runtime controller.
+    const revealStart = performance.now();
+    for (;;) {
+      const t = Math.min(1, (performance.now() - revealStart) / REVEAL_MS);
+      const e = t * t * (3 - 2 * t);
+      scene.fog.near = LOAD_FOG_NEAR + (readyFog.near - LOAD_FOG_NEAR) * e;
+      scene.fog.far = LOAD_FOG_FAR + (readyFog.far - LOAD_FOG_FAR) * e;
+      if (t >= 1) break;
+      await new Promise((r) => requestAnimationFrame(r));
+    }
   } finally {
-    setLoading(false);
+    building = false;
+    scene.fog.near = readyFog.near;
+    scene.fog.far = readyFog.far;
+    envAir.near = readyFog.near;
+    envAir.far = readyFog.far;
   }
+}
+
+// Runtime fog: a tightening-only guard so chunk loading and unloading stay
+// hidden at any altitude or speed. Fog is spherical while chunk rings are
+// cylindrical, so the far plane is capped by the 3D distance to the nearest
+// evictable slab (minus margin); the clear bubble shrinks further with
+// speed so fast flight never outruns the loader into clear view. The loose
+// ring is one wide here; the unload tuning in the next commit widens it so
+// the cap rests past the tuned range.
+function updateStreamingFog() {
+  const dh = Math.max(0, camera.position.y - FOG_GROUND_REF);
+  const unloadHoriz = (RENDER_DIST + 1) * CHUNK;
+  const limitFar = Math.sqrt(unloadHoriz * unloadHoriz + dh * dh) - FOG_MARGIN;
+  const targetFar = Math.max(Math.min(readyFog.far, limitFar), LOAD_FOG_FAR);
+  const ratio = readyFog.near / readyFog.far;
+  const targetNear = Math.max(
+    Math.min(targetFar * ratio * (1 - 0.2 * Math.min(1, vel.length() / 30)), targetFar - 1),
+    LOAD_FOG_NEAR
+  );
+  const k = 0.12;
+  scene.fog.near += (targetNear - scene.fog.near) * k;
+  scene.fog.far += (targetFar - scene.fog.far) * k;
+  envAir.near = targetNear;
+  envAir.far = targetFar;
 }
 
 initMenu(renderer, async () => {
@@ -80,9 +140,10 @@ initMenu(renderer, async () => {
 }, async () => {
   await buildWorld();
   enterGame(renderer);
-}, isHelpOpen);
+}, isHelpOpen, () => building);
 
-// Pre-build the backdrop world behind the translucent menu; Play enters it.
+// Pre-build the world behind the translucent menu; Play enters a finished
+// world fading in through expanding fog.
 buildWorld();
 
 initHelp(() => {
@@ -94,17 +155,17 @@ function requestLockNow() {
   if (p && p.catch) p.catch(() => {});
 }
 
-initHotbarInput(() => loading);
+initHotbarInput(() => false);
 
 document.addEventListener("mousemove", (e) => {
-  if (!isLocked() || loading) return;
+  if (!isLocked()) return;
   setYaw(player.yaw - e.movementX * 0.0022);
   const p = player.pitch - e.movementY * 0.0022;
   setPitch(Math.max(-Math.PI / 2 + 0.01, Math.min(Math.PI / 2 - 0.01, p)));
 });
 
 document.addEventListener("mousedown", (e) => {
-  if (!isLocked() || isHelpOpen() || loading || !started) return;
+  if (!isLocked() || isHelpOpen() || !started) return;
   if (e.button === 0) {
     const changed = placeAtSelection(selectedId());
     if (changed) refreshBlocks(changed);
@@ -119,7 +180,6 @@ document.addEventListener("mousedown", (e) => {
 document.addEventListener("contextmenu", (e) => e.preventDefault());
 
 document.addEventListener("keydown", (e) => {
-  if (loading) return;
   const tag = e.target && e.target.tagName;
   if (tag === "INPUT" || tag === "TEXTAREA") return;
   if (isHelpOpen()) {
@@ -127,7 +187,7 @@ document.addEventListener("keydown", (e) => {
     return;
   }
   if (e.code === "KeyH" && !keys[e.code]) { openHelp(); e.preventDefault(); return; }
-  if (e.code === "KeyF" && !e.repeat && started && !loading && !isHelpOpen()) {
+  if (e.code === "KeyF" && !e.repeat && started && !isHelpOpen()) {
     setFly(!flyOn);
     e.preventDefault();
     return;
@@ -155,15 +215,17 @@ function loop(now) {
   requestAnimationFrame(loop);
   const dt = Math.min(0.05, (now - last) / 1000);
   last = now;
-  if (!worldReady) { renderer.render(scene, camera); return; }
   updateCamera();
-  if (!started || loading) {
+  if (!worldReady || !started) {
     highlight.visible = false;
-    maybeStream(pos.x, pos.z);
+    if (worldReady && !building) updateStreamingFog();
+    maybeStream(pos.x, pos.z, camera.position.y, scene.fog.near, scene.fog.far);
     renderer.render(scene, camera);
     return;
   }
   tickFx(dt);
+  // Streaming fog first, so the loader sees the tightened range.
+  if (!building) updateStreamingFog();
   const simActive = isLocked() && !isHelpOpen();
   if (simActive) {
     if (flyOn) updateFly(dt);
@@ -185,7 +247,7 @@ function loop(now) {
   } else {
     highlight.visible = false;
   }
-  maybeStream(pos.x, pos.z);
+  maybeStream(pos.x, pos.z, camera.position.y, scene.fog.near, scene.fog.far);
   renderer.render(scene, camera);
 }
 

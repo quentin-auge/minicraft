@@ -198,6 +198,10 @@ export function hasPendingChunks() {
   return chunkQueue.length > 0;
 }
 
+export function pendingCount() {
+  return chunkQueue.length;
+}
+
 function columnKeys(x, z) {
   const cx = chunkOf(x), cz = chunkOf(z);
   const out = [cx + "_" + cz];

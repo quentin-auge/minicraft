@@ -23,7 +23,7 @@ stored, how it flows, and how each system works. Read this before changing code.
 - `src/fx/tnt.js` — blast-kind registry (`TNT_TYPES`, normal first), fuses, countdown sprite, spherical blasts, TNT chaining.
 - `src/fx/particles.js` — generic burst/flash effects backend (`spawnBurst`, `spawnFlash`, `tickFx`).
 - `src/render/mesher.js` — chunked InstancedMesh renderer, streaming, local refresh.
-- `src/ui/menu.js` — Play/Resume/New-World overlay, pointer-lock wiring (no saves). Play hides after first click; New World only once started; Esc unlock shows Resume + New World.
+- `src/ui/menu.js` — Play/Resume/New-World overlay, pointer-lock wiring (no saves). Play is clickable from the first frame and enters a finished world fading in through expanding fog; New World only once started and never during a build; Esc unlock shows Resume + New World. Boot builds instantly behind the menu; no spinner anywhere.
 - `src/ui/help.js` — help overlay open/close. Shortcut table: Move, Jump, Sprint, Place, Break, Select, Fly, Help.
 
 ## Data model
@@ -65,12 +65,22 @@ streams in over following frames.
 
 ## Data flow (runtime)
 
-`main.js` loop: always render + camera follow; when started and loaded, TNT
+`main.js` loop: always render + camera follow. Boot loads a world instantly
+behind the translucent menu: voxels generate, every chunk in range builds
+synchronously, then closed-in fog (12–30) expands to its tuned range on a
+smoothstep reveal — the reveal is pure fog motion over a finished world,
+never ghost clarify. A tightening-only runtime fog guard caps fog far by
+the 3D distance to the nearest evictable slab (minus margin) and shrinks
+the clear bubble with speed, so loading and unloading stay hidden at any
+altitude or pace; the dive-murk baseline tracks the guard. Once voxel data exists, input is fully live — move, look,
+place/break, grapple, fly, hotbar; edits
+to unmeshed chunks persist in the voxel store and appear when their chunk
+builds (`refreshBlocks` skips queued chunks, rebuilds built ones). TNT
 tick and `updatePlayer(dt)` while locked and help closed → raycast target +
-highlight → stream nearby chunks. Boot generates a full world behind the
-translucent blue menu; Play enters it instantly, Esc shows Resume + New World
-(fresh seed, same full-build flow). Every chunk in range builds before the
-first playable frame, so blocks never pop in. There is no persistence.
+highlight → stream nearby chunks. Play enters a finished world fading in through expanding fog; Esc
+shows Resume + New World (fresh seed, same instant-load flow, the only action
+that waits on a build). There is no
+persistence.
 
 ## Broad logic (world)
 

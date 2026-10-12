@@ -1,9 +1,11 @@
-// Start menu: Play enters the pre-built world; Resume re-locks pointer;
-// New World generates a fresh seed. The overlay is translucent so the
-// world shows through; the game is fully static, no saves.
+// Start menu: Play enters the pre-built world from the first frame, even
+// while it is still streaming in; Resume re-locks pointer; New World
+// generates a fresh seed. The overlay is translucent so generation shows
+// through; the game is fully static, no saves. Only New World waits on a
+// running build (double-regen protection); everything else stays clickable,
+// with no spinner.
 export let started = false;
 export let locked = false;
-export let loading = false;
 
 const overlay = () => document.getElementById("overlay");
 const crosshair = () => document.getElementById("crosshair");
@@ -11,17 +13,11 @@ const hotbar = () => document.getElementById("hotbar");
 const playBtn = () => document.getElementById("btnPlay");
 const resumeBtn = () => document.getElementById("btnResume");
 const newBtn = () => document.getElementById("btnNew");
-const loadingEl = () => document.getElementById("loading");
 
 function refreshButtons() {
   playBtn().style.display = started ? "none" : "";
   resumeBtn().style.display = (!locked && started) ? "block" : "none";
   newBtn().style.display = started ? "block" : "none";
-}
-
-export function setLoading(on) {
-  loading = on;
-  loadingEl().style.display = on ? "flex" : "none";
 }
 
 export function isLocked() {
@@ -42,32 +38,32 @@ export function enterGame(renderer) {
   requestLock(renderer);
 }
 
-export function initMenu(renderer, onPlay, onNewWorld, isHelpOpen) {
+export function initMenu(renderer, onPlay, onNewWorld, isHelpOpen, isBuilding) {
   refreshButtons();
   overlay().addEventListener("click", () => {
-    if (!started || loading) return;
+    if (!started) return;
     requestLock(renderer);
   });
   playBtn().addEventListener("click", async (e) => {
     e.stopPropagation();
-    if (loading || started) return;
+    if (started) return;
     await onPlay();
   });
   newBtn().addEventListener("click", async (e) => {
     e.stopPropagation();
-    if (loading || !started) return;
+    if (isBuilding() || !started) return;
     await onNewWorld();
   });
   resumeBtn().addEventListener("click", (e) => {
     e.stopPropagation();
-    if (started && !loading) requestLock(renderer);
+    if (started) requestLock(renderer);
   });
   renderer.domElement.addEventListener("click", () => {
-    if (started && !locked && !isHelpOpen() && !loading) requestLock(renderer);
+    if (started && !locked && !isHelpOpen()) requestLock(renderer);
   });
   document.addEventListener("pointerlockchange", () => {
     locked = document.pointerLockElement === renderer.domElement;
-    if (isHelpOpen() || loading) return;
+    if (isHelpOpen()) return;
     overlay().style.display = locked ? "none" : "flex";
     crosshair().style.display = locked ? "block" : "none";
     hotbar().style.display = locked ? "flex" : "none";
