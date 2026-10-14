@@ -12,6 +12,9 @@ export const WATER = 7;
 export const PLANKS = 8;
 export const GLASS = 9;
 export const TNT = 10;
+// Reserved append-only ids for future blast tiers (master: 22 mega, 23 ultra).
+export const MEGA_TNT = 22;
+export const ULTRA_TNT = 23;
 export const FLOWER = 11;
 export const PORTAL = 12;
 export const ENDSTONE = 13;

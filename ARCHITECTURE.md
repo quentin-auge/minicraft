@@ -23,7 +23,7 @@ stored, how it flows, and how each system works. Read this before changing code.
 - `src/player/hook.js` — hook-kind registry (`HOOK_TYPES`, grapple first); framework (fire → pull → arrive/release) dispatches through the spec.
 - `src/player/rope.js` — rope-render backend (instanced cube rope, swappable).
 - `src/player/edit.js` — DDA raycast, place/break, floating-liquid purge.
-- `src/fx/tnt.js` — blast-kind registry (`TNT_TYPES`, normal first), fuses, countdown sprite, spherical blasts, TNT chaining.
+- `src/fx/tnt.js` — blast-kind registry (`TNT_TYPES`, normal first), fuses, countdown sprite, delayed chain queue, spherical blasts. Second break-click detonates lit TNT at once.
 - `src/fx/particles.js` — generic burst/flash effects backend (`spawnBurst`, `spawnFlash`, `tickFx`).
 - `src/render/mesher.js` — chunked InstancedMesh renderer, streaming, local refresh.
 - `src/ui/menu.js` — Play/Resume/New-World overlay, pointer-lock wiring (no saves). Play is clickable from the first frame and enters a finished world fading in through expanding fog; New World only once started and never during a build; Esc unlock shows Resume + New World. Boot builds instantly behind the menu; no spinner anywhere.
@@ -42,7 +42,8 @@ stored, how it flows, and how each system works. Read this before changing code.
 - Village state is a single `village` object: center, bounds, houses, pen, pool, radius/houseCount tunables.
 - Player state is module-level: `pos`/`vel` vectors, `yaw`/`pitch`, `onGround`,
   step-up/step-down flags, jump buffer/rebound trackers, shared `keys` map.
-- Lit TNT lives in a `lit` map (`"x,y,z"` → fuse); the blast refresh callback is injected by the caller.
+- Lit TNT lives in a `lit` map (`"x,y,z"` → fuse); chained blasts wait in a
+  `pendingChain` map (`"x,y,z"` → due time); the blast refresh callback is injected by the caller.
 - Render state: `chunkMeshes` (`"cx_cz"` → per-id InstancedMesh), a build queue,
   shared materials cache. Scene, camera, and renderer are owned by `main.js`.
 
@@ -206,18 +207,20 @@ persistence.
   depth-tested, walls occlude normally.
   refused while flying, cancelled by fly toggle.
 - Editing: DDA raycast (Left = place, Right = break) with a highlight target
-  and unlimited reach across the world (grapple picker unbounded too).
-  Placement targeting passes through liquids except when a liquid is selected
-  (`isLiquid`) and the eye is outside liquid — then the first hit wins (liquid
-  or solid); break and grapple always skip liquids. Breaking TNT ignites it instead, leaving the block for the blast to clear.
+   and unlimited reach across the world (grapple picker unbounded too).
+   Placement targeting passes through liquids except when a liquid is selected
+   (`isLiquid`) and the eye is outside liquid — then the first hit wins (liquid
+   or solid); break and grapple always skip liquids. First break-click on TNT lights its fuse with no remesh (block kept); a second break-click on lit TNT detonates it at once.
   Live edits purge floating liquid: any
   same-liquid group left without a solid 6-neighbor returns to air. Bedrock
   (`y = 0`) and liquids are unbreakable; solid placement refuses the player's
   own AABB.
-- TNT: breaking or clicking a TNT block lights a 2 s fuse, shown as a
-  world-space countdown sprite (white, orange-red under 1 s, accelerating
-  blink); the blast clears a sphere (radius 4), throws a yellow flash plus a
-  64-point burst, and chain-detonates neighboring TNT. Village houses
+- TNT: first break-click on a TNT block lights a 3 s fuse, shown as a
+  world-space countdown sprite (white, orange-red under 1 s, exponential-chirp
+  blink 1→14 Hz, no block remesh during the countdown); a second break-click
+  detonates it immediately. The blast clears a sphere (radius 4), throws a
+  yellow flash plus a 64-point burst, and queues neighboring TNT for delayed
+  chain blasts (50 ms apart, one flash/burst each). Village houses
   are spared.
 - Hotbar: 13 placeable overworld items (`GRASS` … `OBSIDIAN`), texture-icon
   slots; wheel, `K`/`L`, and click all select with wraparound.
@@ -237,7 +240,7 @@ persistence.
 - `WALK = 4.4`, `SPRINT = 7.2`, `GRAVITY = 37.44`, `JUMP_MIN = 8.2`, `FLY = 10` (3x with sprint).
 - Hook kinds: `HOOK_TYPES` (grapple: pull 26, fling 34, throw 70, retract 275, uniform boost 2, retract mini 0.08 s, eye 0.3, head 0, face gap 0.15, hang clear 0.6); new kinds register a spec.
 - `JUMP_HOLD_TIME = 0.7`, `JUMP_THRUST = 45`, `JUMP_RAMP = 0.25`, `JUMP_BUFFER = 0.2`.
-- Blast kinds: `TNT_TYPES` (normal: fuse 2.0, radius 4, `mode:"sphere"`); new tiers register a spec.
+- Blast kinds: `TNT_TYPES` (normal: fuse 3.0, radius 4, `blastKind:"sphere"`, `countdownKind:"sprite"`, `fxKind:"burst"`, `chainDelay` 0.05; mega/ultra later as entries with `blastKind` `pooled`/`band`, `countdownKind` `bucket`, `fxKind` `mega`/`ultra`, ids 22/23); new tiers register a spec.
 
 ## Tuning constants (render)
 
@@ -270,8 +273,9 @@ entries, never framework forks:
 - Shared properties live once in a module-local `*_DEFAULTS` object;
   entries spread it first and override only what differs.
 - Differing numbers are entry properties; differing behavior is a
-  capability flag the framework branches on (`pull`, `blastMode`,
-  `locomotion`) or an optional function prop (`grow`, `filter`, `tick`).
+  capability flag the framework branches on (`pull`, `blastKind`,
+  `countdownKind`, `fxKind`, `locomotion`) or an optional function prop
+  (`grow`, `filter`, `tick`, `carveBlast`, `spawnBlastFx`, `*LitVisual`).
   Framework code never switches on kind names — it dispatches through
   the spec.
 - Spec keys are stable strings, never array indices, so a future save
@@ -283,7 +287,8 @@ Single-anatomy numbers stay plain constants: world dimensions, body
 physics, render budgets. Single-spec systems (`TERRAIN`, `VILLAGE_SPEC`) become registries only when a second variant arrives.
 
 Shipped: trees (oak; pines later), flowers (7 variants), TNT (normal,
-`mode:"sphere"`; tiers later), hooks (grapple, `pull:"self-to-anchor"`;
+`blastKind:"sphere"`, `countdownKind:"sprite"`, `fxKind:"burst"`; mega/ultra
+later as entries, ids 22/23), hooks (grapple, `pull:"self-to-anchor"`;
 grab later), liquids (water outside-blue + pocket-white roles).
 Specified, code-free: mobs (locomotion/perch/water/hookability axes),
 `PORTAL_TYPES` (frame block, sizes, fill material, sealed-when rule,

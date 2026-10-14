@@ -1,10 +1,12 @@
 // Block picking (DDA raycast) and editing: Left click places, Right
-// click breaks — same mapping as master. Breaking TNT ignites it instead.
+// click breaks — same mapping as master. First break-click on TNT lights
+// its fuse (block kept, no remesh needed); a second break-click on lit TNT
+// detonates it immediately.
 import * as THREE from "three";
 import { AIR, BLOCK_INFO, isLiquid, isTntLike } from "../core/blocks.js";
 import { WORLD_RADIUS, MAX_Y, getBlock, setBlock } from "../core/store.js";
 import { PLAYER_HW, PLAYER_H, pos } from "./physics.js";
-import { igniteTNT } from "../fx/tnt.js";
+import { igniteTNT, isLitTNT, detonateNow } from "../fx/tnt.js";
 
 export let currentBlock = null;
 const _dir = new THREE.Vector3();
@@ -128,7 +130,11 @@ export function breakBlockAt(x, y, z) {
   const bid = getBlock(x, y, z);
   if (bid === AIR) return [];
   if (isLiquid(bid)) return [];
-  if (isTntLike(bid)) { igniteTNT(x, y, z); return [[x, y, z]]; }
+  if (isTntLike(bid)) {
+    if (isLitTNT(x, y, z)) return detonateNow(x, y, z);
+    igniteTNT(x, y, z);
+    return [];
+  }
   setBlock(x, y, z, AIR);
   const purged = purgeFloatingLiquidsAround([[x, y, z]]);
   return [[x, y, z], ...purged];

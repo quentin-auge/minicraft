@@ -1,9 +1,13 @@
-// TNT: breaking or clicking a TNT block ignites a short fuse, then a
-// spherical blast clears terrain and chains neighboring TNT. Blast kinds
-// are data: shared properties live in TNT_DEFAULTS, entries override only
-// what differs — a new tier (mega, ultra, ...) is one registry entry with
-// its own fuse, radius, behavior mode, and effects, never a fork. Only
-// "normal" ships. Bedrock (y=0) and village houses are spared.
+// TNT: breaking a TNT block lights a short fuse, then a spherical blast
+// clears terrain and chains neighboring TNT. Blast kinds are data: shared
+// properties live in TNT_DEFAULTS, entries override only what differs.
+// Differing behavior is a capability flag the framework branches on
+// (blastKind, countdownKind, fxKind, veil/halo/light/knockback) or an
+// optional function prop (carveBlast, spawnBlastFx, make/tick/clearLitVisual)
+// that a tier supplies — framework code never switches on kind names.
+// Only "normal" ships; mega ("pooled" blast, "bucket" countdown, "mega" fx)
+// and ultra ("band" blast, halo, lights) arrive as entries reusing ids 22/23.
+// Bedrock (y=0) and village houses are spared.
 import { AIR, TNT } from "../core/blocks.js";
 import { WORLD_RADIUS, MAX_Y, getBlock, setBlock } from "../core/store.js";
 import { isInsideAnyHouse } from "../world/village.js";
@@ -11,23 +15,49 @@ import { spawnBurst, spawnFlash } from "./particles.js";
 import * as THREE from "three";
 
 const TNT_DEFAULTS = {
-  fuse: 2.0,
+  fuse: 3.0,
   radius: 4,
-  mode: "sphere",
-  chainDepth: 4,
   burst: 64,
+  chainDelay: 0.05, // seconds between chained blasts (master: 50 ms)
+  blastKind: "sphere", // "pooled" (mega) | "band" (ultra) later via carveBlast
+  countdownKind: "sprite", // "bucket" (mega/ultra) later via *LitVisual hooks
+  fxKind: "burst", // "mega" | "ultra" later via spawnBlastFx
+  veil: false,
+  halo: false,
+  light: false,
+  knockback: false,
 };
 
 export const TNT_TYPES = [
-  { ...TNT_DEFAULTS, key: "normal" },
+  { ...TNT_DEFAULTS, key: "normal", blockId: TNT },
 ];
 
 function kindOf(key) {
   return TNT_TYPES.find((t) => t.key === key) ?? TNT_TYPES[0];
 }
 
+function kindOfBlock(id) {
+  return TNT_TYPES.find((t) => t.blockId === id) ?? TNT_TYPES[0];
+}
+
+// Exponential-chirp blink shared by every countdownKind that wants it:
+// 1 Hz on a fresh fuse accelerating to ~14 Hz at detonation, pure function
+// of (fuse, total) so pauses never desync it.
+const BLINK_FMIN = 1, BLINK_FMAX = 14;
+const BLINK_RATIO = BLINK_FMAX / BLINK_FMIN;
+const BLINK_LR = Math.log(BLINK_RATIO);
+function blinkPhase(fuse, total) {
+  const e = Math.min(Math.max(0, total - fuse), total * 1.5);
+  return ((BLINK_FMIN * total) / BLINK_LR) * (Math.pow(BLINK_RATIO, e / total) - 1);
+}
+function blinkSmooth(fuse, total) {
+  const p = blinkPhase(fuse, total) % 1;
+  return 0.5 - 0.5 * Math.cos(2 * Math.PI * p);
+}
+
 const lit = new Map(); // "x,y,z" -> { x, y, z, id, fuse, total, kind }
 const sprites = new Map(); // "x,y,z" -> THREE.Sprite countdown
+const pendingChain = new Map(); // "x,y,z" -> { x, y, z, kind, due } delayed blasts
 let sceneRef = null;
 let onBlast = null;
 
@@ -47,12 +77,31 @@ export function igniteTNT(x, y, z, kindKey = "normal") {
   const kind = kindOf(kindKey);
   lit.set(k, { x, y, z, id, fuse: kind.fuse, total: kind.fuse, kind: kind.key });
   if (sceneRef && !sprites.has(k)) {
-    const spr = makeFuseSprite();
-    spr.position.set(x + 0.5, y + 1.35, z + 0.5);
-    drawFuseSprite(spr, kind.fuse);
-    sceneRef.add(spr);
-    sprites.set(k, spr);
+    if (typeof kind.makeLitVisual === "function") {
+      kind.makeLitVisual(x, y, z, kind);
+    } else {
+      const spr = makeFuseSprite();
+      spr.position.set(x + 0.5, y + 1.35, z + 0.5);
+      drawFuseSprite(spr, kind.fuse, false);
+      sceneRef.add(spr);
+      sprites.set(k, spr);
+    }
   }
+}
+
+export function isLitTNT(x, y, z) {
+  return lit.has(x + "," + y + "," + z);
+}
+
+// Second click on lit TNT: cancel the fuse and detonate immediately.
+export function detonateNow(x, y, z, refresh) {
+  const k = x + "," + y + "," + z;
+  const t = lit.get(k);
+  if (!t) return [];
+  const kind = kindOf(t.kind);
+  lit.delete(k);
+  removeSprite(k, kind);
+  return explode(x, y, z, kind, refresh);
 }
 
 function makeFuseSprite() {
@@ -61,28 +110,35 @@ function makeFuseSprite() {
   const tex = new THREE.CanvasTexture(c);
   const spr = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, depthTest: false, transparent: true }));
   spr.scale.set(1.5, 0.75, 1);
-  spr.userData = { canvas: c, tex, shown: null };
+  // Above liquid sheets (10-13), below the block highlight (999): no sort flicker.
+  spr.renderOrder = 20;
+  spr.userData = { canvas: c, tex, shown: null, red: null };
   return spr;
 }
 
-// Redrawn per tenth of a second; white, orange-red under 1 s.
-function drawFuseSprite(spr, v) {
+// Redrawn per tenth of a second or color change; white, orange-red under 1 s.
+function drawFuseSprite(spr, v, red = false) {
   const tenth = Math.max(0, Math.ceil(v * 10) / 10);
-  if (spr.userData.shown === tenth) return;
+  if (spr.userData.shown === tenth && spr.userData.red === red) return;
   spr.userData.shown = tenth;
+  spr.userData.red = red;
   const ctx = spr.userData.canvas.getContext("2d");
   ctx.clearRect(0, 0, 128, 64);
   ctx.font = "bold 52px monospace";
   ctx.textAlign = "center"; ctx.textBaseline = "middle";
-  ctx.lineWidth = 10; ctx.strokeStyle = "#000";
+  ctx.lineWidth = 10; ctx.strokeStyle = "rgba(0,0,0,0.85)";
   const label = tenth.toFixed(1);
   ctx.strokeText(label, 64, 34);
-  ctx.fillStyle = tenth <= 1 ? "#ff6a3d" : "#fff";
+  ctx.fillStyle = red ? "#ff2222" : tenth <= 1 ? "#ff6a3d" : "#fff";
   ctx.fillText(label, 64, 34);
   spr.userData.tex.needsUpdate = true;
 }
 
-function removeSprite(k) {
+function removeSprite(k, kind) {
+  if (kind && typeof kind.clearLitVisual === "function") {
+    kind.clearLitVisual(k);
+    return;
+  }
   const spr = sprites.get(k);
   if (!spr) return;
   sprites.delete(k);
@@ -93,41 +149,100 @@ function removeSprite(k) {
 
 export function cancelTNT(x, y, z) {
   const k = x + "," + y + "," + z;
+  const t = lit.get(k);
   lit.delete(k);
-  removeSprite(k);
+  removeSprite(k, t ? kindOf(t.kind) : null);
+  pendingChain.delete(k);
 }
 
 export function tickTNT(dt, refresh) {
-  if (!lit.size) return;
-  const done = [];
   const now = performance.now() / 1000;
-  for (const [k, t] of lit) {
-    // Fuse dies with its block if the player breaks it mid-burn.
-    if (getBlock(t.x, t.y, t.z) !== t.id) { done.push(k); removeSprite(k); continue; }
-    t.fuse -= dt;
-    const spr = sprites.get(k);
-    if (spr) {
-      drawFuseSprite(spr, t.fuse);
-      // Blink accelerates as the fuse runs out.
-      const f = 2 + (1 - Math.max(0, t.fuse) / t.total) * 12;
-      spr.material.opacity = 0.55 + 0.45 * (0.5 + 0.5 * Math.sin(now * f * Math.PI * 2));
+  if (lit.size) {
+    const done = [];
+    for (const [k, t] of lit) {
+      const kind = kindOf(t.kind);
+      // Fuse dies with its block if the player breaks it mid-burn.
+      if (getBlock(t.x, t.y, t.z) !== t.id) { done.push(k); removeSprite(k, kind); continue; }
+      t.fuse -= dt;
+      if (typeof kind.tickLitVisual === "function") {
+        kind.tickLitVisual(k, t, kind);
+      } else {
+        const spr = sprites.get(k);
+        if (spr) {
+          drawFuseSprite(spr, t.fuse, false);
+          spr.material.opacity = 0.55 + 0.45 * blinkSmooth(t.fuse, t.total);
+        }
+      }
+      if (t.fuse <= 0) {
+        done.push(k);
+        explode(t.x, t.y, t.z, kind, refresh);
+      }
     }
-    if (t.fuse <= 0) {
-      done.push(k);
-      explode(t.x, t.y, t.z, kindOf(t.kind), refresh);
-    }
+    for (const k of done) lit.delete(k);
   }
-  for (const k of done) lit.delete(k);
+  tickChain(now, refresh);
+}
+
+// Delayed chained blasts: each queued TNT detonates with its own full
+// explosion (flash + burst + sphere), cascading as blasts uncover more TNT.
+export function tickChain(now, refresh) {
+  if (!pendingChain.size) return;
+  const due = [];
+  for (const [k, c] of pendingChain) {
+    if (c.due <= now) due.push(k);
+  }
+  for (const k of due) {
+    const c = pendingChain.get(k);
+    pendingChain.delete(k);
+    if (!c) continue;
+    const kind = kindOf(c.kind);
+    lit.delete(k);
+    removeSprite(k, kind);
+    explode(c.x, c.y, c.z, kind, refresh);
+  }
+}
+
+function spawnBlastFx(x, y, z, kind) {
+  if (typeof kind.spawnBlastFx === "function") {
+    kind.spawnBlastFx(x, y, z, kind);
+    return;
+  }
+  spawnFlash({ x: x + 0.5, y: y + 0.5, z: z + 0.5 });
+  spawnBurst({ x: x + 0.5, y: y + 0.5, z: z + 0.5, count: kind.burst });
 }
 
 function explode(cx, cy, cz, kind, refresh) {
-  const R = kind.radius, R2 = R * R;
   const touched = [];
-  removeSprite(cx + "," + cy + "," + cz);
-  spawnFlash({ x: cx + 0.5, y: cy + 0.5, z: cz + 0.5 });
-  spawnBurst({ x: cx + 0.5, y: cy + 0.5, z: cz + 0.5, count: kind.burst });
-  // Clear the ignited block itself first so chained fuses see air.
-  if (getBlock(cx, cy, cz) === TNT) {
+  removeSprite(cx + "," + cy + "," + cz, kind);
+  spawnBlastFx(cx, cy, cz, kind);
+  if (typeof kind.carveBlast === "function") {
+    kind.carveBlast(cx, cy, cz, kind, queueChained, touched);
+  } else {
+    carveSphere(cx, cy, cz, kind, touched);
+  }
+  if (refresh) refresh(touched);
+  if (onBlast) onBlast(cx, cy, cz, kind.radius);
+  return touched;
+}
+
+// Neighboring TNT is queued with a short delay instead of detonating
+// synchronously, so chains read as a cascade with one flash/burst per block.
+// The block is left in place until its delayed blast clears it.
+function queueChained(x, y, z, kind) {
+  const k = x + "," + y + "," + z;
+  if (pendingChain.has(k)) return;
+  const victim = lit.get(k);
+  if (victim) {
+    lit.delete(k);
+    removeSprite(k, kindOf(victim.kind));
+  }
+  pendingChain.set(k, { x, y, z, kind: kind.key, due: performance.now() / 1000 + kind.chainDelay });
+}
+
+function carveSphere(cx, cy, cz, kind, touched) {
+  const R = kind.radius, R2 = R * R;
+  // Clear the ignited block itself first so its cell refreshes even in air.
+  if (getBlock(cx, cy, cz) === kind.blockId || getBlock(cx, cy, cz) === TNT) {
     setBlock(cx, cy, cz, AIR);
     touched.push([cx, cy, cz]);
   }
@@ -139,10 +254,8 @@ function explode(cx, cy, cz, kind, refresh) {
         if (isInsideAnyHouse(x, z)) continue;
         const bid = getBlock(x, y, z);
         if (bid === AIR) continue;
-        if (bid === TNT) {
-          setBlock(x, y, z, AIR);
-          touched.push([x, y, z]);
-          igniteTNTBlast(x, y, z, kind, refresh, touched);
+        if (bid === kind.blockId || bid === TNT) {
+          queueChained(x, y, z, kindOfBlock(bid));
           continue;
         }
         setBlock(x, y, z, AIR);
@@ -150,43 +263,12 @@ function explode(cx, cy, cz, kind, refresh) {
       }
     }
   }
-  if (refresh) refresh(touched);
-  if (onBlast) onBlast(cx, cy, cz, kind.radius);
-}
-
-// Chain-detonated TNT explodes immediately with the same blast.
-const chainDepth = { n: 0 };
-function igniteTNTBlast(x, y, z, kind, refresh, touched) {
-  if (chainDepth.n > kind.chainDepth) return;
-  const R = kind.radius;
-  chainDepth.n++;
-  try {
-    const R2 = R * R;
-    for (let ax = Math.max(-WORLD_RADIUS, Math.ceil(x - R)); ax <= Math.min(WORLD_RADIUS, Math.floor(x + R)); ax++) {
-      for (let ay = Math.max(1, Math.ceil(y - R)); ay <= Math.min(MAX_Y, Math.floor(y + R)); ay++) {
-        for (let az = Math.max(-WORLD_RADIUS, Math.ceil(z - R)); az <= Math.min(WORLD_RADIUS, Math.floor(z + R)); az++) {
-          const dx = ax - x, dy = ay - y, dz = az - z;
-          if (dx * dx + dy * dy + dz * dz > R2) continue;
-          if (isInsideAnyHouse(ax, az)) continue;
-          const bid = getBlock(ax, ay, az);
-          if (bid === AIR) continue;
-          if (bid === TNT) {
-            lit.delete(ax + "," + ay + "," + az);
-            setBlock(ax, ay, az, AIR);
-            touched.push([ax, ay, az]);
-            igniteTNTBlast(ax, ay, az, kind, null, touched);
-            continue;
-          }
-          setBlock(ax, ay, az, AIR);
-          touched.push([ax, ay, az]);
-        }
-      }
-    }
-  } finally {
-    chainDepth.n--;
-  }
 }
 
 export function litCount() {
   return lit.size;
+}
+
+export function pendingCount() {
+  return pendingChain.size;
 }
