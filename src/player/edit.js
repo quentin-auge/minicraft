@@ -6,7 +6,7 @@ import * as THREE from "three";
 import { AIR, BLOCK_INFO, isLiquid, isTntLike } from "../core/blocks.js";
 import { WORLD_RADIUS, MAX_Y, getBlock, setBlock } from "../core/store.js";
 import { PLAYER_HW, PLAYER_H, pos } from "./physics.js";
-import { igniteTNT, isLitTNT, detonateNow } from "../fx/tnt.js";
+import { igniteTNT, isLitTNT, detonateNow, noteTntPlaced } from "../fx/tnt.js";
 
 export let currentBlock = null;
 const _dir = new THREE.Vector3();
@@ -147,6 +147,7 @@ export function tryPlace(id, px, py, pz) {
   if (!(target === AIR || isLiquid(target))) return null;
   if (BLOCK_INFO[id].solid && intersectsPlayer(px, py, pz)) return null;
   setBlock(px, py, pz, id);
+  if (isTntLike(id) && isLiquid(target)) noteTntPlaced(px, py, pz, target);
   const purged = purgeFloatingLiquidsAround([[px, py, pz]]);
   return [[px, py, pz], ...purged];
 }

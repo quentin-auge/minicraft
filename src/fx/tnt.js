@@ -7,8 +7,9 @@
 // that a tier supplies — framework code never switches on kind names.
 // Only "normal" ships; mega ("pooled" blast, "bucket" countdown, "mega" fx)
 // and ultra ("band" blast, halo, lights) arrive as entries reusing ids 22/23.
-// Bedrock (y=0) and village houses are spared.
-import { AIR, TNT } from "../core/blocks.js";
+// Bedrock (y=0), village houses, and liquids are spared; a TNT placed in
+// liquid restores that liquid in its cell after its blast.
+import { AIR, TNT, isLiquid } from "../core/blocks.js";
 import { WORLD_RADIUS, MAX_Y, getBlock, setBlock } from "../core/store.js";
 import { isInsideAnyHouse } from "../world/village.js";
 import { spawnBurst, spawnFlash } from "./particles.js";
@@ -58,6 +59,9 @@ function blinkSmooth(fuse, total) {
 const lit = new Map(); // "x,y,z" -> { x, y, z, id, fuse, total, kind }
 const sprites = new Map(); // "x,y,z" -> THREE.Sprite countdown
 const pendingChain = new Map(); // "x,y,z" -> { x, y, z, kind, due } delayed blasts
+// Liquid displaced when a TNT was placed ("x,y,z" -> liquid id), restored
+// in that cell after its blast. TNT placed in air leaves air behind.
+const displaced = new Map();
 let sceneRef = null;
 let onBlast = null;
 
@@ -67,6 +71,16 @@ export function initTNTFx(scene) {
 
 export function onExplode(fn) {
   onBlast = fn;
+}
+
+// Records the liquid a placed TNT replaced; called once per placement.
+export function noteTntPlaced(x, y, z, id) {
+  displaced.set(x + "," + y + "," + z, id);
+}
+
+// New worlds never inherit another world's placements.
+export function resetTNTMemory() {
+  displaced.clear();
 }
 
 export function igniteTNT(x, y, z, kindKey = "normal") {
@@ -215,10 +229,19 @@ function explode(cx, cy, cz, kind, refresh) {
   const touched = [];
   removeSprite(cx + "," + cy + "," + cz, kind);
   spawnBlastFx(cx, cy, cz, kind);
+  const dk = cx + "," + cy + "," + cz;
+  const fill = displaced.get(dk) ?? null;
+  displaced.delete(dk);
   if (typeof kind.carveBlast === "function") {
     kind.carveBlast(cx, cy, cz, kind, queueChained, touched);
   } else {
     carveSphere(cx, cy, cz, kind, touched);
+  }
+  // A record exists only while its TNT stands (TNT is manually unremovable,
+  // records die at blast or world build), so fill needs no extra guard.
+  if (fill !== null) {
+    setBlock(cx, cy, cz, fill);
+    if (!touched.some(([x, y, z]) => x === cx && y === cy && z === cz)) touched.push([cx, cy, cz]);
   }
   if (refresh) refresh(touched);
   if (onBlast) onBlast(cx, cy, cz, kind.radius);
@@ -254,6 +277,9 @@ function carveSphere(cx, cy, cz, kind, touched) {
         if (isInsideAnyHouse(x, z)) continue;
         const bid = getBlock(x, y, z);
         if (bid === AIR) continue;
+        // Liquids survive blasts; the blast passes through them.
+        // Custom carveBlast tiers must keep this guard.
+        if (isLiquid(bid)) continue;
         if (bid === kind.blockId || bid === TNT) {
           queueChained(x, y, z, kindOfBlock(bid));
           continue;

@@ -11,7 +11,7 @@ import { flyOn, setFly, updateFly } from "./src/player/fly.js";
 import { updateTarget, breakTarget, placeAtSelection, breakBlockAt } from "./src/player/edit.js";
 import { fireHookTarget, grappleBlockPick, cancelHook, severHook, updateHook, hookActive, tickHookFx } from "./src/player/hook.js";
 import { initRope } from "./src/player/rope.js";
-import { tickTNT, initTNTFx } from "./src/fx/tnt.js";
+import { tickTNT, initTNTFx, resetTNTMemory } from "./src/fx/tnt.js";
 import { initFx, tickFx } from "./src/fx/particles.js";
 import { initRenderer, rebuildAll, maybeStream, refreshBlocks, drainChunkQueue, setEyeMedium, UNLOAD_MARGIN } from "./src/render/mesher.js";
 import { buildHotbar, select, selected, selectedId, initHotbarInput } from "./src/ui/hotbar.js";
@@ -86,6 +86,7 @@ async function buildWorld() {
   if (building) return;
   building = true;
   severHook();
+  resetTNTMemory();
   scene.fog.near = LOAD_FOG_NEAR;
   scene.fog.far = LOAD_FOG_FAR;
   await new Promise((r) => setTimeout(r, 30));

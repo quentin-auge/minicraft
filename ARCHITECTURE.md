@@ -22,8 +22,8 @@ stored, how it flows, and how each system works. Read this before changing code.
 - `src/player/fly.js` — fly mode (pitch-aware thrust, no gravity) on the shared movers.
 - `src/player/hook.js` — hook-kind registry (`HOOK_TYPES`, grapple first); framework (fire → pull → arrive/release) dispatches through the spec.
 - `src/player/rope.js` — rope-render backend (instanced cube rope, swappable).
-- `src/player/edit.js` — DDA raycast, place/break, floating-liquid purge.
-- `src/fx/tnt.js` — blast-kind registry (`TNT_TYPES`, normal first), fuses, countdown sprite, delayed chain queue, spherical blasts. Second break-click detonates lit TNT at once.
+- `src/player/edit.js` — DDA raycast, place/break, floating-liquid purge, TNT displaced-liquid record.
+- `src/fx/tnt.js` — blast-kind registry (`TNT_TYPES`, normal first), fuses, countdown sprite, delayed chain queue, spherical blasts, displaced-liquid memory. Second break-click detonates lit TNT at once.
 - `src/fx/particles.js` — generic burst/flash effects backend (`spawnBurst`, `spawnFlash`, `tickFx`).
 - `src/render/mesher.js` — chunked InstancedMesh renderer, streaming, local refresh.
 - `src/ui/menu.js` — Play/Resume/New-World overlay, pointer-lock wiring (no saves). Play is clickable from the first frame and enters a finished world fading in through expanding fog; New World only once started and never during a build; Esc unlock shows Resume + New World. Boot builds instantly behind the menu; no spinner anywhere.
@@ -43,7 +43,9 @@ stored, how it flows, and how each system works. Read this before changing code.
 - Player state is module-level: `pos`/`vel` vectors, `yaw`/`pitch`, `onGround`,
   step-up/step-down flags, jump buffer/rebound trackers, shared `keys` map.
 - Lit TNT lives in a `lit` map (`"x,y,z"` → fuse); chained blasts wait in a
-  `pendingChain` map (`"x,y,z"` → due time); the blast refresh callback is injected by the caller.
+  `pendingChain` map (`"x,y,z"` → due time); liquid displaced by placed TNT
+  waits in a `displaced` map (`"x,y,z"` → liquid id, restored in that cell
+  after its blast, cleared on world build); the blast refresh callback is injected by the caller.
 - Render state: `chunkMeshes` (`"cx_cz"` → per-id InstancedMesh), a build queue,
   shared materials cache. Scene, camera, and renderer are owned by `main.js`.
 
@@ -218,10 +220,12 @@ persistence.
 - TNT: first break-click on a TNT block lights a 3 s fuse, shown as a
   world-space countdown sprite (white, orange-red under 1 s, exponential-chirp
   blink 1→14 Hz, no block remesh during the countdown); a second break-click
-  detonates it immediately. The blast clears a sphere (radius 4), throws a
+  detonates it immediately. The blast clears a sphere (radius 4) except
+  liquids, which survive while the blast passes through them, throws a
   yellow flash plus a 64-point burst, and queues neighboring TNT for delayed
   chain blasts (50 ms apart, one flash/burst each). Village houses
-  are spared.
+  are spared. A TNT placed in liquid restores that exact liquid in its own
+  cell after its blast; placed in air it leaves air behind.
 - Hotbar: 13 placeable overworld items (`GRASS` … `OBSIDIAN`), texture-icon
   slots; wheel, `K`/`L`, and click all select with wraparound.
 
