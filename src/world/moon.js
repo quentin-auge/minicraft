@@ -9,14 +9,10 @@ import { WORLD_RADIUS } from "../core/store.js";
 
 export const MOON_R = WORLD_RADIUS;
 export const MOON_THICK = 5;
-// Hand-picked lower end; the surface derives upward from it.
+// Hand-picked lower end; the surface derives upward from it. The reveal
+// region (render/regions.js) reads MOON_MIN_Y as the disc's volume bound.
 export const MOON_MIN_Y = 850;
 export const MOON_SURFACE_Y = MOON_MIN_Y + MOON_R;
-// Fade band, hand-picked: the disc ramps from invisible to solid between
-// 495 and 515, starting once the sky is fully black. Driven every
-// frame — no remeshing, so nothing can pop in chunk by chunk.
-export const MOON_FADE_Y = 495;
-export const MOON_FADE_END = 515;
 
 export function generateMoon(seed, setBlock) {
   const R = MOON_R;

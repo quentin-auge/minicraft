@@ -1,10 +1,10 @@
 // High-altitude sky: day blue fades to black past the clouds and stays
-// black; stars fade in alongside; the Moon disc (rock + lakes) fades in
-// over its approach band and is never visible below it. Every factor is
-// smoothstepped and clamped. Runs before the dive murk each frame and
-// rewrites its air baseline, so murk keeps working against the current sky.
+// black; stars fade in alongside. Reveal regions (the Moon and future far
+// bodies) are faded separately by regions.js, driven from main.js once this
+// has refreshed the background colour. Every factor is smoothstepped and
+// clamped. Runs before the dive murk each frame and rewrites its air
+// baseline, so murk keeps working against the current sky.
 import * as THREE from "three";
-import { MOON_FADE_Y, MOON_FADE_END } from "../world/moon.js";
 
 const DAY_SKY = new THREE.Color(0x87ceeb);
 const SPACE_SKY = new THREE.Color(0x05070f);
@@ -22,10 +22,6 @@ const smooth = (t) => {
 
 export function skyFactor(y) {
   return smooth((y - SKY_START) / (SKY_END - SKY_START));
-}
-
-export function moonFactor(y) {
-  return smooth((y - MOON_FADE_Y) / (MOON_FADE_END - MOON_FADE_Y));
 }
 
 export function initSky(scene) {
@@ -51,11 +47,8 @@ export function initSky(scene) {
   scene.add(stars);
 }
 
-// setMoonFade(m, skyColor) is injected by the caller (mesher owns the
-// materials). The fade applies before any visual handling below, so a
-// failure there can never leave the moon stuck visible; stars
-// self-initialize on the first tick if boot skipped them.
-export function tickSky(scene, camera, sun, hemi, envAir, setMoonFade) {
+// Stars self-initialize on the first tick if boot skipped them.
+export function tickSky(scene, camera, sun, hemi, envAir) {
   const y = camera.position.y;
   const s = skyFactor(y);
   scene.background.copy(DAY_SKY).lerp(SPACE_SKY, s);
@@ -63,7 +56,6 @@ export function tickSky(scene, camera, sun, hemi, envAir, setMoonFade) {
   envAir.background.copy(scene.background);
   sun.intensity = 1.1 * (1 - 0.55 * s);
   hemi.intensity = 0.75 * (1 - 0.55 * s);
-  setMoonFade(moonFactor(y), scene.background);
   initSky(scene);
   stars.material.opacity = s;
   stars.position.copy(camera.position);

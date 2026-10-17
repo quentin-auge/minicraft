@@ -14,9 +14,10 @@ stored, how it flows, and how each system works. Read this before changing code.
 - `src/core/textures.js` — procedural canvas textures, per-block materials, liquid two-role surface materials, per-variant glowstone textures/materials, moon rock lit+emissive material.
 - `src/render/blocklights.js` — pooled block-light backend (`LIGHT_EMITTERS` registry, glowstone first): per-spec cell clustering + sticky nearest assignment.
 - `src/render/waterfog.js` — eye-in-liquid (or pocketed-air) fog/background murk while submerged.
-- `src/render/sky.js` — high-altitude sky (day-to-black past the clouds, stars, moon fade over its approach band); rewrites the murk's air baseline.
+- `src/render/sky.js` — high-altitude sky (day-to-black past the clouds, stars); rewrites the murk's air baseline. Reveal regions fade separately (regions.js).
+- `src/render/regions.js` — reveal-region registry (`REGIONS`, moon first): each spec declares dimension, membership (`blocks` + `contains`), a camera-driven `factor` 0..1, and an optional `onFade` material hook; `regionOf` classifies a cell, `applyRegions` pushes factors each frame. Generic gating for any far body/structure — non-celestial volumes included.
 - `src/world/overworld.js` — height field, rivers, terrain fill, generation orchestrator.
-- `src/world/moon.js` — Moon disc + lake shafts (`MOON_MIN_Y`/`MOON_SURFACE_Y`/`MOON_R`/`MOON_THICK`, surface derived upward from the hand-picked bottom) plus the low-gravity, toolbar, and fade bands.
+- `src/world/moon.js` — Moon disc + lake shafts (`MOON_MIN_Y`/`MOON_SURFACE_Y`/`MOON_R`/`MOON_THICK`, surface derived upward from the hand-picked bottom); `MOON_MIN_Y` doubles as the Moon reveal region's volume bound.
 - `src/world/glowstone.js` — glowstone color-variant registry (`GLOW_VARIANTS`, 7 entries), per-dimension variant maps + live block index, clustered placement picker (`glowVariantNear`: inherit within 10 blocks, else random).
 - `src/world/clouds.js` — climbable cloud decks (`CLOUD_MIN_Y`/`CLOUD_MAX_Y` bounds plus `generateClouds`); spawn and sky reuse the bounds instead of hard-coding altitudes.
 - `src/world/trees.js` — tree-type registry (`TREE_TYPES`, oak first), generic growth and ground guards.
@@ -32,7 +33,7 @@ stored, how it flows, and how each system works. Read this before changing code.
 - `src/fx/tnt.js` — blast-kind registry (`TNT_TYPES`, normal first), fuses, countdown visuals, delayed chain queue, spherical + pooled blasts, per-kind camera-shake specs, displaced-liquid memory, post-blast floating-liquid purge via injected callback. Second break-click detonates lit TNT at once. Blast deletions clear glowstone variants through the same `clearCell` choke point and re-sync block lights once per blast.
 - `src/fx/particles.js` — generic burst/flash effects backend (`spawnBurst`, `spawnFlash`, `tickFx`); bursts support a crater-filling spawn ball (`fillRadius`), a per-particle color `palette`, and a `foreground` mode (no depth test, drawn above everything); flashes support a constant-speed `maxRadius` fireball mode (expand then retract, duration scales with radius).
 - `src/fx/precip.js` — falling-precipitation backend (`PRECIP_TYPES` registry, snow first; rain later is one entry): camera-following drops at a 30 Hz step, wrap + cached landing heights, material fade-in over camera altitude.
-- `src/render/mesher.js` — chunked InstancedMesh renderer, streaming, local refresh, per-variant glowstone buckets (unlit, always visible), moon-material fade setter (lit Lambert rock crossfades sky-color→texture, body always solid, so it never turns translucent; moon meshes hide below the fade band, default-hidden at build).
+- `src/render/mesher.js` — chunked InstancedMesh renderer, streaming, local refresh, region-aware instance splitting (per-id, per-variant glowstone, flowers, liquid quads all split by `regionOf`, each group owning cloned materials and gated by its region fade; generic per-region opacity fade so anything in a region — rock, placed blocks, glowstone, liquids — reveals smoothly, with the moon's `onFade` keeping the rock opaque and tinting sky-colour→texture; combined `regionVisible && veilVisible` so a hidden region never flashes a pocket veil).
 - `src/ui/menu.js` — Play/Resume/New-World overlay, pointer-lock wiring (no saves). Play is clickable from the first frame and enters a finished world fading in through expanding fog; New World only once started and never during a build; Esc unlock shows Resume + New World. Boot builds instantly behind the menu; no spinner anywhere.
 - `src/ui/debug.js` — `=` HUD readout (`fps N | x X  y Y  z Z`: FPS exponential moving average, quarter-second refresh, hidden until started; integer block coords are the floored feet position passed in from `main.js`).
 - `src/ui/help.js` — help overlay open/close. Shortcut table: Move, Jump, Sprint, Place, Break, Select, Fly, Grapple, Help, Debug. Portal frame diagrams are painted by `portals.js` (`buildPortalDom` at boot).
@@ -250,7 +251,7 @@ persistence.
   2×2×1 (see `configureVillage` to grow).
 - Spawn: feet inside radius 48, vista 50 ahead / 12 up across the FOV swath
   (`VIEW_HALF_TAN` from the 75° FOV), pen margin 1.
-- Moon: bottom `MOON_MIN_Y` = 850 (hand-picked), surface `MOON_SURFACE_Y` = 946, radius 96, shell 5, 6 hashed lakes; low gravity from 850, toolbar flips 8 below at 842 (water→moon-water, flower→glowstone), sky black 475→495, rock + lakes fade 495→515 off one factor (meshes hidden below, so blue sky never shows a silhouette), snow fades in over its gate span.
+- Moon: bottom `MOON_MIN_Y` = 850 (hand-picked), surface `MOON_SURFACE_Y` = 946, radius 96, shell 5, 6 hashed lakes; low gravity from 850, toolbar flips 8 below at 842 (water→moon-water, flower→glowstone), sky black 475→495, the Moon reveal region fades 495→515 (disc, lakes, *and* every block placed at `y >= MOON_MIN_Y` — stones, dirt, flowers, liquids — fading together so blue sky never shows a moon-side silhouette or a popping glowstone), snow fades in over its gate span.
 - Glowstone: 7 color variants, cluster inherit within 10 blocks else fresh random; unlit per-variant textures; pooled point lights (one entry per block, 16 nearest, no distance cutoff, decay 2, intensity 150, 8/s position+color glide, 0.5 s sticky reassignment) that read on lit blocks (moon rock is Lambert + emissiveMap base ~0.85 so the underside stays readable; moon-water sheets stay unlit).
 - Snow: 700 flakes, range 36, size 0.18, fall 2.5–5.5, 30 Hz step, active above `MOON_SURFACE_Y - 8`.
 
@@ -275,6 +276,9 @@ persistence.
   at full sprint speed), so loading chunks debut fully fogged and evicted
   chunks are fully fogged first. First load builds everything synchronously,
   then closed-in fog (12–30) expands over `REVEAL_MS = 1200`.
+- Region reveals: one factor band per region (Moon 495→515), generic material
+  opacity fade owned per region (a region touching bespoke materials overrides
+  them in its `onFade`).
 - Liquid surfaces: unlit two-role sheets (blue 0.7 / top 0.9 on both sides,
   orders 10/11; pocket bounds use depth-writing blue + veils order 12: plain
   white 0.3 gated to divers over unchanged blue backs / plain light-blue 0.35 tinted 0.65 for open-air
@@ -288,13 +292,14 @@ Every variant family follows the same shape — new variants are registry
 entries, never framework forks:
 
 - One exported registry array of spec objects, each with a `key`
-  (`TREE_TYPES`, `FLOWER_VARIANTS`, `GLOW_VARIANTS`, `TNT_TYPES`, `HOOK_TYPES`, `PRECIP_TYPES`, `LIGHT_EMITTERS`).
+  (`TREE_TYPES`, `FLOWER_VARIANTS`, `GLOW_VARIANTS`, `TNT_TYPES`, `HOOK_TYPES`, `PRECIP_TYPES`, `LIGHT_EMITTERS`, `REGIONS`).
 - Shared properties live once in a module-local `*_DEFAULTS` object;
   entries spread it first and override only what differs.
 - Differing numbers are entry properties; differing behavior is a
   capability flag the framework branches on (`pool`, `knockback`, `light`,
-  `clearsLiquids`, `pull`, `locomotion`) or an optional function prop (`carveBlast`,
-  `spawnBlastFx`, `make/tick/clearLitVisual`, `grow`, `filter`, `tick`);
+  `clearsLiquids`, `revealMaterials`, `pull`, `locomotion`) or an optional function prop (`carveBlast`,
+  `spawnBlastFx`, `make/tick/clearLitVisual`, `grow`, `filter`, `contains`,
+  `factor`, `onFade`, `tick`);
   kind strings (`key`, `blastKind`, `countdownKind`, `fxKind`) are stable
   identifiers, never branch conditions — dispatch goes through flags and
   hooks, or through a per-kind spec object looked up by key (e.g. camera
@@ -330,6 +335,7 @@ interface, bar binding, death/cleared flag).
   the active one. New dimensions add a generator module beside `overworld.js`.
 - Block ids append-only; dimension-specific blocks slot into BLOCK_INFO.
 - The hotbar list is dynamic (add/remove/change); band or dimension swaps go in `hotbar.js` callers.
+- A distant body or occluded structure sharing a dimension's sky is a `REGIONS` entry (`contains` + `factor` + optional `onFade`), never a mesher fork.
 
 ## Dropped from master (kept out on purpose)
 

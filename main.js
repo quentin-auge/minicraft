@@ -18,7 +18,8 @@ import { MOON_MIN_Y } from "./src/world/moon.js";
 import { WATER, FLOWER, GLOWSTONE, MOON_WATER } from "./src/core/blocks.js";
 import { resetGlowstoneMemory, rebuildGlowstoneIndex } from "./src/world/glowstone.js";
 import { initBlockLights, tickBlockLights, rebuildBlockLightIndexes, resetBlockLightMemory } from "./src/render/blocklights.js";
-import { initRenderer, rebuildAll, maybeStream, refreshBlocks, drainChunkQueue, setEyeMedium, setMoonFade, UNLOAD_MARGIN } from "./src/render/mesher.js";
+import { initRenderer, rebuildAll, maybeStream, refreshBlocks, drainChunkQueue, setEyeMedium, setRegionFade, UNLOAD_MARGIN } from "./src/render/mesher.js";
+import { applyRegions } from "./src/render/regions.js";
 import { resetItems, select, selected, selectedId, initHotbarInput, setItem, getItems } from "./src/ui/hotbar.js";
 import { initMenu, enterGame, started, isLocked } from "./src/ui/menu.js";
 import { initHelp, openHelp, closeHelp, isHelpOpen } from "./src/ui/help.js";
@@ -322,7 +323,8 @@ function loop(now) {
   // open-air eyes, flipping together with the murk.
   if (!building) updateStreamingFog();
   if (worldReady && !building) {
-    tickSky(scene, camera, sun, hemi, envAir, setMoonFade);
+    tickSky(scene, camera, sun, hemi, envAir);
+    applyRegions(camera.position, scene.background, setRegionFade);
     tickWaterFog(scene, camera, dt, envAir);
     setEyeMedium(eyeMediumId(camera.position.x, camera.position.y, camera.position.z));
   }

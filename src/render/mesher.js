@@ -1,12 +1,13 @@
 // Chunked streaming renderer: one InstancedMesh per block id per chunk,
 // only for exposed blocks. Rebuilds stay local via refreshBlocks().
 import * as THREE from "three";
-import { AIR, BLOCK_INFO, FLOWER, GLASS, GLOWSTONE, MOON, MOON_WATER, isLiquid } from "../core/blocks.js";
+import { AIR, BLOCK_INFO, FLOWER, GLASS, GLOWSTONE, isLiquid } from "../core/blocks.js";
 import { WORLD_RADIUS, CHUNK, RENDER_DIST, getBlock, colTops, colOcc, dim, chunkOf, isEnclosedAir } from "../core/store.js";
 import { materialsFor, liquidSurfaceMat, glowstoneMats } from "../core/textures.js";
 import { FLOWER_GEOS, FLOWER_MAT, flowerVariantAt, flowerAngleAt } from "./flowers.js";
 import { GLOW_VARIANT_COUNT, glowVariantAt } from "../world/glowstone.js";
 import { getSeed } from "../world/overworld.js";
+import { regionOf, regionByKey } from "./regions.js";
 
 const boxGeo = new THREE.BoxGeometry(1, 1, 1);
 const dummy = new THREE.Object3D();
@@ -117,18 +118,19 @@ export function setEyeMedium(m) {
     for (const [key, set] of gatedVeils) {
       if (!key.startsWith("in:")) continue;
       const vis = Number(key.slice(3)) === nextIn;
-      for (const mesh of set) mesh.visible = vis;
+      for (const mesh of set) { mesh.userData.veilVisible = vis; refreshVisible(mesh); }
     }
   }
   if ((eyeMedium.type === "air") !== (m.type === "air")) {
     const set = gatedVeils.get("out");
-    if (set) for (const mesh of set) mesh.visible = m.type === "air";
+    if (set) for (const mesh of set) { mesh.userData.veilVisible = m.type === "air"; refreshVisible(mesh); }
   }
   eyeMedium = m;
 }
 function registerVeil(key, mesh, visible) {
   mesh.userData.veilKey = key;
-  mesh.visible = visible;
+  mesh.userData.veilVisible = visible;
+  refreshVisible(mesh);
   let set = gatedVeils.get(key);
   if (!set) { set = new Set(); gatedVeils.set(key, set); }
   set.add(mesh);
@@ -142,10 +144,13 @@ function unregisterVeils(meshes) {
   }
 }
 const chunkMeshes = new Map(); // "cx_cz" -> Map<id, InstancedMesh>
-// Moon meshes (rock + lake sheets): toggled visible only above the fade
-// band, default-hidden at build so no first frame can flash.
-const moonMeshes = new Set();
-let moonFade = 0;
+// Reveal regions: per-region mesh groups + their current fade factor, plus
+// material clones the region owns (it fades their opacity; an onFade hook can
+// do bespoke work). Region meshes default hidden at build so no first frame
+// can flash before the first fade.
+const regionMeshes = new Map(); // region.key -> Set<InstancedMesh>
+const regionFade = new Map(); // region.key -> 0..1
+const regionMatCache = new Map(); // region.key -> Map<handle, material | material[]>
 const matCache = new Map();
 let sceneRef = null;
 
@@ -154,38 +159,96 @@ function getMats(id) {
   return matCache.get(id);
 }
 
-// Moon fade (driven by sky.js): the visible rock face crossfades from the
-// current sky color to full texture — the body stays solid (opaque, depth
-// writing) throughout, so it never turns translucent and stars never show
-// through it. Lake sheets keep their opacity ramp off memorized bases:
-// faint water over an emerging face reads coherently.
-const MOON_WHITE = new THREE.Color(0xffffff);
-const MOON_SHEET_ROLES = ["outside", "inner", "pocketblue", "pocketblueback", "pocket-out", "pocket-in"];
-export function setMoonFade(m, skyColor) {
-  const o = Math.max(0, Math.min(1, m));
-  moonFade = o;
-  for (const mesh of moonMeshes) mesh.visible = o > 0;
-  const moon = matCache.get(MOON);
-  if (moon) {
-    for (const mt of moon) {
-      mt.opacity = 1;
-      mt.transparent = false;
-      mt.depthWrite = true;
-      mt.color.copy(skyColor).lerp(MOON_WHITE, o);
+// A mesh's visibility is the AND of the two gates that can touch it: its
+// region's fade (undefined = no region) and a liquid veil's eye-medium gate
+// (undefined = not a veil). Combining them keeps a pocket sheet from flashing
+// when the eye medium flips while its region is hidden.
+function refreshVisible(mesh) {
+  const rv = mesh.userData.regionVisible;
+  const vv = mesh.userData.veilVisible;
+  mesh.visible = (rv === undefined || rv) && (vv === undefined || vv);
+}
+
+function registerRegionMesh(region, mesh) {
+  mesh.userData.regionKey = region.key;
+  mesh.userData.regionVisible = (regionFade.get(region.key) ?? 0) > 0;
+  let set = regionMeshes.get(region.key);
+  if (!set) { set = new Set(); regionMeshes.set(region.key, set); }
+  set.add(mesh);
+  refreshVisible(mesh);
+}
+
+// Region-owned material clones, one set per (region, handle). Cloning lets a
+// region fade its own materials without touching the shared ones still in use
+// by the overworld (a moon glowstone must not fade a ground glowstone).
+function regionMaterials(region, handle, factory) {
+  if (!region.revealMaterials) return factory();
+  let owned = regionMatCache.get(region.key);
+  if (!owned) { owned = new Map(); regionMatCache.set(region.key, owned); }
+  let mats = owned.get(handle);
+  if (!mats) {
+    const clone = (m) => {
+      const c = m.clone();
+      c.userData.baseOpacity = m.opacity;
+      c.userData.baseDepth = m.depthWrite;
+      c.userData.baseTransparent = m.transparent;
+      return c;
+    };
+    const src = factory();
+    mats = Array.isArray(src) ? src.map(clone) : clone(src);
+    owned.set(handle, mats);
+  }
+  return mats;
+}
+
+function applyMatFade(m, o) {
+  m.opacity = m.userData.baseOpacity * o;
+  m.transparent = o < 0.99 ? true : m.userData.baseTransparent;
+  m.depthWrite = o >= 0.99 ? m.userData.baseDepth : false;
+}
+
+function ctxFor(region) {
+  return {
+    mats: (id) => regionMaterials(region, "b:" + id, () => getMats(id)),
+    glowMats: (v) => regionMaterials(region, "g:" + v, () => glowstoneMats(v)),
+    liquidMat: (id, role, top) =>
+      regionMaterials(region, "l:" + id + ":" + role + ":" + top, () => liquidSurfaceMat(id, role, top)),
+  };
+}
+
+// setRegionFade(key, o, skyColor): toggle the region's mesh group, fade every
+// owned material's opacity toward o (so anything in the region — rock, placed
+// blocks, glowstone, liquids — reveals smoothly, no micro-pop), then let the
+// region's onFade override specifics (the Moon rock tints sky→texture).
+export function setRegionFade(key, o, skyColor) {
+  o = Math.max(0, Math.min(1, o));
+  regionFade.set(key, o);
+  const set = regionMeshes.get(key);
+  if (set) for (const mesh of set) { mesh.userData.regionVisible = o > 0; refreshVisible(mesh); }
+  const owned = regionMatCache.get(key);
+  if (owned) {
+    for (const mats of owned.values()) {
+      if (Array.isArray(mats)) for (const m of mats) applyMatFade(m, o);
+      else applyMatFade(mats, o);
     }
   }
-  for (const role of MOON_SHEET_ROLES) {
-    for (const top of [false, true]) {
-      const lm = liquidSurfaceMat(MOON_WATER, role, top);
-      if (lm.userData.baseOpacity === undefined) {
-        lm.userData.baseOpacity = lm.opacity;
-        lm.userData.baseDepth = lm.depthWrite;
-      }
-      lm.opacity = lm.userData.baseOpacity * o;
-      lm.transparent = lm.opacity < 0.99;
-      lm.depthWrite = o >= 0.99 ? lm.userData.baseDepth : false;
-    }
+  const region = regionByKey(key);
+  if (region && region.onFade) region.onFade(o, skyColor, ctxFor(region));
+}
+
+// Split an instance/quad list by region membership: `rest` stays with the
+// shared, always-visible materials; each group becomes a region mesh.
+function partitionRegion(id, list) {
+  const groups = new Map();
+  const rest = [];
+  for (const c of list) {
+    const r = regionOf(id, c[0], c[1], c[2]);
+    if (!r) { rest.push(c); continue; }
+    let g = groups.get(r.key);
+    if (!g) { g = { region: r, list: [] }; groups.set(r.key, g); }
+    g.list.push(c);
   }
+  return { rest, groups };
 }
 
 export function initRenderer(scene) {
@@ -209,14 +272,25 @@ export function disposeAll() {
   }
   chunkMeshes.clear();
   gatedVeils.clear();
-  moonMeshes.clear();
+  regionMeshes.clear();
+  for (const owned of regionMatCache.values()) {
+    for (const mats of owned.values()) {
+      if (Array.isArray(mats)) for (const m of mats) m.dispose();
+      else mats.dispose();
+    }
+  }
+  regionMatCache.clear();
   chunkQueue.length = 0;
 }
 
 function disposeChunk(ck) {
   const meshes = chunkMeshes.get(ck);
   if (!meshes) return;
-  for (const m of meshes.values()) { sceneRef.remove(m); m.dispose(); moonMeshes.delete(m); }
+  for (const m of meshes.values()) {
+    sceneRef.remove(m); m.dispose();
+    const rk = m.userData.regionKey;
+    if (rk) { const set = regionMeshes.get(rk); if (set) { set.delete(m); if (!set.size) regionMeshes.delete(rk); } }
+  }
   unregisterVeils(meshes);
   chunkMeshes.delete(ck);
 }
@@ -318,33 +392,44 @@ export function rebuildChunk(cx, cz) {
   }
   if (!perId.size && !flowers.length && !glows.length && !liquidMaps.some((m) => m.size)) return;
   const meshes = new Map();
-  for (const [id, list] of perId) {
-    const mesh = new THREE.InstancedMesh(boxGeo, getMats(id), list.length);
+  const buildBoxes = (list, mats) => {
+    const mesh = new THREE.InstancedMesh(boxGeo, mats, list.length);
     for (let i = 0; i < list.length; i++) {
       const [x, y, z] = list[i];
       dummy.position.set(x + 0.5, y + 0.5, z + 0.5);
-      dummy.scale.set(1, 1, 1);
       dummy.rotation.set(0, 0, 0);
+      dummy.scale.set(1, 1, 1);
       dummy.updateMatrix();
       mesh.setMatrixAt(i, dummy.matrix);
     }
     mesh.instanceMatrix.needsUpdate = true;
     mesh.computeBoundingSphere();
-    // Glass draws after liquids so it composites over water whether the
-    // glass sits behind or in front of the surface.
-    if (id === GLASS) mesh.renderOrder = 13;
-    if (id === MOON) { moonMeshes.add(mesh); mesh.visible = moonFade > 0; }
-    sceneRef.add(mesh);
-    meshes.set(id, mesh);
+    return mesh;
+  };
+  for (const [id, list] of perId) {
+    const { rest, groups } = partitionRegion(id, list);
+    if (rest.length) {
+      const mesh = buildBoxes(rest, getMats(id));
+      // Glass draws after liquids so it composites over water whether the
+      // glass sits behind or in front of the surface.
+      if (id === GLASS) mesh.renderOrder = 13;
+      sceneRef.add(mesh);
+      meshes.set(id, mesh);
+    }
+    for (const g of groups.values()) {
+      const mesh = buildBoxes(g.list, regionMaterials(g.region, "b:" + id, () => getMats(id)));
+      if (id === GLASS) mesh.renderOrder = 13;
+      registerRegionMesh(g.region, mesh);
+      sceneRef.add(mesh);
+      meshes.set(g.region.key + ":" + id, mesh);
+    }
   }
   if (flowers.length) {
     const seed = getSeed();
     const perVariant = FLOWER_GEOS.map(() => []);
     for (const [fx, fy, fz] of flowers) perVariant[flowerVariantAt(fx, fz, seed)].push([fx, fy, fz]);
-    for (let v = 0; v < FLOWER_GEOS.length; v++) {
-      const list = perVariant[v];
-      if (!list.length) continue;
-      const mesh = new THREE.InstancedMesh(FLOWER_GEOS[v], FLOWER_MAT, list.length);
+    const buildFlowers = (list, geo, mats) => {
+      const mesh = new THREE.InstancedMesh(geo, mats, list.length);
       for (let i = 0; i < list.length; i++) {
         const [fx, fy, fz] = list[i];
         dummy.position.set(fx + 0.5, fy + 0.5, fz + 0.5);
@@ -355,13 +440,29 @@ export function rebuildChunk(cx, cz) {
       }
       mesh.instanceMatrix.needsUpdate = true;
       mesh.computeBoundingSphere();
-      sceneRef.add(mesh);
-      meshes.set("flower_" + v, mesh);
+      return mesh;
+    };
+    for (let v = 0; v < FLOWER_GEOS.length; v++) {
+      const list = perVariant[v];
+      if (!list.length) continue;
+      const { rest, groups } = partitionRegion(FLOWER, list);
+      if (rest.length) {
+        const mesh = buildFlowers(rest, FLOWER_GEOS[v], FLOWER_MAT);
+        sceneRef.add(mesh);
+        meshes.set("flower_" + v, mesh);
+      }
+      for (const g of groups.values()) {
+        const mesh = buildFlowers(g.list, FLOWER_GEOS[v], regionMaterials(g.region, "flower", () => FLOWER_MAT));
+        registerRegionMesh(g.region, mesh);
+        sceneRef.add(mesh);
+        meshes.set("flower_" + g.region.key + "_" + v, mesh);
+      }
     }
   }
   // Glowstone: one unlit InstancedMesh per color variant (unexposed stones
-  // are skipped like every other cube). Always visible: the unlit texture
-  // shines at full strength from any distance, independent of the moon fade.
+  // are skipped like every other cube). Overworld stones stay always visible
+  // (the unlit texture shines at full strength from any distance); stones
+  // inside a reveal region fade with it.
   if (glows.length) {
     const perVariant = [];
     for (let v = 0; v < GLOW_VARIANT_COUNT; v++) perVariant.push([]);
@@ -369,19 +470,18 @@ export function rebuildChunk(cx, cz) {
     for (let v = 0; v < GLOW_VARIANT_COUNT; v++) {
       const list = perVariant[v];
       if (!list.length) continue;
-      const mesh = new THREE.InstancedMesh(boxGeo, glowstoneMats(v), list.length);
-      for (let i = 0; i < list.length; i++) {
-        const [gx, gy, gz] = list[i];
-        dummy.position.set(gx + 0.5, gy + 0.5, gz + 0.5);
-        dummy.rotation.set(0, 0, 0);
-        dummy.scale.set(1, 1, 1);
-        dummy.updateMatrix();
-        mesh.setMatrixAt(i, dummy.matrix);
+      const { rest, groups } = partitionRegion(GLOWSTONE, list);
+      if (rest.length) {
+        const mesh = buildBoxes(rest, glowstoneMats(v));
+        sceneRef.add(mesh);
+        meshes.set("glowstone_" + v, mesh);
       }
-      mesh.instanceMatrix.needsUpdate = true;
-      mesh.computeBoundingSphere();
-      sceneRef.add(mesh);
-      meshes.set("glowstone_" + v, mesh);
+      for (const g of groups.values()) {
+        const mesh = buildBoxes(g.list, regionMaterials(g.region, "g:" + v, () => glowstoneMats(v)));
+        registerRegionMesh(g.region, mesh);
+        sceneRef.add(mesh);
+        meshes.set("glowstone_" + g.region.key + "_" + v, mesh);
+      }
     }
   }
   // Boundary faces only: every bound emits the blue pair — an outside
@@ -417,6 +517,10 @@ export function rebuildChunk(cx, cz) {
     sceneRef.add(mesh);
     return mesh;
   };
+  const gateVeil = (gate, lid, mesh) => {
+    if (gate === "in") registerVeil("in:" + lid, mesh, eyeMedium.type === "liquid" && eyeMedium.liquid === lid);
+    else if (gate === "out") registerVeil("out", mesh, eyeMedium.type === "air");
+  };
   for (const { map, role, top, order, suffix, gate } of [
     { map: liquids, role: "outside", top: false, order: 10, suffix: "_out" },
     { map: liquidsTop, role: "outside", top: true, order: 10, suffix: "_top" },
@@ -430,11 +534,20 @@ export function rebuildChunk(cx, cz) {
     { map: liquidsPocket, role: "pocket-in", top: false, order: 12, suffix: "_pin", gate: "in" },
   ]) {
     for (const [lid, list] of map) {
-      const mesh = quadMesh(liquidSurfaceMat(lid, role, top), list, order);
-      if (gate === "in") registerVeil("in:" + lid, mesh, eyeMedium.type === "liquid" && eyeMedium.liquid === lid);
-      else if (gate === "out") registerVeil("out", mesh, eyeMedium.type === "air");
-      if (lid === MOON_WATER) { moonMeshes.add(mesh); mesh.visible = moonFade > 0; }
-      meshes.set("liquid_" + lid + suffix, mesh);
+      const { rest, groups } = partitionRegion(lid, list);
+      if (rest.length) {
+        const mesh = quadMesh(liquidSurfaceMat(lid, role, top), rest, order);
+        gateVeil(gate, lid, mesh);
+        meshes.set("liquid_" + lid + suffix, mesh);
+      }
+      for (const g of groups.values()) {
+        const mesh = quadMesh(
+          regionMaterials(g.region, "l:" + lid + ":" + role + ":" + top, () => liquidSurfaceMat(lid, role, top)),
+          g.list, order);
+        gateVeil(gate, lid, mesh);
+        registerRegionMesh(g.region, mesh);
+        meshes.set("liquid_" + g.region.key + "_" + lid + suffix, mesh);
+      }
     }
   }
   chunkMeshes.set(ck, meshes);
