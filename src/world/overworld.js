@@ -1,17 +1,20 @@
 // Overworld generation: height field, seas, rivers, terrain fill,
-// trees/flowers, clouds, moon, then village flattening and structures.
+// trees/flowers, clouds, moon surface, then village flattening and
+// structures. Only the surface builds here (spawn stands on it); the
+// hollow underside fills lazily after the reveal (see moon.js), so
+// startup pays only for spawn-visible voxels.
 // Tunables live here; the world store holds the voxels.
 import {
   AIR, GRASS, DIRT, STONE, SAND, WATER, FLOWER,
 } from "../core/blocks.js";
 import { hash2, fbm } from "../core/noise.js";
 import {
-  WORLD_RADIUS, WATER_LEVEL, setBlock, getBlock, setDimension, resetWorld,
+  WORLD_RADIUS, WATER_LEVEL, setBlock, fillColumn, getBlock, setDimension, resetWorld,
 } from "../core/store.js";
 import { village, computeLayout, intersectsVillage, placeVillage } from "./village.js";
 import { tryGrowTree } from "./trees.js";
 import { generateClouds } from "./clouds.js";
-import { generateMoon } from "./moon.js";
+import { generateMoonSurface, resetMoon } from "./moon.js";
 
 // Worldgen tunables as one spec object: terrain shape, river system, and the
 // flower scatter density (overworld's own knob; per-variant properties live
@@ -160,15 +163,13 @@ export function generateOverworld(newSeed) {
       const inVillage = x >= village.minX && x <= village.maxX && z >= village.minZ && z <= village.maxZ;
       let h = heightAt(x, z);
       if (inVillage) h = village.center.y;
-      for (let y = 0; y <= h; y++) {
-        let id = STONE;
-        if (y === h) id = inVillage ? STONE : (h <= WATER_LEVEL + 1 ? SAND : GRASS);
-        else if (y >= h - 2) id = DIRT;
-        setBlock(x, y, z, id);
-      }
-      if (!inVillage && h < WATER_LEVEL) {
-        for (let y = h + 1; y <= WATER_LEVEL; y++) setBlock(x, y, z, WATER);
-      }
+      // Bulk runs, not per-block writes: identical voxels, one index pass
+      // per run (stone body, dirt band, top cell, then water fill).
+      const topId = inVillage ? STONE : (h <= WATER_LEVEL + 1 ? SAND : GRASS);
+      if (h >= 3) fillColumn(x, z, 0, h - 3, STONE);
+      if (h >= 1) fillColumn(x, z, Math.max(0, h - 2), h - 1, DIRT);
+      fillColumn(x, z, h, h, topId);
+      if (!inVillage && h < WATER_LEVEL) fillColumn(x, z, h + 1, WATER_LEVEL, WATER);
       if (inVillage) continue;
       treeCtx.forest = fbm(x * 0.01 + 500, z * 0.01 + 500, seed + 888) > forestThresh;
       const grown = tryGrowTree(treeCtx, x, h, z);
@@ -179,7 +180,10 @@ export function generateOverworld(newSeed) {
   }
   placeVillage(setBlock, getBlock);
   generateClouds(seed, setBlock);
-  generateMoon(seed, setBlock);
+  // Moon surface only (spawn-exact tops); the hollow underside fills
+  // lazily after the reveal, its flag reset per world below.
+  generateMoonSurface(seed, setBlock);
+  resetMoon();
 }
 
 export { village };

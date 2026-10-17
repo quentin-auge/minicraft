@@ -4,6 +4,7 @@
 // physics.js applies the result to the player body.
 import { isLiquid, CLOUD, MOON, LOG, LEAVES } from "../core/blocks.js";
 import { getBlock, isSolid, colTops, colTopIdx, dim, WATER_LEVEL } from "../core/store.js";
+import { MOON_MIN_Y } from "./moon.js";
 import { village } from "./village.js";
 
 // Spawn spec: feet stay inside this disc; the vista must be clear this far
@@ -22,9 +23,10 @@ const PEN_MARGIN = 1;
 
 // Highest standable ground in a column: solid dry land, never tree matter,
 // with open headroom. Null for water, tree columns, roofed, or empty columns.
-// Starts from the column's own top (no ceiling to scan from).
+// Starts below the moon band (moon rock never qualifies for footing, so
+// scanning it is pure cost once the lazy fill lands).
 function groundHeightAt(x, z) {
-  const top = colTops[dim][colTopIdx(x, z)];
+  const top = Math.min(colTops[dim][colTopIdx(x, z)], MOON_MIN_Y - 1);
   for (let y = top; y >= 0; y--) {
     const id = getBlock(x, y, z);
     if (id === CLOUD || id === MOON) continue;
@@ -112,7 +114,7 @@ export function findSpawn(eyeHeight) {
     }
   }
   if (bestScore < 0) {
-    const top = colTops[dim][colTopIdx(0, 0)];
+    const top = Math.min(colTops[dim][colTopIdx(0, 0)], MOON_MIN_Y - 1);
     for (let y = top; y >= 0; y--) {
       if (isSolid(0, y, 0)) { fy = y; break; }
     }

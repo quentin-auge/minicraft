@@ -9,7 +9,7 @@
 // Three-free (plain maps, no canvas/THREE) so worldgen and the headless
 // harness can use it; texture derivation lives in `core/textures.js`.
 import { GLOWSTONE } from "../core/blocks.js";
-import { key, keyXYZ, dim, worlds } from "../core/store.js";
+import { key, keyXYZ, dim } from "../core/store.js";
 
 export const CLUSTER_DIST = 10;
 // Hotbar icon / fallback texture variant (yellow, like master).
@@ -74,22 +74,6 @@ export function clearGlowstoneAt(x, y, z) {
   const k = key(x, y, z);
   glowstoneSets[dim].delete(k);
   glowVariants[dim].delete(k);
-}
-
-// Re-derive the live index from the voxel store (world build); variant
-// colors survive when their block does, orphaned ones are dropped.
-export function rebuildGlowstoneIndex() {
-  for (const name of ["over", "nether", "end"]) {
-    const set = glowstoneSets[name];
-    const gv = glowVariants[name];
-    set.clear();
-    for (const [k, id] of worlds[name]) {
-      if (id === GLOWSTONE) set.add(k);
-    }
-    for (const k of [...gv.keys()]) {
-      if (!set.has(k)) gv.delete(k);
-    }
-  }
 }
 
 // New worlds never inherit another world's colors or indexes.

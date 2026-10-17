@@ -1,7 +1,7 @@
 // MiniCraft static bootstrap: scene, input, main loop, world startup.
 // No saves, no network — Play builds a fresh random world in the browser.
 import * as THREE from "three";
-import { generateOverworld } from "./src/world/overworld.js";
+import { generateOverworld, getSeed } from "./src/world/overworld.js";
 import {
   pos, vel, keys, setYaw, setPitch,
   spawnPlayer, updatePlayer, tickKnockback,
@@ -14,11 +14,11 @@ import { initRope } from "./src/player/rope.js";
 import { tickTNT, initTNTFx, resetTNTMemory, onExplode, onLiquidPurge, shakeSpecFor } from "./src/fx/tnt.js";
 import { initFx, tickFx } from "./src/fx/particles.js";
 import { initPrecip, tickSnow } from "./src/fx/precip.js";
-import { MOON_MIN_Y } from "./src/world/moon.js";
+import { MOON_MIN_Y, MOON_R, generateMoon, generateMoonUnderRows, markMoonBuilt, moonReady, moonChunkCenters } from "./src/world/moon.js";
 import { WATER, FLOWER, GLOWSTONE, MOON_WATER } from "./src/core/blocks.js";
-import { resetGlowstoneMemory, rebuildGlowstoneIndex } from "./src/world/glowstone.js";
+import { resetGlowstoneMemory } from "./src/world/glowstone.js";
 import { initBlockLights, tickBlockLights, rebuildBlockLightIndexes, resetBlockLightMemory } from "./src/render/blocklights.js";
-import { initRenderer, rebuildAll, maybeStream, refreshBlocks, drainChunkQueue, setEyeMedium, setRegionFade, UNLOAD_MARGIN } from "./src/render/mesher.js";
+import { initRenderer, rebuildAll, maybeStream, refreshBlocks, setEyeMedium, setRegionFade, UNLOAD_MARGIN } from "./src/render/mesher.js";
 import { applyRegions } from "./src/render/regions.js";
 import { resetItems, select, selected, selectedId, initHotbarInput, setItem, getItems } from "./src/ui/hotbar.js";
 import { initMenu, enterGame, started, isLocked } from "./src/ui/menu.js";
@@ -28,9 +28,10 @@ import { tickWaterFog, eyeMediumId } from "./src/render/waterfog.js";
 import { initSky, tickSky } from "./src/render/sky.js";
 import {
   initPortals, buildPortalDom, setPortalTravelHook, tickPortals,
-  rebuildPortalBlocks, scanWorldPortals, clearPortalFills, notePortalEdits,
+  resetFrameSet, scanWorldPortals, clearPortalFills, notePortalEdits,
 } from "./src/world/portals.js";
-import { CHUNK, RENDER_DIST } from "./src/core/store.js";
+import { villageFrames } from "./src/world/village.js";
+import { CHUNK, RENDER_DIST, setBlock } from "./src/core/store.js";
 import { EYE } from "./src/player/physics.js";
 
 const scene = new THREE.Scene();
@@ -134,10 +135,12 @@ let building = false;
 // Moon-band hotbar (slots flip at the Moon's lower end); reset per world.
 let moonBand = false;
 
-// The level loads instantly behind the translucent menu: voxels generate,
-// every chunk in range builds synchronously (a short freeze is accepted),
-// and only then does closed-in fog expand to reveal the finished world.
-// Play enters a solid world from the first frame — nothing ever pops in.
+// The level loads behind the translucent menu: voxels generate, the spawn
+// neighborhood builds synchronously (a short freeze is accepted), then
+// closed-in fog expands to reveal the world while far chunks keep streaming
+// in under the frame budget — invisible behind the fog, and the clear-bubble
+// guard builds anything entering visibility synchronously, so Play enters a
+// solid world from the first frame and nothing ever pops in.
 async function buildWorld() {
   if (building) return;
   building = true;
@@ -151,11 +154,12 @@ async function buildWorld() {
   try {
     generateOverworld(Math.floor(Math.random() * 100000));
     spawnPlayer();
-    rebuildGlowstoneIndex();
+    // No glowstone rescan: worldgen places none and the live index starts
+    // empty (player edits track themselves).
     rebuildBlockLightIndexes();
-    rebuildAll(pos.x, pos.z);    drainChunkQueue(true);
+    rebuildAll(pos.x, pos.z);
     clearPortalFills();
-    rebuildPortalBlocks();
+    resetFrameSet(villageFrames);
     scanWorldPortals();
     moonBand = false;
     resetItems();
@@ -164,6 +168,7 @@ async function buildWorld() {
     worldReady = true;
     // Expanding-fog reveal: ease from closed-in to the tuned range on a
     // smoothstep over REVEAL_MS, then hand off to the runtime controller.
+    // Far chunks stream in behind the fog under the frame budget meanwhile.
     const revealStart = performance.now();
     for (;;) {
       const t = Math.min(1, (performance.now() - revealStart) / REVEAL_MS);
@@ -179,6 +184,37 @@ async function buildWorld() {
     scene.fog.far = readyFog.far;
     envAir.near = readyFog.near;
     envAir.far = readyFog.far;
+  }
+  if (worldReady) fillMoonUnder(getSeed());
+}
+
+// Lazy moon underside (startup perf): spawn stands on the eagerly-built
+// surface, so the hollow shell below it fills after the reveal, sliced
+// across idle frames, then built disc chunks remesh (streaming covers the
+// rest: the fill completes before the refresh pass, so later builds include
+// it). Aborts if a New World starts mid-fill; seed-tokened, and the
+// overwrites are deterministic, so racing the safety net is harmless.
+let moonFilling = false;
+async function fillMoonUnder(seed) {
+  if (moonFilling || moonReady(seed)) return;
+  moonFilling = true;
+  try {
+    const R = MOON_R, STEP = 16;
+    for (let x0 = -R; x0 <= R; x0 += STEP) {
+      if (getSeed() !== seed || building || !worldReady || moonReady(seed)) return;
+      generateMoonUnderRows(seed, setBlock, x0, x0 + STEP);
+      await new Promise((r) => requestAnimationFrame(r));
+    }
+    if (getSeed() !== seed || building || !worldReady || moonReady(seed)) return;
+    markMoonBuilt(seed);
+    const centers = moonChunkCenters();
+    for (let i = 0; i < centers.length; i += 2) {
+      if (getSeed() !== seed || building || !worldReady) return;
+      refreshBlocks(centers.slice(i, i + 2));
+      await new Promise((r) => requestAnimationFrame(r));
+    }
+  } finally {
+    moonFilling = false;
   }
 }
 
@@ -349,6 +385,13 @@ function loop(now) {
         if (gi >= 0) setItem(gi, FLOWER);
       }
     }
+  }
+  // Underside safety net: below the moon band the shell must exist now, so
+  // descending onto (or under) a fresh moon never meets unbuilt rock.
+  // Synchronous and rare (the background fill wins by ~30 s of descent).
+  if (worldReady && !building && !moonReady(getSeed()) && camera.position.y < MOON_MIN_Y - 8) {
+    generateMoon(getSeed(), setBlock);
+    refreshBlocks(moonChunkCenters());
   }
   const simActive = isLocked() && !isHelpOpen();
   if (simActive) {

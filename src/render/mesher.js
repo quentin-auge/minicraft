@@ -6,6 +6,7 @@ import { WORLD_RADIUS, CHUNK, RENDER_DIST, getBlock, colTops, colTopIdx, colOcc,
 import { materialsFor, liquidSurfaceMat, glowstoneMats } from "../core/textures.js";
 import { FLOWER_GEOS, FLOWER_MAT, flowerVariantAt, flowerAngleAt } from "./flowers.js";
 import { GLOW_VARIANT_COUNT, glowVariantAt } from "../world/glowstone.js";
+import { MOON_SURFACE_Y } from "../world/moon.js";
 import { getSeed } from "../world/overworld.js";
 import { regionOf, regionByKey } from "./regions.js";
 
@@ -257,18 +258,25 @@ export function setRegionFade(key, o, skyColor) {
 }
 
 // Split an instance/quad list by region membership: `rest` stays with the
-// shared, always-visible materials; each group becomes a region mesh.
+// shared, always-visible materials; each group becomes a region mesh. Also
+// tracks the highest rest cell, which bounds the chunk's rest-group cull box
+// (the walk skips the per-cell test, so this single pass is the only one).
 function partitionRegion(id, list) {
   const groups = new Map();
   const rest = [];
+  let restTop = -1;
   for (const c of list) {
     const r = regionOf(id, c[0], c[1], c[2]);
-    if (!r) { rest.push(c); continue; }
+    if (!r) {
+      rest.push(c);
+      if (c[1] > restTop) restTop = c[1];
+      continue;
+    }
     let g = groups.get(r.key);
     if (!g) { g = { region: r, list: [] }; groups.set(r.key, g); }
     g.list.push(c);
   }
-  return { rest, groups };
+  return { rest, groups, restTop };
 }
 
 export function initRenderer(scene) {
@@ -368,8 +376,9 @@ export function rebuildChunk(cx, cz) {
     if (!arr) { arr = []; map.set(id, arr); }
     arr.push(quad);
   };
-  // Column tops for this build: chunkTop bounds every mesh sphere, restTop
-  // (highest non-region cell) drives the fog-cull box of the rest group.
+  // Column tops for this build: chunkTop bounds every mesh sphere; restTop
+  // (highest rest cell, folded up from each partition below) drives the
+  // fog-cull box of the rest group.
   let chunkTop = -1;
   let restTop = -1;
   // Pocket-test memo per build: neighboring liquid faces re-query the same
@@ -380,7 +389,11 @@ export function rebuildChunk(cx, cz) {
   const memoEnclosed = (x, y, z) => {
     const k = colTopIdx(x, z) * 4096 + y;
     let v = enclosedMemo.get(k);
-    if (v === undefined) { v = isEnclosedAir(x, y, z); enclosedMemo.set(k, v); }
+    // Below-cap queries use the bare-tops escape (moon rock excluded): lake
+    // bottoms and ground air exit in column height instead of exhausting the
+    // budget in the hollow under-cap volume; at- and above-cap queries keep
+    // the exact old behavior.
+    if (v === undefined) { v = isEnclosedAir(x, y, z, y < MOON_SURFACE_Y); enclosedMemo.set(k, v); }
     return v;
   };
   const memoHemmed = (x, y, z, id) => {
@@ -401,9 +414,6 @@ export function rebuildChunk(cx, cz) {
         const id = getBlock(x, y, z);
         if (!BLOCK_INFO[id]) continue;
         if (y > chunkTop) chunkTop = y;
-        // Single membership test per cell; partitionRegion re-tests below, so
-        // this stays cheaper than re-walking the rest lists afterwards.
-        if (regionOf(id, x, y, z) === null && y > restTop) restTop = y;
         if (id === FLOWER) { flowers.push([x, y, z]); continue; }
         if (id === GLOWSTONE) {
           if (isExposed(x, y, z)) glows.push([x, y, z]);
@@ -475,20 +485,23 @@ export function rebuildChunk(cx, cz) {
   restGroup.matrixAutoUpdate = false;
   const buildBoxes = (list, mats) => {
     const mesh = new THREE.InstancedMesh(boxGeo, mats, list.length);
+    // Translation-only instances: write the column-major matrix directly
+    // instead of composing through the shared dummy Object3D.
+    const a = mesh.instanceMatrix.array;
     for (let i = 0; i < list.length; i++) {
-      const [x, y, z] = list[i];
-      dummy.position.set(x + 0.5, y + 0.5, z + 0.5);
-      dummy.rotation.set(0, 0, 0);
-      dummy.scale.set(1, 1, 1);
-      dummy.updateMatrix();
-      mesh.setMatrixAt(i, dummy.matrix);
+      const o = i * 16;
+      a[o] = 1; a[o + 1] = 0; a[o + 2] = 0; a[o + 3] = 0;
+      a[o + 4] = 0; a[o + 5] = 1; a[o + 6] = 0; a[o + 7] = 0;
+      a[o + 8] = 0; a[o + 9] = 0; a[o + 10] = 1; a[o + 11] = 0;
+      a[o + 12] = list[i][0] + 0.5; a[o + 13] = list[i][1] + 0.5; a[o + 14] = list[i][2] + 0.5; a[o + 15] = 1;
     }
     mesh.instanceMatrix.needsUpdate = true;
     stampStatic(mesh, x0, x1, z0, z1, chunkTop);
     return mesh;
   };
   for (const [id, list] of perId) {
-    const { rest, groups } = partitionRegion(id, list);
+    const { rest, groups, restTop: rt } = partitionRegion(id, list);
+    if (rt > restTop) restTop = rt;
     if (rest.length) {
       const mesh = buildBoxes(rest, getMats(id));
       // Glass draws after liquids so it composites over water whether the
@@ -526,7 +539,8 @@ export function rebuildChunk(cx, cz) {
     for (let v = 0; v < FLOWER_GEOS.length; v++) {
       const list = perVariant[v];
       if (!list.length) continue;
-      const { rest, groups } = partitionRegion(FLOWER, list);
+      const { rest, groups, restTop: rt } = partitionRegion(FLOWER, list);
+      if (rt > restTop) restTop = rt;
       if (rest.length) {
         const mesh = buildFlowers(rest, FLOWER_GEOS[v], FLOWER_MAT);
         restGroup.add(mesh);
@@ -551,7 +565,8 @@ export function rebuildChunk(cx, cz) {
     for (let v = 0; v < GLOW_VARIANT_COUNT; v++) {
       const list = perVariant[v];
       if (!list.length) continue;
-      const { rest, groups } = partitionRegion(GLOWSTONE, list);
+      const { rest, groups, restTop: rt } = partitionRegion(GLOWSTONE, list);
+      if (rt > restTop) restTop = rt;
       if (rest.length) {
         const mesh = buildBoxes(rest, glowstoneMats(v));
         restGroup.add(mesh);
@@ -614,7 +629,8 @@ export function rebuildChunk(cx, cz) {
     { map: liquidsPocket, role: "pocket-in", top: false, order: 12, suffix: "_pin", gate: "in" },
   ]) {
     for (const [lid, list] of map) {
-      const { rest, groups } = partitionRegion(lid, list);
+      const { rest, groups, restTop: rt } = partitionRegion(lid, list);
+      if (rt > restTop) restTop = rt;
       if (rest.length) {
         const mesh = quadMesh(liquidSurfaceMat(lid, role, top), rest, order);
         gateVeil(gate, lid, mesh);

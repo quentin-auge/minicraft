@@ -10,19 +10,19 @@ stored, how it flows, and how each system works. Read this before changing code.
 - `src/ui/hotbar.js` — dynamic item list (add/remove/change/reset ops, selection tracked by id), rendered bar.
 - `src/core/blocks.js` — block ids, BLOCK_INFO (solid/opaque/placeable, plus `light` emitter key for emissive blocks), liquid/TNT predicates.
 - `src/core/noise.js` — deterministic hash2/valueNoise/fbm.
-- `src/core/store.js` — voxel storage, one Map per dimension, column tops.
+- `src/core/store.js` — voxel storage, one Map per dimension, column tops (plus moon-free bare tops for the enclosure fast path).
 - `src/core/textures.js` — procedural canvas textures, per-block materials, liquid two-role surface materials, per-variant glowstone textures/materials, moon rock lit+emissive material.
 - `src/render/blocklights.js` — pooled block-light backend (`LIGHT_EMITTERS` registry, glowstone first): per-spec cell clustering + sticky nearest assignment.
 - `src/render/waterfog.js` — eye-in-liquid (or pocketed-air) fog/background murk while submerged.
 - `src/render/sky.js` — high-altitude sky (day-to-black past the clouds, stars); rewrites the murk's air baseline. Reveal regions fade separately (regions.js).
 - `src/render/regions.js` — reveal-region registry (`REGIONS`, moon first): each spec declares dimension, membership (`blocks` + `contains`), a camera-driven `factor` 0..1, and an optional `onFade` material hook; `regionOf` classifies a cell, `applyRegions` pushes factors each frame. Generic gating for any far body/structure — non-celestial volumes included.
 - `src/world/overworld.js` — height field, rivers, terrain fill, generation orchestrator.
-- `src/world/moon.js` — Moon disc + lake shafts (`MOON_MIN_Y`/`MOON_SURFACE_Y`/`MOON_R`/`MOON_THICK`, surface derived upward from the hand-picked bottom); `MOON_MIN_Y` doubles as the Moon reveal region's volume bound.
+- `src/world/moon.js` — Moon disc + lake shafts (`MOON_MIN_Y`/`MOON_SURFACE_Y`/`MOON_R`/`MOON_THICK`, surface derived upward from the hand-picked bottom); `MOON_MIN_Y` doubles as the Moon reveal region's volume bound. Surface (cap + lakes) builds with the world (tops final before spawn); the hollow underside fills lazily after the reveal in row slices (`generateMoonUnderRows`, idempotent), then built disc chunks remesh via `refreshBlocks`; below the moon band the fill finishes synchronously.
 - `src/world/glowstone.js` — glowstone color-variant registry (`GLOW_VARIANTS`, 7 entries), per-dimension variant maps + live block index, clustered placement picker (`glowVariantNear`: inherit within 10 blocks, else random).
 - `src/world/clouds.js` — climbable cloud decks (`CLOUD_MIN_Y`/`CLOUD_MAX_Y` bounds plus `generateClouds`); spawn and sky reuse the bounds instead of hard-coding altitudes.
 - `src/world/trees.js` — tree-type registry (`TREE_TYPES`, oak first), generic growth and ground guards.
 - `src/render/flowers.js` — flower-variant registry, baked voxel-cluster geometries (stem/leaves/disc bloom).
-- `src/world/village.js` — village layout and structure placement (houses, pen, pool).
+- `src/world/village.js` — village layout and structure placement (houses, pen, pool); records worldgen-placed frame-block keys for the portal index (no full-map scan at build).
 - `src/world/spawn.js` — spawn selection on finished voxels (`findSpawn`): firm open ground with a frustum-wide clear vista.
 - `src/world/portals.js` — local-loop Nether/End portals: `PORTAL_TYPES` registry (End `PORTAL` frame, Nether `OBSIDIAN` frame; each spec carries frame block, sizes via anchors, fill color/material, travel action, help art — new families register a spec, the engine dispatches without family switches), frame validation (End 5×5/5×4 upright faces x/z + 5×5 flat, corners optional; Nether 5×4/4×5/4×4 upright faces x/z + 5×4/4×5 flat, corners required), frames may cross orthogonally (interior frame blocks must belong to another live window's ring — support-closure; breaking either ring drops both), solid-color fills (End black, Nether purple, fogged like any block, always shown), body-overlap travel trigger, spiral + help-diagram builders, arrivals ~3 blocks out facing the crossed window. Every edit refreshes fills around the edited cell the same frame (placement reach is unlimited, the player-centered scan alone would miss far windows).
 - `src/player/physics.js` — player state, movement, shared axis movers (`collideBody`); `spawnPlayer` applies the `findSpawn` pick.
@@ -46,7 +46,7 @@ stored, how it flows, and how each system works. Read this before changing code.
 - No ceiling: columns run any `y >= 0` (floor `y = 0` bedrock stays); `dim`/`world` point at the active dimension's map and tops.
 - Noise (`noise.js`) matches master's formulas exactly, including its z-flipped
   bilinear blend — required for a sane land/water ratio, do not "fix".
-- `colTops[dim]` (Int32Array) tracks the highest non-air block per column for meshing and spawn; `colOcc[dim]` (`colIdx` → `Set` of occupied y) lets meshing iterate blocks instead of scanning height, and `colLiqTop[dim]` (`colIdx` → highest liquid y) answers swim queries in O(1) — all maintained by `setBlock`, the only writer.
+- `colTops[dim]` (Int32Array) tracks the highest non-air block per column for meshing and spawn; `colOcc[dim]` (`colIdx` → `Set` of occupied y) lets meshing iterate blocks instead of scanning height, and `colLiqTop[dim]` (`colIdx` → highest liquid y) answers swim queries in O(1) — all maintained by `setBlock`, plus the bulk `fillColumn` fast path used only by initial terrain fill (identical voxels and indexes, one bookkeeping pass per run).
 - Village state is a single `village` object: center, bounds, houses, pen, pool, radius/houseCount tunables.
 - Player state is module-level: `pos`/`vel` vectors, `yaw`/`pitch`, `onGround`,
   step-up/step-down flags, jump buffer/rebound trackers, shared `keys` map.
@@ -67,12 +67,13 @@ stored, how it flows, and how each system works. Read this before changing code.
 → per-column terrain fill (flattened to stone inside village bounds, water below
 `WATER_LEVEL`) → trees/flowers (flowers only on grass with air above, hash-gated
 by `TERRAIN.flowerDensity`) → `placeVillage` structures. `generateClouds` scatters solid puff
-clusters in the `CLOUD_MIN_Y`…`CLOUD_MAX_Y` band afterwards, then `generateMoon` lays the rock disc
-with hashed `MOON_WATER` lake shafts at `MOON_SURFACE_Y`. Spawn selection (`findSpawn`) closes the pipeline:
+clusters in the `CLOUD_MIN_Y`…`CLOUD_MAX_Y` band afterwards, then `generateMoonSurface` lays the rock cap
+with hashed `MOON_WATER` lake shafts at `MOON_SURFACE_Y` (tops final before spawn). Spawn selection (`findSpawn`) closes the pipeline:
 nearest firm open ground to the origin whose vista stays clear 50 blocks ahead
 across the whole FOV swath and 12 rows above the eye — no wall, trunk, hillside,
 or canopy anywhere in the frame. Pen cells excluded, liquids never qualify,
-cloud decks and moon rock never qualify for footing.
+cloud decks and moon rock never qualify for footing (the scan starts below the moon band, so it stays fast).
+The hollow underside shell fills after the reveal, not in the pipeline: `main.js` slices `generateMoonUnderRows` across idle frames (same geometry/salts as the eager port), then remeshes built disc chunks via `refreshBlocks` (`moonChunkCenters`; chunks streaming in later already contain the voxels). Below the moon band the fill finishes synchronously instead, so descending never meets an unbuilt shell.
 
 ## Data flow (meshing)
 
@@ -123,7 +124,7 @@ opposite same-level sides or 3+ sides: wells read like pockets from inside water
 enclosed air (bubbles); bumps, shores, diagonals, and sky stay blue, the opposition pair running before the flood so open air skips it. Only
 pocket-bound sheets write depth; open-sea sheets never do, keeping shallows
 see-through. Blue sheets are never gated.
-Pocket detection is a bounded air-only flood with a colTop fast path for open sky: meshing (`isEnclosedAir`) counts budget exhaustion as open, so only small pockets veil; the eye medium (`isEyePocketed`) adds a per-cell sky escape and counts budget exhaustion as pocketed, so big sealed halls keep veil gating (both veils hidden, pure blue) while the fog itself stays clear unless the eye is liquid. One `LIQUID_SURFACE` spec per
+Pocket detection is a bounded air-only flood with a colTop fast path for open sky: meshing (`isEnclosedAir`) counts budget exhaustion as open, so only small pockets veil; below the disc surface it escapes at the bare (moon-free) column tops instead, since moon rock pushes every top to ~946 and would otherwise force full-budget floods for all ground and lake-bottom air. The eye medium (`isEyePocketed`) adds a per-cell sky escape and counts budget exhaustion as pocketed, so big sealed halls keep veil gating (both veils hidden, pure blue) while the fog itself stays clear unless the eye is liquid. One `LIQUID_SURFACE` spec per
 liquid in `textures.js` (defaults plus overrides, stable keys) supplies both
 roles — color, opacity, and grain, so retinting never touches paint
 code — new liquids register a spec without framework forks. Surfaces
@@ -137,10 +138,13 @@ spheres (no per-build computation, no per-frame matrix updates). Pocket/hem
 tests memoize per air cell per build; steady-state region fades skip the
 mesh and generic material loops (late-created materials fade at creation,
 the bespoke `onFade` still runs). Non-region meshes share one group per
-chunk, fog-culled as a unit past fog far (the Moon ground content);
+ chunk, fog-culled as a unit past fog far (the Moon ground content);
 region meshes stay scene-level under their fade gate. The
-first build is fully synchronous: every chunk in range meshes before the
-first frame, then closed-in fog expands to reveal the finished world.
+first build is near-synchronous only: the spawn neighborhood meshes before
+the first frame, then closed-in fog expands to reveal the world while far
+chunks keep streaming in under the frame budget — invisible behind the fog,
+and the clear-bubble guard builds anything entering visibility
+synchronously, so nothing ever pops in.
 Eviction waits for both the loose ring and the fogged range: a chunk outside
 `RENDER_DIST + UNLOAD_MARGIN` disposes only once its slab also clears fog
 far plus margin, and anything still queued inside the clear bubble builds
@@ -149,10 +153,13 @@ synchronously before the frame renders.
 ## Data flow (runtime)
 
 `main.js` loop: always render + camera follow. Boot loads a world instantly
-behind the translucent menu: voxels generate, every chunk in range builds
+behind the translucent menu: voxels generate, the spawn neighborhood builds
 synchronously, then closed-in fog (12–30) expands to its tuned range on a
-smoothstep reveal — the reveal is pure fog motion over a finished world,
-never ghost clarify. A tightening-only runtime fog guard caps fog far by
+smoothstep reveal while far chunks keep streaming in behind it — the reveal
+stays pure fog motion over a solid neighborhood, never ghost clarify, and
+the clear-bubble guard meshes anything entering visibility synchronously.
+A tightening-only
+runtime fog guard caps fog far by
 the 3D distance to the nearest evictable slab (minus margin) and shrinks
 the clear bubble with speed, so loading and unloading stay hidden at any
 altitude or pace; the dive-murk baseline tracks the guard. The loop
@@ -261,7 +268,7 @@ persistence.
   2×2×1 (see `configureVillage` to grow).
 - Spawn: feet inside radius 48, vista 50 ahead / 12 up across the FOV swath
   (`VIEW_HALF_TAN` from the 75° FOV), pen margin 1.
-- Moon: bottom `MOON_MIN_Y` = 850 (hand-picked), surface `MOON_SURFACE_Y` = 946, radius 96, shell 5, 6 hashed lakes; low gravity from 850, toolbar flips 8 below at 842 (water→moon-water, flower→glowstone), sky black 475→495, the Moon reveal region fades 495→515 (disc, lakes, *and* every block placed at `y >= MOON_MIN_Y` — stones, dirt, flowers, liquids — fading together so blue sky never shows a moon-side silhouette or a popping glowstone), snow fades in over its gate span.
+- Moon: bottom `MOON_MIN_Y` = 850 (hand-picked), surface `MOON_SURFACE_Y` = 946, radius 96, shell 5, 6 hashed lakes; surface (cap + lakes) builds with the world, hollow underside fills lazily in 16-row slices after the reveal plus chunk refresh, sync below `MOON_MIN_Y` - 8; low gravity from 850, toolbar flips 8 below at 842 (water→moon-water, flower→glowstone), sky black 475→495, the Moon reveal region fades 495→515 (disc, lakes, *and* every block placed at `y >= MOON_MIN_Y` — stones, dirt, flowers, liquids — fading together so blue sky never shows a moon-side silhouette or a popping glowstone), snow fades in over its gate span.
 - Glowstone: 7 color variants, cluster inherit within 10 blocks else fresh random; unlit per-variant textures; pooled point lights (one entry per block, bounded nearest-16 in one pass, no distance cutoff, decay 2, intensity 150, 8/s position+color glide with snap at rest, 0.5 s sticky reassignment) that read on lit blocks (moon rock is Lambert + emissiveMap base ~0.85 so the underside stays readable; moon-water sheets stay unlit).
 - Snow: 700 flakes, range 36, size 0.18, fall 2.5–5.5, 30 Hz step with landing heights refreshed every 8th step, hidden below its gate span, active above `MOON_SURFACE_Y - 8`.
 

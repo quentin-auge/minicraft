@@ -1,11 +1,15 @@
 // The Moon: a thick rock disc high above the clouds with hashed water
 // lakes, ported from master (same geometry, same salts). Altitudes derive
-// from the cloud bounds so the whole sky stacks from one anchor. Lakes
-// generate eagerly with the shell: the sparse mesher makes master's
-// near-moon visibility gate obsolete.
+// from the cloud bounds so the whole sky stacks from one anchor. Only the
+// surface (cap + lake shafts) builds with the world — spawn stands on it,
+// so tops are final before the player exists. The hollow underside shell
+// fills lazily after the reveal in row slices: unreachable within its
+// few-second window, so startup never pays for it. Overwrites are
+// deterministic, so a resumed or repeated fill is identical — no clearing
+// pass needed.
 import { MOON, MOON_WATER } from "../core/blocks.js";
 import { hash2 } from "../core/noise.js";
-import { WORLD_RADIUS } from "../core/store.js";
+import { WORLD_RADIUS, CHUNK } from "../core/store.js";
 
 export const MOON_R = WORLD_RADIUS;
 export const MOON_THICK = 5;
@@ -14,29 +18,82 @@ export const MOON_THICK = 5;
 export const MOON_MIN_Y = 850;
 export const MOON_SURFACE_Y = MOON_MIN_Y + MOON_R;
 
-export function generateMoon(seed, setBlock) {
+// Fill state per world seed: underside complete (the surface always builds
+// with the world; meshing of the shell follows via chunk refresh).
+// resetMoon clears it; every New World regenerates from empty.
+let builtSeed = null;
+export function moonReady(seed) {
+  return builtSeed === seed;
+}
+export function resetMoon() {
+  builtSeed = null;
+}
+
+// Surface-defining voxels (cap shell + lake shafts): eager in worldgen,
+// before spawn. Column tops are final afterwards, so spawn, lights, and
+// portals all agree with the post-fill world.
+export function generateMoonSurface(seed, setBlock) {
+  const R = MOON_R;
+  const base = MOON_SURFACE_Y;
+  const R2 = R * R;
+  for (let x = -R; x <= R; x++) for (let z = -R; z <= R; z++) {
+    if (x * x + z * z > R2) continue;
+    for (let y = base - MOON_THICK + 1; y <= base; y++) {
+      setBlock(x, y, z, MOON);
+    }
+  }
+  generateMoonLakes(seed, setBlock);
+}
+
+// Hollow underside shell in x-row slices (lazy background fill): same
+// voxels as the eager port, just deferred. Deterministic per geometry
+// (no seed hash), so repeats are identical.
+export function generateMoonUnderRows(seed, setBlock, x0, x1) {
   const R = MOON_R;
   const base = MOON_SURFACE_Y;
   const R2 = R * R;
   const inner = (R - MOON_THICK) * (R - MOON_THICK);
-  for (let x = -R; x <= R; x++) for (let z = -R; z <= R; z++) {
+  for (let x = Math.max(x0, -R); x < Math.min(x1, R + 1); x++) for (let z = -R; z <= R; z++) {
     const d2 = x * x + z * z;
     if (d2 > R2) continue;
     const h = Math.floor(Math.sqrt(R2 - d2));
-    for (let y = base - MOON_THICK + 1; y <= base; y++) {
-      if (y < 0) continue;
-      setBlock(x, y, z, MOON);
-    }
     for (let y = base - h; y < base - MOON_THICK + 1; y++) {
       const dy = base - y;
       const dist2 = d2 + dy * dy;
       if (dist2 <= R2 && dist2 >= inner) {
-        if (y < 0) continue;
         setBlock(x, y, z, MOON);
       }
     }
   }
-  generateMoonLakes(seed, setBlock);
+}
+
+export function markMoonBuilt(seed) {
+  builtSeed = seed;
+}
+
+// Full synchronous fill (underside safety net, headless harness): surface
+// plus whole underside in one go. Idempotent per seed.
+export function generateMoon(seed, setBlock) {
+  generateMoonSurface(seed, setBlock);
+  generateMoonUnderRows(seed, setBlock, -MOON_R, MOON_R + 1);
+  markMoonBuilt(seed);
+}
+
+// Chunk-center block coords overlapping the disc, for post-fill refresh:
+// only built chunks remesh (streaming builds the rest with underside
+// voxels already in place, since the fill completes before the refresh
+// pass; the surface was meshed at build).
+export function moonChunkCenters() {
+  const out = [];
+  const R = MOON_R;
+  const C = Math.ceil(R / CHUNK);
+  for (let cx = -C; cx <= C; cx++) for (let cz = -C; cz <= C; cz++) {
+    const x0 = cx * CHUNK, x1 = cx * CHUNK + CHUNK - 1;
+    const z0 = cz * CHUNK, z1 = cz * CHUNK + CHUNK - 1;
+    const nx = Math.max(x0, Math.min(0, x1)), nz = Math.max(z0, Math.min(0, z1));
+    if (nx * nx + nz * nz <= R * R) out.push([x0 + (CHUNK >> 1), 0, z0 + (CHUNK >> 1)]);
+  }
+  return out;
 }
 
 function generateMoonLakes(seed, setBlock) {

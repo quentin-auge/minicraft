@@ -4,7 +4,7 @@
 // Columns are unbounded above (any y >= 0, no ceiling): key packing stays
 // exact to 2^53 with the strides below (practical limit y ~ 2M, far past
 // view distance), and per-column indexes keep tall builds cheap.
-import { AIR, BLOCK_INFO, isLiquid } from "./blocks.js";
+import { AIR, BLOCK_INFO, isLiquid, MOON, MOON_WATER } from "./blocks.js";
 
 export const WORLD_RADIUS = 96;
 export const WATER_LEVEL = 10;
@@ -38,6 +38,12 @@ function makeColTops() {
 
 export const worlds = { over: new Map(), nether: new Map(), end: new Map() };
 export const colTops = { over: makeColTops(), nether: makeColTops(), end: makeColTops() };
+// Bare column tops: same index, but moon rock and moon water never raise
+// it. The Moon disc sets every column top to ~946, which would neuter the
+// enclosure fast path below (every ground flood would exhaust its budget
+// under the disc); the bare tops restore O(column-height) escapes for
+// below-band queries. Spawn and streaming keep using colTops.
+export const colTopsBare = { over: makeColTops(), nether: makeColTops(), end: makeColTops() };
 // Sparse column occupancy: colTopIdx -> Set of occupied y. Meshing iterates
 // blocks instead of scanning 0..top, so tall builds cost by blocks, not
 // height. colLiqTop (colTopIdx -> highest liquid y) answers swim queries in
@@ -61,6 +67,7 @@ export function setDimension(name) {
 export function resetWorld(name) {
   worlds[name].clear();
   colTops[name].fill(0);
+  colTopsBare[name].fill(0);
   colOcc[name].clear();
   colLiqTop[name].clear();
   if (dim === name) world = worlds[name];
@@ -80,6 +87,7 @@ export function setBlock(x, y, z, id) {
   const k = key(x, y, z);
   const ci = colTopIdx(x, z);
   const tops = colTops[dim];
+  const bare = colTopsBare[dim];
   const occ = colOcc[dim];
   if (id !== AIR) {
     world.set(k, id);
@@ -87,6 +95,7 @@ export function setBlock(x, y, z, id) {
     if (!set) { set = new Set(); occ.set(ci, set); }
     set.add(y);
     if (y > tops[ci]) tops[ci] = y;
+    if (id !== MOON && id !== MOON_WATER && y > bare[ci]) bare[ci] = y;
     if (isLiquid(id)) {
       const lt = colLiqTop[dim];
       if (y > (lt.get(ci) ?? -1)) lt.set(ci, y);
@@ -105,6 +114,18 @@ export function setBlock(x, y, z, id) {
     if (set) for (const yy of set) if (yy > m) m = yy;
     tops[ci] = m;
   }
+  // Bare top rescan has its own gate: moon rock can sit far above the bare
+  // top, so the tops gate above would miss terrain removals underneath it.
+  if (y >= bare[ci]) {
+    let bm = 0;
+    if (set) for (const yy of set) {
+      if (yy > bm) {
+        const bid = world.get(key(x, yy, z)) || AIR;
+        if (bid !== MOON && bid !== MOON_WATER) bm = yy;
+      }
+    }
+    bare[ci] = bm;
+  }
   const lt = colLiqTop[dim];
   if (y === lt.get(ci)) {
     let m = -1;
@@ -115,6 +136,34 @@ export function setBlock(x, y, z, id) {
     }
     if (m < 0) lt.delete(ci);
     else lt.set(ci, m);
+  }
+}
+
+// Bulk column fill: identical voxels and indexes to the equivalent setBlock
+// loop, but the per-column bookkeeping (occ set, tops, bare, liquid top)
+// runs once instead of per block. Only for fresh solid runs during worldgen
+// (never AIR, never overwrites mid-game edits); edits, trees, structures,
+// and blasts keep setBlock.
+export function fillColumn(x, z, y0, y1, id) {
+  if (y0 > y1) return;
+  const ci = colTopIdx(x, z);
+  const occ = colOcc[dim];
+  let set = occ.get(ci);
+  if (!set) { set = new Set(); occ.set(ci, set); }
+  const base = (x + KEY_OFF) * KEY_XSTRIDE + (z + KEY_OFF);
+  for (let y = y0; y <= y1; y++) {
+    world.set(base + y * KEY_YSTRIDE, id);
+    set.add(y);
+  }
+  const tops = colTops[dim];
+  if (y1 > tops[ci]) tops[ci] = y1;
+  if (id !== MOON && id !== MOON_WATER) {
+    const bare = colTopsBare[dim];
+    if (y1 > bare[ci]) bare[ci] = y1;
+  }
+  if (isLiquid(id)) {
+    const lt = colLiqTop[dim];
+    if (y1 > (lt.get(ci) ?? -1)) lt.set(ci, y1);
   }
 }
 
@@ -132,15 +181,27 @@ export function isSolid(x, y, z) {
 // only true pockets pay the full flood. Meshing only (veils, seals): small
 // pockets.
 export const POCKET_FLOOD_LIMIT = 512;
-export function isEnclosedAir(x, y, z) {
+// belowCap restores the fast path under the Moon: moon rock pushes every
+// column top to ~946, so without it each ground flood would explore the full
+// budget under the disc. Bare tops (moon excluded) bound the flood to column
+// height instead. Sound on generated terrain: air above all local non-moon
+// solids can only be sealed by moon overhead, which nothing places — sealed
+// player builds straddling the bare top (≤512 cells) read open; at- and
+// above-cap queries keep the exact old behavior, so lake rims and the sky
+// above read exactly as before. The only divergence is player-dug sealed
+// moon pockets touching liquid (unbuildable seal, veil tint only), which do
+// not exist in generated worlds. Meshing is the only caller.
+export function isEnclosedAir(x, y, z, belowCap = false) {
   if (Math.abs(x) > WORLD_RADIUS || Math.abs(z) > WORLD_RADIUS) return false;
   if (colTops[dim][colTopIdx(x, z)] < y) return false;
+  const bare = belowCap ? colTopsBare[dim] : null;
   const seen = new Set([key(x, y, z)]);
   const stack = [[x, y, z]];
   while (stack.length) {
     if (seen.size > POCKET_FLOOD_LIMIT) return false;
     const [cx, cy, cz] = stack.pop();
     if (colTops[dim][colTopIdx(cx, cz)] < cy) return false;
+    if (bare && bare[colTopIdx(cx, cz)] < cy) return false;
     const ns = [[cx, cy + 1, cz], [cx, cy - 1, cz], [cx - 1, cy, cz], [cx + 1, cy, cz], [cx, cy, cz + 1], [cx, cy, cz - 1]];
     for (const [nx, ny, nz] of ns) {
       if (Math.abs(nx) > WORLD_RADIUS || Math.abs(nz) > WORLD_RADIUS) return false;

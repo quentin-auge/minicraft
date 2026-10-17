@@ -11,7 +11,7 @@
 // changes.
 import * as THREE from "three";
 import { AIR, PORTAL, OBSIDIAN } from "../core/blocks.js";
-import { WORLD_RADIUS, key, keyXYZ, world, getBlock, isSolid } from "../core/store.js";
+import { WORLD_RADIUS, key, keyXYZ, getBlock, isSolid } from "../core/store.js";
 import {
   pos, vel, yaw, keys, setYaw, setPitch,
   PLAYER_HW, PLAYER_H,
@@ -76,11 +76,11 @@ export function notePortalEdits(coords) {
   portalDirty = true;
 }
 
-export function rebuildPortalBlocks() {
+// Worldgen-placed frames, keyed by the generator (live edits track
+// themselves via trackFrame, so a clear plus this list is exact).
+export function resetFrameSet(keys) {
   frameSet.clear();
-  for (const [k, id] of world) {
-    if (isFrameBlock(id)) frameSet.add(k);
-  }
+  for (const k of keys) frameSet.add(k);
   portalDirty = true;
 }
 

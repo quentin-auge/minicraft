@@ -4,7 +4,7 @@
 // terrain code.
 import { AIR, GRASS, STONE, LOG, WATER, GLASS, PLANKS, PORTAL, OBSIDIAN } from "../core/blocks.js";
 import { hash2 } from "../core/noise.js";
-import { WATER_LEVEL, WORLD_RADIUS } from "../core/store.js";
+import { WATER_LEVEL, WORLD_RADIUS, key } from "../core/store.js";
 
 // Village dimensions as one spec object: a bigger or denser village
 // overrides properties here, never the layout code below.
@@ -26,6 +26,18 @@ export const village = {
   houseCount: VILLAGE_SPEC.houses,
 };
 
+// Worldgen-placed frame blocks (pool floor, house portal rings), keyed for
+// the portal index: portals.js consumes this list at build instead of
+// rescanning the whole voxel map. Reset per world in computeLayout.
+export const villageFrames = [];
+
+// Frame-block writer: records the key alongside the voxel so the portal
+// index stays exact with no scan.
+function frame(setBlock, x, y, z, id) {
+  setBlock(x, y, z, id);
+  villageFrames.push(key(x, y, z));
+}
+
 export function configureVillage({ radius = VILLAGE_SPEC.radius, houses = VILLAGE_SPEC.houses } = {}) {
   village.radius = radius;
   village.houseCount = houses;
@@ -38,6 +50,7 @@ export function computeLayout(seed, heightAt) {
   village.houses = [];
   village.pen = null;
   village.pool = null;
+  villageFrames.length = 0;
   let vx = 0, vz = 0, vy = 0;
   for (let t = 0; t < 400; t++) {
     const cx = Math.round((hash2(t, 1, seed + 7100) * 2 - 1) * (WORLD_RADIUS - R - 6));
@@ -123,7 +136,7 @@ function placePool(setBlock, getBlock) {
   if (!p) return;
   const vy = p.vy;
   for (let x = p.minX; x <= p.maxX; x++) for (let z = p.minZ; z <= p.maxZ; z++) {
-    setBlock(x, vy - VILLAGE_SPEC.pool.depth, z, OBSIDIAN);
+    frame(setBlock, x, vy - VILLAGE_SPEC.pool.depth, z, OBSIDIAN);
     for (let y = vy - VILLAGE_SPEC.pool.depth + 1; y <= vy; y++) setBlock(x, y, z, WATER);
     if (getBlock(x, vy + 1, z) !== AIR) setBlock(x, vy + 1, z, AIR);
     if (getBlock(x, vy + 2, z) !== AIR) setBlock(x, vy + 2, z, AIR);
@@ -197,17 +210,17 @@ function placeHouses(setBlock) {
     }
     for (let x = minX; x <= maxX; x++) for (let z = minZ; z <= maxZ; z++) {
       const edge = x === minX || x === maxX || z === minZ || z === maxZ;
-      setBlock(x, vy + hh, z, edge ? PORTAL : OBSIDIAN);
+      frame(setBlock, x, vy + hh, z, edge ? PORTAL : OBSIDIAN);
     }
     for (let x = minX + 1; x <= maxX - 1; x++) for (let z = minZ + 1; z <= maxZ - 1; z++) {
       const edge = x === minX + 1 || x === maxX - 1 || z === minZ + 1 || z === maxZ - 1;
-      setBlock(x, vy + hh + 1, z, edge ? PORTAL : OBSIDIAN);
+      frame(setBlock, x, vy + hh + 1, z, edge ? PORTAL : OBSIDIAN);
     }
     for (let x = minX + 2; x <= maxX - 2; x++) for (let z = minZ + 2; z <= maxZ - 2; z++) {
       const edge = x === minX + 2 || x === maxX - 2 || z === minZ + 2 || z === maxZ - 2;
-      setBlock(x, vy + hh + 2, z, edge ? PORTAL : OBSIDIAN);
+      frame(setBlock, x, vy + hh + 2, z, edge ? PORTAL : OBSIDIAN);
     }
-    setBlock(h.cx, vy + hh + 3, h.cz, PORTAL);
+    frame(setBlock, h.cx, vy + hh + 3, h.cz, PORTAL);
     for (let x = minX + 1; x <= maxX - 1; x++) for (let z = minZ + 1; z <= maxZ - 1; z++) setBlock(x, vy + 1, z, AIR);
     for (const [dx, dz] of [[h.d0x, h.d0z], [h.d1x, h.d1z]])
       for (let y = vy + 1; y <= vy + 3; y++) setBlock(dx, y, dz, AIR);
