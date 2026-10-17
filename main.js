@@ -117,7 +117,9 @@ onLiquidPurge((touched) => purgeFloatingLiquidsAround(touched));
 function updateCamera(dt = 0) {
   camera.position.set(pos.x, pos.y + EYE, pos.z);
   camera.rotation.set(player.pitch, player.yaw, 0);
-  if (camTrauma > 0) {
+  // Pause contract: shake neither decays nor wobbles while paused (dt 0
+  // skips the block entirely, freezing the frame instead of settling it).
+  if (dt > 0 && camTrauma > 0) {
     camTrauma = Math.max(0, camTrauma - dt * 1.4);
     const sh = Math.pow(camTrauma, 1.5);
     const st = performance.now() / 1000;
@@ -334,12 +336,18 @@ addEventListener("resize", () => {
 });
 
 let last = performance.now();
+// Pause contract: simTime advances only while the sim runs and drives every
+// time-based visual (precip sway phase), so pausing freezes the frame.
+let simTime = 0;
 
 function loop(now) {
   requestAnimationFrame(loop);
   const dt = Math.min(0.05, (now - last) / 1000);
   last = now;
-  updateCamera(dt);
+  // Pause = pointer unlocked (menu) or help open: everything sim and visual
+  // freezes; only the loader, the debug readout, and the final render run.
+  const simActive = worldReady && started && !building && isLocked() && !isHelpOpen();
+  updateCamera(simActive ? dt : 0);
   if (!worldReady || !started) {
     highlight.visible = false;
     if (worldReady && !building) updateStreamingFog();
@@ -347,18 +355,19 @@ function loop(now) {
     renderer.render(scene, camera);
     return;
   }
-  tickFx(dt);
-  tickSnow(dt, now / 1000, camera);
   tickDebug(dt, pos.x, pos.y, pos.z);
-  tickBlockLights(dt, camera);
-  tickHookFx(dt);
-  // Streaming fog first, so the loader sees the tightened range; dive murk
-  // after (gated on building so it never fights the reveal), restoring the
-  // tracked air baseline on resurface. The pocket veil gate rides along:
-  // water-side white shows only for divers, the tinted veil only for
-  // open-air eyes, flipping together with the murk.
-  if (!building) updateStreamingFog();
-  if (worldReady && !building) {
+  if (simActive) {
+    simTime += dt;
+    tickFx(dt);
+    tickSnow(dt, simTime, camera);
+    tickBlockLights(dt, camera);
+    tickHookFx(dt);
+    // Streaming fog first, so the loader sees the tightened range; dive murk
+    // after (gated on building so it never fights the reveal), restoring the
+    // tracked air baseline on resurface. The pocket veil gate rides along:
+    // water-side white shows only for divers, the tinted veil only for
+    // open-air eyes, flipping together with the murk.
+    updateStreamingFog();
     tickSky(scene, camera, sun, hemi, envAir);
     applyRegions(camera.position, scene.background, setRegionFade);
     // One eye-medium lookup per frame, shared by the murk and the veil gate
@@ -366,10 +375,8 @@ function loop(now) {
     const medium = eyeMediumId(camera.position.x, camera.position.y, camera.position.z);
     tickWaterFog(scene, camera, dt, envAir, medium);
     setEyeMedium(medium);
-  }
-  // Moon-band hotbar: 8 below the Moon's lower end the water slot becomes
-  // moon water and the flower slot becomes glowstone; both restore on descent.
-  if (worldReady && !building) {
+    // Moon-band hotbar: 8 below the Moon's lower end the water slot becomes
+    // moon water and the flower slot becomes glowstone; both restore on descent.
     const moonNow = pos.y >= MOON_MIN_Y - 8;
     if (moonNow !== moonBand) {
       moonBand = moonNow;
@@ -385,16 +392,13 @@ function loop(now) {
         if (gi >= 0) setItem(gi, FLOWER);
       }
     }
-  }
-  // Underside safety net: below the moon band the shell must exist now, so
-  // descending onto (or under) a fresh moon never meets unbuilt rock.
-  // Synchronous and rare (the background fill wins by ~30 s of descent).
-  if (worldReady && !building && !moonReady(getSeed()) && camera.position.y < MOON_MIN_Y - 8) {
-    generateMoon(getSeed(), setBlock);
-    refreshBlocks(moonChunkCenters());
-  }
-  const simActive = isLocked() && !isHelpOpen();
-  if (simActive) {
+    // Underside safety net: below the moon band the shell must exist now, so
+    // descending onto (or under) a fresh moon never meets unbuilt rock.
+    // Synchronous and rare (the background fill wins by ~30 s of descent).
+    if (!moonReady(getSeed()) && camera.position.y < MOON_MIN_Y - 8) {
+      generateMoon(getSeed(), setBlock);
+      refreshBlocks(moonChunkCenters());
+    }
     // Knockback impulse decays every sim frame, whatever mode moves next;
     // the hook pull owns its frame and simply leaves it for afterwards.
     tickKnockback(dt);
@@ -409,9 +413,7 @@ function loop(now) {
       spawnPlayer();
     }
     tickTNT(dt, (touched) => { notePortalEdits(touched); refreshBlocks(touched); });
-  }
-  tickPortals(dt, simActive);
-  if (isLocked() && !isHelpOpen()) {
+    tickPortals(dt, true);
     const hit = updateTarget(camera, selectedId());
     if (hit) {
       highlight.visible = true;

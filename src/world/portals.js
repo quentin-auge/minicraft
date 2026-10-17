@@ -82,6 +82,10 @@ export function resetFrameSet(keys) {
   frameSet.clear();
   for (const k of keys) frameSet.add(k);
   portalDirty = true;
+  // A fresh world never inherits a pending teleport from the last one.
+  pendingTravel = null;
+  portalBusy = false;
+  portalCd = 0;
 }
 
 // --- Window evaluation (shapes from master) ---
@@ -742,22 +746,30 @@ function hidePortalSpiral() {
   setTimeout(() => { if (spiralGen === g) el.style.display = "none"; }, PORTAL_FADE_OUT + 80);
 }
 
+// Pause contract: the spiral wait is a sim-time pending, decremented in
+// tickPortals — never a wall-clock setTimeout — so pausing mid-spiral
+// freezes it and the travel completes after unpausing.
+let pendingTravel = null; // { spot, yawV, msg, t }
 function travelTo(spot, yawV, msg) {
   if (portalBusy) return;
   portalBusy = true;
   portalCd = 1.5;
   showPortalSpiral();
-  setTimeout(() => {
-    if (onTravelHook) onTravelHook();
-    pos.set(spot.x, spot.y, spot.z);
-    vel.set(0, 0, 0);
-    setYaw(yawV);
-    setPitch(0);
-    Object.keys(keys).forEach((k) => { keys[k] = false; });
-    if (msg) showToast(msg);
-    portalBusy = false;
-    hidePortalSpiral();
-  }, PORTAL_FADE_IN + 80);
+  pendingTravel = { spot, yawV, msg, t: (PORTAL_FADE_IN + 80) / 1000 };
+}
+
+function completeTravel() {
+  const { spot, yawV, msg } = pendingTravel;
+  pendingTravel = null;
+  if (onTravelHook) onTravelHook();
+  pos.set(spot.x, spot.y, spot.z);
+  vel.set(0, 0, 0);
+  setYaw(yawV);
+  setPitch(0);
+  Object.keys(keys).forEach((k) => { keys[k] = false; });
+  if (msg) showToast(msg);
+  portalBusy = false;
+  hidePortalSpiral();
 }
 
 function moveDir() {
@@ -801,9 +813,16 @@ function checkPortal() {
 }
 
 export function tickPortals(dt, canTravel) {
+  // Fully frozen while paused: cooldown, fill scans, and the pending travel
+  // all wait for the sim to run again.
+  if (!canTravel) return;
   if (portalCd > 0) portalCd -= dt;
+  if (pendingTravel) {
+    pendingTravel.t -= dt;
+    if (pendingTravel.t <= 0) completeTravel();
+  }
   if (sceneRef) updatePortalVisual(dt);
-  if (canTravel) checkPortal();
+  checkPortal();
 }
 
 // --- Help diagrams + travel spiral art (master visuals) ---

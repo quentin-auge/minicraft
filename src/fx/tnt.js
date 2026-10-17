@@ -288,6 +288,9 @@ export function shakeSpecFor(kindKey) {
 
 const lit = new Map(); // "x,y,z" -> { x, y, z, id, fuse, total, kind }
 const sprites = new Map(); // "x,y,z" -> THREE.Sprite countdown
+// Pause contract: chain dues are sim-time (advanced by tickTNT's dt), never
+// wall-clock, so a pause freezes the cascade instead of firing it on resume.
+let simNow = 0;
 const pendingChain = new Map(); // "x,y,z" -> { x, y, z, kind, due } delayed blasts
 // Liquid displaced when a TNT was placed ("x,y,z" -> liquid id), restored
 // in that cell after its blast unless the kind clears liquids.
@@ -330,6 +333,8 @@ export function noteTntPlaced(x, y, z, id) {
 
 // New worlds never inherit another world's placements, fuses, or lights.
 export function resetTNTMemory() {
+  simNow = 0;
+  pendingChain.clear();
   displaced.clear();
   megaIndex.clear();
   for (const k of [...megaVeils.keys()]) clearMegaLitVisual(k);
@@ -435,7 +440,7 @@ export function cancelTNT(x, y, z) {
 }
 
 export function tickTNT(dt, refresh) {
-  const now = performance.now() / 1000;
+  simNow += dt;
   if (lit.size) {
     const done = [];
     for (const [k, t] of lit) {
@@ -456,7 +461,7 @@ export function tickTNT(dt, refresh) {
     }
     for (const k of done) lit.delete(k);
   }
-  tickChain(now, refresh);
+  tickChain(simNow, refresh);
 }
 
 // Delayed chained blasts: each queued TNT detonates with its own full
@@ -550,7 +555,7 @@ function queueChained(x, y, z, kind) {
     lit.delete(k);
     removeSprite(k, kindOf(victim.kind));
   }
-  pendingChain.set(k, { x, y, z, kind: kind.key, due: performance.now() / 1000 + kind.chainDelay });
+  pendingChain.set(k, { x, y, z, kind: kind.key, due: simNow + kind.chainDelay });
 }
 
 // Live mega-position index: every placed mega block, removed as blasts

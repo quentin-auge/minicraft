@@ -6,7 +6,7 @@ stored, how it flows, and how each system works. Read this before changing code.
 ## Tree
 
 - `index.html` — static shell: menu, help (controls + portal diagrams), hotbar DOM, portal-travel spiral overlay, Three.js import map.
-- `main.js` — bootstrap: scene, input wiring, main loop, world startup. Ticks portals (fill refresh + loop travel) and notifies the portal index of blast edits.
+- `main.js` — bootstrap: scene, input wiring, main loop, world startup. Owns the pause gate (`simActive`: locked + help closed + started + built): every sim/visual tick runs only behind it; the loader, the debug readout, and the final render are the only things that run while paused. Ticks portals (fill refresh + loop travel) and notifies the portal index of blast edits.
 - `src/ui/hotbar.js` — dynamic item list (add/remove/change/reset ops, selection tracked by id), rendered bar.
 - `src/core/blocks.js` — block ids, BLOCK_INFO (solid/opaque/placeable, plus `light` emitter key for emissive blocks), liquid/TNT predicates.
 - `src/core/noise.js` — deterministic hash2/valueNoise/fbm.
@@ -24,15 +24,15 @@ stored, how it flows, and how each system works. Read this before changing code.
 - `src/render/flowers.js` — flower-variant registry, baked voxel-cluster geometries (stem/leaves/disc bloom).
 - `src/world/village.js` — village layout and structure placement (houses, pen, pool); records worldgen-placed frame-block keys for the portal index (no full-map scan at build).
 - `src/world/spawn.js` — spawn selection on finished voxels (`findSpawn`): firm open ground with a frustum-wide clear vista.
-- `src/world/portals.js` — local-loop Nether/End portals: `PORTAL_TYPES` registry (End `PORTAL` frame, Nether `OBSIDIAN` frame; each spec carries frame block, sizes via anchors, fill color/material, travel action, help art — new families register a spec, the engine dispatches without family switches), frame validation (End 5×5/5×4 upright faces x/z + 5×5 flat, corners optional; Nether 5×4/4×5/4×4 upright faces x/z + 5×4/4×5 flat, corners required), frames may cross orthogonally (interior frame blocks must belong to another live window's ring — support-closure; breaking either ring drops both), solid-color fills (End black, Nether purple, fogged like any block, always shown), body-overlap travel trigger, spiral + help-diagram builders, arrivals ~3 blocks out facing the crossed window. Every edit refreshes fills around the edited cell the same frame (placement reach is unlimited, the player-centered scan alone would miss far windows).
+- `src/world/portals.js` — local-loop Nether/End portals: `PORTAL_TYPES` registry (End `PORTAL` frame, Nether `OBSIDIAN` frame; each spec carries frame block, sizes via anchors, fill color/material, travel action, help art — new families register a spec, the engine dispatches without family switches), frame validation (End 5×5/5×4 upright faces x/z + 5×5 flat, corners optional; Nether 5×4/4×5/4×4 upright faces x/z + 5×4/4×5 flat, corners required), frames may cross orthogonally (interior frame blocks must belong to another live window's ring — support-closure; breaking either ring drops both), solid-color fills (End black, Nether purple, fogged like any block, always shown), body-overlap travel trigger, spiral + help-diagram builders, arrivals ~3 blocks out facing the crossed window. The spiral wait is a sim-time pending (`pendingTravel`, decremented in `tickPortals`), so pausing mid-spiral freezes it and the travel completes after unpausing; `tickPortals` freezes entirely (cooldown, scans, pending) while paused. Every edit refreshes fills around the edited cell the same frame (placement reach is unlimited, the player-centered scan alone would miss far windows).
 - `src/player/physics.js` — player state, movement, shared axis movers (`collideBody`); `spawnPlayer` applies the `findSpawn` pick.
 - `src/player/fly.js` — fly mode (pitch-aware thrust, no gravity) on the shared movers.
 - `src/player/hook.js` — hook-kind registry (`HOOK_TYPES`, grapple first); framework (fire → pull → arrive/release) dispatches through the spec.
 - `src/player/rope.js` — rope-render backend (instanced cube rope, swappable).
 - `src/player/edit.js` — DDA raycast, place/break, floating-liquid purge, TNT displaced-liquid record. Notifies the portal index of every voxel change; glowstone places/breaks assign/clear the color variant and notify the block-light index.
-- `src/fx/tnt.js` — blast-kind registry (`TNT_TYPES`, normal first), fuses, countdown visuals, delayed chain queue, spherical + pooled blasts, per-kind camera-shake specs, displaced-liquid memory, post-blast floating-liquid purge via injected callback. Second break-click detonates lit TNT at once. Blast deletions clear glowstone variants through the same `clearCell` choke point and re-sync block lights once per blast.
+- `src/fx/tnt.js` — blast-kind registry (`TNT_TYPES`, normal first), fuses, countdown visuals, delayed chain queue, spherical + pooled blasts, per-kind camera-shake specs, displaced-liquid memory, post-blast floating-liquid purge via injected callback. Chain dues are sim-time (`simNow`, advanced by `tickTNT`'s `dt`), so a pause freezes the cascade instead of firing it on resume. Second break-click detonates lit TNT at once. Blast deletions clear glowstone variants through the same `clearCell` choke point and re-sync block lights once per blast.
 - `src/fx/particles.js` — generic burst/flash effects backend (`spawnBurst`, `spawnFlash`, `tickFx`); bursts support a crater-filling spawn ball (`fillRadius`), a per-particle color `palette`, and a `foreground` mode (no depth test, drawn above everything); flashes support a constant-speed `maxRadius` fireball mode (expand then retract, duration scales with radius).
-- `src/fx/precip.js` — falling-precipitation backend (`PRECIP_TYPES` registry, snow first; rain later is one entry): camera-following drops at a 30 Hz step, wrap + cached landing heights, material fade-in over camera altitude.
+- `src/fx/precip.js` — falling-precipitation backend (`PRECIP_TYPES` registry, snow first; rain later is one entry): camera-following drops at a 30 Hz step, wrap + cached landing heights, material fade-in over camera altitude. Its sway clock is the sim-time passed in by `main.js`, so snow freezes mid-air while paused.
 - `src/render/mesher.js` — chunked InstancedMesh renderer, streaming, local refresh, region-aware instance splitting (per-id, per-variant glowstone, flowers, liquid quads all split by `regionOf`, each group owning cloned materials and gated by its region fade; generic per-region opacity fade so anything in a region — rock, placed blocks, glowstone, liquids — reveals smoothly, with the moon's `onFade` keeping the rock opaque and tinting sky-colour→texture; combined `regionVisible && veilVisible` so a hidden region never flashes a pocket veil).
 - `src/ui/menu.js` — Play/Resume/New-World overlay, pointer-lock wiring (no saves). Play is clickable from the first frame and enters a finished world fading in through expanding fog; New World only once started and never during a build; Esc unlock shows Resume + New World. Boot builds instantly behind the menu; no spinner anywhere.
 - `src/ui/debug.js` — `=` HUD readout (`fps N | x X  y Y  z Z`: FPS exponential moving average, quarter-second refresh, hidden until started; integer block coords are the floored feet position passed in from `main.js`).
@@ -174,15 +174,20 @@ the only murk, since surfaces are flat unlit sheets. The eye medium is
 computed once per frame and shared by the murk and the veil gate. Once voxel data exists, input is fully live — move, look,
 place/break, grapple, fly, hotbar; edits
 to unmeshed chunks persist in the voxel store and appear when their chunk
-builds (`refreshBlocks` skips queued chunks, rebuilds built ones). TNT
-tick and simulation while locked and help closed (hook, else fly, else walk)
-→ raycast target + highlight → stream nearby chunks. Falling below `y = -20`
+builds (`refreshBlocks` skips queued chunks, rebuilds built ones). Pause (`simActive`: locked and help closed) gates every sim and visual tick — player/hook/TNT/portals, particles, snow, block lights, fog, sky, regions, murk, shake — while the loader, the debug readout, and the final render keep running (see Pause contract). While active: movement (hook, else fly, else walk) → TNT tick → portal tick → raycast target + highlight → stream nearby chunks. Falling below `y = -20`
 respawns. Portal windows refresh around the player (fills always exist but
 fog like anything else); stepping into a fill plays the spiral, then respawns beside the
-same window, ~3 blocks out and facing it) with a 1.5 s cooldown. Play enters a finished world fading in through expanding fog; Esc
+same window, ~3 blocks out and facing it) with a 1.5 s cooldown; pausing mid-spiral freezes the wait and the travel completes after unpausing. Play enters a finished world fading in through expanding fog; Esc
 shows Resume + New World (fresh seed, same instant-load flow, the only action
 that waits on a build). There is no
 persistence.
+
+## Pause contract
+
+- Paused = pointer unlocked (menu) or help open. `main.js` computes one `simActive` (`worldReady && started && !building && isLocked() && !isHelpOpen()`) and every sim or visual tick runs only behind it: player/hook/knockback, `tickTNT`, `tickPortals`, `tickFx`, precip, block lights, hook visuals, streaming fog, sky, regions, dive murk, camera shake, highlight. Pausing freezes the frame; unpausing resumes it — nothing fires, decays, or catches up in between.
+- Time-based logic takes `dt` plus sim-time only — never `performance.now`/`Date.now`/`setTimeout`/`setInterval` in a tick path. Pending futures are state + `dt` countdowns decremented in their tick: TNT chains (`pendingChain.due` off `simNow`), portal travel (`pendingTravel.t`), precip sway (sim-time passed in by `main.js`).
+- Loader and UI-only code are the only wall-clock exemptions, named here so future agents don't "fix" them: chunk streaming/mesher budget + background moon fill (loading, not sim), `tickDebug` FPS readout, hotbar wheel throttle, `helpJustClosed` grace, toast/spiral DOM fades.
+- New features ship pausable or they don't ship: wire every new `tick*`/`update*` behind `simActive`, keep every countdown in sim-time, and extend this section when adding a new exemption or pending-future shape.
 
 ## Broad logic (world)
 
@@ -325,6 +330,7 @@ entries, never framework forks:
   never forks.
 - Spec keys are stable strings, never array indices, so a future save
   format survives reordering.
+- Every tick-shaped hook (`tickLitVisual`, `spawnBlastFx`, precip `active`/`landed`, `LIGHT_EMITTERS` sync, `REGIONS` factor) obeys the Pause contract above: `dt` + sim-time in, no wall-clock out.
 - Cosmetic variants follow the recipe: weighted options table → deterministic
   hash picker (`flowerVariantAt`) or stored per-block color (`glowVariantAt`, clustered on place) → baked geometries/materials + shared material.
 
