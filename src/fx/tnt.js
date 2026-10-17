@@ -12,6 +12,9 @@
 // Bedrock (y=0) is always spared; liquids survive unless the kind sets
 // clearsLiquids (mega). A non-clearing TNT placed in liquid restores that
 // liquid in its cell after its blast; a clearing kind leaves air behind.
+// After every blast, liquids left with no solid 6-neighbor are purged back
+// to air through an injected callback (set via onLiquidPurge), so blasts
+// never strand floating remnants.
 import { AIR, TNT, MEGA_TNT, isLiquid, isTntLike } from "../core/blocks.js";
 import { WORLD_RADIUS, MAX_Y, colTops, colTopIdx, dim, getBlock, setBlock } from "../core/store.js";
 import { GRAVITY, pos, vel, setOnGround, addPlayerKnockback, KNOCK_DECAY } from "../player/physics.js";
@@ -290,6 +293,7 @@ const pendingChain = new Map(); // "x,y,z" -> { x, y, z, kind, due } delayed bla
 const displaced = new Map();
 let sceneRef = null;
 let onBlast = null;
+let onPurge = null;
 
 export function initTNTFx(scene) {
   sceneRef = scene;
@@ -297,6 +301,24 @@ export function initTNTFx(scene) {
 
 export function onExplode(fn) {
   onBlast = fn;
+}
+
+// Floating-liquid purge, injected by the caller (edit.js already depends on
+// this module, so a static import would cycle). Runs after every blast over
+// its touched cells; skipped silently when unset (e.g. headless use).
+export function onLiquidPurge(fn) {
+  onPurge = fn;
+}
+
+// Purges blast-stranded floating liquids and folds the purged cells into
+// touched so they remesh with the rest.
+function purgeBlastLiquids(touched) {
+  if (!onPurge || !touched.length) return touched;
+  const purged = onPurge(touched) ?? [];
+  for (const c of purged) {
+    if (!touched.some(([x, y, z]) => x === c[0] && y === c[1] && z === c[2])) touched.push(c);
+  }
+  return touched;
 }
 
 // Records the liquid a placed TNT replaced; called once per placement.
@@ -466,6 +488,7 @@ function spawnBlastFx(x, y, z, kind) {
 function explode(cx, cy, cz, kind, refresh) {
   if (kind.pool) {
     const pooled = explodePool(cx, cy, cz, kind);
+    purgeBlastLiquids(pooled);
     if (refresh) refresh(pooled);
     return pooled;
   }
@@ -505,6 +528,7 @@ function explode(cx, cy, cz, kind, refresh) {
     setBlock(cx, cy, cz, fill);
     if (!touched.some(([x, y, z]) => x === cx && y === cy && z === cz)) touched.push([cx, cy, cz]);
   }
+  purgeBlastLiquids(touched);
   if (refresh) refresh(touched);
   if (kind.knockback) applyMegaKnockback(cx, cy, cz, kind);
   if (onBlast) onBlast(cx, cy, cz, kind.radius, kind.key);

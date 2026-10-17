@@ -8,10 +8,10 @@ import {
 } from "./src/player/physics.js";
 import * as player from "./src/player/physics.js";
 import { flyOn, setFly, updateFly } from "./src/player/fly.js";
-import { updateTarget, breakTarget, placeAtSelection, breakBlockAt } from "./src/player/edit.js";
+import { updateTarget, breakTarget, placeAtSelection, breakBlockAt, purgeFloatingLiquidsAround } from "./src/player/edit.js";
 import { fireHookTarget, grappleBlockPick, cancelHook, severHook, updateHook, hookActive, tickHookFx } from "./src/player/hook.js";
 import { initRope } from "./src/player/rope.js";
-import { tickTNT, initTNTFx, resetTNTMemory, onExplode, shakeSpecFor } from "./src/fx/tnt.js";
+import { tickTNT, initTNTFx, resetTNTMemory, onExplode, onLiquidPurge, shakeSpecFor } from "./src/fx/tnt.js";
 import { initFx, tickFx } from "./src/fx/particles.js";
 import { initRenderer, rebuildAll, maybeStream, refreshBlocks, drainChunkQueue, setEyeMedium, UNLOAD_MARGIN } from "./src/render/mesher.js";
 import { buildHotbar, select, selected, selectedId, initHotbarInput } from "./src/ui/hotbar.js";
@@ -90,6 +90,10 @@ onExplode((cx, cy, cz, radius, kindKey) => {
   else amp = spec.max * spec.knee * Math.exp(-3 * (dc - 2 * radius) / radius);
   addCamShake(amp);
 });
+
+// Blast-stranded floating liquids collapse back to air. Injected here
+// because tnt.js must not import edit.js (edit.js already depends on it).
+onLiquidPurge((touched) => purgeFloatingLiquidsAround(touched));
 
 function updateCamera(dt = 0) {
   camera.position.set(pos.x, pos.y + EYE, pos.z);
