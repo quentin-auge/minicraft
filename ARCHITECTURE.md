@@ -187,7 +187,7 @@ persistence.
   A mob grab adds a filter entry (`{ kind: "mob", ref }` from a mob picker)
   plus a kind entry with `pull: "anchor-to-self"` and a following `retarget`
   (anchor tracks `mob.pos` + offset every frame, flight included); release
-  and sever paths are shared, with no physics changes. Grapple (middle-click): any solid block (ground, wall, ceiling —
+  and sever paths are shared, with no physics changes. Grapple (middle-click or G, release to let go): any solid block (ground, wall, ceiling —
   never liquid), unbounded DDA pick (`Infinity`, 1024 steps, like edit picks), eye anchor `0.3`; refused while flying, hooked, or in fly
   mode. Head flies parametric (`fly 0→1` at `throw × boost`) onto the aimed
   face plane (`headOff` 0: cube centered on the surface, half-buried), physics live underneath so falls continue. The

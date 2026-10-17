@@ -256,6 +256,12 @@ document.addEventListener("keydown", (e) => {
     e.preventDefault();
     return;
   }
+  if (e.code === "KeyG" && !e.repeat && started && !isHelpOpen() && isLocked()) {
+    camera.getWorldDirection(_hookDir);
+    fireHookTarget(grappleBlockPick, camera.position, _hookDir);
+    e.preventDefault();
+    return;
+  }
   keys[e.code] = true;
   keys[e.key] = true;
   if (e.code === "KeyK") select(selected - 1);
@@ -263,6 +269,7 @@ document.addEventListener("keydown", (e) => {
   if (["Space", "Slash", "Tab", "ArrowUp", "ArrowDown"].includes(e.code) || e.key === " ") e.preventDefault();
 });
 document.addEventListener("keyup", (e) => {
+  if (e.code === "KeyG" && hookActive()) cancelHook(true);
   keys[e.code] = false;
   keys[e.key] = false;
 });
