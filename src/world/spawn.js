@@ -3,7 +3,7 @@
 // dependency, so the headless world-gen harness asserts it directly;
 // physics.js applies the result to the player body.
 import { isLiquid, LOG, LEAVES } from "../core/blocks.js";
-import { getBlock, isSolid, MAX_Y, WATER_LEVEL } from "../core/store.js";
+import { getBlock, isSolid, colTops, colTopIdx, dim, WATER_LEVEL } from "../core/store.js";
 import { village } from "./village.js";
 
 // Spawn spec: feet stay inside this disc; the vista must be clear this far
@@ -22,8 +22,10 @@ const PEN_MARGIN = 1;
 
 // Highest standable ground in a column: solid dry land, never tree matter,
 // with open headroom. Null for water, tree columns, roofed, or empty columns.
+// Starts from the column's own top (no ceiling to scan from).
 function groundHeightAt(x, z) {
-  for (let y = MAX_Y; y >= 0; y--) {
+  const top = colTops[dim][colTopIdx(x, z)];
+  for (let y = top; y >= 0; y--) {
     const id = getBlock(x, y, z);
     if (id === LOG || id === LEAVES) return null;
     if (isSolid(x, y, z)) {
@@ -109,7 +111,8 @@ export function findSpawn(eyeHeight) {
     }
   }
   if (bestScore < 0) {
-    for (let y = MAX_Y; y >= 0; y--) {
+    const top = colTops[dim][colTopIdx(0, 0)];
+    for (let y = top; y >= 0; y--) {
       if (isSolid(0, y, 0)) { fy = y; break; }
     }
     ff = bestFacing(0.5, fy + 1 + eyeHeight, 0.5)[0];

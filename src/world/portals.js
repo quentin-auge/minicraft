@@ -11,7 +11,7 @@
 // changes.
 import * as THREE from "three";
 import { AIR, PORTAL, OBSIDIAN } from "../core/blocks.js";
-import { WORLD_RADIUS, MAX_Y, key, world, getBlock, isSolid } from "../core/store.js";
+import { WORLD_RADIUS, key, keyXYZ, world, getBlock, isSolid } from "../core/store.js";
 import {
   pos, vel, yaw, keys, setYaw, setPitch,
   PLAYER_HW, PLAYER_H,
@@ -44,14 +44,6 @@ const specByKey = new Map(PORTAL_TYPES.map((s) => [s.key, s]));
 const specOf = (win) => specByKey.get(win.type);
 const frameIds = new Set(PORTAL_TYPES.map((s) => s.frame));
 const isFrameBlock = (id) => frameIds.has(id);
-
-function keyXYZ(k) {
-  const z = (k % 2048) - 1024;
-  const t = Math.floor(k / 2048);
-  const y = t % 2048;
-  const x = Math.floor(t / 2048) - 1024;
-  return [x, y, z];
-}
 
 // Index of every frame block, so scans only visit real candidates.
 const frameSet = new Set();
@@ -619,7 +611,7 @@ function findReturnSpot(win, dir, wins) {
   for (const r of [3, 4, 5, 2, 1]) {
     for (const dy of [0, 1, -1, 2, -2]) {
       const feetY = box.baseY + dy;
-      if (feetY < 1 || feetY + 1 > MAX_Y) continue;
+      if (feetY < 1) continue;
       const ring = [];
       for (let ix = box.minX - r; ix <= box.maxX + r; ix++)
         for (let iz = box.minZ - r; iz <= box.maxZ + r; iz++) {
@@ -659,7 +651,7 @@ function frameTopSpot(win, wins) {
   cols.sort((a, b) => (Math.abs(a[0] - c.x) + Math.abs(a[2] - c.z)) - (Math.abs(b[0] - c.x) + Math.abs(b[2] - c.z)));
   for (const [fx, fy, fz] of cols) {
     if (!isSolid(fx, fy, fz)) continue;
-    for (let feetY = fy + 1; feetY <= Math.min(fy + 30, MAX_Y - 1); feetY++) {
+    for (let feetY = fy + 1; feetY <= fy + 30; feetY++) {
       if (!isSolid(fx, feetY - 1, fz)) continue;
       if (!returnBodyClear(fx + 0.5, feetY, fz + 0.5)) continue;
       if (inReturnPortalBody(wins, fx + 0.5, feetY, fz + 0.5)) continue;
@@ -695,7 +687,7 @@ function resolveSpawn(sx, sy, sz) {
   for (const r of [3, 4, 2, 1, 0]) {
     for (const dy of [0, 1, -1, 2, -2, -3, 3]) {
       const feetY = cy + dy;
-      if (feetY < 1 || feetY + 1 > MAX_Y) continue;
+      if (feetY < 1) continue;
       for (let ix = cx - r; ix <= cx + r; ix++)
         for (let iz = cz - r; iz <= cz + r; iz++) {
           if (r > 0 && Math.max(Math.abs(ix - cx), Math.abs(iz - cz)) !== r) continue;

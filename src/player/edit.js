@@ -4,7 +4,7 @@
 // detonates it immediately.
 import * as THREE from "three";
 import { AIR, BLOCK_INFO, isLiquid, isTntLike } from "../core/blocks.js";
-import { WORLD_RADIUS, MAX_Y, getBlock, setBlock } from "../core/store.js";
+import { WORLD_RADIUS, getBlock, setBlock } from "../core/store.js";
 import { PLAYER_HW, PLAYER_H, pos } from "./physics.js";
 import { igniteTNT, isLitTNT, detonateNow, noteTntPlaced, kindOfBlock, trackMegaPlaced } from "../fx/tnt.js";
 import { notePortalEdit } from "../world/portals.js";
@@ -23,7 +23,7 @@ export function pickBlock(origin, dir, skipLiquid, maxDist = Infinity, maxSteps 
   let tMaxZ = dir.z !== 0 ? ((stepZ > 0 ? Math.floor(origin.z) + 1 - origin.z : origin.z - Math.floor(origin.z)) / Math.abs(dir.z)) : Infinity;
   let face = [0, 0, 0];
   for (let i = 0; i < maxSteps; i++) {
-    const out = x < -WORLD_RADIUS || x > WORLD_RADIUS || z < -WORLD_RADIUS || z > WORLD_RADIUS || y < 0 || y > MAX_Y;
+    const out = x < -WORLD_RADIUS || x > WORLD_RADIUS || z < -WORLD_RADIUS || z > WORLD_RADIUS || y < 0;
     if (!out) {
       const id = getBlock(x, y, z);
       if (id !== AIR && !(skipLiquid && isLiquid(id))) return { x, y, z, id, face };
@@ -86,7 +86,7 @@ export function purgeFloatingLiquidsAround(coords) {
     if (isLiquid(getBlock(x, y, z))) seeds.push([x, y, z]);
     for (const [dx, dy, dz] of LIQUID_NB) {
       const nx = x + dx, ny = y + dy, nz = z + dz;
-      if (ny < 0 || ny > MAX_Y) continue;
+      if (ny < 0) continue;
       if (isLiquid(getBlock(nx, ny, nz))) seeds.push([nx, ny, nz]);
     }
   }
@@ -107,7 +107,7 @@ export function purgeFloatingLiquidsAround(coords) {
       if (liquidTouchesSolid(x, y, z)) { grounded = true; break; }
       for (const [dx, dy, dz] of LIQUID_NB) {
         const nx = x + dx, ny = y + dy, nz = z + dz;
-        if (ny < 0 || ny > MAX_Y) continue;
+        if (ny < 0) continue;
         if (getBlock(nx, ny, nz) !== lid) continue;
         const nk = key(nx, ny, nz);
         if (seen.has(nk)) continue;
@@ -145,7 +145,7 @@ export function breakBlockAt(x, y, z) {
 
 export function tryPlace(id, px, py, pz) {
   if (!BLOCK_INFO[id] || !BLOCK_INFO[id].placeable) return null;
-  if (py < 0 || py > MAX_Y) return null;
+  if (py < 0) return null;
   const target = getBlock(px, py, pz);
   if (!(target === AIR || isLiquid(target))) return null;
   if (BLOCK_INFO[id].solid && intersectsPlayer(px, py, pz)) return null;

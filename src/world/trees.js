@@ -4,7 +4,7 @@
 // tryGrowTree per column.
 import { AIR, GRASS, LOG, LEAVES } from "../core/blocks.js";
 import { hash2 } from "../core/noise.js";
-import { WATER_LEVEL, MAX_Y } from "../core/store.js";
+import { WATER_LEVEL } from "../core/store.js";
 
 const TREE_DEFAULTS = {
   trunkMin: 4,
@@ -66,7 +66,6 @@ export function tryGrowTree(ctx, x, h, z) {
     const density = ctx.forest ? type.densityForest : type.densityOpen;
     if (hash2(x, z, ctx.seed + type.salt) >= density) continue;
     const trunkH = type.trunkMin + Math.floor(hash2(x, z, ctx.seed + 999) * (type.trunkMax - type.trunkMin + 1));
-    if (h + trunkH + 2 >= MAX_Y) continue;
     if (!groundOk(ctx, x, h, z, type)) continue;
     type.grow(ctx, x, h + 1, z, trunkH);
     return type.key;

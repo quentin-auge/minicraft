@@ -35,11 +35,11 @@ stored, how it flows, and how each system works. Read this before changing code.
 
 - Block ids are stable integers (`AIR = 0` … `MOON_WATER = 21`); new blocks only append.
 - `BLOCK_INFO[id]` carries `solid`, `opaque`, `placeable`. Physics and meshing both derive from it.
-- Voxel key: `(x + 1024) * 2048² + y * 2048 + (z + 1024)`; one `Map` per dimension in `worlds`.
-- `MAX_Y = 256` world ceiling; `dim`/`world` point at the active dimension's map and tops.
+- Voxel key: `(x + 1024) * 2^32 + y * 2048 + (z + 1024)` (decoded by `keyXYZ`, kept beside the encoder); one `Map` per dimension in `worlds`.
+- No ceiling: columns run any `y >= 0` (floor `y = 0` bedrock stays); `dim`/`world` point at the active dimension's map and tops.
 - Noise (`noise.js`) matches master's formulas exactly, including its z-flipped
   bilinear blend — required for a sane land/water ratio, do not "fix".
-- `colTops[dim]` (Int16Array) tracks the highest non-air block per column for meshing and spawn.
+- `colTops[dim]` (Int32Array) tracks the highest non-air block per column for meshing and spawn; `colOcc[dim]` (`colIdx` → `Set` of occupied y) lets meshing iterate blocks instead of scanning height, and `colLiqTop[dim]` (`colIdx` → highest liquid y) answers swim queries in O(1) — all maintained by `setBlock`, the only writer.
 - Village state is a single `village` object: center, bounds, houses, pen, pool, radius/houseCount tunables.
 - Player state is module-level: `pos`/`vel` vectors, `yaw`/`pitch`, `onGround`,
   step-up/step-down flags, jump buffer/rebound trackers, shared `keys` map.
@@ -66,7 +66,8 @@ No clouds, no moon.
 
 ## Data flow (meshing)
 
-Per chunk: scan columns up to `colTops`, keep exposed blocks only (any neighbor
+Per chunk: iterate each column's occupancy set (`colOcc`, ascending) and
+keep exposed blocks only (any neighbor non-opaque), group by id
 non-opaque), group by id into one InstancedMesh each (flowers skip the cube
 bucket: per-variant cluster meshes with a hash-spun Y rotation, glass
 transparent). Liquids skip cubes entirely: one merged InstancedMesh per

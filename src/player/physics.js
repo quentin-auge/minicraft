@@ -3,7 +3,7 @@
 // Dropped from master: jump streak speed boost, grapple, fly, mob collision.
 import * as THREE from "three";
 import { isLiquid } from "../core/blocks.js";
-import { getBlock, isSolid, colTops, colTopIdx, dim } from "../core/store.js";
+import { getBlock, isSolid, colLiqTop, colTopIdx, dim } from "../core/store.js";
 import { findSpawn } from "../world/spawn.js";
 
 export const PLAYER_HW = 0.3;
@@ -124,16 +124,14 @@ export function headInWater() {
 }
 
 function waterSurfaceTop() {
+  // O(1) per column via the liquid-top index: no scan, so swimming beside a
+  // tall build costs the same as open water.
   let top = -Infinity;
   for (let bx = Math.floor(pos.x - PLAYER_HW); bx <= Math.floor(pos.x + PLAYER_HW); bx++)
     for (let bz = Math.floor(pos.z - PLAYER_HW); bz <= Math.floor(pos.z + PLAYER_HW); bz++) {
-      const ct = colTops[dim][colTopIdx(bx, bz)];
-      for (let y = ct; y >= 0; y--) {
-        if (isLiquid(getBlock(bx, y, bz))) {
-          if (y + 1 > top) top = y + 1;
-          break;
-        }
-      }
+      const lt = colLiqTop[dim].get(colTopIdx(bx, bz));
+      if (lt === undefined) continue;
+      if (lt + 1 > top) top = lt + 1;
     }
   return top;
 }

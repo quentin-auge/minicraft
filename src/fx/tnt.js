@@ -16,7 +16,7 @@
 // to air through an injected callback (set via onLiquidPurge), so blasts
 // never strand floating remnants.
 import { AIR, TNT, MEGA_TNT, isLiquid, isTntLike } from "../core/blocks.js";
-import { WORLD_RADIUS, MAX_Y, colTops, colTopIdx, dim, getBlock, setBlock } from "../core/store.js";
+import { WORLD_RADIUS, colTops, colTopIdx, dim, getBlock, setBlock } from "../core/store.js";
 import { GRAVITY, pos, vel, setOnGround, addPlayerKnockback, KNOCK_DECAY } from "../player/physics.js";
 import { flyOn } from "../player/fly.js";
 import { spawnBurst, spawnFlash } from "./particles.js";
@@ -697,7 +697,7 @@ function carveSphere(cx, cy, cz, kind, touched, pool = false, Reff = kind.radius
   for (let x = Math.max(-WORLD_RADIUS, Math.ceil(cx - R)); x <= Math.min(WORLD_RADIUS, Math.floor(cx + R)); x++) {
     for (let z = Math.max(-WORLD_RADIUS, Math.ceil(cz - R)); z <= Math.min(WORLD_RADIUS, Math.floor(cz + R)); z++) {
       const yLo = Math.max(1, Math.ceil(cy - R));
-      let yHi = Math.min(MAX_Y, Math.floor(cy + R));
+      let yHi = Math.floor(cy + R);
       // Skip the air above the terrain: only the blast at or below the
       // column top can hit anything (same cells as before, half the scan).
       const top = colTops[dim][colTopIdx(x, z)];

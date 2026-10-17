@@ -2,7 +2,7 @@
 // only for exposed blocks. Rebuilds stay local via refreshBlocks().
 import * as THREE from "three";
 import { AIR, BLOCK_INFO, FLOWER, GLASS, isLiquid } from "../core/blocks.js";
-import { WORLD_RADIUS, CHUNK, RENDER_DIST, getBlock, colTops, dim, chunkOf, isEnclosedAir } from "../core/store.js";
+import { WORLD_RADIUS, CHUNK, RENDER_DIST, getBlock, colTops, colOcc, dim, chunkOf, isEnclosedAir } from "../core/store.js";
 import { materialsFor, liquidSurfaceMat } from "../core/textures.js";
 import { FLOWER_GEOS, FLOWER_MAT, flowerVariantAt, flowerAngleAt } from "./flowers.js";
 import { getSeed } from "../world/overworld.js";
@@ -205,11 +205,14 @@ export function rebuildChunk(cx, cz) {
   };
   for (let x = x0; x <= x1; x++) {
     for (let z = z0; z <= z1; z++) {
-      const top = colTops[dim][(x + 1024) * 2048 + (z + 1024)];
-      if (top === 0 && getBlock(x, 0, z) === AIR) continue;
-      for (let y = 0; y <= top; y++) {
+      // Sparse column walk: only occupied cells are visited (ascending, as
+      // before), so tall builds cost by blocks instead of height.
+      const occ = colOcc[dim].get((x + 1024) * 2048 + (z + 1024));
+      if (!occ) continue;
+      const ys = [...occ].sort((a, b) => a - b);
+      for (const y of ys) {
         const id = getBlock(x, y, z);
-        if (id === AIR || !BLOCK_INFO[id]) continue;
+        if (!BLOCK_INFO[id]) continue;
         if (id === FLOWER) { flowers.push([x, y, z]); continue; }
         if (isLiquid(id)) {
           for (let d = 0; d < LIQUID_DIRS.length; d++) {
