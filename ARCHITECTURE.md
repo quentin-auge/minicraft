@@ -32,7 +32,7 @@ stored, how it flows, and how each system works. Read this before changing code.
 - `src/fx/precip.js` — falling-precipitation backend (`PRECIP_TYPES` registry, snow first; rain later is one entry): camera-following drops at a 30 Hz step, wrap + cached landing heights, material fade-in over camera altitude.
 - `src/render/mesher.js` — chunked InstancedMesh renderer, streaming, local refresh, moon-material fade setter (rock face crossfades sky-color→texture, body always solid, so it never turns translucent; moon meshes hide below the fade band, default-hidden at build).
 - `src/ui/menu.js` — Play/Resume/New-World overlay, pointer-lock wiring (no saves). Play is clickable from the first frame and enters a finished world fading in through expanding fog; New World only once started and never during a build; Esc unlock shows Resume + New World. Boot builds instantly behind the menu; no spinner anywhere.
-- `src/ui/debug.js` — `=` FPS readout (`fps~N`, exponential moving average, quarter-second refresh, hidden until started).
+- `src/ui/debug.js` — `=` HUD readout (`fps N | x X  y Y  z Z`: FPS exponential moving average, quarter-second refresh, hidden until started; integer block coords are the floored feet position passed in from `main.js`).
 - `src/ui/help.js` — help overlay open/close. Shortcut table: Move, Jump, Sprint, Place, Break, Select, Fly, Grapple, Help, Debug. Portal frame diagrams are painted by `portals.js` (`buildPortalDom` at boot).
 
 ## Data model

@@ -306,7 +306,7 @@ function loop(now) {
   }
   tickFx(dt);
   tickSnow(dt, now / 1000, camera);
-  tickDebug(dt);
+  tickDebug(dt, pos.x, pos.y, pos.z);
   tickHookFx(dt);
   // Streaming fog first, so the loader sees the tightened range; dive murk
   // after (gated on building so it never fights the reveal), restoring the
