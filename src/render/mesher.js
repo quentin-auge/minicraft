@@ -1,10 +1,11 @@
 // Chunked streaming renderer: one InstancedMesh per block id per chunk,
 // only for exposed blocks. Rebuilds stay local via refreshBlocks().
 import * as THREE from "three";
-import { AIR, BLOCK_INFO, FLOWER, GLASS, MOON, MOON_WATER, isLiquid } from "../core/blocks.js";
+import { AIR, BLOCK_INFO, FLOWER, GLASS, GLOWSTONE, MOON, MOON_WATER, isLiquid } from "../core/blocks.js";
 import { WORLD_RADIUS, CHUNK, RENDER_DIST, getBlock, colTops, colOcc, dim, chunkOf, isEnclosedAir } from "../core/store.js";
-import { materialsFor, liquidSurfaceMat } from "../core/textures.js";
+import { materialsFor, liquidSurfaceMat, glowstoneMats } from "../core/textures.js";
 import { FLOWER_GEOS, FLOWER_MAT, flowerVariantAt, flowerAngleAt } from "./flowers.js";
+import { GLOW_VARIANT_COUNT, glowVariantAt } from "../world/glowstone.js";
 import { getSeed } from "../world/overworld.js";
 
 const boxGeo = new THREE.BoxGeometry(1, 1, 1);
@@ -229,6 +230,7 @@ export function rebuildChunk(cx, cz) {
   const z1 = Math.min(cz * CHUNK + CHUNK - 1, WORLD_RADIUS);
   const perId = new Map();
   const flowers = [];
+  const glows = [];
   const liquids = new Map();
   const liquidsTop = new Map();
   const liquidsPocket = new Map();
@@ -253,6 +255,10 @@ export function rebuildChunk(cx, cz) {
         const id = getBlock(x, y, z);
         if (!BLOCK_INFO[id]) continue;
         if (id === FLOWER) { flowers.push([x, y, z]); continue; }
+        if (id === GLOWSTONE) {
+          if (isExposed(x, y, z)) glows.push([x, y, z]);
+          continue;
+        }
         if (isLiquid(id)) {
           for (let d = 0; d < LIQUID_DIRS.length; d++) {
             const [dx, dy, dz] = LIQUID_OFF[d];
@@ -310,7 +316,7 @@ export function rebuildChunk(cx, cz) {
       }
     }
   }
-  if (!perId.size && !flowers.length && !liquidMaps.some((m) => m.size)) return;
+  if (!perId.size && !flowers.length && !glows.length && !liquidMaps.some((m) => m.size)) return;
   const meshes = new Map();
   for (const [id, list] of perId) {
     const mesh = new THREE.InstancedMesh(boxGeo, getMats(id), list.length);
@@ -351,6 +357,31 @@ export function rebuildChunk(cx, cz) {
       mesh.computeBoundingSphere();
       sceneRef.add(mesh);
       meshes.set("flower_" + v, mesh);
+    }
+  }
+  // Glowstone: one unlit InstancedMesh per color variant (unexposed stones
+  // are skipped like every other cube). Always visible: the unlit texture
+  // shines at full strength from any distance, independent of the moon fade.
+  if (glows.length) {
+    const perVariant = [];
+    for (let v = 0; v < GLOW_VARIANT_COUNT; v++) perVariant.push([]);
+    for (const [gx, gy, gz] of glows) perVariant[glowVariantAt(gx, gy, gz)].push([gx, gy, gz]);
+    for (let v = 0; v < GLOW_VARIANT_COUNT; v++) {
+      const list = perVariant[v];
+      if (!list.length) continue;
+      const mesh = new THREE.InstancedMesh(boxGeo, glowstoneMats(v), list.length);
+      for (let i = 0; i < list.length; i++) {
+        const [gx, gy, gz] = list[i];
+        dummy.position.set(gx + 0.5, gy + 0.5, gz + 0.5);
+        dummy.rotation.set(0, 0, 0);
+        dummy.scale.set(1, 1, 1);
+        dummy.updateMatrix();
+        mesh.setMatrixAt(i, dummy.matrix);
+      }
+      mesh.instanceMatrix.needsUpdate = true;
+      mesh.computeBoundingSphere();
+      sceneRef.add(mesh);
+      meshes.set("glowstone_" + v, mesh);
     }
   }
   // Boundary faces only: every bound emits the blue pair — an outside

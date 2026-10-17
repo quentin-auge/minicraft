@@ -15,9 +15,11 @@ import { tickTNT, initTNTFx, resetTNTMemory, onExplode, onLiquidPurge, shakeSpec
 import { initFx, tickFx } from "./src/fx/particles.js";
 import { initPrecip, tickSnow } from "./src/fx/precip.js";
 import { MOON_MIN_Y } from "./src/world/moon.js";
-import { WATER, FLOWER, MOON_WATER } from "./src/core/blocks.js";
+import { WATER, FLOWER, GLOWSTONE, MOON_WATER } from "./src/core/blocks.js";
+import { resetGlowstoneMemory, rebuildGlowstoneIndex } from "./src/world/glowstone.js";
+import { initBlockLights, tickBlockLights, rebuildBlockLightIndexes, resetBlockLightMemory } from "./src/render/blocklights.js";
 import { initRenderer, rebuildAll, maybeStream, refreshBlocks, drainChunkQueue, setEyeMedium, setMoonFade, UNLOAD_MARGIN } from "./src/render/mesher.js";
-import { resetItems, select, selected, selectedId, initHotbarInput, removeItem, addItem, setItem, getItems } from "./src/ui/hotbar.js";
+import { resetItems, select, selected, selectedId, initHotbarInput, setItem, getItems } from "./src/ui/hotbar.js";
 import { initMenu, enterGame, started, isLocked } from "./src/ui/menu.js";
 import { initHelp, openHelp, closeHelp, isHelpOpen } from "./src/ui/help.js";
 import { toggleDebug, tickDebug } from "./src/ui/debug.js";
@@ -70,6 +72,7 @@ initFx(scene);
 initSky(scene);
 initPrecip(scene);
 initTNTFx(scene);
+initBlockLights(scene);
 initRope(scene);
 initPortals(scene);
 buildPortalDom();
@@ -139,14 +142,17 @@ async function buildWorld() {
   building = true;
   severHook();
   resetTNTMemory();
+  resetGlowstoneMemory();
+  resetBlockLightMemory();
   scene.fog.near = LOAD_FOG_NEAR;
   scene.fog.far = LOAD_FOG_FAR;
   await new Promise((r) => setTimeout(r, 30));
   try {
     generateOverworld(Math.floor(Math.random() * 100000));
     spawnPlayer();
-    rebuildAll(pos.x, pos.z);
-    drainChunkQueue(true);
+    rebuildGlowstoneIndex();
+    rebuildBlockLightIndexes();
+    rebuildAll(pos.x, pos.z);    drainChunkQueue(true);
     clearPortalFills();
     rebuildPortalBlocks();
     scanWorldPortals();
@@ -307,6 +313,7 @@ function loop(now) {
   tickFx(dt);
   tickSnow(dt, now / 1000, camera);
   tickDebug(dt, pos.x, pos.y, pos.z);
+  tickBlockLights(dt, camera);
   tickHookFx(dt);
   // Streaming fog first, so the loader sees the tightened range; dive murk
   // after (gated on building so it never fights the reveal), restoring the
@@ -320,7 +327,7 @@ function loop(now) {
     setEyeMedium(eyeMediumId(camera.position.x, camera.position.y, camera.position.z));
   }
   // Moon-band hotbar: 8 below the Moon's lower end the water slot becomes
-  // moon water and the flower slot goes away; both restore on descent.
+  // moon water and the flower slot becomes glowstone; both restore on descent.
   if (worldReady && !building) {
     const moonNow = pos.y >= MOON_MIN_Y - 8;
     if (moonNow !== moonBand) {
@@ -328,11 +335,13 @@ function loop(now) {
       if (moonNow) {
         const wi = getItems().indexOf(WATER);
         if (wi >= 0) setItem(wi, MOON_WATER);
-        removeItem(FLOWER);
+        const fi = getItems().indexOf(FLOWER);
+        if (fi >= 0) setItem(fi, GLOWSTONE);
       } else {
         const mi = getItems().indexOf(MOON_WATER);
         if (mi >= 0) setItem(mi, WATER);
-        addItem(FLOWER, 9);
+        const gi = getItems().indexOf(GLOWSTONE);
+        if (gi >= 0) setItem(gi, FLOWER);
       }
     }
   }

@@ -3,7 +3,9 @@ import * as THREE from "three";
 import {
   GRASS, DIRT, STONE, SAND, LOG, LEAVES, WATER, PLANKS, GLASS,
   TNT, MEGA_TNT, FLOWER, PORTAL, OBSIDIAN, CLOUD, MOON, MOON_WATER,
+  GLOWSTONE,
 } from "./blocks.js";
+import { GLOW_VARIANTS, GLOW_ICON_VARIANT } from "../world/glowstone.js";
 
 export function canvasTex(draw, size = 16) {
   const c = document.createElement("canvas");
@@ -37,6 +39,25 @@ const makeTex = (base, amount = 24) => canvasTex((ctx) => {
 function hexToRgb(hex) {
   const n = parseInt(hex.slice(1), 16);
   return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+}
+
+// Glowstone palettes: lift the registry's base/bright triples brighter along
+// their dominant channels only (thresholded per entry), so each hue stays
+// pure instead of washing toward white. `flat` entries skip the lift with
+// hand-picked saturated colors.
+function liftGlow(rgb, f, thresh = 0.6) {
+  const max = Math.max(...rgb);
+  const t = max * thresh;
+  return rgb.map((v) => (v >= t ? Math.min(255, Math.round(v + (255 - v) * f)) : v));
+}
+
+function drawGlowMesh(ctx, p) {
+  ctx.fillStyle = p.bright;
+  ctx.fillRect(0, 0, 16, 16);
+  const border = `rgb(${(p.noise[0] * 0.75) | 0},${(p.noise[1] * 0.75) | 0},${(p.noise[2] * 0.75) | 0}`;
+  ctx.strokeStyle = border;
+  ctx.lineWidth = 0.5;
+  ctx.strokeRect(0, 0, 16, 16);
 }
 
 // Linear mix of two rgb triples; tints the outward pocket veil toward the
@@ -267,8 +288,19 @@ for (const entry of LIQUID_SURFACE) {
     pocketSpec.grain);
 }
 TEX.water = TEX.water_outside;
-const liquidMatCache = new Map();
-export function liquidSurfaceMat(id, role, top = false) {
+
+// One unlit canvas per glowstone variant, derived from the registry above;
+// the shared `glowstone` texture (hotbar icon) is the icon variant.
+export const GLOW_TEX = GLOW_VARIANTS.map((spec) => {
+  const base = spec.flat ? spec.base : liftGlow(spec.base, spec.lift, spec.thresh);
+  const bright = spec.flat ? spec.bright : liftGlow(spec.bright, spec.lift, spec.thresh);
+  return canvasTex((ctx) => drawGlowMesh(ctx, {
+    bright: `rgb(${bright[0]},${bright[1]},${bright[2]})`,
+    noise: base,
+  }));
+});
+TEX.glowstone = GLOW_TEX[GLOW_ICON_VARIANT];
+const liquidMatCache = new Map();export function liquidSurfaceMat(id, role, top = false) {
   const k = id + ":" + role + (top ? ":top" : "");
   if (!liquidMatCache.has(k)) {
     const entry = liquidSpecById.get(id) || liquidSpecById.get(WATER);
@@ -287,8 +319,31 @@ export function liquidSurfaceMat(id, role, top = false) {
   return liquidMatCache.get(k);
 }
 
-export function faceTex(map, opts = {}) {
-  return [material(map, opts), material(map, opts), material(map, opts), material(map, opts), material(map, opts), material(map, opts)];
+// One shared unlit material set per glowstone variant (MeshBasicMaterial,
+// fog-free: the stone shines at full strength from any distance). The mesher fans glowstone blocks out by variant; the default
+// icon variant below doubles as the hotbar icon and the materialsFor fallback.
+const glowMatCache = new Map();
+export function glowstoneMats(v) {
+  if (!glowMatCache.has(v)) glowMatCache.set(v, basicFace(GLOW_TEX[v], { fog: false }));
+  return glowMatCache.get(v);
+}
+
+// Moon rock: lit Lambert so glowstone pools read on it, plus an emissive
+// copy of the same texture (~0.85) so faces away from the sun (notably the
+// underside) stay readable instead of going black.
+let moonMatsCache = null;
+export function moonMats() {
+  if (!moonMatsCache) {
+    const m = new THREE.MeshLambertMaterial({
+      map: TEX.moon, emissiveMap: TEX.moon,
+      emissive: new THREE.Color(0xffffff), emissiveIntensity: 0.85, fog: false,
+    });
+    moonMatsCache = [m, m, m, m, m, m];
+  }
+  return moonMatsCache;
+}
+
+export function faceTex(map, opts = {}) {  return [material(map, opts), material(map, opts), material(map, opts), material(map, opts), material(map, opts), material(map, opts)];
 }
 
 function basicFace(map, opts = {}) {
@@ -321,8 +376,9 @@ export function materialsFor(id) {
       return [material(TEX.mega_side), material(TEX.mega_side), material(TEX.mega_top), material(TEX.mega_top), material(TEX.mega_side), material(TEX.mega_side)];
     case PORTAL: return faceTex(TEX.portal);
     case CLOUD: return faceTex(TEX.cloud);
-    case MOON: return basicFace(TEX.moon, { fog: false });
+    case MOON: return moonMats();
     case MOON_WATER: return basicFace(TEX.moonwater_outside, { fog: false });
+    case GLOWSTONE: return glowstoneMats(GLOW_ICON_VARIANT);
     case OBSIDIAN: return faceTex(TEX.obsidian);
     default: return faceTex(TEX.dirt);
   }

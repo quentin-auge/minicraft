@@ -49,7 +49,7 @@ export const BLOCK_INFO = {
   [SOULSAND]: { name: "Soul Sand", solid: true, opaque: true, placeable: false },
   [MOON]: { name: "Moon", solid: true, opaque: true, placeable: false },
   [MOON_WATER]: { name: "Moon Water", solid: false, opaque: false, placeable: true },
-  [GLOWSTONE]: { name: "Glowstone", solid: true, opaque: true, placeable: true },
+  [GLOWSTONE]: { name: "Glowstone", solid: true, opaque: true, placeable: true, light: "glowstone" },
 };
 
 export function isSolidId(id) {

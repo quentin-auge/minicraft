@@ -15,11 +15,13 @@
 // After every blast, liquids left with no solid 6-neighbor are purged back
 // to air through an injected callback (set via onLiquidPurge), so blasts
 // never strand floating remnants.
-import { AIR, TNT, MEGA_TNT, isLiquid, isTntLike } from "../core/blocks.js";
+import { AIR, TNT, MEGA_TNT, GLOWSTONE, isLiquid, isTntLike } from "../core/blocks.js";
 import { WORLD_RADIUS, colTops, colTopIdx, dim, getBlock, setBlock } from "../core/store.js";
 import { GRAVITY, pos, vel, setOnGround, addPlayerKnockback, KNOCK_DECAY } from "../player/physics.js";
 import { flyOn } from "../player/fly.js";
 import { spawnBurst, spawnFlash } from "./particles.js";
+import { clearGlowstoneAt } from "../world/glowstone.js";
+import { noteBlockLightEdit } from "../render/blocklights.js";
 import * as THREE from "three";
 
 // Master values: normal fuse 3 s, blast 3; mega fuse 8 s, pooled blast
@@ -489,6 +491,7 @@ function explode(cx, cy, cz, kind, refresh) {
   if (kind.pool) {
     const pooled = explodePool(cx, cy, cz, kind);
     purgeBlastLiquids(pooled);
+    syncGlowAfterBlast();
     if (refresh) refresh(pooled);
     return pooled;
   }
@@ -529,6 +532,7 @@ function explode(cx, cy, cz, kind, refresh) {
     if (!touched.some(([x, y, z]) => x === cx && y === cy && z === cz)) touched.push([cx, cy, cz]);
   }
   purgeBlastLiquids(touched);
+  syncGlowAfterBlast();
   if (refresh) refresh(touched);
   if (kind.knockback) applyMegaKnockback(cx, cy, cz, kind);
   if (onBlast) onBlast(cx, cy, cz, kind.radius, kind.key);
@@ -560,8 +564,20 @@ export function trackMegaPlaced(x, y, z) {
 function untrackMega(x, y, z) {
   megaIndex.delete(x + "," + y + "," + z);
 }
-// Single choke point for blast deletions: keeps the index in sync.
+// Single choke point for blast deletions: keeps the indexes in sync.
+// Glowstone variants clear cheaply here (map deletes only); the light
+// clusters re-sync once per blast via syncGlowAfterBlast below, not per cell.
+let glowBlasted = false;
+function syncGlowAfterBlast() {
+  if (!glowBlasted) return;
+  glowBlasted = false;
+  noteBlockLightEdit();
+}
 function clearCell(x, y, z, touched) {
+  if (getBlock(x, y, z) === GLOWSTONE) {
+    clearGlowstoneAt(x, y, z);
+    glowBlasted = true;
+  }
   if (kindOfBlock(getBlock(x, y, z)).pool) untrackMega(x, y, z);
   setBlock(x, y, z, AIR);
   touched.push([x, y, z]);
@@ -684,6 +700,7 @@ function explodePool(cx, cy, cz, kind) {
     }
     applyMegaKnockback(ax, ay, az, kind, R);
     if (onBlast) onBlast(ax, ay, az, R, kind.key);
+    syncGlowAfterBlast();
     return touched;
   } finally {
     for (const m of members) pooling.delete(m.x + "," + m.y + "," + m.z);
