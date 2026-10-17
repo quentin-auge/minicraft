@@ -7,7 +7,7 @@ stored, how it flows, and how each system works. Read this before changing code.
 
 - `index.html` — static shell: menu, help (controls + portal diagrams), hotbar DOM, portal-travel spiral overlay, Three.js import map.
 - `main.js` — bootstrap: scene, input wiring, main loop, world startup. Ticks portals (fill refresh + loop travel) and notifies the portal index of blast edits.
-- `src/ui/hotbar.js` — full static item list, selection.
+- `src/ui/hotbar.js` — dynamic item list (add/remove/change/reset ops, selection tracked by id), rendered bar.
 - `src/core/blocks.js` — block ids, BLOCK_INFO (solid/opaque/placeable), liquid/TNT predicates.
 - `src/core/noise.js` — deterministic hash2/valueNoise/fbm.
 - `src/core/store.js` — voxel storage, one Map per dimension, column tops.
@@ -316,7 +316,7 @@ interface, bar binding, death/cleared flag).
 - `worlds`/`colTops` already carry per-dimension maps; `setDimension` switches
   the active one. New dimensions add a generator module beside `overworld.js`.
 - Block ids append-only; dimension-specific blocks slot into BLOCK_INFO.
-- The hotbar is a static list today; dimension swaps (if wanted) go in `hotbar.js`.
+- The hotbar list is dynamic (add/remove/change); band or dimension swaps go in `hotbar.js` callers.
 
 ## Dropped from master (kept out on purpose)
 
