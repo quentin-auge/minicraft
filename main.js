@@ -17,6 +17,7 @@ import { initPrecip, tickSnow } from "./src/fx/precip.js";
 import { MOON_MIN_Y, MOON_R, generateMoon, generateMoonUnderRows, markMoonBuilt, moonReady, moonChunkCenters } from "./src/world/moon.js";
 import { WATER, FLOWER, GLOWSTONE, MOON_WATER } from "./src/core/blocks.js";
 import { resetGlowstoneMemory } from "./src/world/glowstone.js";
+import { resetFlowerMemory } from "./src/world/flowers.js";
 import { initBlockLights, tickBlockLights, rebuildBlockLightIndexes, resetBlockLightMemory } from "./src/render/blocklights.js";
 import { initRenderer, rebuildAll, maybeStream, refreshBlocks, setEyeMedium, setRegionFade, UNLOAD_MARGIN } from "./src/render/mesher.js";
 import { applyRegions } from "./src/render/regions.js";
@@ -149,6 +150,7 @@ async function buildWorld() {
   severHook();
   resetTNTMemory();
   resetGlowstoneMemory();
+  resetFlowerMemory();
   resetBlockLightMemory();
   scene.fog.near = LOAD_FOG_NEAR;
   scene.fog.far = LOAD_FOG_FAR;

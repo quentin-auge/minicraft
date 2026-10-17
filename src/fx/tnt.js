@@ -15,12 +15,13 @@
 // After every blast, liquids left with no solid 6-neighbor are purged back
 // to air through an injected callback (set via onLiquidPurge), so blasts
 // never strand floating remnants.
-import { AIR, TNT, MEGA_TNT, GLOWSTONE, isLiquid, isTntLike } from "../core/blocks.js";
+import { AIR, TNT, MEGA_TNT, FLOWER, GLOWSTONE, isLiquid, isTntLike } from "../core/blocks.js";
 import { WORLD_RADIUS, colTops, colTopIdx, dim, getBlock, setBlock } from "../core/store.js";
 import { GRAVITY, pos, vel, setOnGround, addPlayerKnockback, KNOCK_DECAY } from "../player/physics.js";
 import { flyOn } from "../player/fly.js";
 import { spawnBurst, spawnFlash } from "./particles.js";
 import { clearGlowstoneAt } from "../world/glowstone.js";
+import { clearFlowerAt } from "../world/flowers.js";
 import { noteBlockLightEdit } from "../render/blocklights.js";
 import * as THREE from "three";
 
@@ -583,6 +584,7 @@ function clearCell(x, y, z, touched) {
     clearGlowstoneAt(x, y, z);
     glowBlasted = true;
   }
+  if (getBlock(x, y, z) === FLOWER) clearFlowerAt(x, y, z);
   if (kindOfBlock(getBlock(x, y, z)).pool) untrackMega(x, y, z);
   setBlock(x, y, z, AIR);
   touched.push([x, y, z]);

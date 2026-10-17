@@ -13,6 +13,7 @@ import {
 } from "../core/store.js";
 import { village, computeLayout, intersectsVillage, placeVillage } from "./village.js";
 import { tryGrowTree } from "./trees.js";
+import { noteFlowerPlace, resetFlowerMemory } from "./flowers.js";
 import { generateClouds } from "./clouds.js";
 import { generateMoonSurface, resetMoon } from "./moon.js";
 
@@ -136,6 +137,7 @@ export function generateOverworld(newSeed) {
   seed = newSeed;
   setDimension("over");
   resetWorld("over");
+  resetFlowerMemory();
   heightMemo.clear();
   waterScale = 1 + (hash2(0, 0, seed + 333) * 4 | 0);
   waterDepth = 1 + (hash2(0, 0, seed + 444) * 3 | 0);
@@ -175,6 +177,7 @@ export function generateOverworld(newSeed) {
       const grown = tryGrowTree(treeCtx, x, h, z);
       if (!grown && getBlock(x, h, z) === GRASS && getBlock(x, h + 1, z) === AIR && hash2(x, z, seed + 7777) < TERRAIN.flowerDensity) {
         setBlock(x, h + 1, z, FLOWER);
+        noteFlowerPlace(x, h + 1, z);
       }
     }
   }

@@ -3,11 +3,12 @@
 // its fuse (block kept, no remesh needed); a second break-click on lit TNT
 // detonates it immediately.
 import * as THREE from "three";
-import { AIR, BLOCK_INFO, GLOWSTONE, isLiquid, isTntLike } from "../core/blocks.js";
+import { AIR, BLOCK_INFO, FLOWER, GLOWSTONE, isLiquid, isTntLike } from "../core/blocks.js";
 import { WORLD_RADIUS, getBlock, setBlock } from "../core/store.js";
 import { PLAYER_HW, PLAYER_H, pos } from "./physics.js";
 import { igniteTNT, isLitTNT, detonateNow, noteTntPlaced, kindOfBlock, trackMegaPlaced } from "../fx/tnt.js";
 import { noteGlowstonePlace, clearGlowstoneAt } from "../world/glowstone.js";
+import { noteFlowerPlace, clearFlowerAt } from "../world/flowers.js";
 import { noteBlockLightEdit } from "../render/blocklights.js";
 import { notePortalEdit } from "../world/portals.js";
 
@@ -140,6 +141,7 @@ export function breakBlockAt(x, y, z) {
     return [];
   }
   if (bid === GLOWSTONE) clearGlowstoneAt(x, y, z);
+  if (bid === FLOWER) clearFlowerAt(x, y, z);
   setBlock(x, y, z, AIR);
   if (bid === GLOWSTONE) noteBlockLightEdit();
   notePortalEdit(x, y, z);
@@ -158,6 +160,7 @@ export function tryPlace(id, px, py, pz) {
     noteGlowstonePlace(px, py, pz);
     noteBlockLightEdit();
   }
+  if (id === FLOWER) noteFlowerPlace(px, py, pz);
   if (kindOfBlock(id).pool) trackMegaPlaced(px, py, pz);
   notePortalEdit(px, py, pz);
   if (isTntLike(id) && isLiquid(target)) noteTntPlaced(px, py, pz, target);

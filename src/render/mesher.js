@@ -4,10 +4,10 @@ import * as THREE from "three";
 import { AIR, BLOCK_INFO, FLOWER, GLASS, GLOWSTONE, isLiquid } from "../core/blocks.js";
 import { WORLD_RADIUS, CHUNK, RENDER_DIST, getBlock, colTops, colTopIdx, colOcc, dim, chunkOf, isEnclosedAir } from "../core/store.js";
 import { materialsFor, liquidSurfaceMat, glowstoneMats } from "../core/textures.js";
-import { FLOWER_GEOS, FLOWER_MAT, flowerVariantAt, flowerAngleAt } from "./flowers.js";
+import { FLOWER_GEOS, FLOWER_MAT } from "./flowers.js";
+import { flowerVariantAt, flowerAngleAt } from "../world/flowers.js";
 import { GLOW_VARIANT_COUNT, glowVariantAt } from "../world/glowstone.js";
 import { MOON_SURFACE_Y } from "../world/moon.js";
-import { getSeed } from "../world/overworld.js";
 import { regionOf, regionByKey } from "./regions.js";
 
 const boxGeo = new THREE.BoxGeometry(1, 1, 1);
@@ -519,15 +519,14 @@ export function rebuildChunk(cx, cz) {
     }
   }
   if (flowers.length) {
-    const seed = getSeed();
     const perVariant = FLOWER_GEOS.map(() => []);
-    for (const [fx, fy, fz] of flowers) perVariant[flowerVariantAt(fx, fz, seed)].push([fx, fy, fz]);
+    for (const [fx, fy, fz] of flowers) perVariant[flowerVariantAt(fx, fy, fz)].push([fx, fy, fz]);
     const buildFlowers = (list, geo, mats) => {
       const mesh = new THREE.InstancedMesh(geo, mats, list.length);
       for (let i = 0; i < list.length; i++) {
         const [fx, fy, fz] = list[i];
         dummy.position.set(fx + 0.5, fy + 0.5, fz + 0.5);
-        dummy.rotation.set(0, flowerAngleAt(fx, fz, seed), 0);
+        dummy.rotation.set(0, flowerAngleAt(fx, fy, fz), 0);
         dummy.scale.set(1, 1, 1);
         dummy.updateMatrix();
         mesh.setMatrixAt(i, dummy.matrix);

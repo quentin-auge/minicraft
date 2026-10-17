@@ -21,7 +21,8 @@ stored, how it flows, and how each system works. Read this before changing code.
 - `src/world/glowstone.js` — glowstone color-variant registry (`GLOW_VARIANTS`, 7 entries), per-dimension variant maps + live block index, clustered placement picker (`glowVariantNear`: inherit within 10 blocks, else random).
 - `src/world/clouds.js` — climbable cloud decks (`CLOUD_MIN_Y`/`CLOUD_MAX_Y` bounds plus `generateClouds`); spawn and sky reuse the bounds instead of hard-coding altitudes.
 - `src/world/trees.js` — tree-type registry (`TREE_TYPES`, oak first), generic growth and ground guards.
-- `src/render/flowers.js` — flower-variant registry, baked voxel-cluster geometries (stem/leaves/disc bloom).
+- `src/render/flowers.js` — flower-variant registry, baked voxel-cluster geometries (stem/leaves/disc bloom). Per-block looks live in `world/flowers.js`; this module holds no placement state.
+- `src/world/flowers.js` — per-dimension per-flower look memory (variant + Y angle, three-free): `noteFlowerPlace` draws a fresh weighted-random look at placement, the mesher only reads it back, `clearFlowerAt`/ `resetFlowerMemory` drop it on break/blast/new world.
 - `src/world/village.js` — village layout and structure placement (houses, pen, pool); records worldgen-placed frame-block keys for the portal index (no full-map scan at build).
 - `src/world/spawn.js` — spawn selection on finished voxels (`findSpawn`): firm open ground with a frustum-wide clear vista.
 - `src/world/portals.js` — local-loop Nether/End portals: `PORTAL_TYPES` registry (End `PORTAL` frame, Nether `OBSIDIAN` frame; each spec carries frame block, sizes via anchors, fill color/material, travel action, help art — new families register a spec, the engine dispatches without family switches), frame validation (End 5×5/5×4 upright faces x/z + 5×5 flat, corners optional; Nether 5×4/4×5/4×4 upright faces x/z + 5×4/4×5 flat, corners required), frames may cross orthogonally (interior frame blocks must belong to another live window's ring — support-closure; breaking either ring drops both), solid-color fills (End black, Nether purple, fogged like any block, always shown), body-overlap travel trigger, spiral + help-diagram builders, arrivals ~3 blocks out facing the crossed window. The spiral wait is a sim-time pending (`pendingTravel`, decremented in `tickPortals`), so pausing mid-spiral freezes it and the travel completes after unpausing; `tickPortals` freezes entirely (cooldown, scans, pending) while paused. Every edit refreshes fills around the edited cell the same frame (placement reach is unlimited, the player-centered scan alone would miss far windows).
@@ -58,6 +59,7 @@ stored, how it flows, and how each system works. Read this before changing code.
    consume them, cleared on world build); the blast refresh callback and the
    post-blast floating-liquid purge (`onLiquidPurge`) are injected by the caller.
 - Glowstone color lives in per-dimension variant maps (`"x,y,z"` key → variant index, default green) plus a live block index per dimension (clustering reads the stones, light buckets read the index — no world scans); placed stones inherit the nearest variant within 10 blocks, cleared on break/blast/world build.
+- Flower looks live in per-dimension maps (`key(x,y,z)` → variant index + Y angle): every placement (worldgen scatter, player place) draws a fresh weighted-random variant and angle via `noteFlowerPlace`; the mesher only reads them back, so rebuilds never reshuffle a look; cleared on break/blast/world build.
 - Render state: `chunkMeshes` (`"cx_cz"` → per-id InstancedMesh), a build queue,
   shared materials cache. Scene, camera, and renderer are owned by `main.js`.
 
@@ -65,8 +67,9 @@ stored, how it flows, and how each system works. Read this before changing code.
 
 `generateOverworld(seed)` runs one pipeline: seed → river paths → village layout
 → per-column terrain fill (flattened to stone inside village bounds, water below
-`WATER_LEVEL`) → trees/flowers (flowers only on grass with air above, hash-gated
-by `TERRAIN.flowerDensity`) → `placeVillage` structures. `generateClouds` scatters solid puff
+`WATER_LEVEL`) → trees/flowers (flowers only on grass with air above, presence
+hash-gated by `TERRAIN.flowerDensity`, each placed flower drawing a fresh
+random variant + angle via `noteFlowerPlace`) → `placeVillage` structures. `generateClouds` scatters solid puff
 clusters in the `CLOUD_MIN_Y`…`CLOUD_MAX_Y` band afterwards, then `generateMoonSurface` lays the rock cap
 with hashed `MOON_WATER` lake shafts at `MOON_SURFACE_Y` (tops final before spawn). Spawn selection (`findSpawn`) closes the pipeline:
 nearest firm open ground to the origin whose vista stays clear 50 blocks ahead
@@ -80,7 +83,7 @@ The hollow underside shell fills after the reveal, not in the pipeline: `main.js
 Per chunk: iterate each column's occupancy set (`colOcc`, ascending) and
 keep exposed blocks only (any neighbor non-opaque), group by id
 non-opaque), group by id into one InstancedMesh each (flowers skip the cube
-bucket: per-variant cluster meshes with a hash-spun Y rotation, glass
+bucket: per-variant cluster meshes with a stored random Y rotation, glass
 transparent). Liquids skip cubes entirely: one merged InstancedMesh per
 (liquid id, side) of full-block 1x1 boundary faces exactly on the cell
 bounds. Faces against same-liquid or opaque neighbors are culled so adjacent
@@ -331,8 +334,7 @@ entries, never framework forks:
 - Spec keys are stable strings, never array indices, so a future save
   format survives reordering.
 - Every tick-shaped hook (`tickLitVisual`, `spawnBlastFx`, precip `active`/`landed`, `LIGHT_EMITTERS` sync, `REGIONS` factor) obeys the Pause contract above: `dt` + sim-time in, no wall-clock out.
-- Cosmetic variants follow the recipe: weighted options table → deterministic
-  hash picker (`flowerVariantAt`) or stored per-block color (`glowVariantAt`, clustered on place) → baked geometries/materials + shared material.
+- Cosmetic variants follow the recipe: weighted options table → stored per-block look drawn at placement (`flowerVariantAt`/`flowerAngleAt` reads, `noteFlowerPlace` draws; `glowVariantAt`, clustered on place) → baked geometries/materials + shared material.
 
 Single-anatomy numbers stay plain constants: world dimensions, body
 physics, render budgets. Single-spec systems (`TERRAIN`, `VILLAGE_SPEC`) become registries only when a second variant arrives.

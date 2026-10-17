@@ -4,7 +4,6 @@
 // FLOWER_VARIANTS: shared properties live in FLOWER_DEFAULTS, entries
 // override only what differs. Geometries bake once with vertex colors.
 import * as THREE from "three";
-import { hash2 } from "../core/noise.js";
 
 const STEM = [20, 66, 30];
 const LEAF = [36, 94, 42];
@@ -122,18 +121,3 @@ function buildGeometry(variant) {
 
 export const FLOWER_GEOS = FLOWER_VARIANTS.map(buildGeometry);
 export const FLOWER_MAT = new THREE.MeshLambertMaterial({ vertexColors: true });
-
-const WEIGHT_SUM = FLOWER_VARIANTS.reduce((a, v) => a + v.weight, 0);
-
-export function flowerVariantAt(x, z, seed) {
-  let r = hash2(x, z, seed + 99999) * WEIGHT_SUM;
-  for (let v = 0; v < FLOWER_VARIANTS.length; v++) {
-    if (r < FLOWER_VARIANTS[v].weight) return v;
-    r -= FLOWER_VARIANTS[v].weight;
-  }
-  return FLOWER_VARIANTS.length - 1;
-}
-
-export function flowerAngleAt(x, z, seed) {
-  return hash2(x, z, seed + 77777) * Math.PI * 2;
-}
