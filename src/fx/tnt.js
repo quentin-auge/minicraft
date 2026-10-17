@@ -2,15 +2,16 @@
 // clears terrain and chains neighboring TNT. Blast kinds are data: shared
 // properties live in TNT_DEFAULTS, entries override only what differs.
 // Differing behavior is a capability flag the framework branches on
-// (pool, knockback, light) or an optional function prop (carveBlast,
+// (pool, knockback, light, clearsLiquids) or an optional function prop (carveBlast,
 // spawnBlastFx, make/tick/clearLitVisual) that a tier supplies — kind
 // strings (key, blastKind, countdownKind, fxKind) are stable identifiers,
 // never branch conditions.
 // Normal (radius 3, 3 s fuse) and mega (pooled radius 15 / 22.5 / 33.75,
 // capped at 40, 8 s fuse, simultaneous blasts, player knockback,
 // threatening lit look) ship as entries; ultra arrives later reusing id 23.
-// Bedrock (y=0) and liquids are spared; a TNT placed in
-// liquid restores that liquid in its cell after its blast.
+// Bedrock (y=0) is always spared; liquids survive unless the kind sets
+// clearsLiquids (mega). A non-clearing TNT placed in liquid restores that
+// liquid in its cell after its blast; a clearing kind leaves air behind.
 import { AIR, TNT, MEGA_TNT, isLiquid, isTntLike } from "../core/blocks.js";
 import { WORLD_RADIUS, MAX_Y, colTops, colTopIdx, dim, getBlock, setBlock } from "../core/store.js";
 import { GRAVITY, pos, vel, setOnGround, addPlayerKnockback, KNOCK_DECAY } from "../player/physics.js";
@@ -32,6 +33,7 @@ const TNT_DEFAULTS = {
   pool: false,
   light: false,
   knockback: false,
+  clearsLiquids: false, // true (mega): the blast clears liquids instead of passing through
 };
 
 // Mega-only blink choreography (master: exponential chirp 1 Hz -> ~14 Hz
@@ -256,7 +258,7 @@ export const TNT_TYPES = [
     ...TNT_DEFAULTS, key: "mega", blockId: MEGA_TNT,
     fuse: 8.0, radius: 15,
     blastKind: "pooled", countdownKind: "bucket", fxKind: "mega",
-    pool: true, light: true, knockback: true,
+    pool: true, light: true, knockback: true, clearsLiquids: true,
     shake: { range: 3, knee: 0.4, max: 1.5 },
     spawnBlastFx: spawnMegaBlastFx,
     makeLitVisual: makeMegaLitVisual,
@@ -283,7 +285,8 @@ const lit = new Map(); // "x,y,z" -> { x, y, z, id, fuse, total, kind }
 const sprites = new Map(); // "x,y,z" -> THREE.Sprite countdown
 const pendingChain = new Map(); // "x,y,z" -> { x, y, z, kind, due } delayed blasts
 // Liquid displaced when a TNT was placed ("x,y,z" -> liquid id), restored
-// in that cell after its blast. TNT placed in air leaves air behind.
+// in that cell after its blast unless the kind clears liquids.
+// TNT placed in air leaves air behind.
 const displaced = new Map();
 let sceneRef = null;
 let onBlast = null;
@@ -497,7 +500,8 @@ function explode(cx, cy, cz, kind, refresh) {
   }
   // A record exists only while its TNT stands (TNT is manually unremovable,
   // records die at blast or world build), so fill needs no extra guard.
-  if (fill !== null) {
+  // Clearing kinds (mega) leave air behind instead of restoring.
+  if (fill !== null && !kind.clearsLiquids) {
     setBlock(cx, cy, cz, fill);
     if (!touched.some(([x, y, z]) => x === cx && y === cy && z === cz)) touched.push([cx, cy, cz]);
   }
@@ -638,12 +642,13 @@ function explodePool(cx, cy, cz, kind) {
     for (let i = 0; i < members.length; i++) {
       carveSphere(members[i].x, members[i].y, members[i].z, kind, touched, true, radii[i]);
     }
-    // Each pooled mega restores the liquid it was placed in, if any.
+    // Each pooled mega restores the liquid it was placed in, if any —
+    // unless it clears liquids, in which case its cell stays air.
     for (const m of members) {
       const dk = m.x + "," + m.y + "," + m.z;
       const fill = displaced.get(dk) ?? null;
       displaced.delete(dk);
-      if (fill !== null) {
+      if (fill !== null && !kind.clearsLiquids) {
         setBlock(m.x, m.y, m.z, fill);
         if (!touched.some(([x, y, z]) => x === m.x && y === m.y && z === m.z)) touched.push([m.x, m.y, m.z]);
       }
@@ -679,9 +684,10 @@ function carveSphere(cx, cy, cz, kind, touched, pool = false, Reff = kind.radius
         if (dx * dx + dy * dy + dz * dz > R2) continue;
         const bid = getBlock(x, y, z);
         if (bid === AIR) continue;
-        // Liquids survive blasts; the blast passes through them.
-        // Custom carveBlast tiers must keep this guard.
-        if (isLiquid(bid)) continue;
+        // Liquids survive blasts unless the kind clears them; otherwise
+        // the blast passes through them. Custom carveBlast tiers must keep
+        // this guard.
+        if (isLiquid(bid) && !kind.clearsLiquids) continue;
         const victimKind = isTntLike(bid) ? kindOfBlock(bid) : null;
         if (victimKind && victimKind.pool) {
           if (pool) {

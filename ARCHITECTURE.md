@@ -45,7 +45,7 @@ stored, how it flows, and how each system works. Read this before changing code.
 - Lit TNT lives in a `lit` map (`"x,y,z"` → fuse); chained blasts wait in a
   `pendingChain` map (`"x,y,z"` → due time); liquid displaced by placed TNT
   waits in a `displaced` map (`"x,y,z"` → liquid id, restored in that cell
-  after its blast, cleared on world build); placed mega blocks are indexed in
+  after its blast unless the kind clears liquids, cleared on world build); placed mega blocks are indexed in
   `megaIndex` for instant pool clustering (added on place, removed as blasts
   consume them, cleared on world build); the blast refresh callback is injected by the caller.
 - Render state: `chunkMeshes` (`"cx_cz"` → per-id InstancedMesh), a build queue,
@@ -218,7 +218,7 @@ persistence.
   same-liquid group left without a solid 6-neighbor returns to air. Bedrock
   (`y = 0`) and liquids are unbreakable; solid placement refuses the player's
   own AABB.
-- TNT: first break-click on a TNT block lights its fuse with no remesh (block kept); normal shows a steady white countdown sprite (orange-red under 1 s), mega (blue block, id 22) an 8 s fuse with an accelerating blue-to-white veil pulse plus white heat and pooled lights, no number. A second break-click detonates lit TNT at once. Normal blasts clear a sphere (radius 3) and chain neighbours with 50 ms delays, one flash/burst each. Megas link transitively at blast distance into one simultaneous pooled blast: upfront neighbor search over the live `megaIndex` (no voxel scans, clustering stays instant), +50% compound radius growth per neighbour within the member's current R/2 (cap 40, Ø80 ~= village diagonal), one crater + fireball per member at its own radius — crater-filling particle ball (`fillRadius`, fine yellow/red/orange palette, foreground), layered nuclear core + halo (retract ends with the 1.5 s fire, smoke trails to 2.0 s), same particle budget, carve clamped to column tops. Normals caught in a pool go off instantly instead of cascading; a mega uncovered by a normal blast joins the pool. Each blast clears solid cells except liquids (survive, blast passes through) and bedrock (`y = 0`); a TNT placed in liquid restores that liquid afterwards, placed in air it leaves air behind. Player launch is one centroid shove per pooled blast (uniform 1.5R travel: ballistic arc on ground, decaying `knockVel` impulse along the mega→player line in fly, fly mode kept), plus camera shake out to 3R (max inside, linear to 2R, exponential to silence, via per-kind `shake` spec).
+- TNT: first break-click on a TNT block lights its fuse with no remesh (block kept); normal shows a steady white countdown sprite (orange-red under 1 s), mega (blue block, id 22) an 8 s fuse with an accelerating blue-to-white veil pulse plus white heat and pooled lights, no number. A second break-click detonates lit TNT at once. Normal blasts clear a sphere (radius 3) and chain neighbours with 50 ms delays, one flash/burst each. Megas link transitively at blast distance into one simultaneous pooled blast: upfront neighbor search over the live `megaIndex` (no voxel scans, clustering stays instant), +50% compound radius growth per neighbour within the member's current R/2 (cap 40, Ø80 ~= village diagonal), one crater + fireball per member at its own radius — crater-filling particle ball (`fillRadius`, fine yellow/red/orange palette, foreground), layered nuclear core + halo (retract ends with the 1.5 s fire, smoke trails to 2.0 s), same particle budget, carve clamped to column tops. Normals caught in a pool go off instantly instead of cascading; a mega uncovered by a normal blast joins the pool. Each blast clears solid cells except bedrock (`y = 0`); liquids survive (blast passes through) unless the kind sets `clearsLiquids` — mega clears them and, placed in liquid, leaves air behind instead of restoring it, while normal TNT restores the displaced liquid afterwards and placed in air leaves air behind. Player launch is one centroid shove per pooled blast (uniform 1.5R travel: ballistic arc on ground, decaying `knockVel` impulse along the mega→player line in fly, fly mode kept), plus camera shake out to 3R (max inside, linear to 2R, exponential to silence, via per-kind `shake` spec).
 - Hotbar: 14 placeable overworld items (`GRASS` … `OBSIDIAN`, mega TNT always
   listed after normal TNT), texture-icon
   slots; wheel, `K`/`L`, and click all select with wraparound.
@@ -272,7 +272,7 @@ entries, never framework forks:
   entries spread it first and override only what differs.
 - Differing numbers are entry properties; differing behavior is a
   capability flag the framework branches on (`pool`, `knockback`, `light`,
-  `pull`, `locomotion`) or an optional function prop (`carveBlast`,
+  `clearsLiquids`, `pull`, `locomotion`) or an optional function prop (`carveBlast`,
   `spawnBlastFx`, `make/tick/clearLitVisual`, `grow`, `filter`, `tick`);
   kind strings (`key`, `blastKind`, `countdownKind`, `fxKind`) are stable
   identifiers, never branch conditions — dispatch goes through flags and
