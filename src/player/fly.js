@@ -2,7 +2,7 @@
 // speed (3x with sprint), per-axis slide collision through the shared axis
 // movers, no gravity, stepping, or swimming.
 import * as THREE from "three";
-import { keys, yaw, pitch, playerBody, collideBody } from "./physics.js";
+import { keys, yaw, pitch, playerBody, knockVel, collideBody } from "./physics.js";
 
 export const FLY = 10;
 
@@ -28,5 +28,7 @@ export function updateFly(dt) {
   const speed = FLY * (sprint ? 3 : 1);
   if (_move.lengthSq() > 0) _move.normalize().multiplyScalar(speed);
   playerBody.vel.set(_move.x, _move.y, _move.z);
+  // Blast knockback rides on top of the thrust and decays away in physics.
+  playerBody.vel.add(knockVel);
   collideBody(dt, playerBody, false);
 }

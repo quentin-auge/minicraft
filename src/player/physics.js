@@ -78,6 +78,25 @@ export function setHookWet(v) { hookWet = v; }
 
 export const keys = {};
 
+// Knockback impulse shared by every movement mode: blasts add to it, each
+// frame applies it on top of the mode's own velocity, then it decays.
+// Walk mode keeps its direct vel.set path (unchanged feel); fly mode, which
+// overwrites vel every frame, reads the impulse through here instead.
+export const knockVel = new THREE.Vector3();
+// Decay rate: a passive impulse travels v0 / KNOCK_DECAY blocks, so blast
+// code calibrates its initial speed as travel distance x KNOCK_DECAY.
+export const KNOCK_DECAY = 2.2;
+export function addPlayerKnockback(x, y, z) {
+  knockVel.x += x;
+  knockVel.y += y;
+  knockVel.z += z;
+}
+export function tickKnockback(dt) {
+  const k = Math.exp(-KNOCK_DECAY * dt);
+  knockVel.multiplyScalar(k);
+  if (knockVel.lengthSq() < 0.25) knockVel.set(0, 0, 0);
+}
+
 // Spawn selection lives in `src/world/spawn.js` (pure voxel search over
 // finished world data); here the pick is applied to the player body. Pitch
 // resets so respawns and regens never inherit the old look angle.
@@ -87,6 +106,7 @@ export function spawnPlayer() {
   setYaw(s.yaw);
   setPitch(0);
   vel.set(0, 0, 0);
+  knockVel.set(0, 0, 0);
   onGround = false;
   stepDown = false;
   stepUp = false;

@@ -12,7 +12,7 @@ export const WATER = 7;
 export const PLANKS = 8;
 export const GLASS = 9;
 export const TNT = 10;
-// Reserved append-only ids for future blast tiers (master: 22 mega, 23 ultra).
+// Append-only ids: 22 shipped as mega (placeable), 23 reserved for ultra.
 export const MEGA_TNT = 22;
 export const ULTRA_TNT = 23;
 export const FLOWER = 11;
@@ -38,6 +38,7 @@ export const BLOCK_INFO = {
   [PLANKS]: { name: "Planks", solid: true, opaque: true, placeable: true },
   [GLASS]: { name: "Glass", solid: true, opaque: false, placeable: true },
   [TNT]: { name: "TNT", solid: true, opaque: true, placeable: true },
+  [MEGA_TNT]: { name: "Mega TNT", solid: true, opaque: true, placeable: true },
   [FLOWER]: { name: "Flower", solid: false, opaque: false, placeable: true },
   [PORTAL]: { name: "Portal", solid: true, opaque: false, placeable: true },
   [ENDSTONE]: { name: "End Stone", solid: true, opaque: true, placeable: false },
@@ -61,5 +62,5 @@ export function isLiquid(id) {
 }
 
 export function isTntLike(id) {
-  return id === TNT;
+  return id === TNT || id === MEGA_TNT;
 }

@@ -17,37 +17,81 @@ export function spawnBurst(o) {
     x, y, z, count, life = 0.8, size = 0.18, gravity = 22, additive = true,
     color = [1, 0.6, 0.15], variance = [0, 0.4, 0.2],
     speedMin = 4, speedMax = 12, up = 3,
+    // Fill ball: initial positions spread uniformly through this radius
+    // (0 = all at the center, as before). Same particles, same per-frame
+    // cost — only the spawn layout changes.
+    fillRadius = 0,
+    // Palette: [[r,g,b], ...] picked uniformly per particle (plus a small
+    // jitter), replacing color/variance when set.
+    palette = null,
+    // Foreground: skip depth testing and draw above everything (below the
+    // block highlight), for bursts that must read through terrain.
+    foreground = false,
   } = o;
   const positions = new Float32Array(count * 3);
   const colors = new Float32Array(count * 3);
   const vel = new Float32Array(count * 3);
   for (let i = 0; i < count; i++) {
-    positions[i * 3] = x; positions[i * 3 + 1] = y; positions[i * 3 + 2] = z;
+    let px = x, py = y, pz = z;
+    if (fillRadius > 0) {
+      const rr = fillRadius * Math.cbrt(Math.random());
+      const th = Math.random() * Math.PI * 2;
+      const ph = Math.acos(2 * Math.random() - 1);
+      px += rr * Math.sin(ph) * Math.cos(th);
+      py += rr * Math.cos(ph);
+      pz += rr * Math.sin(ph) * Math.sin(th);
+    }
+    positions[i * 3] = px; positions[i * 3 + 1] = py; positions[i * 3 + 2] = pz;
     const th = Math.random() * Math.PI * 2;
     const ph = Math.acos(2 * Math.random() - 1);
     const s = speedMin + Math.random() * (speedMax - speedMin);
     vel[i * 3] = s * Math.sin(ph) * Math.cos(th);
     vel[i * 3 + 1] = s * Math.cos(ph) + up;
     vel[i * 3 + 2] = s * Math.sin(ph) * Math.sin(th);
-    for (let j = 0; j < 3; j++)
-      colors[i * 3 + j] = Math.min(1, Math.max(0, color[j] + Math.random() * variance[j]));
+    if (palette) {
+      const pc = palette[(Math.random() * palette.length) | 0];
+      for (let j = 0; j < 3; j++)
+        colors[i * 3 + j] = Math.min(1, Math.max(0, pc[j] + (Math.random() - 0.5) * 0.08));
+    } else {
+      for (let j = 0; j < 3; j++)
+        colors[i * 3 + j] = Math.min(1, Math.max(0, color[j] + Math.random() * variance[j]));
+    }
   }
   const geo = new THREE.BufferGeometry();
   geo.setAttribute("position", new THREE.BufferAttribute(positions, 3));
   geo.setAttribute("color", new THREE.BufferAttribute(colors, 3));
   const mat = new THREE.PointsMaterial({
     size, vertexColors: true, transparent: true, depthWrite: false,
+    depthTest: !foreground,
     blending: additive ? THREE.AdditiveBlending : THREE.NormalBlending,
   });
   const pts = new THREE.Points(geo, mat);
   pts.frustumCulled = false;
+  if (foreground) pts.renderOrder = 998;
   sceneRef.add(pts);
   bursts.push({ pts, vel, life, max: life, gravity });
 }
 
 export function spawnFlash(o) {
   if (!sceneRef) return;
-  const { x, y, z, color = 0xffdd77, life = 0.28, size = 1, growth = 4.2 } = o;
+  const { x, y, z, color = 0xffdd77, life = 0.28, size = 1, growth = 4.2, maxRadius = null, speed = 30, retractSpeed = null } = o;
+  if (maxRadius !== null) {
+    // Fireball: expands to maxRadius at constant speed, then retracts at
+    // retractSpeed (default: same as expand, symmetric). Bigger fireballs
+    // burn longer: life = expand time + retract time.
+    const rs = retractSpeed ?? speed;
+    const mesh = new THREE.Mesh(
+      new THREE.SphereGeometry(1, 24, 16),
+      new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.95, depthWrite: false, blending: THREE.AdditiveBlending })
+    );
+    mesh.position.set(x, y, z);
+    mesh.scale.setScalar(0.001);
+    sceneRef.add(mesh);
+    const tGrow = Math.max(0.001, maxRadius / speed);
+    const tShrink = Math.max(0.001, maxRadius / rs);
+    flashes.push({ mesh, life: tGrow + tShrink, max: tGrow + tShrink, fireball: true, maxRadius, speed, tGrow, retractSpeed: rs, tShrink });
+    return;
+  }
   const mesh = new THREE.Mesh(
     new THREE.SphereGeometry(size, 10, 8),
     new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.95, depthWrite: false })
@@ -89,8 +133,18 @@ export function tickFx(dt) {
       continue;
     }
     const t = 1 - f.life / f.max;
-    const s = f.size * (0.4 + t * f.growth);
-    f.mesh.scale.set(s, s, s);
-    f.mesh.material.opacity = 0.95 * (f.life / f.max);
+    if (f.fireball) {
+      const age = f.max - f.life;
+      const r = age < f.tGrow
+        ? Math.min(f.maxRadius, f.speed * age)
+        : Math.max(0.001, f.maxRadius - f.retractSpeed * (age - f.tGrow));
+      f.mesh.scale.set(r, r, r);
+      // Full brightness while expanding, linear fade while retracting.
+      f.mesh.material.opacity = age < f.tGrow ? 0.95 : 0.95 * Math.max(0, f.life / f.tShrink);
+    } else {
+      const s = f.size * (0.4 + t * f.growth);
+      f.mesh.scale.set(s, s, s);
+      f.mesh.material.opacity = 0.95 * (f.life / f.max);
+    }
   }
 }

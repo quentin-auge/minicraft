@@ -4,14 +4,14 @@ import * as THREE from "three";
 import { generateOverworld } from "./src/world/overworld.js";
 import {
   pos, vel, keys, setYaw, setPitch,
-  spawnPlayer, updatePlayer,
+  spawnPlayer, updatePlayer, tickKnockback,
 } from "./src/player/physics.js";
 import * as player from "./src/player/physics.js";
 import { flyOn, setFly, updateFly } from "./src/player/fly.js";
 import { updateTarget, breakTarget, placeAtSelection, breakBlockAt } from "./src/player/edit.js";
 import { fireHookTarget, grappleBlockPick, cancelHook, severHook, updateHook, hookActive, tickHookFx } from "./src/player/hook.js";
 import { initRope } from "./src/player/rope.js";
-import { tickTNT, initTNTFx, resetTNTMemory } from "./src/fx/tnt.js";
+import { tickTNT, initTNTFx, resetTNTMemory, onExplode, shakeSpecFor } from "./src/fx/tnt.js";
 import { initFx, tickFx } from "./src/fx/particles.js";
 import { initRenderer, rebuildAll, maybeStream, refreshBlocks, drainChunkQueue, setEyeMedium, UNLOAD_MARGIN } from "./src/render/mesher.js";
 import { buildHotbar, select, selected, selectedId, initHotbarInput } from "./src/ui/hotbar.js";
@@ -70,9 +70,41 @@ highlight.renderOrder = 999;
 scene.add(highlight);
 const _hookDir = new THREE.Vector3();
 
-function updateCamera() {
+// Mega-blast camera shake (master: trauma capped at 1.5, decays 1.4/s,
+// rotational + positional jitter scaled by trauma^1.5). Three zones per
+// kind shake spec: max inside the blast, linear decay to 2x range,
+// exponential decay to 3x. Kinds without a spec don't shake.
+let camTrauma = 0;
+function addCamShake(a) { camTrauma = Math.min(1.5, camTrauma + a); }
+onExplode((cx, cy, cz, radius, kindKey) => {
+  const spec = shakeSpecFor(kindKey);
+  if (!spec) return;
+  const dx = camera.position.x - (cx + 0.5);
+  const dy = camera.position.y - (cy + 0.5);
+  const dz = camera.position.z - (cz + 0.5);
+  const dc = Math.hypot(dx, dy, dz);
+  if (dc > spec.range * radius) return;
+  let amp;
+  if (dc <= radius) amp = spec.max;
+  else if (dc <= 2 * radius) amp = spec.max * (1 - (1 - spec.knee) * (dc - radius) / radius);
+  else amp = spec.max * spec.knee * Math.exp(-3 * (dc - 2 * radius) / radius);
+  addCamShake(amp);
+});
+
+function updateCamera(dt = 0) {
   camera.position.set(pos.x, pos.y + EYE, pos.z);
   camera.rotation.set(player.pitch, player.yaw, 0);
+  if (camTrauma > 0) {
+    camTrauma = Math.max(0, camTrauma - dt * 1.4);
+    const sh = Math.pow(camTrauma, 1.5);
+    const st = performance.now() / 1000;
+    camera.rotation.x += Math.sin(st * 61.7) * 0.22 * sh;
+    camera.rotation.y += Math.sin(st * 53.3 + 1.7) * 0.22 * sh;
+    camera.rotation.z += Math.sin(st * 47.1 + 0.6) * 0.14 * sh;
+    camera.position.x += Math.sin(st * 67.3 + 0.9) * 0.6 * sh;
+    camera.position.y += Math.sin(st * 71.9) * 0.6 * sh;
+    camera.position.z += Math.sin(st * 59.7 + 2.1) * 0.6 * sh;
+  }
 }
 
 let worldReady = false;
@@ -233,7 +265,7 @@ function loop(now) {
   requestAnimationFrame(loop);
   const dt = Math.min(0.05, (now - last) / 1000);
   last = now;
-  updateCamera();
+  updateCamera(dt);
   if (!worldReady || !started) {
     highlight.visible = false;
     if (worldReady && !building) updateStreamingFog();
@@ -256,6 +288,9 @@ function loop(now) {
   }
   const simActive = isLocked() && !isHelpOpen();
   if (simActive) {
+    // Knockback impulse decays every sim frame, whatever mode moves next;
+    // the hook pull owns its frame and simply leaves it for afterwards.
+    tickKnockback(dt);
     const hookOwnsFrame = hookActive() ? updateHook(dt) : false;
     if (!hookOwnsFrame) {
       if (flyOn) updateFly(dt);

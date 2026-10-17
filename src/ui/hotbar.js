@@ -2,13 +2,13 @@
 // swaps, no unlock gating. Wheel / K / L / click all select.
 import {
   GRASS, DIRT, STONE, SAND, LOG, PLANKS, GLASS, LEAVES, WATER,
-  FLOWER, TNT, PORTAL, OBSIDIAN,
+  FLOWER, TNT, MEGA_TNT, PORTAL, OBSIDIAN,
 } from "../core/blocks.js";
 import { materialsFor } from "../core/textures.js";
 
 export const HOTBAR = [
   GRASS, DIRT, STONE, SAND, LOG, PLANKS, GLASS, LEAVES,
-  WATER, FLOWER, TNT, PORTAL, OBSIDIAN,
+  WATER, FLOWER, TNT, MEGA_TNT, PORTAL, OBSIDIAN,
 ];
 
 export let selected = 0;

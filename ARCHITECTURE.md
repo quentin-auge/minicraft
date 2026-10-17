@@ -23,8 +23,8 @@ stored, how it flows, and how each system works. Read this before changing code.
 - `src/player/hook.js` — hook-kind registry (`HOOK_TYPES`, grapple first); framework (fire → pull → arrive/release) dispatches through the spec.
 - `src/player/rope.js` — rope-render backend (instanced cube rope, swappable).
 - `src/player/edit.js` — DDA raycast, place/break, floating-liquid purge, TNT displaced-liquid record.
-- `src/fx/tnt.js` — blast-kind registry (`TNT_TYPES`, normal first), fuses, countdown sprite, delayed chain queue, spherical blasts, displaced-liquid memory. Second break-click detonates lit TNT at once.
-- `src/fx/particles.js` — generic burst/flash effects backend (`spawnBurst`, `spawnFlash`, `tickFx`).
+- `src/fx/tnt.js` — blast-kind registry (`TNT_TYPES`, normal first), fuses, countdown visuals, delayed chain queue, spherical + pooled blasts, per-kind camera-shake specs, displaced-liquid memory. Second break-click detonates lit TNT at once.
+- `src/fx/particles.js` — generic burst/flash effects backend (`spawnBurst`, `spawnFlash`, `tickFx`); bursts support a crater-filling spawn ball (`fillRadius`), a per-particle color `palette`, and a `foreground` mode (no depth test, drawn above everything); flashes support a constant-speed `maxRadius` fireball mode (expand then retract, duration scales with radius).
 - `src/render/mesher.js` — chunked InstancedMesh renderer, streaming, local refresh.
 - `src/ui/menu.js` — Play/Resume/New-World overlay, pointer-lock wiring (no saves). Play is clickable from the first frame and enters a finished world fading in through expanding fog; New World only once started and never during a build; Esc unlock shows Resume + New World. Boot builds instantly behind the menu; no spinner anywhere.
 - `src/ui/debug.js` — `=` FPS readout (`fps~N`, exponential moving average, quarter-second refresh, hidden until started).
@@ -45,7 +45,9 @@ stored, how it flows, and how each system works. Read this before changing code.
 - Lit TNT lives in a `lit` map (`"x,y,z"` → fuse); chained blasts wait in a
   `pendingChain` map (`"x,y,z"` → due time); liquid displaced by placed TNT
   waits in a `displaced` map (`"x,y,z"` → liquid id, restored in that cell
-  after its blast, cleared on world build); the blast refresh callback is injected by the caller.
+  after its blast, cleared on world build); placed mega blocks are indexed in
+  `megaIndex` for instant pool clustering (added on place, removed as blasts
+  consume them, cleared on world build); the blast refresh callback is injected by the caller.
 - Render state: `chunkMeshes` (`"cx_cz"` → per-id InstancedMesh), a build queue,
   shared materials cache. Scene, camera, and renderer are owned by `main.js`.
 
@@ -216,15 +218,9 @@ persistence.
   same-liquid group left without a solid 6-neighbor returns to air. Bedrock
   (`y = 0`) and liquids are unbreakable; solid placement refuses the player's
   own AABB.
-- TNT: first break-click on a TNT block lights a 3 s fuse, shown as a
-  world-space countdown sprite (steady white, orange-red under 1 s, no
-  flicker, no block remesh during the countdown); a second break-click
-  detonates it immediately. The blast clears a sphere (radius 3) except
-  liquids, which survive while the blast passes through them, throws a
-  yellow flash plus a 64-point burst, and queues neighboring TNT for delayed
-  chain blasts (50 ms apart, one flash/burst each). A TNT placed in liquid restores that exact liquid in its own
-  cell after its blast; placed in air it leaves air behind.
-- Hotbar: 13 placeable overworld items (`GRASS` … `OBSIDIAN`), texture-icon
+- TNT: first break-click on a TNT block lights its fuse with no remesh (block kept); normal shows a steady white countdown sprite (orange-red under 1 s), mega (blue block, id 22) an 8 s fuse with an accelerating blue-to-white veil pulse plus white heat and pooled lights, no number. A second break-click detonates lit TNT at once. Normal blasts clear a sphere (radius 3) and chain neighbours with 50 ms delays, one flash/burst each. Megas link transitively at blast distance into one simultaneous pooled blast: upfront neighbor search over the live `megaIndex` (no voxel scans, clustering stays instant), +50% compound radius growth per neighbour within the member's current R/2 (cap 40, Ø80 ~= village diagonal), one crater + fireball per member at its own radius — crater-filling particle ball (`fillRadius`, fine yellow/red/orange palette, foreground), layered nuclear core + halo (retract ends with the 1.5 s fire, smoke trails to 2.0 s), same particle budget, carve clamped to column tops. Normals caught in a pool go off instantly instead of cascading; a mega uncovered by a normal blast joins the pool. Each blast clears solid cells except liquids (survive, blast passes through) and bedrock (`y = 0`); a TNT placed in liquid restores that liquid afterwards, placed in air it leaves air behind. Player launch is one centroid shove per pooled blast (uniform 1.5R travel: ballistic arc on ground, decaying `knockVel` impulse along the mega→player line in fly, fly mode kept), plus camera shake out to 3R (max inside, linear to 2R, exponential to silence, via per-kind `shake` spec).
+- Hotbar: 14 placeable overworld items (`GRASS` … `OBSIDIAN`, mega TNT always
+  listed after normal TNT), texture-icon
   slots; wheel, `K`/`L`, and click all select with wraparound.
 
 ## Tuning (world specs, not constants)
@@ -242,7 +238,7 @@ persistence.
 - `WALK = 4.4`, `SPRINT = 7.2`, `GRAVITY = 37.44`, `JUMP_MIN = 8.2`, `FLY = 10` (3x with sprint).
 - Hook kinds: `HOOK_TYPES` (grapple: pull 26, fling 34, throw 70, retract 275, uniform boost 2, retract mini 0.08 s, eye 0.3, head 0, face gap 0.15, hang clear 0.6); new kinds register a spec.
 - `JUMP_HOLD_TIME = 0.7`, `JUMP_THRUST = 45`, `JUMP_RAMP = 0.25`, `JUMP_BUFFER = 0.2`.
-- Blast kinds: `TNT_TYPES` (normal: fuse 3.0, radius 3, `blastKind:"sphere"`, `countdownKind:"sprite"`, `fxKind:"burst"`, `chainDelay` 0.05; mega/ultra later as entries with `blastKind` `pooled`/`band`, `countdownKind` `bucket`, `fxKind` `mega`/`ultra`, ids 22/23); new tiers register a spec.
+- Blast kinds: `TNT_TYPES` (normal: fuse 3.0, radius 3, `blastKind:"sphere"`, `countdownKind:"sprite"`, `fxKind:"burst"`, `chainDelay` 0.05; mega: fuse 8.0, radius 15/22.5/33.75 capped at 40 (`megaPoolRadius`: link at current R, growth per neighbours within current R/2, both transitively over a live mega index; carve clamped to column tops), `blastKind:"pooled"` (transitive simultaneous pool, one crater + fireball per member at its own radius), `countdownKind:"bucket"` (veil + white heat + pooled lights, no number), `fxKind:"mega"` via `spawnBlastFx`, `knockback` (launch + shake out to 3R via per-kind `shake` spec, max inside, linear to 2R, exponential to 3R; ballistic arc on ground, decaying `knockVel` impulse along the mega→player line in fly), id 22; ultra later as an entry with `blastKind` `band`, id 23); new tiers register a spec.
 
 ## Tuning constants (render)
 
@@ -275,11 +271,15 @@ entries, never framework forks:
 - Shared properties live once in a module-local `*_DEFAULTS` object;
   entries spread it first and override only what differs.
 - Differing numbers are entry properties; differing behavior is a
-  capability flag the framework branches on (`pull`, `blastKind`,
-  `countdownKind`, `fxKind`, `locomotion`) or an optional function prop
-  (`grow`, `filter`, `tick`, `carveBlast`, `spawnBlastFx`, `*LitVisual`).
-  Framework code never switches on kind names — it dispatches through
-  the spec.
+  capability flag the framework branches on (`pool`, `knockback`, `light`,
+  `pull`, `locomotion`) or an optional function prop (`carveBlast`,
+  `spawnBlastFx`, `make/tick/clearLitVisual`, `grow`, `filter`, `tick`);
+  kind strings (`key`, `blastKind`, `countdownKind`, `fxKind`) are stable
+  identifiers, never branch conditions — dispatch goes through flags and
+  hooks, or through a per-kind spec object looked up by key (e.g. camera
+  shake via `shakeSpecFor(kind)`). Framework code never switches on kind
+  names — new variants add entries (and any new flags/hooks they need),
+  never forks.
 - Spec keys are stable strings, never array indices, so a future save
   format survives reordering.
 - Cosmetic variants follow the recipe: weighted options table → deterministic
@@ -289,8 +289,9 @@ Single-anatomy numbers stay plain constants: world dimensions, body
 physics, render budgets. Single-spec systems (`TERRAIN`, `VILLAGE_SPEC`) become registries only when a second variant arrives.
 
 Shipped: trees (oak; pines later), flowers (7 variants), TNT (normal,
-`blastKind:"sphere"`, `countdownKind:"sprite"`, `fxKind:"burst"`; mega/ultra
-later as entries, ids 22/23), hooks (grapple, `pull:"self-to-anchor"`;
+`blastKind:"sphere"`, `countdownKind:"sprite"`, `fxKind:"burst"`; mega,
+`blastKind:"pooled"`, `countdownKind:"bucket"`, `fxKind:"mega"`, id 22; ultra
+later as an entry, id 23), hooks (grapple, `pull:"self-to-anchor"`;
 grab later), liquids (water outside-blue + pocket-white roles).
 Specified, code-free: mobs (locomotion/perch/water/hookability axes),
 `PORTAL_TYPES` (frame block, sizes, fill material, sealed-when rule,
