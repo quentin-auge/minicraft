@@ -59,7 +59,7 @@
     }
     #help .panel {
       background: #1c2030; color: #e8edf5; padding: 18px 20px; border-radius: 14px;
-      border: 2px solid rgba(255,255,255,0.18); max-width: 340px; line-height: 1.6;
+      border: 2px solid rgba(255,255,255,0.18); max-width: 560px; line-height: 1.6;
       font-size: 14px; box-shadow: 0 12px 40px rgba(0,0,0,0.6);
     }
     #help h2 { margin-bottom: 12px; font-size: 22px; color: #fff; }
@@ -68,6 +68,11 @@
     #help td { padding: 3px 8px; border-top: 1px solid rgba(255,255,255,0.1); vertical-align: top; }
     #help td:first-child { color: #fff; font-weight: 600; white-space: nowrap; width: 36%; }
     #help .hint { margin-top: 16px; font-size: 12px; color: #aab8c4; text-align: center; }
+    #help .portal-diagram { display: flex; gap: 20px; align-items: center; margin-top: 4px; }
+    #help .portal-diagram h3 { margin: 0 0 6px; }
+    #help .portal-diagram svg { flex: 0 0 auto; border-radius: 8px; box-shadow: 0 0 18px rgba(155,48,247,0.55); }
+    #help .portal-diagram p { margin: 0; }
+    #help .note { margin-top: 12px; font-size: 13px; color: #cdd6e2; }
     #help .closebtn {
       margin-top: 14px; display: block; width: 100%; font: inherit; font-size: 15px; font-weight: 600;
       color: #fff; background: #3a8; border: 2px solid #4c9; border-radius: 8px; padding: 10px; cursor: pointer;
@@ -107,6 +112,37 @@
       background: rgba(0,0,0,0.5); padding: 12px 22px; border-radius: 10px;
       opacity: 0; transition: opacity .4s; pointer-events: none; text-align: center;
     }
+    /* Portal travel spiral (fullscreen overlay; opacity + rotate run on the
+       compositor, so the spiral keeps spinning through the teleport) */
+    #portalSpiral {
+      position: fixed; inset: 0; z-index: 50;
+      background: #050208;
+      opacity: 0; pointer-events: none; overflow: hidden;
+      transition: opacity 0.6s ease;
+      display: none;
+    }
+    #portalSpiral.show {
+      opacity: 1;
+      transition: opacity 0.45s ease;
+    }
+    #portalSpiral .swirl-wrap {
+      position: absolute; inset: 0;
+      display: flex; align-items: center; justify-content: center;
+    }
+    #portalSpiral .swirl-wrap svg {
+      width: 150vmax; height: 150vmax; flex: 0 0 auto;
+      animation: spiralSpin 2.4s linear infinite;
+      will-change: transform;
+    }
+    #portalSpiral .swirl-wrap.back svg {
+      width: 120vmax; height: 120vmax;
+      animation-duration: 4.4s; animation-direction: reverse; opacity: 0.5;
+    }
+    #portalSpiral::after {
+      content: ""; position: absolute; inset: 0;
+      background: radial-gradient(circle, transparent 45%, rgba(0,0,0,0.6) 100%);
+    }
+    @keyframes spiralSpin { to { transform: rotate(360deg); } }
   </style>
 </head>
 <body>
@@ -115,6 +151,10 @@
   <div id="crosshair"></div>
   <div id="hotbar"></div>
   <div id="toast"></div>
+  <div id="portalSpiral">
+    <div class="swirl-wrap back"><svg id="portalSpiralBack" viewBox="-100 -100 200 200"></svg></div>
+    <div class="swirl-wrap front"><svg id="portalSpiralFront" viewBox="-100 -100 200 200"></svg></div>
+  </div>
   <div id="help">
     <div class="panel">
       <h2>Help</h2>
@@ -131,6 +171,17 @@
         <tr><td>H</td><td>Help</td></tr>
         <tr><td>=</td><td>Debug</td></tr>
       </table>
+      <div class="portal-diagram">
+        <div>
+          <h3>Portal to the End</h3>
+          <div id="portalArt"></div>
+        </div>
+        <div>
+          <h3>Portal to the Nether</h3>
+          <div id="netherArt"></div>
+        </div>
+      </div>
+      <div class="note">End frame: 5x5 PORTAL blocks, flat or upright either way. Nether frame: 5x4, 4x5 or 4x4 OBSIDIAN, flat or upright. Frames may cross each other. Step into the fill to travel.</div>
       <button class="closebtn" id="btnHelpClose">Close</button>
     </div>
   </div>

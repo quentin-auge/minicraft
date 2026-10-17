@@ -7,6 +7,7 @@ import { AIR, BLOCK_INFO, isLiquid, isTntLike } from "../core/blocks.js";
 import { WORLD_RADIUS, MAX_Y, getBlock, setBlock } from "../core/store.js";
 import { PLAYER_HW, PLAYER_H, pos } from "./physics.js";
 import { igniteTNT, isLitTNT, detonateNow, noteTntPlaced, kindOfBlock, trackMegaPlaced } from "../fx/tnt.js";
+import { notePortalEdit } from "../world/portals.js";
 
 export let currentBlock = null;
 const _dir = new THREE.Vector3();
@@ -119,6 +120,7 @@ export function purgeFloatingLiquidsAround(coords) {
       if (y === 0) continue;
       if (getBlock(x, y, z) !== lid) continue;
       setBlock(x, y, z, AIR);
+      notePortalEdit(x, y, z);
       purged.push([x, y, z]);
     }
   }
@@ -136,6 +138,7 @@ export function breakBlockAt(x, y, z) {
     return [];
   }
   setBlock(x, y, z, AIR);
+  notePortalEdit(x, y, z);
   const purged = purgeFloatingLiquidsAround([[x, y, z]]);
   return [[x, y, z], ...purged];
 }
@@ -148,6 +151,7 @@ export function tryPlace(id, px, py, pz) {
   if (BLOCK_INFO[id].solid && intersectsPlayer(px, py, pz)) return null;
   setBlock(px, py, pz, id);
   if (kindOfBlock(id).pool) trackMegaPlaced(px, py, pz);
+  notePortalEdit(px, py, pz);
   if (isTntLike(id) && isLiquid(target)) noteTntPlaced(px, py, pz, target);
   const purged = purgeFloatingLiquidsAround([[px, py, pz]]);
   return [[px, py, pz], ...purged];

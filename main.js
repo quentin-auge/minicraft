@@ -19,6 +19,10 @@ import { initMenu, enterGame, started, isLocked } from "./src/ui/menu.js";
 import { initHelp, openHelp, closeHelp, isHelpOpen } from "./src/ui/help.js";
 import { toggleDebug, tickDebug } from "./src/ui/debug.js";
 import { tickWaterFog, eyeMediumId } from "./src/render/waterfog.js";
+import {
+  initPortals, buildPortalDom, setPortalTravelHook, tickPortals,
+  rebuildPortalBlocks, scanWorldPortals, clearPortalFills, notePortalEdits,
+} from "./src/world/portals.js";
 import { CHUNK, RENDER_DIST } from "./src/core/store.js";
 import { EYE } from "./src/player/physics.js";
 
@@ -60,6 +64,9 @@ initRenderer(scene);
 initFx(scene);
 initTNTFx(scene);
 initRope(scene);
+initPortals(scene);
+buildPortalDom();
+setPortalTravelHook(() => severHook());
 
 const highlight = new THREE.LineSegments(
   new THREE.EdgesGeometry(new THREE.BoxGeometry(1.002, 1.002, 1.002)),
@@ -131,6 +138,9 @@ async function buildWorld() {
     spawnPlayer();
     rebuildAll(pos.x, pos.z);
     drainChunkQueue(true);
+    clearPortalFills();
+    rebuildPortalBlocks();
+    scanWorldPortals();
     buildHotbar();
     select(0);
     updateCamera();
@@ -305,8 +315,9 @@ function loop(now) {
       severHook();
       spawnPlayer();
     }
-    tickTNT(dt, (touched) => refreshBlocks(touched));
+    tickTNT(dt, (touched) => { notePortalEdits(touched); refreshBlocks(touched); });
   }
+  tickPortals(dt, simActive);
   if (isLocked() && !isHelpOpen()) {
     const hit = updateTarget(camera, selectedId());
     if (hit) {

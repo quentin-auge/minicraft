@@ -5,8 +5,8 @@ stored, how it flows, and how each system works. Read this before changing code.
 
 ## Tree
 
-- `index.html` — static shell: menu, help, hotbar DOM, Three.js import map.
-- `main.js` — bootstrap: scene, input wiring, main loop, world startup.
+- `index.html` — static shell: menu, help (controls + portal diagrams), hotbar DOM, portal-travel spiral overlay, Three.js import map.
+- `main.js` — bootstrap: scene, input wiring, main loop, world startup. Ticks portals (fill refresh + loop travel) and notifies the portal index of blast edits.
 - `src/ui/hotbar.js` — full static item list, selection.
 - `src/core/blocks.js` — block ids, BLOCK_INFO (solid/opaque/placeable), liquid/TNT predicates.
 - `src/core/noise.js` — deterministic hash2/valueNoise/fbm.
@@ -18,17 +18,18 @@ stored, how it flows, and how each system works. Read this before changing code.
 - `src/render/flowers.js` — flower-variant registry, baked voxel-cluster geometries (stem/leaves/disc bloom).
 - `src/world/village.js` — village layout and structure placement (houses, pen, pool).
 - `src/world/spawn.js` — spawn selection on finished voxels (`findSpawn`): firm open ground with a frustum-wide clear vista.
+- `src/world/portals.js` — local-loop Nether/End portals: `PORTAL_TYPES` registry (End `PORTAL` frame, Nether `OBSIDIAN` frame; each spec carries frame block, sizes via anchors, fill color/material, travel action, help art — new families register a spec, the engine dispatches without family switches), frame validation (End 5×5/5×4 upright faces x/z + 5×5 flat, corners optional; Nether 5×4/4×5/4×4 upright faces x/z + 5×4/4×5 flat, corners required), frames may cross orthogonally (interior frame blocks must belong to another live window's ring — support-closure; breaking either ring drops both), solid-color fills (End black, Nether purple, fogged like any block, always shown), body-overlap travel trigger, spiral + help-diagram builders, arrivals ~3 blocks out facing the crossed window. Every edit refreshes fills around the edited cell the same frame (placement reach is unlimited, the player-centered scan alone would miss far windows).
 - `src/player/physics.js` — player state, movement, shared axis movers (`collideBody`); `spawnPlayer` applies the `findSpawn` pick.
 - `src/player/fly.js` — fly mode (pitch-aware thrust, no gravity) on the shared movers.
 - `src/player/hook.js` — hook-kind registry (`HOOK_TYPES`, grapple first); framework (fire → pull → arrive/release) dispatches through the spec.
 - `src/player/rope.js` — rope-render backend (instanced cube rope, swappable).
-- `src/player/edit.js` — DDA raycast, place/break, floating-liquid purge, TNT displaced-liquid record.
+- `src/player/edit.js` — DDA raycast, place/break, floating-liquid purge, TNT displaced-liquid record. Notifies the portal index of every voxel change.
 - `src/fx/tnt.js` — blast-kind registry (`TNT_TYPES`, normal first), fuses, countdown visuals, delayed chain queue, spherical + pooled blasts, per-kind camera-shake specs, displaced-liquid memory, post-blast floating-liquid purge via injected callback. Second break-click detonates lit TNT at once.
 - `src/fx/particles.js` — generic burst/flash effects backend (`spawnBurst`, `spawnFlash`, `tickFx`); bursts support a crater-filling spawn ball (`fillRadius`), a per-particle color `palette`, and a `foreground` mode (no depth test, drawn above everything); flashes support a constant-speed `maxRadius` fireball mode (expand then retract, duration scales with radius).
 - `src/render/mesher.js` — chunked InstancedMesh renderer, streaming, local refresh.
 - `src/ui/menu.js` — Play/Resume/New-World overlay, pointer-lock wiring (no saves). Play is clickable from the first frame and enters a finished world fading in through expanding fog; New World only once started and never during a build; Esc unlock shows Resume + New World. Boot builds instantly behind the menu; no spinner anywhere.
 - `src/ui/debug.js` — `=` FPS readout (`fps~N`, exponential moving average, quarter-second refresh, hidden until started).
-- `src/ui/help.js` — help overlay open/close. Shortcut table: Move, Jump, Sprint, Place, Break, Select, Fly, Grapple, Help, Debug.
+- `src/ui/help.js` — help overlay open/close. Shortcut table: Move, Jump, Sprint, Place, Break, Select, Fly, Grapple, Help, Debug. Portal frame diagrams are painted by `portals.js` (`buildPortalDom` at boot).
 
 ## Data model
 
@@ -146,7 +147,9 @@ to unmeshed chunks persist in the voxel store and appear when their chunk
 builds (`refreshBlocks` skips queued chunks, rebuilds built ones). TNT
 tick and simulation while locked and help closed (hook, else fly, else walk)
 → raycast target + highlight → stream nearby chunks. Falling below `y = -20`
-respawns. Play enters a finished world fading in through expanding fog; Esc
+respawns. Portal windows refresh around the player (fills always exist but
+fog like anything else); stepping into a fill plays the spiral, then respawns beside the
+same window, ~3 blocks out and facing it) with a 1.5 s cooldown. Play enters a finished world fading in through expanding fog; Esc
 shows Resume + New World (fresh seed, same instant-load flow, the only action
 that waits on a build). There is no
 persistence.
@@ -295,10 +298,12 @@ Shipped: trees (oak; pines later), flowers (7 variants), TNT (normal,
 `blastKind:"sphere"`, `countdownKind:"sprite"`, `fxKind:"burst"`; mega,
 `blastKind:"pooled"`, `countdownKind:"bucket"`, `fxKind:"mega"`, id 22; ultra
 later as an entry, id 23), hooks (grapple, `pull:"self-to-anchor"`;
-grab later), liquids (water outside-blue + pocket-white roles).
+grab later), liquids (water outside-blue + pocket-white roles), portals
+(`PORTAL_TYPES`: end frame `PORTAL`, nether frame `OBSIDIAN`, per-spec sizes,
+fill, travel action, help art; local loop — arrivals respawn beside the same
+window, dimensions later).
 Specified, code-free: mobs (locomotion/perch/water/hookability axes),
-`PORTAL_TYPES` (frame block, sizes, fill material, sealed-when rule,
-arrival mapper, mob policy), `DIMENSIONS` (generator, env preset, spawn,
+`DIMENSIONS` (generator, env preset, spawn,
 cleared flag + respawn policy, fly band, hazards, hotbar),
 `BOSS_SPECS` (anchor dim, hp-as-hits, path builder, hit palette, weapon
 interface, bar binding, death/cleared flag).
@@ -313,5 +318,5 @@ interface, bar binding, death/cleared flag).
 ## Dropped from master (kept out on purpose)
 
 Saves and server API, mobs, jump streak boost, hold-chain
-paint/bridge editing, clouds/moon, portals,
+paint/bridge editing, clouds/moon, Nether/End dimensions,
 boss bar.
