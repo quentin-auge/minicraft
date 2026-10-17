@@ -129,7 +129,16 @@ roles — color, opacity, and grain, so retinting never touches paint
 code — new liquids register a spec without framework forks. Surfaces
 stay unlit; glass draws last (renderOrder 13). Chunks within `RENDER_DIST` build nearest-first (3D distance to the
 eye) under a
-per-frame budget; edits rebuild only touching chunks via `refreshBlocks`. The
+per-frame budget; edits rebuild only touching chunks via `refreshBlocks`. 3D
+distances read cached per-chunk tops (dropped on rebuild/dispose) and the
+clear-bubble guard scores the queue once, nearest-first. Columns walk
+unsorted (instance order is invisible); meshes carry static conservative
+spheres (no per-build computation, no per-frame matrix updates). Pocket/hem
+tests memoize per air cell per build; steady-state region fades skip the
+mesh and generic material loops (late-created materials fade at creation,
+the bespoke `onFade` still runs). Non-region meshes share one group per
+chunk, fog-culled as a unit past fog far (the Moon ground content);
+region meshes stay scene-level under their fade gate. The
 first build is fully synchronous: every chunk in range meshes before the
 first frame, then closed-in fog expands to reveal the finished world.
 Eviction waits for both the loose ring and the fogged range: a chunk outside
@@ -154,7 +163,8 @@ eye-gated on the camera cell being liquid — divers murk with
 the liquid's tint (per-liquid tint, fog 2–30), pocket and tunnel air stays
 clear) plus the pocket-veil
 eye-medium gate (liquid/diver, open air, pocket air, flipped only on change):
-the only murk, since surfaces are flat unlit sheets. Once voxel data exists, input is fully live — move, look,
+the only murk, since surfaces are flat unlit sheets. The eye medium is
+computed once per frame and shared by the murk and the veil gate. Once voxel data exists, input is fully live — move, look,
 place/break, grapple, fly, hotbar; edits
 to unmeshed chunks persist in the voxel store and appear when their chunk
 builds (`refreshBlocks` skips queued chunks, rebuilds built ones). TNT
@@ -252,8 +262,8 @@ persistence.
 - Spawn: feet inside radius 48, vista 50 ahead / 12 up across the FOV swath
   (`VIEW_HALF_TAN` from the 75° FOV), pen margin 1.
 - Moon: bottom `MOON_MIN_Y` = 850 (hand-picked), surface `MOON_SURFACE_Y` = 946, radius 96, shell 5, 6 hashed lakes; low gravity from 850, toolbar flips 8 below at 842 (water→moon-water, flower→glowstone), sky black 475→495, the Moon reveal region fades 495→515 (disc, lakes, *and* every block placed at `y >= MOON_MIN_Y` — stones, dirt, flowers, liquids — fading together so blue sky never shows a moon-side silhouette or a popping glowstone), snow fades in over its gate span.
-- Glowstone: 7 color variants, cluster inherit within 10 blocks else fresh random; unlit per-variant textures; pooled point lights (one entry per block, 16 nearest, no distance cutoff, decay 2, intensity 150, 8/s position+color glide, 0.5 s sticky reassignment) that read on lit blocks (moon rock is Lambert + emissiveMap base ~0.85 so the underside stays readable; moon-water sheets stay unlit).
-- Snow: 700 flakes, range 36, size 0.18, fall 2.5–5.5, 30 Hz step, active above `MOON_SURFACE_Y - 8`.
+- Glowstone: 7 color variants, cluster inherit within 10 blocks else fresh random; unlit per-variant textures; pooled point lights (one entry per block, bounded nearest-16 in one pass, no distance cutoff, decay 2, intensity 150, 8/s position+color glide with snap at rest, 0.5 s sticky reassignment) that read on lit blocks (moon rock is Lambert + emissiveMap base ~0.85 so the underside stays readable; moon-water sheets stay unlit).
+- Snow: 700 flakes, range 36, size 0.18, fall 2.5–5.5, 30 Hz step with landing heights refreshed every 8th step, hidden below its gate span, active above `MOON_SURFACE_Y - 8`.
 
 ## Tuning constants (player)
 

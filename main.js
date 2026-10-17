@@ -325,8 +325,11 @@ function loop(now) {
   if (worldReady && !building) {
     tickSky(scene, camera, sun, hemi, envAir);
     applyRegions(camera.position, scene.background, setRegionFade);
-    tickWaterFog(scene, camera, dt, envAir);
-    setEyeMedium(eyeMediumId(camera.position.x, camera.position.y, camera.position.z));
+    // One eye-medium lookup per frame, shared by the murk and the veil gate
+    // (it used to run twice, with a bounded air flood each time in pockets).
+    const medium = eyeMediumId(camera.position.x, camera.position.y, camera.position.z);
+    tickWaterFog(scene, camera, dt, envAir, medium);
+    setEyeMedium(medium);
   }
   // Moon-band hotbar: 8 below the Moon's lower end the water slot becomes
   // moon water and the flower slot becomes glowstone; both restore on descent.

@@ -2,7 +2,7 @@
 // only for exposed blocks. Rebuilds stay local via refreshBlocks().
 import * as THREE from "three";
 import { AIR, BLOCK_INFO, FLOWER, GLASS, GLOWSTONE, isLiquid } from "../core/blocks.js";
-import { WORLD_RADIUS, CHUNK, RENDER_DIST, getBlock, colTops, colOcc, dim, chunkOf, isEnclosedAir } from "../core/store.js";
+import { WORLD_RADIUS, CHUNK, RENDER_DIST, getBlock, colTops, colTopIdx, colOcc, dim, chunkOf, isEnclosedAir } from "../core/store.js";
 import { materialsFor, liquidSurfaceMat, glowstoneMats } from "../core/textures.js";
 import { FLOWER_GEOS, FLOWER_MAT, flowerVariantAt, flowerAngleAt } from "./flowers.js";
 import { GLOW_VARIANT_COUNT, glowVariantAt } from "../world/glowstone.js";
@@ -144,6 +144,11 @@ function unregisterVeils(meshes) {
   }
 }
 const chunkMeshes = new Map(); // "cx_cz" -> Map<id, InstancedMesh>
+// Rest groups for fog culling: ck -> { group, x0, x1, z0, z1, top }, where
+// top is the highest non-region cell of the chunk. Region meshes stay
+// scene-level under their own fade gate.
+const chunkRest = new Map();
+let cullVersion = 0; // bumped on every rebuild/dispose; the cull caches on it
 // Reveal regions: per-region mesh groups + their current fade factor, plus
 // material clones the region owns (it fades their opacity; an onFade hook can
 // do bespoke work). Region meshes default hidden at build so no first frame
@@ -197,6 +202,12 @@ function regionMaterials(region, handle, factory) {
     const src = factory();
     mats = Array.isArray(src) ? src.map(clone) : clone(src);
     owned.set(handle, mats);
+    // A handle first created after the region settled stays consistent with
+    // the current factor instead of flashing at full opacity; the steady-state
+    // early-out in setRegionFade skips re-fading, so creation applies it once.
+    const o = regionFade.get(region.key) ?? 0;
+    if (Array.isArray(mats)) for (const m of mats) applyMatFade(m, o);
+    else applyMatFade(mats, o);
   }
   return mats;
 }
@@ -222,7 +233,17 @@ function ctxFor(region) {
 // region's onFade override specifics (the Moon rock tints sky→texture).
 export function setRegionFade(key, o, skyColor) {
   o = Math.max(0, Math.min(1, o));
+  const prev = regionFade.get(key);
   regionFade.set(key, o);
+  const region = regionByKey(key);
+  // Steady state (the common case on the Moon: o pinned at 0 or 1): skip the
+  // mesh loop and the generic material fade. The bespoke onFade still runs so
+  // sky-tinted materials track the background; late-created handles fade at
+  // creation (regionMaterials), so skipping never leaves one stale.
+  if (prev === o) {
+    if (region && region.onFade) region.onFade(o, skyColor, ctxFor(region));
+    return;
+  }
   const set = regionMeshes.get(key);
   if (set) for (const mesh of set) { mesh.userData.regionVisible = o > 0; refreshVisible(mesh); }
   const owned = regionMatCache.get(key);
@@ -232,7 +253,6 @@ export function setRegionFade(key, o, skyColor) {
       else applyMatFade(mats, o);
     }
   }
-  const region = regionByKey(key);
   if (region && region.onFade) region.onFade(o, skyColor, ctxFor(region));
 }
 
@@ -255,10 +275,27 @@ export function initRenderer(scene) {
   sceneRef = scene;
 }
 
+// Hoisted neighbor offsets: isExposed runs per occupied cell, so sharing one
+// table avoids allocating neighbor arrays on every call.
+// Y faces first: surface cells (the majority of meshed blocks) expose upward
+// and return on the first test; interior cells pay all six either way.
+const EXPOSE_DIRS = [[0, 1, 0], [0, -1, 0], [1, 0, 0], [-1, 0, 0], [0, 0, 1], [0, 0, -1]];
+
+// Static bounds for chunk meshes: every instance sits inside its chunk
+// column, so one conservative sphere replaces per-mesh computation at build
+// time. Three culls against it directly; staying conservative keeps culling
+// exact (never hides visible geometry).
+function stampStatic(mesh, x0, x1, z0, z1, top) {
+  const cx = (x0 + x1 + 1) / 2, cy = (top + 1) / 2, cz = (z0 + z1 + 1) / 2;
+  const r = 0.5 * Math.sqrt((x1 - x0 + 1) ** 2 + (top + 1) ** 2 + (z1 - z0 + 1) ** 2) + 0.01;
+  mesh.boundingSphere = new THREE.Sphere(new THREE.Vector3(cx, cy, cz), r);
+  mesh.matrixAutoUpdate = false;
+}
+
 function isExposed(x, y, z) {
-  const dirs = [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]];
-  for (const [dx, dy, dz] of dirs) {
-    const n = getBlock(x + dx, y + dy, z + dz);
+  for (let i = 0; i < EXPOSE_DIRS.length; i++) {
+    const d = EXPOSE_DIRS[i];
+    const n = getBlock(x + d[0], y + d[1], z + d[2]);
     if (n === AIR) return true;
     const info = BLOCK_INFO[n];
     if (!info || !info.opaque) return true;
@@ -271,7 +308,11 @@ export function disposeAll() {
     for (const m of meshes.values()) { sceneRef.remove(m); m.dispose(); }
   }
   chunkMeshes.clear();
+  for (const r of chunkRest.values()) sceneRef.remove(r.group);
+  chunkRest.clear();
+  cullVersion++;
   gatedVeils.clear();
+  topMaxCache.clear();
   regionMeshes.clear();
   for (const owned of regionMatCache.values()) {
     for (const mats of owned.values()) {
@@ -284,10 +325,18 @@ export function disposeAll() {
 }
 
 function disposeChunk(ck) {
+  topMaxCache.delete(ck);
+  // Dropping the rest group removes its whole subtree at once; per-mesh
+  // dispose below still frees the instance buffers.
+  const rest = chunkRest.get(ck);
+  if (rest) { sceneRef.remove(rest.group); chunkRest.delete(ck); }
+  cullVersion++;
   const meshes = chunkMeshes.get(ck);
   if (!meshes) return;
   for (const m of meshes.values()) {
-    sceneRef.remove(m); m.dispose();
+    // Region meshes are scene-level; rest meshes leave with their group.
+    if (m.userData.regionKey) sceneRef.remove(m);
+    m.dispose();
     const rk = m.userData.regionKey;
     if (rk) { const set = regionMeshes.get(rk); if (set) { set.delete(m); if (!set.size) regionMeshes.delete(rk); } }
   }
@@ -297,6 +346,7 @@ function disposeChunk(ck) {
 
 export function rebuildChunk(cx, cz) {
   const ck = cx + "_" + cz;
+  topMaxCache.delete(ck);
   disposeChunk(ck);
   const x0 = Math.max(cx * CHUNK, -WORLD_RADIUS);
   const x1 = Math.min(cx * CHUNK + CHUNK - 1, WORLD_RADIUS);
@@ -318,16 +368,42 @@ export function rebuildChunk(cx, cz) {
     if (!arr) { arr = []; map.set(id, arr); }
     arr.push(quad);
   };
+  // Column tops for this build: chunkTop bounds every mesh sphere, restTop
+  // (highest non-region cell) drives the fog-cull box of the rest group.
+  let chunkTop = -1;
+  let restTop = -1;
+  // Pocket-test memo per build: neighboring liquid faces re-query the same
+  // air cells (lake rims, shaft rings), and each miss used to pay a full
+  // bounded flood. Keys pack the column index and y (y < 4096 in practice).
+  const enclosedMemo = new Map();
+  const hemmedMemo = new Map();
+  const memoEnclosed = (x, y, z) => {
+    const k = colTopIdx(x, z) * 4096 + y;
+    let v = enclosedMemo.get(k);
+    if (v === undefined) { v = isEnclosedAir(x, y, z); enclosedMemo.set(k, v); }
+    return v;
+  };
+  const memoHemmed = (x, y, z, id) => {
+    const k = (colTopIdx(x, z) * 4096 + y) * 32 + id;
+    let v = hemmedMemo.get(k);
+    if (v === undefined) { v = hemmedAir(x, y, z, id); hemmedMemo.set(k, v); }
+    return v;
+  };
   for (let x = x0; x <= x1; x++) {
     for (let z = z0; z <= z1; z++) {
       // Sparse column walk: only occupied cells are visited (ascending, as
       // before), so tall builds cost by blocks instead of height.
       const occ = colOcc[dim].get((x + 1024) * 2048 + (z + 1024));
       if (!occ) continue;
-      const ys = [...occ].sort((a, b) => a - b);
-      for (const y of ys) {
+      // Unsorted walk: instance order inside a mesh has no visual effect, so
+      // the per-column sort was pure rebuild cost (tall Moon columns worst).
+      for (const y of occ) {
         const id = getBlock(x, y, z);
         if (!BLOCK_INFO[id]) continue;
+        if (y > chunkTop) chunkTop = y;
+        // Single membership test per cell; partitionRegion re-tests below, so
+        // this stays cheaper than re-walking the rest lists afterwards.
+        if (regionOf(id, x, y, z) === null && y > restTop) restTop = y;
         if (id === FLOWER) { flowers.push([x, y, z]); continue; }
         if (id === GLOWSTONE) {
           if (isExposed(x, y, z)) glows.push([x, y, z]);
@@ -347,7 +423,7 @@ export function rebuildChunk(cx, cz) {
               // the plane 1-high ones do instead of floating mid-column.
               if (dy !== -1) continue;
               if (getBlock(x, y - 1, z) !== id) continue;
-              if (getBlock(x, y + 1, z) !== AIR || isEnclosedAir(x, y + 1, z)) continue;
+              if (getBlock(x, y + 1, z) !== AIR || memoEnclosed(x, y + 1, z)) continue;
               let sealY = y;
               while (getBlock(x, sealY - 1, z) === id && hasAirSide(x, sealY - 1, z)) sealY--;
               if (!sealFootAt(x, sealY, z)) continue;
@@ -371,8 +447,8 @@ export function rebuildChunk(cx, cz) {
             // Opposite pairs first; the flood runs only when that falls
             // short and fast-paths sky itself.
             const n = getBlock(x + dx, y + dy, z + dz);
-            const pocketed = n === AIR && (hemmedAir(x + dx, y + dy, z + dz, id) ||
-              isEnclosedAir(x + dx, y + dy, z + dz));
+            const pocketed = n === AIR && (memoHemmed(x + dx, y + dy, z + dz, id) ||
+              memoEnclosed(x + dx, y + dy, z + dz));
             if (pocketed) {
               pushQuad(dy === 1 ? liquidsPocketBlueTop : liquidsPocketBlue, id, quad);
               pushQuad(liquidsPocketBlueBack, id, quad);
@@ -392,6 +468,11 @@ export function rebuildChunk(cx, cz) {
   }
   if (!perId.size && !flowers.length && !glows.length && !liquidMaps.some((m) => m.size)) return;
   const meshes = new Map();
+  // Non-region meshes share one static group per chunk so the whole ground
+  // content culls as a unit when it sits past the fog (the Moon case).
+  // Region meshes stay scene-level under their own fade gate.
+  const restGroup = new THREE.Group();
+  restGroup.matrixAutoUpdate = false;
   const buildBoxes = (list, mats) => {
     const mesh = new THREE.InstancedMesh(boxGeo, mats, list.length);
     for (let i = 0; i < list.length; i++) {
@@ -403,7 +484,7 @@ export function rebuildChunk(cx, cz) {
       mesh.setMatrixAt(i, dummy.matrix);
     }
     mesh.instanceMatrix.needsUpdate = true;
-    mesh.computeBoundingSphere();
+    stampStatic(mesh, x0, x1, z0, z1, chunkTop);
     return mesh;
   };
   for (const [id, list] of perId) {
@@ -413,7 +494,7 @@ export function rebuildChunk(cx, cz) {
       // Glass draws after liquids so it composites over water whether the
       // glass sits behind or in front of the surface.
       if (id === GLASS) mesh.renderOrder = 13;
-      sceneRef.add(mesh);
+      restGroup.add(mesh);
       meshes.set(id, mesh);
     }
     for (const g of groups.values()) {
@@ -439,7 +520,7 @@ export function rebuildChunk(cx, cz) {
         mesh.setMatrixAt(i, dummy.matrix);
       }
       mesh.instanceMatrix.needsUpdate = true;
-      mesh.computeBoundingSphere();
+      stampStatic(mesh, x0, x1, z0, z1, chunkTop);
       return mesh;
     };
     for (let v = 0; v < FLOWER_GEOS.length; v++) {
@@ -448,7 +529,7 @@ export function rebuildChunk(cx, cz) {
       const { rest, groups } = partitionRegion(FLOWER, list);
       if (rest.length) {
         const mesh = buildFlowers(rest, FLOWER_GEOS[v], FLOWER_MAT);
-        sceneRef.add(mesh);
+        restGroup.add(mesh);
         meshes.set("flower_" + v, mesh);
       }
       for (const g of groups.values()) {
@@ -473,7 +554,7 @@ export function rebuildChunk(cx, cz) {
       const { rest, groups } = partitionRegion(GLOWSTONE, list);
       if (rest.length) {
         const mesh = buildBoxes(rest, glowstoneMats(v));
-        sceneRef.add(mesh);
+        restGroup.add(mesh);
         meshes.set("glowstone_" + v, mesh);
       }
       for (const g of groups.values()) {
@@ -512,9 +593,8 @@ export function rebuildChunk(cx, cz) {
       mesh.setMatrixAt(i, dummy.matrix);
     }
     mesh.instanceMatrix.needsUpdate = true;
-    mesh.computeBoundingSphere();
+    stampStatic(mesh, x0, x1, z0, z1, chunkTop);
     mesh.renderOrder = order;
-    sceneRef.add(mesh);
     return mesh;
   };
   const gateVeil = (gate, lid, mesh) => {
@@ -538,6 +618,7 @@ export function rebuildChunk(cx, cz) {
       if (rest.length) {
         const mesh = quadMesh(liquidSurfaceMat(lid, role, top), rest, order);
         gateVeil(gate, lid, mesh);
+        restGroup.add(mesh);
         meshes.set("liquid_" + lid + suffix, mesh);
       }
       for (const g of groups.values()) {
@@ -546,17 +627,30 @@ export function rebuildChunk(cx, cz) {
           g.list, order);
         gateVeil(gate, lid, mesh);
         registerRegionMesh(g.region, mesh);
+        sceneRef.add(mesh);
         meshes.set("liquid_" + g.region.key + "_" + lid + suffix, mesh);
       }
     }
   }
+  if (restGroup.children.length) {
+    sceneRef.add(restGroup);
+    chunkRest.set(ck, { group: restGroup, x0, x1, z0, z1, top: restTop });
+  }
+  cullVersion++;
   chunkMeshes.set(ck, meshes);
 }
 
 const chunkQueue = [];
 
+// Highest surface per chunk bounds, cached: chunkDist3 queries it once per
+// candidate chunk per stream pass, and the Moon tops never change between
+// edits. Entries drop on rebuild/dispose so edits never read stale heights.
+const topMaxCache = new Map(); // "cx_cz" -> top y
 // Highest surface in a chunk's bounds (world-clipped), for 3D distances.
 function chunkTopMax(cx, cz) {
+  const ck = cx + "_" + cz;
+  const hit = topMaxCache.get(ck);
+  if (hit !== undefined) return hit;
   let top = 0;
   const x0 = Math.max(cx * CHUNK, -WORLD_RADIUS);
   const x1 = Math.min(cx * CHUNK + CHUNK - 1, WORLD_RADIUS);
@@ -568,6 +662,7 @@ function chunkTopMax(cx, cz) {
       const t = tops[(x + 1024) * 2048 + (z + 1024)];
       if (t > top) top = t;
     }
+  topMaxCache.set(ck, top);
   return top;
 }
 
@@ -642,6 +737,27 @@ export function streamChunks(px, pz, eyeY = TERRAIN_REF_Y, fogFar = Infinity) {
 
 const lastStream = { cx: Infinity, cz: Infinity };
 
+// Rest-group fog culling: a group whose whole box sits past fog far renders
+// pure fog color (the background), so hiding it is invisible. On the Moon
+// this skips the entire ground content sharing the same chunk columns; in
+// transit it skips both ends. Conservative by construction: the box bounds
+// every rest fragment, so a visible group always contains something closer.
+// Region meshes keep their own fade gate and stay scene-level.
+const CULL_MARGIN = 2;
+let lastCull = { v: -1, px: Infinity, eyeY: Infinity, pz: Infinity, far: Infinity };
+export function updateChunkCulling(px, eyeY, pz, fogFar) {
+  const L = lastCull;
+  if (L.v === cullVersion && L.px === px && L.eyeY === eyeY && L.pz === pz && L.far === fogFar) return;
+  lastCull = { v: cullVersion, px, eyeY, pz, far: fogFar };
+  const lim = fogFar + CULL_MARGIN, lim2 = lim * lim;
+  for (const r of chunkRest.values()) {
+    const dx = px < r.x0 ? r.x0 - px : px > r.x1 + 1 ? px - (r.x1 + 1) : 0;
+    const dz = pz < r.z0 ? r.z0 - pz : pz > r.z1 + 1 ? pz - (r.z1 + 1) : 0;
+    const dy = eyeY > r.top + 1 ? eyeY - (r.top + 1) : eyeY < 0 ? -eyeY : 0;
+    r.group.visible = dx * dx + dy * dy + dz * dz <= lim2;
+  }
+}
+
 export function maybeStream(px, pz, eyeY = TERRAIN_REF_Y, fogNear = 0, fogFar = Infinity) {
   const cx = chunkOf(px), cz = chunkOf(pz);
   if (lastStream.cx !== cx || lastStream.cz !== cz) {
@@ -653,21 +769,28 @@ export function maybeStream(px, pz, eyeY = TERRAIN_REF_Y, fogNear = 0, fogFar = 
   // Clear-bubble guard: anything still queued inside the clear bubble would
   // pop in plain sight, so it builds synchronously no matter the budget.
   // Nearest first, so the closest hole always fills even if more remain.
-  if (fogNear > 0) {
-    for (;;) {
-      let best = -1, bestD = fogNear;
-      for (let i = 0; i < chunkQueue.length; i++) {
-        const [wx, wz] = chunkQueue[i].split("_").map(Number);
-        const d = chunkDist3(px, eyeY, pz, wx, wz);
-        if (d < bestD) { bestD = d; best = i; }
-      }
-      if (best < 0) break;
-      const [ck] = chunkQueue.splice(best, 1);
-      if (chunkMeshes.has(ck)) continue;
-      const [wx, wz] = ck.split("_").map(Number);
-      rebuildChunk(wx, wz);
+  // Scored once up front: the old loop re-split every key on every pass.
+  if (fogNear > 0 && chunkQueue.length) {
+    const scored = [];
+    for (const ck of chunkQueue) {
+      const sep = ck.indexOf("_");
+      const wx = +ck.slice(0, sep), wz = +ck.slice(sep + 1);
+      scored.push([chunkDist3(px, eyeY, pz, wx, wz), ck, wx, wz]);
     }
+    scored.sort((a, b) => a[0] - b[0]);
+    chunkQueue.length = 0;
+    let k = 0;
+    while (k < scored.length && scored[k][0] < fogNear) k++;
+    for (let i = 0; i < k; i++) {
+      if (chunkMeshes.has(scored[i][1])) continue;
+      rebuildChunk(scored[i][2], scored[i][3]);
+    }
+    // The rest keeps its nearest-first order from streamChunks.
+    for (let i = k; i < scored.length; i++) chunkQueue.push(scored[i][1]);
   }
+  // Fog-cull the rest groups against the current visibility range; cheap
+  // enough to run every frame (early-outs when nothing moved).
+  updateChunkCulling(px, eyeY, pz, fogFar);
 }
 
 const CHUNK_BUDGET_MS = 6;

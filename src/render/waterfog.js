@@ -42,8 +42,10 @@ export function eyeMediumId(ex, ey, ez) {
   return { type: "air", liquid: 0 };
 }
 
-export function tickWaterFog(scene, camera, dt, envAir) {
-  const m = eyeMediumId(camera.position.x, camera.position.y, camera.position.z);
+export function tickWaterFog(scene, camera, dt, envAir, medium) {
+  // The caller (main.js) computes the eye medium once per frame and shares it
+  // with the veil gate; the fallback keeps direct calls working.
+  const m = medium ?? eyeMediumId(camera.position.x, camera.position.y, camera.position.z);
   const target = m.type === "liquid" ? 1 : 0;
   subSmooth += (target - subSmooth) * (1 - Math.exp(-dt * 8));
   if (Math.abs(subSmooth - target) < 0.002) subSmooth = target;

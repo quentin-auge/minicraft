@@ -123,6 +123,8 @@ export function tickPrecip(key, dt, time, camera) {
     const t = (camera.position.y - spec.fadeIn[0]) / (spec.fadeIn[1] - spec.fadeIn[0]);
     const f = Math.max(0, Math.min(1, t));
     st.pts.material.opacity = spec.opacity * f * f * (3 - 2 * f);
+    // Fully faded out: skip the draw call entirely (no visual change).
+    st.pts.visible = f > 0;
   }
   if (st.fresh) { st.fresh = false; for (let i = 0; i < spec.count; i++) spawnDrop(spec, st, i, camera.position, true); }
   st.acc += dt;
@@ -146,7 +148,10 @@ export function tickPrecip(key, dt, time, camera) {
     else if (z - e.z < -spec.range) { z += 2 * spec.range; wrapped = true; }
     if (y > e.y + spec.topMargin) { spawnDrop(spec, st, i, e); continue; }
     let landY = st.ground[i];
-    if (wrapped || (i & 3) === (tick & 3)) {
+    // Staggered landing-height refresh: each drop re-reads every 8th step, so
+    // movement-time wrap storms cost a quarter of the column lookups. Drops
+    // keep last known heights in between; landings lag at most ~0.27 s.
+    if (wrapped || (i & 7) === (tick & 7)) {
       landY = spec.groundY(Math.floor(x), Math.floor(z));
       st.ground[i] = landY;
     }

@@ -119,15 +119,24 @@ function syncEmitter(st, dt, camera) {
     return;
   }
   const cam = camera.position;
+  // Bounded nearest-N in one pass: the old code pushed a pair per cluster
+  // and sorted the whole set on every chunk crossing. Order among equidistant
+  // clusters may differ from a full sort; light assignment there is invisible.
+  const lim2 = spec.dist * spec.dist;
   const ranked = [];
   for (let i = 0; i < st.clusters.length; i++) {
     const c = st.clusters[i];
     const dx = c.x - cam.x, dy = c.y - cam.y, dz = c.z - cam.z;
     const d2 = dx * dx + dy * dy + dz * dz;
-    if (d2 <= spec.dist * spec.dist) ranked.push([d2, i]);
+    if (d2 > lim2) continue;
+    let k = ranked.length;
+    while (k > 0 && ranked[k - 1][0] > d2) k--;
+    if (k < spec.max) {
+      ranked.splice(k, 0, [d2, i]);
+      if (ranked.length > spec.max) ranked.pop();
+    }
   }
-  ranked.sort((a, b) => a[0] - b[0]);
-  const want = Math.min(spec.max, ranked.length);
+  const want = ranked.length;
   const active = new Uint8Array(st.clusters.length);
   // First keep every light that already sits on a still-ranked cluster, so
   // the pool never hops between clusters while the player walks around —
@@ -186,10 +195,12 @@ export function tickBlockLights(dt, camera) {
     for (const L of st.lights) {
       if (!L || !L.light.visible || !L.tcolor) continue;
       const p = L.light.position;
-      p.x += (L.tx - p.x) * k;
-      p.y += (L.ty - p.y) * k;
-      p.z += (L.tz - p.z) * k;
-      L.light.color.lerp(L.tcolor, k);
+      const dx = L.tx - p.x, dy = L.ty - p.y, dz = L.tz - p.z;
+      // Snap once settled: the old code lerped forever, paying a color
+      // conversion and three mults per light per frame at rest.
+      if (Math.abs(dx) + Math.abs(dy) + Math.abs(dz) < 0.001) p.set(L.tx, L.ty, L.tz);
+      else { p.x += dx * k; p.y += dy * k; p.z += dz * k; }
+      if (L.light.color.getHex() !== L.tcolor.getHex()) L.light.color.lerp(L.tcolor, k);
     }
   }
 }
