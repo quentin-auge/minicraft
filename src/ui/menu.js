@@ -1,7 +1,8 @@
 // Start menu: Play enters the pre-built world from the first frame, even
 // while it is still streaming in; Resume re-locks pointer; New World
-// generates a fresh seed. The overlay is translucent so generation shows
-// through; the game is fully static, no saves. Only New World waits on a
+// generates a fresh seed. No backdrop veil: the world shows through behind
+// the menu; the panel is solid (#1c2030, same as help). The game is
+// fully static, no saves. Only New World waits on a
 // running build (double-regen protection); everything else stays clickable,
 // with no spinner.
 export let started = false;

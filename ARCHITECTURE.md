@@ -5,7 +5,7 @@ stored, how it flows, and how each system works. Read this before changing code.
 
 ## Tree
 
-- `index.html` — static shell: menu, help (controls + portal diagrams), hotbar DOM, portal-travel spiral overlay, Three.js import map.
+- `index.html` — static shell: menu (no backdrop veil, solid `#1c2030` panel like help), help (controls + portal diagrams), hotbar DOM, portal-travel spiral overlay, Three.js import map.
 - `main.js` — bootstrap: scene, input wiring, main loop, world startup. Owns the pause gate (`simActive`: locked + help closed + started + built): every sim/visual tick runs only behind it; the loader, the debug readout, and the final render are the only things that run while paused. Ticks portals (fill refresh + loop travel) and notifies the portal index of blast edits.
 - `src/ui/hotbar.js` — dynamic item list (add/remove/change/reset ops, selection tracked by id), rendered bar.
 - `src/core/blocks.js` — block ids, BLOCK_INFO (solid/opaque/placeable, plus `light` emitter key for emissive blocks), liquid/TNT predicates.
