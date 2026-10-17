@@ -108,7 +108,7 @@ opposite same-level sides or 3+ sides: wells read like pockets from inside water
 enclosed air (bubbles); bumps, shores, diagonals, and sky stay blue, the opposition pair running before the flood so open air skips it. Only
 pocket-bound sheets write depth; open-sea sheets never do, keeping shallows
 see-through. Blue sheets are never gated.
-Pocket detection is a bounded air-only flood with a colTop fast path for open sky: meshing (`isEnclosedAir`) counts budget exhaustion as open, so only small pockets veil; the eye medium (`isEyePocketed`) adds a per-cell sky escape and counts budget exhaustion as pocketed, so big sealed halls murk like divers instead of reading clear air. One `LIQUID_SURFACE` spec per
+Pocket detection is a bounded air-only flood with a colTop fast path for open sky: meshing (`isEnclosedAir`) counts budget exhaustion as open, so only small pockets veil; the eye medium (`isEyePocketed`) adds a per-cell sky escape and counts budget exhaustion as pocketed, so big sealed halls keep veil gating (both veils hidden, pure blue) while the fog itself stays clear unless the eye is liquid. One `LIQUID_SURFACE` spec per
 liquid in `textures.js` (defaults plus overrides, stable keys) supplies both
 roles — color, opacity, and grain, so retinting never touches paint
 code — new liquids register a spec without framework forks. Surfaces
@@ -133,10 +133,9 @@ the 3D distance to the nearest evictable slab (minus margin) and shrinks
 the clear bubble with speed, so loading and unloading stay hidden at any
 altitude or pace; the dive-murk baseline tracks the guard. The loop
 ticks a light underwater murk after the build settles (`waterfog.js`,
-eye-gated on the camera cell — divers and pocket-sitters murk alike with
-the hemming liquid's tint, so pockets never see out clearer than divers do;
-pockets stack a deeper tier (half range, stronger tint), like deeper water —
-per-liquid tint, fog 2–30) plus the pocket-veil
+eye-gated on the camera cell being liquid — divers murk with
+the liquid's tint (per-liquid tint, fog 2–30), pocket and tunnel air stays
+clear) plus the pocket-veil
 eye-medium gate (liquid/diver, open air, pocket air, flipped only on change):
 the only murk, since surfaces are flat unlit sheets. Once voxel data exists, input is fully live — move, look,
 place/break, grapple, fly, hotbar; edits
