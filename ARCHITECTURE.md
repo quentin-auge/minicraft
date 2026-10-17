@@ -223,8 +223,7 @@ persistence.
   detonates it immediately. The blast clears a sphere (radius 4) except
   liquids, which survive while the blast passes through them, throws a
   yellow flash plus a 64-point burst, and queues neighboring TNT for delayed
-  chain blasts (50 ms apart, one flash/burst each). Village houses
-  are spared. A TNT placed in liquid restores that exact liquid in its own
+  chain blasts (50 ms apart, one flash/burst each). A TNT placed in liquid restores that exact liquid in its own
   cell after its blast; placed in air it leaves air behind.
 - Hotbar: 13 placeable overworld items (`GRASS` … `OBSIDIAN`), texture-icon
   slots; wheel, `K`/`L`, and click all select with wraparound.

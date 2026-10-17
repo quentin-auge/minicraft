@@ -7,11 +7,10 @@
 // that a tier supplies — framework code never switches on kind names.
 // Only "normal" ships; mega ("pooled" blast, "bucket" countdown, "mega" fx)
 // and ultra ("band" blast, halo, lights) arrive as entries reusing ids 22/23.
-// Bedrock (y=0), village houses, and liquids are spared; a TNT placed in
+// Bedrock (y=0) and liquids are spared; a TNT placed in
 // liquid restores that liquid in its cell after its blast.
 import { AIR, TNT, isLiquid } from "../core/blocks.js";
 import { WORLD_RADIUS, MAX_Y, getBlock, setBlock } from "../core/store.js";
-import { isInsideAnyHouse } from "../world/village.js";
 import { spawnBurst, spawnFlash } from "./particles.js";
 import * as THREE from "three";
 
@@ -274,7 +273,6 @@ function carveSphere(cx, cy, cz, kind, touched) {
       for (let z = Math.max(-WORLD_RADIUS, Math.ceil(cz - R)); z <= Math.min(WORLD_RADIUS, Math.floor(cz + R)); z++) {
         const dx = x - cx, dy = y - cy, dz = z - cz;
         if (dx * dx + dy * dy + dz * dz > R2) continue;
-        if (isInsideAnyHouse(x, z)) continue;
         const bid = getBlock(x, y, z);
         if (bid === AIR) continue;
         // Liquids survive blasts; the blast passes through them.
