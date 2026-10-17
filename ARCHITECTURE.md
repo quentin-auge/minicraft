@@ -217,9 +217,9 @@ persistence.
   (`y = 0`) and liquids are unbreakable; solid placement refuses the player's
   own AABB.
 - TNT: first break-click on a TNT block lights a 3 s fuse, shown as a
-  world-space countdown sprite (white, orange-red under 1 s, exponential-chirp
-  blink 1→14 Hz, no block remesh during the countdown); a second break-click
-  detonates it immediately. The blast clears a sphere (radius 4) except
+  world-space countdown sprite (steady white, orange-red under 1 s, no
+  flicker, no block remesh during the countdown); a second break-click
+  detonates it immediately. The blast clears a sphere (radius 3) except
   liquids, which survive while the blast passes through them, throws a
   yellow flash plus a 64-point burst, and queues neighboring TNT for delayed
   chain blasts (50 ms apart, one flash/burst each). A TNT placed in liquid restores that exact liquid in its own
@@ -242,7 +242,7 @@ persistence.
 - `WALK = 4.4`, `SPRINT = 7.2`, `GRAVITY = 37.44`, `JUMP_MIN = 8.2`, `FLY = 10` (3x with sprint).
 - Hook kinds: `HOOK_TYPES` (grapple: pull 26, fling 34, throw 70, retract 275, uniform boost 2, retract mini 0.08 s, eye 0.3, head 0, face gap 0.15, hang clear 0.6); new kinds register a spec.
 - `JUMP_HOLD_TIME = 0.7`, `JUMP_THRUST = 45`, `JUMP_RAMP = 0.25`, `JUMP_BUFFER = 0.2`.
-- Blast kinds: `TNT_TYPES` (normal: fuse 3.0, radius 4, `blastKind:"sphere"`, `countdownKind:"sprite"`, `fxKind:"burst"`, `chainDelay` 0.05; mega/ultra later as entries with `blastKind` `pooled`/`band`, `countdownKind` `bucket`, `fxKind` `mega`/`ultra`, ids 22/23); new tiers register a spec.
+- Blast kinds: `TNT_TYPES` (normal: fuse 3.0, radius 3, `blastKind:"sphere"`, `countdownKind:"sprite"`, `fxKind:"burst"`, `chainDelay` 0.05; mega/ultra later as entries with `blastKind` `pooled`/`band`, `countdownKind` `bucket`, `fxKind` `mega`/`ultra`, ids 22/23); new tiers register a spec.
 
 ## Tuning constants (render)
 

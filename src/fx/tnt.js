@@ -16,7 +16,7 @@ import * as THREE from "three";
 
 const TNT_DEFAULTS = {
   fuse: 3.0,
-  radius: 4,
+  radius: 3,
   burst: 64,
   chainDelay: 0.05, // seconds between chained blasts (master: 50 ms)
   blastKind: "sphere", // "pooled" (mega) | "band" (ultra) later via carveBlast
@@ -38,21 +38,6 @@ function kindOf(key) {
 
 function kindOfBlock(id) {
   return TNT_TYPES.find((t) => t.blockId === id) ?? TNT_TYPES[0];
-}
-
-// Exponential-chirp blink shared by every countdownKind that wants it:
-// 1 Hz on a fresh fuse accelerating to ~14 Hz at detonation, pure function
-// of (fuse, total) so pauses never desync it.
-const BLINK_FMIN = 1, BLINK_FMAX = 14;
-const BLINK_RATIO = BLINK_FMAX / BLINK_FMIN;
-const BLINK_LR = Math.log(BLINK_RATIO);
-function blinkPhase(fuse, total) {
-  const e = Math.min(Math.max(0, total - fuse), total * 1.5);
-  return ((BLINK_FMIN * total) / BLINK_LR) * (Math.pow(BLINK_RATIO, e / total) - 1);
-}
-function blinkSmooth(fuse, total) {
-  const p = blinkPhase(fuse, total) % 1;
-  return 0.5 - 0.5 * Math.cos(2 * Math.PI * p);
 }
 
 const lit = new Map(); // "x,y,z" -> { x, y, z, id, fuse, total, kind }
@@ -181,10 +166,7 @@ export function tickTNT(dt, refresh) {
         kind.tickLitVisual(k, t, kind);
       } else {
         const spr = sprites.get(k);
-        if (spr) {
-          drawFuseSprite(spr, t.fuse, false);
-          spr.material.opacity = 0.55 + 0.45 * blinkSmooth(t.fuse, t.total);
-        }
+        if (spr) drawFuseSprite(spr, t.fuse, false);
       }
       if (t.fuse <= 0) {
         done.push(k);
