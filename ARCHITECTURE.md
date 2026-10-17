@@ -14,6 +14,7 @@ stored, how it flows, and how each system works. Read this before changing code.
 - `src/core/textures.js` — procedural canvas textures, per-block materials, liquid two-role surface materials.
 - `src/render/waterfog.js` — eye-in-liquid (or pocketed-air) fog/background murk while submerged.
 - `src/world/overworld.js` — height field, rivers, terrain fill, generation orchestrator.
+- `src/world/clouds.js` — climbable cloud decks (`CLOUD_MIN_Y`/`CLOUD_MAX_Y` bounds plus `generateClouds`); spawn and sky reuse the bounds instead of hard-coding altitudes.
 - `src/world/trees.js` — tree-type registry (`TREE_TYPES`, oak first), generic growth and ground guards.
 - `src/render/flowers.js` — flower-variant registry, baked voxel-cluster geometries (stem/leaves/disc bloom).
 - `src/world/village.js` — village layout and structure placement (houses, pen, pool).
@@ -58,11 +59,12 @@ stored, how it flows, and how each system works. Read this before changing code.
 `generateOverworld(seed)` runs one pipeline: seed → river paths → village layout
 → per-column terrain fill (flattened to stone inside village bounds, water below
 `WATER_LEVEL`) → trees/flowers (flowers only on grass with air above, hash-gated
-by `TERRAIN.flowerDensity`) → `placeVillage` structures. Spawn selection (`findSpawn`) closes the pipeline:
+by `TERRAIN.flowerDensity`) → `placeVillage` structures. `generateClouds` scatters solid puff
+clusters in the `CLOUD_MIN_Y`…`CLOUD_MAX_Y` band afterwards. Spawn selection (`findSpawn`) closes the pipeline:
 nearest firm open ground to the origin whose vista stays clear 50 blocks ahead
 across the whole FOV swath and 12 rows above the eye — no wall, trunk, hillside,
-or canopy anywhere in the frame. Pen cells excluded, liquids never qualify.
-No clouds, no moon.
+or canopy anywhere in the frame. Pen cells excluded, liquids never qualify,
+cloud decks never qualify for footing. No moon.
 
 ## Data flow (meshing)
 
@@ -319,5 +321,5 @@ interface, bar binding, death/cleared flag).
 ## Dropped from master (kept out on purpose)
 
 Saves and server API, mobs, jump streak boost, hold-chain
-paint/bridge editing, clouds/moon, Nether/End dimensions,
+paint/bridge editing, moon, Nether/End dimensions,
 boss bar.

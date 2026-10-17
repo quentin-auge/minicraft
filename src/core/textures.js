@@ -1,10 +1,8 @@
 // Procedural canvas textures and per-block materials, ported from master.
-// Kept as-is (lighting/fog behavior included); clouds/moon entries dropped
-// since those blocks are never generated in the static build.
 import * as THREE from "three";
 import {
   GRASS, DIRT, STONE, SAND, LOG, LEAVES, WATER, PLANKS, GLASS,
-  TNT, MEGA_TNT, FLOWER, PORTAL, OBSIDIAN,
+  TNT, MEGA_TNT, FLOWER, PORTAL, OBSIDIAN, CLOUD,
 } from "./blocks.js";
 
 export function canvasTex(draw, size = 16) {
@@ -135,6 +133,12 @@ export const TEX = {
     ctx.strokeRect(0.75, 0.75, 14.5, 14.5);
     ctx.beginPath(); ctx.moveTo(8, 1); ctx.lineTo(8, 15); ctx.stroke();
     ctx.beginPath(); ctx.moveTo(1, 8); ctx.lineTo(15, 8); ctx.stroke();
+  }),
+  cloud: canvasTex((ctx) => {
+    ctx.fillStyle = "#ffffff"; ctx.fillRect(0, 0, 16, 16);
+    pxNoise(ctx, [255, 255, 255], 12);
+    ctx.fillStyle = "rgba(150,150,160,0.28)";
+    for (let i = 0; i < 5; i++) ctx.fillRect(Math.random() * 13, Math.random() * 13, 2 + Math.random() * 2, 1 + Math.random() * 2);
   }),
   obsidian: canvasTex((ctx) => {
     ctx.fillStyle = "#12070f"; ctx.fillRect(0, 0, 16, 16);
@@ -275,6 +279,7 @@ export function materialsFor(id) {
     case MEGA_TNT:
       return [material(TEX.mega_side), material(TEX.mega_side), material(TEX.mega_top), material(TEX.mega_top), material(TEX.mega_side), material(TEX.mega_side)];
     case PORTAL: return faceTex(TEX.portal);
+    case CLOUD: return faceTex(TEX.cloud);
     case OBSIDIAN: return faceTex(TEX.obsidian);
     default: return faceTex(TEX.dirt);
   }

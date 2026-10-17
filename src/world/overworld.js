@@ -1,6 +1,6 @@
 // Overworld generation: height field, seas, rivers, terrain fill,
-// trees/flowers, then village flattening and structures.
-// No clouds, no moon. Tunables live here; the world store holds the voxels.
+// trees/flowers, clouds, then village flattening and structures.
+// Tunables live here; the world store holds the voxels.
 import {
   AIR, GRASS, DIRT, STONE, SAND, WATER, FLOWER,
 } from "../core/blocks.js";
@@ -10,6 +10,7 @@ import {
 } from "../core/store.js";
 import { village, computeLayout, intersectsVillage, placeVillage } from "./village.js";
 import { tryGrowTree } from "./trees.js";
+import { generateClouds } from "./clouds.js";
 
 // Worldgen tunables as one spec object: terrain shape, river system, and the
 // flower scatter density (overworld's own knob; per-variant properties live
@@ -176,6 +177,7 @@ export function generateOverworld(newSeed) {
     }
   }
   placeVillage(setBlock, getBlock);
+  generateClouds(seed, setBlock);
 }
 
 export { village };
