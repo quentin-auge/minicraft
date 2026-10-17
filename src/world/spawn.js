@@ -2,7 +2,7 @@
 // with a frustum-wide clear vista. Pure math over the voxel store, no THREE
 // dependency, so the headless world-gen harness asserts it directly;
 // physics.js applies the result to the player body.
-import { isLiquid, CLOUD, LOG, LEAVES } from "../core/blocks.js";
+import { isLiquid, CLOUD, MOON, LOG, LEAVES } from "../core/blocks.js";
 import { getBlock, isSolid, colTops, colTopIdx, dim, WATER_LEVEL } from "../core/store.js";
 import { village } from "./village.js";
 
@@ -27,7 +27,7 @@ function groundHeightAt(x, z) {
   const top = colTops[dim][colTopIdx(x, z)];
   for (let y = top; y >= 0; y--) {
     const id = getBlock(x, y, z);
-    if (id === CLOUD) continue;
+    if (id === CLOUD || id === MOON) continue;
     if (id === LOG || id === LEAVES) return null;
     if (isSolid(x, y, z)) {
       if (isLiquid(id) || y <= WATER_LEVEL) return null;

@@ -1,7 +1,7 @@
 // Chunked streaming renderer: one InstancedMesh per block id per chunk,
 // only for exposed blocks. Rebuilds stay local via refreshBlocks().
 import * as THREE from "three";
-import { AIR, BLOCK_INFO, FLOWER, GLASS, isLiquid } from "../core/blocks.js";
+import { AIR, BLOCK_INFO, FLOWER, GLASS, MOON, MOON_WATER, isLiquid } from "../core/blocks.js";
 import { WORLD_RADIUS, CHUNK, RENDER_DIST, getBlock, colTops, colOcc, dim, chunkOf, isEnclosedAir } from "../core/store.js";
 import { materialsFor, liquidSurfaceMat } from "../core/textures.js";
 import { FLOWER_GEOS, FLOWER_MAT, flowerVariantAt, flowerAngleAt } from "./flowers.js";
@@ -141,12 +141,50 @@ function unregisterVeils(meshes) {
   }
 }
 const chunkMeshes = new Map(); // "cx_cz" -> Map<id, InstancedMesh>
+// Moon meshes (rock + lake sheets): toggled visible only above the fade
+// band, default-hidden at build so no first frame can flash.
+const moonMeshes = new Set();
+let moonFade = 0;
 const matCache = new Map();
 let sceneRef = null;
 
 function getMats(id) {
   if (!matCache.has(id)) matCache.set(id, materialsFor(id));
   return matCache.get(id);
+}
+
+// Moon fade (driven by sky.js): the visible rock face crossfades from the
+// current sky color to full texture — the body stays solid (opaque, depth
+// writing) throughout, so it never turns translucent and stars never show
+// through it. Lake sheets keep their opacity ramp off memorized bases:
+// faint water over an emerging face reads coherently.
+const MOON_WHITE = new THREE.Color(0xffffff);
+const MOON_SHEET_ROLES = ["outside", "inner", "pocketblue", "pocketblueback", "pocket-out", "pocket-in"];
+export function setMoonFade(m, skyColor) {
+  const o = Math.max(0, Math.min(1, m));
+  moonFade = o;
+  for (const mesh of moonMeshes) mesh.visible = o > 0;
+  const moon = matCache.get(MOON);
+  if (moon) {
+    for (const mt of moon) {
+      mt.opacity = 1;
+      mt.transparent = false;
+      mt.depthWrite = true;
+      mt.color.copy(skyColor).lerp(MOON_WHITE, o);
+    }
+  }
+  for (const role of MOON_SHEET_ROLES) {
+    for (const top of [false, true]) {
+      const lm = liquidSurfaceMat(MOON_WATER, role, top);
+      if (lm.userData.baseOpacity === undefined) {
+        lm.userData.baseOpacity = lm.opacity;
+        lm.userData.baseDepth = lm.depthWrite;
+      }
+      lm.opacity = lm.userData.baseOpacity * o;
+      lm.transparent = lm.opacity < 0.99;
+      lm.depthWrite = o >= 0.99 ? lm.userData.baseDepth : false;
+    }
+  }
 }
 
 export function initRenderer(scene) {
@@ -170,13 +208,14 @@ export function disposeAll() {
   }
   chunkMeshes.clear();
   gatedVeils.clear();
+  moonMeshes.clear();
   chunkQueue.length = 0;
 }
 
 function disposeChunk(ck) {
   const meshes = chunkMeshes.get(ck);
   if (!meshes) return;
-  for (const m of meshes.values()) { sceneRef.remove(m); m.dispose(); }
+  for (const m of meshes.values()) { sceneRef.remove(m); m.dispose(); moonMeshes.delete(m); }
   unregisterVeils(meshes);
   chunkMeshes.delete(ck);
 }
@@ -288,6 +327,7 @@ export function rebuildChunk(cx, cz) {
     // Glass draws after liquids so it composites over water whether the
     // glass sits behind or in front of the surface.
     if (id === GLASS) mesh.renderOrder = 13;
+    if (id === MOON) { moonMeshes.add(mesh); mesh.visible = moonFade > 0; }
     sceneRef.add(mesh);
     meshes.set(id, mesh);
   }
@@ -362,6 +402,7 @@ export function rebuildChunk(cx, cz) {
       const mesh = quadMesh(liquidSurfaceMat(lid, role, top), list, order);
       if (gate === "in") registerVeil("in:" + lid, mesh, eyeMedium.type === "liquid" && eyeMedium.liquid === lid);
       else if (gate === "out") registerVeil("out", mesh, eyeMedium.type === "air");
+      if (lid === MOON_WATER) { moonMeshes.add(mesh); mesh.visible = moonFade > 0; }
       meshes.set("liquid_" + lid + suffix, mesh);
     }
   }

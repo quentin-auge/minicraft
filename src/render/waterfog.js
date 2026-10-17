@@ -5,11 +5,12 @@
 // the only murk. Tints parallel LIQUID_SURFACE in textures.js without
 // importing it (render-side tuning lives here).
 import * as THREE from "three";
-import { AIR, WATER, isLiquid } from "../core/blocks.js";
+import { AIR, WATER, MOON_WATER, isLiquid } from "../core/blocks.js";
 import { getBlock, isEyePocketed } from "../core/store.js";
 
 const LIQUID_FOG = {
   [WATER]: { tint: 0x0d3b7a, near: 2, far: 30 },
+  [MOON_WATER]: { tint: 0x7a7e82, near: 2, far: 13 },
 };
 const TINT_MIX = 0.55;
 

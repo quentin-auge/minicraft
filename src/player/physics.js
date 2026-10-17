@@ -5,6 +5,7 @@ import * as THREE from "three";
 import { isLiquid } from "../core/blocks.js";
 import { getBlock, isSolid, colLiqTop, colTopIdx, dim } from "../core/store.js";
 import { findSpawn } from "../world/spawn.js";
+import { MOON_MIN_Y } from "../world/moon.js";
 
 export const PLAYER_HW = 0.3;
 export const PLAYER_H = 1.8;
@@ -266,6 +267,10 @@ export function updatePlayer(dt) {
   // before the movement logic runs. The pull phase never passes through
   // here, so its stepping is unaffected.
   if (hookPlanar) stepUp = false;
+  // Low gravity near the Moon and above (master rule): one factor per
+  // frame, shared by every acceleration and energy calc below so arcs
+  // stay consistent.
+  const G = dim === "over" && pos.y >= MOON_MIN_Y ? GRAVITY * 0.5 : GRAVITY;
   _fwd.set(-Math.sin(yaw), 0, -Math.cos(yaw));
   _right.set(Math.cos(yaw), 0, -Math.sin(yaw));
   _move.set(0, 0, 0);
@@ -318,7 +323,7 @@ export function updatePlayer(dt) {
       if (target !== null && pos.y < target - 0.5) {
         const delta = target - (surface + 0.1);
         if (delta > 0) {
-          vel.y = Math.sqrt(2 * GRAVITY * delta);
+          vel.y = Math.sqrt(2 * G * delta);
           if (sprintKey) {
             if (_move.lengthSq() > 0) {
               const mn = _move.clone().normalize().multiplyScalar(SPRINT * 2);
@@ -361,12 +366,12 @@ export function updatePlayer(dt) {
       }
     } else if (hookPlanar && hookWet) {
       // Pinned wet arrival: sink by gravity, horizontal only.
-      vel.y -= GRAVITY * dt;
+      vel.y -= G * dt;
       vel.y = Math.min(Math.max(vel.y, -SWIM_MAX), SWIM_MAX);
     } else {
       const surface = waterSurfaceTop();
       if (surface === -Infinity) {
-        vel.y -= GRAVITY * dt;
+        vel.y -= G * dt;
       } else {
         const targetY = surface - 1.17;
         const err = targetY - pos.y;
@@ -417,10 +422,10 @@ export function updatePlayer(dt) {
       for (let bx = Math.floor(pos.x - PLAYER_HW); bx <= Math.floor(pos.x + PLAYER_HW) && !supp; bx++)
         for (let bz = Math.floor(pos.z - PLAYER_HW); bz <= Math.floor(pos.z + PLAYER_HW); bz++)
           if (isSolid(bx, fy, bz)) supp = true;
-      if (!supp) { stepDown = false; vel.y -= GRAVITY * dt; }
+      if (!supp) { stepDown = false; vel.y -= G * dt; }
       else vel.y = -STEP_SPEED;
     } else {
-      vel.y -= GRAVITY * dt;
+      vel.y -= G * dt;
       if (!onGround && spaceNow && airT < JUMP_HOLD_TIME && vel.y > 0) {
         airT += dt;
         vel.y += JUMP_THRUST * Math.min(1, airT / JUMP_RAMP) * dt;

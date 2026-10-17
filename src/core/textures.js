@@ -2,7 +2,7 @@
 import * as THREE from "three";
 import {
   GRASS, DIRT, STONE, SAND, LOG, LEAVES, WATER, PLANKS, GLASS,
-  TNT, MEGA_TNT, FLOWER, PORTAL, OBSIDIAN, CLOUD,
+  TNT, MEGA_TNT, FLOWER, PORTAL, OBSIDIAN, CLOUD, MOON, MOON_WATER,
 } from "./blocks.js";
 
 export function canvasTex(draw, size = 16) {
@@ -140,6 +140,41 @@ export const TEX = {
     ctx.fillStyle = "rgba(150,150,160,0.28)";
     for (let i = 0; i < 5; i++) ctx.fillRect(Math.random() * 13, Math.random() * 13, 2 + Math.random() * 2, 1 + Math.random() * 2);
   }),
+  moon: canvasTex((ctx) => {
+    ctx.fillStyle = "#7a7e82"; ctx.fillRect(0, 0, 16, 16);
+    for (let y = 0; y < 16; y++) for (let x = 0; x < 16; x++) {
+      const n = (Math.random() * 2 - 1) * 16 + (Math.random() * 2 - 1) * 8;
+      const v = 122 + n;
+      ctx.fillStyle = `rgb(${v | 0},${(v + 1) | 0},${(v + 2) | 0})`;
+      if (Math.random() < 0.58) ctx.fillRect(x, y, 1, 1);
+    }
+    const crater = (x, y, r, shade) => {
+      const g = ctx.createRadialGradient(x - r * 0.32, y - r * 0.32, r * 0.12, x, y, r);
+      g.addColorStop(0, `rgba(${shade[0] + 14},${shade[1] + 14},${shade[2] + 14},0.92)`);
+      g.addColorStop(0.30, `rgba(${shade[0]},${shade[1]},${shade[2]},0.95)`);
+      g.addColorStop(0.62, `rgba(${shade[0] - 16},${shade[1] - 16},${shade[2] - 16},0.96)`);
+      g.addColorStop(0.85, `rgba(${shade[0] - 28},${shade[1] - 28},${shade[2] - 28},0.97)`);
+      g.addColorStop(1, `rgba(${shade[0] + 8},${shade[1] + 8},${shade[2] + 8},0.88)`);
+      ctx.fillStyle = g; ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = "rgba(0,0,0,0.22)"; ctx.beginPath(); ctx.arc(x + r * 0.20, y + r * 0.22, r * 0.48, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = "rgba(255,255,255,0.06)"; ctx.beginPath(); ctx.arc(x - r * 0.26, y - r * 0.28, r * 0.16, 0, Math.PI * 2); ctx.fill();
+      ctx.strokeStyle = "rgba(70,72,74,0.42)"; ctx.lineWidth = 0.8; ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.stroke();
+    };
+    const shades = [[110,112,114],[104,106,108],[116,118,120],[98,100,102]];
+    crater(4.4, 4.7, 3.2, shades[0]);
+    crater(12.0, 5.1, 2.7, shades[1]);
+    crater(8.6, 11.0, 3.5, shades[2]);
+    crater(3.0, 12.4, 2.0, shades[3]);
+    crater(13.4, 11.8, 1.8, shades[0]);
+    crater(6.4, 8.4, 1.5, shades[1]);
+    crater(9.2, 3.4, 1.2, shades[2]);
+    for (let i = 0; i < 22; i++) {
+      const x = Math.random() * 16, y = Math.random() * 16;
+      const v = 86 + Math.random() * 32;
+      ctx.fillStyle = `rgba(${v | 0},${v | 0},${(v + 1) | 0},${0.14 + Math.random() * 0.16})`;
+      ctx.fillRect(x | 0, y | 0, 1, 1);
+    }
+  }),
   obsidian: canvasTex((ctx) => {
     ctx.fillStyle = "#12070f"; ctx.fillRect(0, 0, 16, 16);
     pxNoise(ctx, [24, 12, 20], 18);
@@ -195,6 +230,7 @@ const LIQUID_DEFAULTS = {
 };
 export const LIQUID_SURFACE = [
   { liquid: WATER, key: "water" },
+  { liquid: MOON_WATER, key: "moonwater", outside: { color: "#7a7e82" } },
 ];
 const liquidSpecById = new Map(LIQUID_SURFACE.map((s) => [s.liquid, s]));
 // One table maps every visual role to its look: which side renders, which
@@ -255,6 +291,11 @@ export function faceTex(map, opts = {}) {
   return [material(map, opts), material(map, opts), material(map, opts), material(map, opts), material(map, opts), material(map, opts)];
 }
 
+function basicFace(map, opts = {}) {
+  const m = new THREE.MeshBasicMaterial({ map, ...opts });
+  return [m, m, m, m, m, m];
+}
+
 // BoxGeometry face order: +x, -x, +y, -y, +z, -z
 export function materialsFor(id) {
   switch (id) {
@@ -280,6 +321,8 @@ export function materialsFor(id) {
       return [material(TEX.mega_side), material(TEX.mega_side), material(TEX.mega_top), material(TEX.mega_top), material(TEX.mega_side), material(TEX.mega_side)];
     case PORTAL: return faceTex(TEX.portal);
     case CLOUD: return faceTex(TEX.cloud);
+    case MOON: return basicFace(TEX.moon, { fog: false });
+    case MOON_WATER: return basicFace(TEX.moonwater_outside, { fog: false });
     case OBSIDIAN: return faceTex(TEX.obsidian);
     default: return faceTex(TEX.dirt);
   }

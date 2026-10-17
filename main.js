@@ -13,12 +13,16 @@ import { fireHookTarget, grappleBlockPick, cancelHook, severHook, updateHook, ho
 import { initRope } from "./src/player/rope.js";
 import { tickTNT, initTNTFx, resetTNTMemory, onExplode, onLiquidPurge, shakeSpecFor } from "./src/fx/tnt.js";
 import { initFx, tickFx } from "./src/fx/particles.js";
-import { initRenderer, rebuildAll, maybeStream, refreshBlocks, drainChunkQueue, setEyeMedium, UNLOAD_MARGIN } from "./src/render/mesher.js";
-import { buildHotbar, select, selected, selectedId, initHotbarInput } from "./src/ui/hotbar.js";
+import { initPrecip, tickSnow } from "./src/fx/precip.js";
+import { MOON_MIN_Y } from "./src/world/moon.js";
+import { WATER, FLOWER, MOON_WATER } from "./src/core/blocks.js";
+import { initRenderer, rebuildAll, maybeStream, refreshBlocks, drainChunkQueue, setEyeMedium, setMoonFade, UNLOAD_MARGIN } from "./src/render/mesher.js";
+import { resetItems, select, selected, selectedId, initHotbarInput, removeItem, addItem, setItem, getItems } from "./src/ui/hotbar.js";
 import { initMenu, enterGame, started, isLocked } from "./src/ui/menu.js";
 import { initHelp, openHelp, closeHelp, isHelpOpen } from "./src/ui/help.js";
 import { toggleDebug, tickDebug } from "./src/ui/debug.js";
 import { tickWaterFog, eyeMediumId } from "./src/render/waterfog.js";
+import { initSky, tickSky } from "./src/render/sky.js";
 import {
   initPortals, buildPortalDom, setPortalTravelHook, tickPortals,
   rebuildPortalBlocks, scanWorldPortals, clearPortalFills, notePortalEdits,
@@ -58,10 +62,13 @@ document.getElementById("game").appendChild(renderer.domElement);
 const sun = new THREE.DirectionalLight(0xfff5e0, 1.1);
 sun.position.set(60, 90, 40);
 scene.add(sun);
-scene.add(new THREE.HemisphereLight(0xbfd4ff, 0x5a6a4a, 0.75));
+const hemi = new THREE.HemisphereLight(0xbfd4ff, 0x5a6a4a, 0.75);
+scene.add(hemi);
 
 initRenderer(scene);
 initFx(scene);
+initSky(scene);
+initPrecip(scene);
 initTNTFx(scene);
 initRope(scene);
 initPortals(scene);
@@ -120,6 +127,8 @@ function updateCamera(dt = 0) {
 
 let worldReady = false;
 let building = false;
+// Moon-band hotbar (slots flip at the Moon's lower end); reset per world.
+let moonBand = false;
 
 // The level loads instantly behind the translucent menu: voxels generate,
 // every chunk in range builds synchronously (a short freeze is accepted),
@@ -141,7 +150,8 @@ async function buildWorld() {
     clearPortalFills();
     rebuildPortalBlocks();
     scanWorldPortals();
-    buildHotbar();
+    moonBand = false;
+    resetItems();
     select(0);
     updateCamera();
     worldReady = true;
@@ -295,6 +305,7 @@ function loop(now) {
     return;
   }
   tickFx(dt);
+  tickSnow(dt, now / 1000, camera);
   tickDebug(dt);
   tickHookFx(dt);
   // Streaming fog first, so the loader sees the tightened range; dive murk
@@ -304,8 +315,26 @@ function loop(now) {
   // open-air eyes, flipping together with the murk.
   if (!building) updateStreamingFog();
   if (worldReady && !building) {
+    tickSky(scene, camera, sun, hemi, envAir, setMoonFade);
     tickWaterFog(scene, camera, dt, envAir);
     setEyeMedium(eyeMediumId(camera.position.x, camera.position.y, camera.position.z));
+  }
+  // Moon-band hotbar: 8 below the Moon's lower end the water slot becomes
+  // moon water and the flower slot goes away; both restore on descent.
+  if (worldReady && !building) {
+    const moonNow = pos.y >= MOON_MIN_Y - 8;
+    if (moonNow !== moonBand) {
+      moonBand = moonNow;
+      if (moonNow) {
+        const wi = getItems().indexOf(WATER);
+        if (wi >= 0) setItem(wi, MOON_WATER);
+        removeItem(FLOWER);
+      } else {
+        const mi = getItems().indexOf(MOON_WATER);
+        if (mi >= 0) setItem(mi, WATER);
+        addItem(FLOWER, 9);
+      }
+    }
   }
   const simActive = isLocked() && !isHelpOpen();
   if (simActive) {

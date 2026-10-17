@@ -13,7 +13,9 @@ stored, how it flows, and how each system works. Read this before changing code.
 - `src/core/store.js` — voxel storage, one Map per dimension, column tops.
 - `src/core/textures.js` — procedural canvas textures, per-block materials, liquid two-role surface materials.
 - `src/render/waterfog.js` — eye-in-liquid (or pocketed-air) fog/background murk while submerged.
+- `src/render/sky.js` — high-altitude sky (day-to-black past the clouds, stars, moon fade over its approach band); rewrites the murk's air baseline.
 - `src/world/overworld.js` — height field, rivers, terrain fill, generation orchestrator.
+- `src/world/moon.js` — Moon disc + lake shafts (`MOON_MIN_Y`/`MOON_SURFACE_Y`/`MOON_R`/`MOON_THICK`, surface derived upward from the hand-picked bottom) plus the low-gravity, toolbar, and fade bands.
 - `src/world/clouds.js` — climbable cloud decks (`CLOUD_MIN_Y`/`CLOUD_MAX_Y` bounds plus `generateClouds`); spawn and sky reuse the bounds instead of hard-coding altitudes.
 - `src/world/trees.js` — tree-type registry (`TREE_TYPES`, oak first), generic growth and ground guards.
 - `src/render/flowers.js` — flower-variant registry, baked voxel-cluster geometries (stem/leaves/disc bloom).
@@ -27,7 +29,8 @@ stored, how it flows, and how each system works. Read this before changing code.
 - `src/player/edit.js` — DDA raycast, place/break, floating-liquid purge, TNT displaced-liquid record. Notifies the portal index of every voxel change.
 - `src/fx/tnt.js` — blast-kind registry (`TNT_TYPES`, normal first), fuses, countdown visuals, delayed chain queue, spherical + pooled blasts, per-kind camera-shake specs, displaced-liquid memory, post-blast floating-liquid purge via injected callback. Second break-click detonates lit TNT at once.
 - `src/fx/particles.js` — generic burst/flash effects backend (`spawnBurst`, `spawnFlash`, `tickFx`); bursts support a crater-filling spawn ball (`fillRadius`), a per-particle color `palette`, and a `foreground` mode (no depth test, drawn above everything); flashes support a constant-speed `maxRadius` fireball mode (expand then retract, duration scales with radius).
-- `src/render/mesher.js` — chunked InstancedMesh renderer, streaming, local refresh.
+- `src/fx/precip.js` — falling-precipitation backend (`PRECIP_TYPES` registry, snow first; rain later is one entry): camera-following drops at a 30 Hz step, wrap + cached landing heights, material fade-in over camera altitude.
+- `src/render/mesher.js` — chunked InstancedMesh renderer, streaming, local refresh, moon-material fade setter (rock face crossfades sky-color→texture, body always solid, so it never turns translucent; moon meshes hide below the fade band, default-hidden at build).
 - `src/ui/menu.js` — Play/Resume/New-World overlay, pointer-lock wiring (no saves). Play is clickable from the first frame and enters a finished world fading in through expanding fog; New World only once started and never during a build; Esc unlock shows Resume + New World. Boot builds instantly behind the menu; no spinner anywhere.
 - `src/ui/debug.js` — `=` FPS readout (`fps~N`, exponential moving average, quarter-second refresh, hidden until started).
 - `src/ui/help.js` — help overlay open/close. Shortcut table: Move, Jump, Sprint, Place, Break, Select, Fly, Grapple, Help, Debug. Portal frame diagrams are painted by `portals.js` (`buildPortalDom` at boot).
@@ -60,11 +63,12 @@ stored, how it flows, and how each system works. Read this before changing code.
 → per-column terrain fill (flattened to stone inside village bounds, water below
 `WATER_LEVEL`) → trees/flowers (flowers only on grass with air above, hash-gated
 by `TERRAIN.flowerDensity`) → `placeVillage` structures. `generateClouds` scatters solid puff
-clusters in the `CLOUD_MIN_Y`…`CLOUD_MAX_Y` band afterwards. Spawn selection (`findSpawn`) closes the pipeline:
+clusters in the `CLOUD_MIN_Y`…`CLOUD_MAX_Y` band afterwards, then `generateMoon` lays the rock disc
+with hashed `MOON_WATER` lake shafts at `MOON_SURFACE_Y`. Spawn selection (`findSpawn`) closes the pipeline:
 nearest firm open ground to the origin whose vista stays clear 50 blocks ahead
 across the whole FOV swath and 12 rows above the eye — no wall, trunk, hillside,
 or canopy anywhere in the frame. Pen cells excluded, liquids never qualify,
-cloud decks never qualify for footing. No moon.
+cloud decks and moon rock never qualify for footing.
 
 ## Data flow (meshing)
 
@@ -139,7 +143,9 @@ never ghost clarify. A tightening-only runtime fog guard caps fog far by
 the 3D distance to the nearest evictable slab (minus margin) and shrinks
 the clear bubble with speed, so loading and unloading stay hidden at any
 altitude or pace; the dive-murk baseline tracks the guard. The loop
-ticks a light underwater murk after the build settles (`waterfog.js`,
+ticks the high-altitude sky first (`sky.js`: black past the clouds, stars,
+moon fading in over its approach band, never visible below), then
+a light underwater murk after the build settles (`waterfog.js`,
 eye-gated on the camera cell being liquid — divers murk with
 the liquid's tint (per-liquid tint, fog 2–30), pocket and tunnel air stays
 clear) plus the pocket-veil
@@ -228,9 +234,9 @@ persistence.
 - TNT: first break-click on a TNT block lights its fuse with no remesh (block kept); normal shows a steady white countdown sprite (orange-red under 1 s), mega (blue block, id 22) an 8 s fuse with an accelerating blue-to-white veil pulse plus white heat and pooled lights, no number. A second break-click detonates lit TNT at once. Normal blasts clear a sphere (radius 3) and chain neighbours with 50 ms delays, one flash/burst each. Megas link transitively at blast distance into one simultaneous pooled blast: upfront neighbor search over the live `megaIndex` (no voxel scans, clustering stays instant), +50% compound radius growth per neighbour within the member's current R/2 (cap 40, Ø80 ~= village diagonal), one crater + fireball per member at its own radius — crater-filling particle ball (`fillRadius`, fine yellow/red/orange palette, foreground), layered nuclear core + halo (retract ends with the 1.5 s fire, smoke trails to 2.0 s), same particle budget, carve clamped to column tops. Normals caught in a pool go off instantly instead of cascading; a mega uncovered by a normal blast joins the pool. Each blast clears solid cells except bedrock (`y = 0`); liquids survive (blast passes through) unless the kind sets `clearsLiquids` — mega clears them and, placed in liquid, leaves air behind instead of restoring it,
   while normal TNT restores the displaced liquid afterwards and placed in air leaves air behind.
   After every blast, liquid groups left with no solid neighbor are purged back to air. Player launch is one centroid shove per pooled blast (uniform 1.5R travel: ballistic arc on ground, decaying `knockVel` impulse along the mega→player line in fly, fly mode kept), plus camera shake out to 3R (max inside, linear to 2R, exponential to silence, via per-kind `shake` spec).
-- Hotbar: 14 placeable overworld items (`GRASS` … `OBSIDIAN`, mega TNT always
+- Hotbar: dynamic list (add/remove/change/reset, selection by id) over 14 base overworld items (`GRASS` … `OBSIDIAN`, mega TNT always
   listed after normal TNT), texture-icon
-  slots; wheel, `K`/`L`, and click all select with wraparound.
+  slots; wheel, `K`/`L`, and click all select with wraparound. Eight below the Moon's lower end the water slot becomes moon water and the flower slot goes away, restored on descent.
 
 ## Tuning (world specs, not constants)
 
@@ -241,6 +247,8 @@ persistence.
   2×2×1 (see `configureVillage` to grow).
 - Spawn: feet inside radius 48, vista 50 ahead / 12 up across the FOV swath
   (`VIEW_HALF_TAN` from the 75° FOV), pen margin 1.
+- Moon: bottom `MOON_MIN_Y` = 850 (hand-picked), surface `MOON_SURFACE_Y` = 946, radius 96, shell 5, 6 hashed lakes; low gravity from 850, toolbar flips 8 below at 842 (water→moon-water, flower gone), sky black 475→495, rock + lakes fade 495→515 off one factor (meshes hidden below, so blue sky never shows a silhouette), snow fades in over its gate span.
+- Snow: 700 flakes, range 36, size 0.18, fall 2.5–5.5, 30 Hz step, active above `MOON_SURFACE_Y - 8`.
 
 ## Tuning constants (player)
 
@@ -276,7 +284,7 @@ Every variant family follows the same shape — new variants are registry
 entries, never framework forks:
 
 - One exported registry array of spec objects, each with a `key`
-  (`TREE_TYPES`, `FLOWER_VARIANTS`, `TNT_TYPES`, `HOOK_TYPES`).
+  (`TREE_TYPES`, `FLOWER_VARIANTS`, `TNT_TYPES`, `HOOK_TYPES`, `PRECIP_TYPES`).
 - Shared properties live once in a module-local `*_DEFAULTS` object;
   entries spread it first and override only what differs.
 - Differing numbers are entry properties; differing behavior is a
@@ -301,7 +309,8 @@ Shipped: trees (oak; pines later), flowers (7 variants), TNT (normal,
 `blastKind:"sphere"`, `countdownKind:"sprite"`, `fxKind:"burst"`; mega,
 `blastKind:"pooled"`, `countdownKind:"bucket"`, `fxKind:"mega"`, id 22; ultra
 later as an entry, id 23), hooks (grapple, `pull:"self-to-anchor"`;
-grab later), liquids (water outside-blue + pocket-white roles), portals
+grab later), liquids (water + moon-water outside/pocket roles), precip
+(snow; rain later), portals
 (`PORTAL_TYPES`: end frame `PORTAL`, nether frame `OBSIDIAN`, per-spec sizes,
 fill, travel action, help art; local loop — arrivals respawn beside the same
 window, dimensions later).
@@ -321,5 +330,5 @@ interface, bar binding, death/cleared flag).
 ## Dropped from master (kept out on purpose)
 
 Saves and server API, mobs, jump streak boost, hold-chain
-paint/bridge editing, moon, Nether/End dimensions,
+paint/bridge editing, Nether/End dimensions,
 boss bar.
