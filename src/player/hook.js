@@ -15,7 +15,8 @@
 // ghosted, landing the player top-or-before while the rope stays on the
 // face; the rope stays pinned until mouse-up.
 import { pos, vel, playerBody, collideBody, headInWater, setOnGround, setGhostPass, setHookPlanar, setHookWet, PLAYER_HW, PLAYER_H, EYE } from "./physics.js";
-import { isSolid } from "../core/store.js";
+import { dim, isSolid } from "../core/store.js";
+import { skyGrappleTarget } from "../world/tntstream.js";
 import { isSolidId } from "../core/blocks.js";
 import { showRope, showPinnedRope, showTip, hideRope, hideLine, hideTip } from "./rope.js";
 import { pickBlock } from "./edit.js";
@@ -76,6 +77,26 @@ export function hookActive() {
 export function grappleBlockPick(origin, dir) {
   const hit = pickBlock(origin, dir, true, Infinity, 1024);
   return hit ? { kind: "block", x: hit.x, y: hit.y, z: hit.z, id: hit.id, face: hit.face } : null;
+}
+
+// Anchor readout for streaming eviction pins (null when unhooked).
+export function hookAnchor() {
+  if (!hook) return null;
+  return { x: hook.ax, y: hook.ay, z: hook.az };
+}
+
+// Sky-grapple (infinite TNT dimension only): when the DDA pick misses, the
+// lattice materializes a cloud past the fog along the aim ray and the
+// grapple latches it through the normal block filter. Same refusals as a
+// regular shot (flying, already hooked); other dimensions fizzle as before.
+export function fireSkyHook(origin, dir, minD, maxD, refresh) {
+  if (flyOn || hook) return false;
+  if (dim !== "tnt") return false;
+  const target = skyGrappleTarget(origin, dir, minD, maxD, refresh);
+  if (!target) return false;
+  const fire = TARGET_FILTERS[target.kind];
+  if (!fire) return false;
+  return fire(target, hookKindOf("grapple"));
 }
 
 export function fireHookTarget(pick, origin, dir, kindKey = "grapple") {

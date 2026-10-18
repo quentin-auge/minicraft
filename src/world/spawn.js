@@ -3,7 +3,7 @@
 // dependency, so the headless world-gen harness asserts it directly;
 // physics.js applies the result to the player body.
 import { isLiquid, CLOUD, MOON, LOG, LEAVES } from "../core/blocks.js";
-import { getBlock, isSolid, colTops, colTopIdx, dim, WATER_LEVEL } from "../core/store.js";
+import { getBlock, isSolid, topAt, dim, WATER_LEVEL } from "../core/store.js";
 import { MOON_MIN_Y } from "./moon.js";
 import { village } from "./village.js";
 
@@ -26,7 +26,7 @@ const PEN_MARGIN = 1;
 // Starts below the moon band (moon rock never qualifies for footing, so
 // scanning it is pure cost once the lazy fill lands).
 function groundHeightAt(x, z) {
-  const top = Math.min(colTops[dim][colTopIdx(x, z)], MOON_MIN_Y - 1);
+  const top = Math.min(topAt(dim, x, z), MOON_MIN_Y - 1);
   for (let y = top; y >= 0; y--) {
     const id = getBlock(x, y, z);
     if (id === CLOUD || id === MOON) continue;
@@ -114,7 +114,7 @@ export function findSpawn(eyeHeight) {
     }
   }
   if (bestScore < 0) {
-    const top = Math.min(colTops[dim][colTopIdx(0, 0)], MOON_MIN_Y - 1);
+    const top = Math.min(topAt(dim, 0, 0), MOON_MIN_Y - 1);
     for (let y = top; y >= 0; y--) {
       if (isSolid(0, y, 0)) { fy = y; break; }
     }

@@ -6,8 +6,8 @@
 // Core rule: no TNT blast may reach another TNT cloud. Worst-case mega pool
 // radius caps at 40 (see fx/tnt.js megaPoolRadius), normal blasts reach 3 —
 // so the pairwise edge gap must exceed 40 for any mega-involved pair and 3
-// for normal–normal pairs, plus a 2–20% per-pair margin drawn from the seed
-// hash. The generator enforces this constructively (a candidate center is
+// for normal–normal pairs, plus a tier-split per-pair margin from the seed
+// hash (flat 1% for mega-involved pairs, 5–20% for normal–normal). The generator enforces this constructively (a candidate center is
 // only accepted when it clears every accepted cloud); a post-fill voxel
 // sweep throws on any violation, and the headless harness re-asserts the
 // rule per seed. Clouds sit as close as the rule allows: spacing uses each
@@ -26,12 +26,15 @@ export const TNT_MAX_Y = 192;
 export function blastIsolationNeed(tierA, tierB) {
   return (tierA === MEGA_TNT || tierB === MEGA_TNT) ? 40 : 3;
 }
-// Per-pair safety margin, 2–20% drawn from the seed hash (order-independent:
-// sorted cloud orders, so generator and verifier agree).
+// Per-pair safety margin: mega-involved pairs take a flat 1% (tight,
+// consistent packing around megas); normal–normal pairs draw 5–20% from
+// the seed hash (order-independent: sorted orders, so generator and
+// verifier agree) for sparser red fill.
 const MARGIN_SALT = 6337;
-export function pairMargin(seed, orderA, orderB) {
+export function pairMargin(seed, orderA, orderB, megaInvolved) {
+  if (megaInvolved) return 0.01;
   const lo = Math.min(orderA, orderB), hi = Math.max(orderA, orderB);
-  return 0.02 + hash2(lo, hi, seed + MARGIN_SALT) * 0.18;
+  return 0.05 + hash2(lo, hi, seed + MARGIN_SALT) * 0.15;
 }
 // Two-phase scatter: a few megas placed sparsely first (each sterilizes a
 // 40+ zone), then regular clouds fill every remaining safe pocket — they only
@@ -65,8 +68,9 @@ export function tntClouds() {
 
 // Shared puff layout: one place computes it, placement and the analytical
 // bounding radius both consume it, so spacing math can never drift from the
-// voxels it spaces.
-function puffParams(cx, cy, cz, salt) {
+// voxels it spaces. Exported for the infinite streaming lattice, which
+// places the same puffs without the legacy cube clips.
+export function puffParams(cx, cy, cz, salt) {
   const out = [];
   const puffs = 2 + Math.floor(hash2(cx, cz, salt) * 2);
   const spread = 1 + hash2(cx, cy, salt + 1) * 2.5;
@@ -85,7 +89,7 @@ function puffParams(cx, cy, cz, salt) {
 // Analytical bound: no placed block sits farther than this from the center.
 // Blocks land at round(offset) + cell with |cell| <= ceil(radius), so each
 // axis reaches |offset| + 0.5 + ceil(radius); +1 covers the rest.
-function cloudRadius(cx, cy, cz, salt) {
+export function cloudRadius(cx, cy, cz, salt) {
   let ex = 0, ey = 0, ez = 0;
   for (const p of puffParams(cx, cy, cz, salt)) {
     ex = Math.max(ex, Math.abs(p.ox) + 0.5 + Math.ceil(p.ra));
@@ -93,6 +97,39 @@ function cloudRadius(cx, cy, cz, salt) {
     ez = Math.max(ez, Math.abs(p.oz) + 0.5 + Math.ceil(p.rb));
   }
   return Math.sqrt(ex * ex + ey * ey + ez * ez) + 1;
+}
+
+// Largest possible bounding radius over all salts: the puff sizes and the
+// spread are bounded above, so the lattice can prove isolation from the
+// cell size alone without measuring every cloud. Puff counts 2..3, spread
+// <= 3.5, per-axis |offset| <= 3.5, radii <= 4 (xz) / <= 3 (y): ex,ez <= 8,
+// ey <= 5.25, so r <= sqrt(64 + 27.6 + 64) + 1 < 13.5.
+export const CLOUD_R_MAX = 14;
+
+// Clip-free cloud placement: the same puffs as placeCloud, but voxels roam
+// the full key range (infinite dimensions). Returns { top, r } like above.
+// `onBlock` receives every written [x, y, z] (eviction recomputes the same
+// set) — null skips the callback.
+export function placeCloudAt(cx, cy, cz, id, salt, onBlock = null) {
+  let top = -Infinity, topX = cx, topZ = cz, r = 0;
+  for (const p of puffParams(cx, cy, cz, salt)) {
+    const Px = cx + Math.round(p.ox);
+    const Pz = cz + Math.round(p.oz);
+    const Py = cy + Math.round(p.oy);
+    const mx = Math.ceil(p.ra), mz = Math.ceil(p.rb), my = Math.ceil(p.rh);
+    for (let dx = -mx; dx <= mx; dx++)
+      for (let dz = -mz; dz <= mz; dz++)
+        for (let dy = -my; dy <= my; dy++) {
+          if (dx * dx / (p.ra * p.ra) + dz * dz / (p.rb * p.rb) + dy * dy / (p.rh * p.rh) > 1) continue;
+          const x = Px + dx, y = Py + dy, z = Pz + dz;
+          setBlock(x, y, z, id);
+          if (onBlock) onBlock(x, y, z);
+          if (y > top) { top = y; topX = x; topZ = z; }
+          const d = Math.hypot(x - cx, y - cy, z - cz);
+          if (d > r) r = d;
+        }
+  }
+  return { top, topX, topZ, r };
 }
 
 function placeCloud(cx, cy, cz, id, salt) {
@@ -119,7 +156,8 @@ function placeCloud(cx, cy, cz, id, salt) {
 }
 
 // Greedy 3D scatter for one tier: accept a candidate only when its edge gap
-// to every accepted cloud clears the pair's blast need plus its 2–20% margin.
+// to every accepted cloud clears the pair's blast need plus its tier-split
+// margin.
 // The salt stays a pure function of the final order, so the analytical
 // radius used here always matches the voxels placed later.
 function scatterTier(seed, tier, count, candidates, saltBase, accepted) {
@@ -135,7 +173,7 @@ function scatterTier(seed, tier, count, candidates, saltBase, accepted) {
       const r = cloudRadius(cx, cy, cz, salt);
       let ok = true;
       for (const c of accepted) {
-        const need = blastIsolationNeed(tier, c.tier) * (1 + pairMargin(seed, order, c.order));
+        const need = blastIsolationNeed(tier, c.tier) * (1 + pairMargin(seed, order, c.order, tier === MEGA_TNT || c.tier === MEGA_TNT));
         const dx = c.x - cx, dy = c.y - cy, dz = c.z - cz;
         if (Math.hypot(dx, dy, dz) - (r + c.r) < need) { ok = false; break; }
       }
@@ -166,7 +204,7 @@ function verifyIsolation(seed) {
   for (let i = 0; i < clouds.length; i++) {
     for (let j = i + 1; j < clouds.length; j++) {
       const a = clouds[i], b = clouds[j];
-      const need = blastIsolationNeed(a.tier, b.tier) * (1 + pairMargin(seed, a.order, b.order));
+      const need = blastIsolationNeed(a.tier, b.tier) * (1 + pairMargin(seed, a.order, b.order, a.tier === MEGA_TNT || b.tier === MEGA_TNT));
       const gap = Math.hypot(a.x - b.x, a.y - b.y, a.z - b.z) - (a.r + b.r);
       if (gap < need) {
         throw new Error(

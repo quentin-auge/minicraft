@@ -4,7 +4,8 @@
 // detonates it immediately.
 import * as THREE from "three";
 import { AIR, BLOCK_INFO, FLOWER, GLOWSTONE, isLiquid, isTntLike } from "../core/blocks.js";
-import { WORLD_RADIUS, dim, getBlock, setBlock } from "../core/store.js";
+import { dim, dimInfinite, getBlock, setBlock, outOfWorld } from "../core/store.js";
+import { pinTntCellAt } from "../world/tntstream.js";
 import { dimHasBedrock } from "../world/dimensions.js";
 import { PLAYER_HW, PLAYER_H, pos } from "./physics.js";
 import { igniteTNT, isLitTNT, detonateNow, noteTntPlaced, kindOfBlock, trackMegaPlaced } from "../fx/tnt.js";
@@ -27,8 +28,9 @@ export function pickBlock(origin, dir, skipLiquid, maxDist = Infinity, maxSteps 
   let tMaxZ = dir.z !== 0 ? ((stepZ > 0 ? Math.floor(origin.z) + 1 - origin.z : origin.z - Math.floor(origin.z)) / Math.abs(dir.z)) : Infinity;
   let face = [0, 0, 0];
   for (let i = 0; i < maxSteps; i++) {
-    const out = x < -WORLD_RADIUS || x > WORLD_RADIUS || z < -WORLD_RADIUS || z > WORLD_RADIUS || y < 0;
-    if (!out) {
+    // Infinite dimensions keep stepping past the old cube (and below zero);
+    // bounded dims keep the exact old bounds.
+    if (!outOfWorld(x, y, z)) {
       const id = getBlock(x, y, z);
       if (id !== AIR && !(skipLiquid && isLiquid(id))) return { x, y, z, id, face };
     }
@@ -154,6 +156,7 @@ export function breakBlockAt(x, y, z) {
   if (bid === GLOWSTONE) clearGlowstoneAt(x, y, z);
   if (bid === FLOWER) clearFlowerAt(x, y, z);
   setBlock(x, y, z, AIR);
+  if (dimInfinite()) pinTntCellAt(x, y, z);
   if (bid === GLOWSTONE) noteBlockLightEdit();
   notePortalEdit(x, y, z);
   const purged = purgeFloatingLiquidsAround([[x, y, z]]);
@@ -162,11 +165,16 @@ export function breakBlockAt(x, y, z) {
 
 export function tryPlace(id, px, py, pz) {
   if (!BLOCK_INFO[id] || !BLOCK_INFO[id].placeable) return null;
-  if (py < 0) return null;
+  // Bounded dims keep the y = 0 floor unplaceable; the infinite sky builds
+  // anywhere in the key range.
+  if (py < 0 && !dimInfinite()) return null;
   const target = getBlock(px, py, pz);
   if (!(target === AIR || isLiquid(target))) return null;
   if (BLOCK_INFO[id].solid && intersectsPlayer(px, py, pz)) return null;
   setBlock(px, py, pz, id);
+  // Player content pins its stream cell: edits (and portal frames built
+  // from them) never evict within a visit.
+  if (dimInfinite()) pinTntCellAt(px, py, pz);
   if (id === GLOWSTONE) {
     noteGlowstonePlace(px, py, pz);
     noteBlockLightEdit();

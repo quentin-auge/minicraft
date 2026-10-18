@@ -2,7 +2,7 @@
 // only for exposed blocks. Rebuilds stay local via refreshBlocks().
 import * as THREE from "three";
 import { AIR, BLOCK_INFO, FLOWER, GLASS, GLOWSTONE, isLiquid } from "../core/blocks.js";
-import { WORLD_RADIUS, CHUNK, RENDER_DIST, getBlock, colTops, colTopIdx, colOcc, dim, chunkOf, isEnclosedAir } from "../core/store.js";
+import { WORLD_RADIUS, CHUNK, renderDist, getBlock, topAt, colTopIdx, colOcc, dim, dimInfinite, chunkOf, isEnclosedAir } from "../core/store.js";
 import { materialsFor, liquidSurfaceMat, glowstoneMats } from "../core/textures.js";
 import { FLOWER_GEOS, FLOWER_MAT } from "./flowers.js";
 import { flowerVariantAt, flowerAngleAt } from "../world/flowers.js";
@@ -98,7 +98,8 @@ function hemmedAir(x, y, z, id) {
 // far wall and each pocket shows exactly one face. Veil flips happen only
 // when the eye medium changes (`setEyeMedium`, fed per frame), so
 // steady-state cost is zero.
-// Chunks load within RENDER_DIST but unload three rings later, so fog far
+// Chunks load within the dimension's render distance (RENDER_DIST overworld,
+// TNT_RENDER_DIST in the infinite sky) but unload three rings later, so fog far
 // stays inside the nearest evictable slab and border crossings never
 // dispose a visible row before its replacement streams in. The rings clip
 // to the finite world, so the extra margin costs no extra chunks.
@@ -259,24 +260,29 @@ export function setRegionFade(key, o, skyColor) {
 
 // Split an instance/quad list by region membership: `rest` stays with the
 // shared, always-visible materials; each group becomes a region mesh. Also
-// tracks the highest rest cell, which bounds the chunk's rest-group cull box
-// (the walk skips the per-cell test, so this single pass is the only one).
+// tracks the rest interval (lowest..highest rest cell), which bounds the
+// chunk's rest-group cull box (the walk skips the per-cell test, so this
+// single pass is the only one). The bottom matters as much as the top:
+// infinite dimensions hold geometry at any y, so a floor-based box would
+// cull everything around a below-zero eye.
 function partitionRegion(id, list) {
   const groups = new Map();
   const rest = [];
-  let restTop = -1;
+  let restTop = -1, restBottom = Infinity;
   for (const c of list) {
     const r = regionOf(id, c[0], c[1], c[2]);
     if (!r) {
       rest.push(c);
       if (c[1] > restTop) restTop = c[1];
+      if (c[1] < restBottom) restBottom = c[1];
       continue;
     }
     let g = groups.get(r.key);
     if (!g) { g = { region: r, list: [] }; groups.set(r.key, g); }
     g.list.push(c);
   }
-  return { rest, groups, restTop };
+  if (restBottom === Infinity) restBottom = restTop + 1; // empty rest: old behavior
+  return { rest, groups, restTop, restBottom };
 }
 
 export function initRenderer(scene) {
@@ -292,10 +298,13 @@ const EXPOSE_DIRS = [[0, 1, 0], [0, -1, 0], [1, 0, 0], [-1, 0, 0], [0, 0, 1], [0
 // Static bounds for chunk meshes: every instance sits inside its chunk
 // column, so one conservative sphere replaces per-mesh computation at build
 // time. Three culls against it directly; staying conservative keeps culling
-// exact (never hides visible geometry).
-function stampStatic(mesh, x0, x1, z0, z1, top) {
-  const cx = (x0 + x1 + 1) / 2, cy = (top + 1) / 2, cz = (z0 + z1 + 1) / 2;
-  const r = 0.5 * Math.sqrt((x1 - x0 + 1) ** 2 + (top + 1) ** 2 + (z1 - z0 + 1) ** 2) + 0.01;
+// exact (never hides visible geometry). The sphere spans the true instance
+// interval [bottom, top + 1] — a floor-based sphere culled everything below
+// zero in unbounded dimensions, hiding the whole sky when looking down.
+function stampStatic(mesh, x0, x1, z0, z1, top, bottom) {
+  const bot = bottom === Infinity ? 0 : bottom;
+  const cx = (x0 + x1 + 1) / 2, cy = (top + 1 + bot) / 2, cz = (z0 + z1 + 1) / 2;
+  const r = 0.5 * Math.sqrt((x1 - x0 + 1) ** 2 + (top + 1 - bot) ** 2 + (z1 - z0 + 1) ** 2) + 0.01;
   mesh.boundingSphere = new THREE.Sphere(new THREE.Vector3(cx, cy, cz), r);
   mesh.matrixAutoUpdate = false;
 }
@@ -366,10 +375,11 @@ export function rebuildChunk(cx, cz, fade = false) {
   const ck = cx + "_" + cz;
   topMaxCache.delete(ck);
   disposeChunk(ck);
-  const x0 = Math.max(cx * CHUNK, -WORLD_RADIUS);
-  const x1 = Math.min(cx * CHUNK + CHUNK - 1, WORLD_RADIUS);
-  const z0 = Math.max(cz * CHUNK, -WORLD_RADIUS);
-  const z1 = Math.min(cz * CHUNK + CHUNK - 1, WORLD_RADIUS);
+  const B = clipBound();
+  const x0 = Math.max(cx * CHUNK, -B);
+  const x1 = Math.min(cx * CHUNK + CHUNK - 1, B);
+  const z0 = Math.max(cz * CHUNK, -B);
+  const z1 = Math.min(cz * CHUNK + CHUNK - 1, B);
   const perId = new Map();
   const flowers = [];
   const glows = [];
@@ -386,18 +396,19 @@ export function rebuildChunk(cx, cz, fade = false) {
     if (!arr) { arr = []; map.set(id, arr); }
     arr.push(quad);
   };
-  // Column tops for this build: chunkTop bounds every mesh sphere; restTop
-  // (highest rest cell, folded up from each partition below) drives the
-  // fog-cull box of the rest group.
-  let chunkTop = -1;
-  let restTop = -1;
+  // Column tops for this build: chunkTop/chunkBottom bound every mesh
+  // sphere; restTop (highest rest cell, folded up from each partition
+  // below) drives the fog-cull box of the rest group.
+  let chunkTop = -1, chunkBottom = Infinity;
+  let restTop = -1, restBottom = Infinity;
   // Pocket-test memo per build: neighboring liquid faces re-query the same
-  // air cells (lake rims, shaft rings), and each miss used to pay a full
-  // bounded flood. Keys pack the column index and y (y < 4096 in practice).
+  // air cells (lake rims, shaft rims), and each miss used to pay a full
+  // bounded flood. Keys pack the column index and y (full key range).
   const enclosedMemo = new Map();
   const hemmedMemo = new Map();
+  const memoKey = (x, y, z) => colTopIdx(x, z) * 262144 + (y + 131072);
   const memoEnclosed = (x, y, z) => {
-    const k = colTopIdx(x, z) * 4096 + y;
+    const k = memoKey(x, y, z);
     let v = enclosedMemo.get(k);
     // Below-cap queries use the bare-tops escape (moon rock excluded): lake
     // bottoms and ground air exit in column height instead of exhausting the
@@ -407,7 +418,7 @@ export function rebuildChunk(cx, cz, fade = false) {
     return v;
   };
   const memoHemmed = (x, y, z, id) => {
-    const k = (colTopIdx(x, z) * 4096 + y) * 32 + id;
+    const k = memoKey(x, y, z) * 32 + id;
     let v = hemmedMemo.get(k);
     if (v === undefined) { v = hemmedAir(x, y, z, id); hemmedMemo.set(k, v); }
     return v;
@@ -416,7 +427,7 @@ export function rebuildChunk(cx, cz, fade = false) {
     for (let z = z0; z <= z1; z++) {
       // Sparse column walk: only occupied cells are visited (ascending, as
       // before), so tall builds cost by blocks instead of height.
-      const occ = colOcc[dim].get((x + 1024) * 2048 + (z + 1024));
+      const occ = colOcc[dim].get(colTopIdx(x, z));
       if (!occ) continue;
       // Unsorted walk: instance order inside a mesh has no visual effect, so
       // the per-column sort was pure rebuild cost (tall Moon columns worst).
@@ -424,6 +435,7 @@ export function rebuildChunk(cx, cz, fade = false) {
         const id = getBlock(x, y, z);
         if (!BLOCK_INFO[id]) continue;
         if (y > chunkTop) chunkTop = y;
+        if (y < chunkBottom) chunkBottom = y;
         if (id === FLOWER) { flowers.push([x, y, z]); continue; }
         if (id === GLOWSTONE) {
           if (isExposed(x, y, z)) glows.push([x, y, z]);
@@ -506,12 +518,13 @@ export function rebuildChunk(cx, cz, fade = false) {
       a[o + 12] = list[i][0] + 0.5; a[o + 13] = list[i][1] + 0.5; a[o + 14] = list[i][2] + 0.5; a[o + 15] = 1;
     }
     mesh.instanceMatrix.needsUpdate = true;
-    stampStatic(mesh, x0, x1, z0, z1, chunkTop);
+    stampStatic(mesh, x0, x1, z0, z1, chunkTop, chunkBottom);
     return mesh;
   };
   for (const [id, list] of perId) {
-    const { rest, groups, restTop: rt } = partitionRegion(id, list);
+    const { rest, groups, restTop: rt, restBottom: rb } = partitionRegion(id, list);
     if (rt > restTop) restTop = rt;
+    if (rb < restBottom) restBottom = rb;
     if (rest.length) {
       const mesh = buildBoxes(rest, getMats(id));
       // Glass draws after liquids so it composites over water whether the
@@ -542,14 +555,15 @@ export function rebuildChunk(cx, cz, fade = false) {
         mesh.setMatrixAt(i, dummy.matrix);
       }
       mesh.instanceMatrix.needsUpdate = true;
-      stampStatic(mesh, x0, x1, z0, z1, chunkTop);
+      stampStatic(mesh, x0, x1, z0, z1, chunkTop, chunkBottom);
       return mesh;
     };
     for (let v = 0; v < FLOWER_GEOS.length; v++) {
       const list = perVariant[v];
       if (!list.length) continue;
-      const { rest, groups, restTop: rt } = partitionRegion(FLOWER, list);
+      const { rest, groups, restTop: rt, restBottom: rb } = partitionRegion(FLOWER, list);
       if (rt > restTop) restTop = rt;
+    if (rb < restBottom) restBottom = rb;
       if (rest.length) {
         const mesh = buildFlowers(rest, FLOWER_GEOS[v], FLOWER_MAT);
         restGroup.add(mesh);
@@ -574,8 +588,9 @@ export function rebuildChunk(cx, cz, fade = false) {
     for (let v = 0; v < GLOW_VARIANT_COUNT; v++) {
       const list = perVariant[v];
       if (!list.length) continue;
-      const { rest, groups, restTop: rt } = partitionRegion(GLOWSTONE, list);
+      const { rest, groups, restTop: rt, restBottom: rb } = partitionRegion(GLOWSTONE, list);
       if (rt > restTop) restTop = rt;
+    if (rb < restBottom) restBottom = rb;
       if (rest.length) {
         const mesh = buildBoxes(rest, glowstoneMats(v));
         restGroup.add(mesh);
@@ -617,7 +632,7 @@ export function rebuildChunk(cx, cz, fade = false) {
       mesh.setMatrixAt(i, dummy.matrix);
     }
     mesh.instanceMatrix.needsUpdate = true;
-    stampStatic(mesh, x0, x1, z0, z1, chunkTop);
+    stampStatic(mesh, x0, x1, z0, z1, chunkTop, chunkBottom);
     mesh.renderOrder = order;
     return mesh;
   };
@@ -638,8 +653,9 @@ export function rebuildChunk(cx, cz, fade = false) {
     { map: liquidsPocket, role: "pocket-in", top: false, order: 12, suffix: "_pin", gate: "in" },
   ]) {
     for (const [lid, list] of map) {
-      const { rest, groups, restTop: rt } = partitionRegion(lid, list);
+      const { rest, groups, restTop: rt, restBottom: rb } = partitionRegion(lid, list);
       if (rt > restTop) restTop = rt;
+    if (rb < restBottom) restBottom = rb;
       if (rest.length) {
         const mesh = quadMesh(liquidSurfaceMat(lid, role, top), rest, order);
         gateVeil(gate, lid, mesh);
@@ -659,7 +675,7 @@ export function rebuildChunk(cx, cz, fade = false) {
   }
   if (restGroup.children.length) {
     sceneRef.add(restGroup);
-    chunkRest.set(ck, { group: restGroup, x0, x1, z0, z1, top: restTop });
+    chunkRest.set(ck, { group: restGroup, x0, x1, z0, z1, top: restTop, bottom: restBottom });
     // Streaming builds fade in (see tickChunkFades); edit/band remeshes
     // pass fade=false and stay instant.
     if (fade) fadeChunkIn(ck, cx, cz, restGroup);
@@ -716,6 +732,12 @@ export function tickChunkFades(dt, px, eyeY, pz, fogFar) {
 
 const chunkQueue = [];
 
+// World clip per dimension: bounded dims clamp to the cube, infinite dims
+// roam free (dimInfinite reads the active dimension, never a fork).
+function clipBound() {
+  return dimInfinite() ? Infinity : WORLD_RADIUS;
+}
+
 // Highest surface per chunk bounds, cached: chunkDist3 queries it once per
 // candidate chunk per stream pass, and the Moon tops never change between
 // edits. Entries drop on rebuild/dispose so edits never read stale heights.
@@ -726,14 +748,15 @@ function chunkTopMax(cx, cz) {
   const hit = topMaxCache.get(ck);
   if (hit !== undefined) return hit;
   let top = 0;
-  const x0 = Math.max(cx * CHUNK, -WORLD_RADIUS);
-  const x1 = Math.min(cx * CHUNK + CHUNK - 1, WORLD_RADIUS);
-  const z0 = Math.max(cz * CHUNK, -WORLD_RADIUS);
-  const z1 = Math.min(cz * CHUNK + CHUNK - 1, WORLD_RADIUS);
-  const tops = colTops[dim];
+  const B = clipBound();
+  const x0 = Math.max(cx * CHUNK, -B);
+  const x1 = Math.min(cx * CHUNK + CHUNK - 1, B);
+  const z0 = Math.max(cz * CHUNK, -B);
+  const z1 = Math.min(cz * CHUNK + CHUNK - 1, B);
+  const topsName = dim;
   for (let x = x0; x <= x1; x++)
     for (let z = z0; z <= z1; z++) {
-      const t = tops[(x + 1024) * 2048 + (z + 1024)];
+      const t = topAt(topsName, x, z);
       if (t > top) top = t;
     }
   topMaxCache.set(ck, top);
@@ -749,6 +772,11 @@ function chunkDist3(px, eyeY, pz, wx, wz) {
   return Math.sqrt(dx * dx + dz * dz + drop * drop);
 }
 
+function parseChunkKey(ck) {
+  const sep = ck.lastIndexOf("_");
+  return [+ck.slice(0, sep), +ck.slice(sep + 1)];
+}
+
 export function rebuildAll(px, pz, syncRadius = 3) {
   disposeAll();
   streamChunks(px, pz);
@@ -758,13 +786,13 @@ export function rebuildAll(px, pz, syncRadius = 3) {
   const near = [];
   const far = [];
   for (const ck of chunkQueue) {
-    const [wx, wz] = ck.split("_").map(Number);
+    const [wx, wz] = parseChunkKey(ck);
     ((Math.abs(wx - cx) <= syncRadius && Math.abs(wz - cz) <= syncRadius) ? near : far).push(ck);
   }
   chunkQueue.length = 0;
   chunkQueue.push(...far);
   for (const ck of near) {
-    const [wx, wz] = ck.split("_").map(Number);
+    const [wx, wz] = parseChunkKey(ck);
     // No fade here: the spawn disc must stand complete on the first frame
     // (a cut, not a parade) — streaming fades only apply past it.
     rebuildChunk(wx, wz);
@@ -775,23 +803,26 @@ export function rebuildAll(px, pz, syncRadius = 3) {
 
 export function streamChunks(px, pz, eyeY = TERRAIN_REF_Y, fogFar = Infinity) {
   const cx = chunkOf(px), cz = chunkOf(pz);
+  const RD = renderDist();
   const keep = new Set();
   const keepLoose = new Set();
-  for (let dx = -RENDER_DIST - UNLOAD_MARGIN; dx <= RENDER_DIST + UNLOAD_MARGIN; dx++)
-    for (let dz = -RENDER_DIST - UNLOAD_MARGIN; dz <= RENDER_DIST + UNLOAD_MARGIN; dz++) {
+  for (let dx = -RD - UNLOAD_MARGIN; dx <= RD + UNLOAD_MARGIN; dx++)
+    for (let dz = -RD - UNLOAD_MARGIN; dz <= RD + UNLOAD_MARGIN; dz++) {
       const wx = cx + dx, wz = cz + dz;
-      if (wx * CHUNK > WORLD_RADIUS || wx * CHUNK + CHUNK - 1 < -WORLD_RADIUS) continue;
-      if (wz * CHUNK > WORLD_RADIUS || wz * CHUNK + CHUNK - 1 < -WORLD_RADIUS) continue;
+      if (!dimInfinite()) {
+        if (wx * CHUNK > WORLD_RADIUS || wx * CHUNK + CHUNK - 1 < -WORLD_RADIUS) continue;
+        if (wz * CHUNK > WORLD_RADIUS || wz * CHUNK + CHUNK - 1 < -WORLD_RADIUS) continue;
+      }
       const ck = wx + "_" + wz;
       keepLoose.add(ck);
-      if (Math.abs(dx) <= RENDER_DIST && Math.abs(dz) <= RENDER_DIST) keep.add(ck);
+      if (Math.abs(dx) <= RD && Math.abs(dz) <= RD) keep.add(ck);
     }
   // Dispose only outside the loose ring, and only once the slab also clears
   // the fogged range: border crossings never flicker a row while its
   // replacement streams in, and high flight never exposes an eviction.
   for (const ck of [...chunkMeshes.keys()]) {
     if (keepLoose.has(ck)) continue;
-    const [wx, wz] = ck.split("_").map(Number);
+    const [wx, wz] = parseChunkKey(ck);
     if (chunkDist3(px, eyeY, pz, wx, wz) <= fogFar + DISPOSE_MARGIN) continue;
     disposeChunk(ck);
   }
@@ -802,7 +833,7 @@ export function streamChunks(px, pz, eyeY = TERRAIN_REF_Y, fogFar = Infinity) {
   const missing = [];
   for (const ck of keep) {
     if (chunkMeshes.has(ck) || queued.has(ck)) continue;
-    const [wx, wz] = ck.split("_").map(Number);
+    const [wx, wz] = parseChunkKey(ck);
     missing.push([ck, chunkDist3(px, eyeY, pz, wx, wz)]);
   }
   missing.sort((a, b) => a[1] - b[1]);
@@ -829,7 +860,10 @@ export function updateChunkCulling(px, eyeY, pz, fogFar) {
   for (const r of chunkRest.values()) {
     const dx = px < r.x0 ? r.x0 - px : px > r.x1 + 1 ? px - (r.x1 + 1) : 0;
     const dz = pz < r.z0 ? r.z0 - pz : pz > r.z1 + 1 ? pz - (r.z1 + 1) : 0;
-    const dy = eyeY > r.top + 1 ? eyeY - (r.top + 1) : eyeY < 0 ? -eyeY : 0;
+    // Interval distance: geometry fills [bottom, top], so a surrounded eye
+    // counts as near. The old floor-based form culled everything around a
+    // below-zero eye in unbounded dimensions.
+    const dy = eyeY > r.top + 1 ? eyeY - (r.top + 1) : eyeY < r.bottom ? r.bottom - eyeY : 0;
     r.group.visible = dx * dx + dy * dy + dz * dz <= lim2;
   }
 }
@@ -841,7 +875,16 @@ export function maybeStream(px, pz, eyeY = TERRAIN_REF_Y, fogNear = 0, fogFar = 
     lastStream.cz = cz;
     streamChunks(px, pz, eyeY, fogFar);
   }
-  if (chunkQueue.length) drainChunkQueue(false);
+  // Deficit-driven drain: missing geometry inside the visible range borrows
+  // frame time (falling faster than the base budget builds); anything
+  // farther out waits its turn, and the fog guard still caps visibility on
+  // whatever remains missing. Streaming remesh requests drain first under
+  // their own sub-budget (steady frames keep the old 6 ms total).
+  const behind = (chunkQueue.length + pendingRefresh.size) > 0 &&
+    nearestMissingDist(px, eyeY, pz) <= fogFar;
+  // Single-point tuning: behind splits the 16 ms total, steady the 6 ms.
+  if (pendingRefresh.size) drainPendingRefresh(px, eyeY, pz, behind ? CHUNK_BEHIND_BUDGET_MS / 2 : 2);
+  if (chunkQueue.length) drainChunkQueue(false, behind ? CHUNK_BEHIND_BUDGET_MS / 2 : CHUNK_BUDGET_MS - 2);
   // Clear-bubble guard: anything still queued inside the clear bubble would
   // pop in plain sight, so it builds synchronously no matter the budget.
   // Nearest first, so the closest hole always fills even if more remain.
@@ -849,8 +892,7 @@ export function maybeStream(px, pz, eyeY = TERRAIN_REF_Y, fogNear = 0, fogFar = 
   if (fogNear > 0 && chunkQueue.length) {
     const scored = [];
     for (const ck of chunkQueue) {
-      const sep = ck.indexOf("_");
-      const wx = +ck.slice(0, sep), wz = +ck.slice(sep + 1);
+      const [wx, wz] = parseChunkKey(ck);
       scored.push([chunkDist3(px, eyeY, pz, wx, wz), ck, wx, wz]);
     }
     scored.sort((a, b) => a[0] - b[0]);
@@ -870,14 +912,19 @@ export function maybeStream(px, pz, eyeY = TERRAIN_REF_Y, fogNear = 0, fogFar = 
 }
 
 const CHUNK_BUDGET_MS = 6;
+// Borrowed frame time while visibly behind: a 2x-gravity dive (80 b/s)
+// needs ~1,200 chunk builds/s to hold the mesh horizon, past what 6 ms
+// covers. The loan only triggers while missing geometry sits inside the
+// fog range — steady movement never pays it.
+export const CHUNK_BEHIND_BUDGET_MS = 16;
 
-export function drainChunkQueue(all) {
+export function drainChunkQueue(all, budgetMs = CHUNK_BUDGET_MS) {
   if (!chunkQueue.length) return;
-  const deadline = all ? Infinity : performance.now() + CHUNK_BUDGET_MS;
+  const deadline = all ? Infinity : performance.now() + budgetMs;
   while (chunkQueue.length && (all || performance.now() < deadline)) {
     const ck = chunkQueue.shift();
     if (chunkMeshes.has(ck)) continue;
-    const [wx, wz] = ck.split("_").map(Number);
+    const [wx, wz] = parseChunkKey(ck);
     rebuildChunk(wx, wz, true);
   }
 }
@@ -892,8 +939,8 @@ export function hasPendingChunks() {
 export function nearestMissingDist(px, eyeY, pz) {
   let best = Infinity;
   for (const ck of chunkQueue) {
-    const sep = ck.indexOf("_");
-    const d = chunkDist3(px, eyeY, pz, +ck.slice(0, sep), +ck.slice(sep + 1));
+    const [wx, wz] = parseChunkKey(ck);
+    const d = chunkDist3(px, eyeY, pz, wx, wz);
     if (d < best) best = d;
   }
   return best;
@@ -933,9 +980,43 @@ export function refreshBlocks(coords) {
   for (const ck of keys) {
     if (!chunkMeshes.has(ck) && !chunkQueue.includes(ck)) continue;
     if (chunkMeshes.has(ck)) {
-      const [cx, cz] = ck.split("_").map(Number);
+      const [cx, cz] = parseChunkKey(ck);
       rebuildChunk(cx, cz);
     }
+  }
+}
+
+// Budgeted remesh requests for the streaming path (tnt lattice): same
+// column-key mapping as refreshBlocks, but queued instead of rebuilt inline —
+// a fall plants dozens of touched columns per tick and sync-rebuilding all
+// of them inside the tick is the frame-busting spiral (tall columns re-walk
+// hundreds of occupancy entries each). Drained nearest-first under its own
+// sub-budget in maybeStream; unbuilt keys resolve through the normal build
+// queue, out-of-range keys drop when the stream window moves on.
+const pendingRefresh = new Set();
+export function queueRefreshBlocks(coords) {
+  for (const [x, , z] of coords) {
+    for (const ck of columnKeys(x, z)) pendingRefresh.add(ck);
+  }
+}
+function drainPendingRefresh(px, eyeY, pz, budgetMs) {
+  if (!pendingRefresh.size) return;
+  const deadline = performance.now() + budgetMs;
+  const scored = [];
+  for (const ck of pendingRefresh) {
+    const [wx, wz] = parseChunkKey(ck);
+    scored.push([chunkDist3(px, eyeY, pz, wx, wz), ck, wx, wz]);
+  }
+  scored.sort((a, b) => a[0] - b[0]);
+  pendingRefresh.clear();
+  for (const [, ck, wx, wz] of scored) {
+    if (performance.now() > deadline) {
+      pendingRefresh.add(ck); // over budget: back to the queue, order be damned
+      continue;
+    }
+    // Built → rebuild now; queued → the build drain covers it; unknown →
+    // drop (streamChunks re-queues if it enters the window).
+    if (chunkMeshes.has(ck)) rebuildChunk(wx, wz);
   }
 }
 

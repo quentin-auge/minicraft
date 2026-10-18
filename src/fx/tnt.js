@@ -17,7 +17,7 @@
 // to air through an injected callback (set via onLiquidPurge), so blasts
 // never strand floating remnants.
 import { AIR, TNT, MEGA_TNT, ULTRA_TNT, FLOWER, GLOWSTONE, LOG, LEAVES, isLiquid, isTntLike } from "../core/blocks.js";
-import { WORLD_RADIUS, colTops, colTopIdx, dim, getBlock, setBlock } from "../core/store.js";
+import { WORLD_RADIUS, topAt, dimInfinite, dimBound, dim, getBlock, setBlock } from "../core/store.js";
 import { CLOUD_MAX_Y } from "../world/clouds.js";
 import { rebuildChunk, isChunkBuilt, chunkKeysForColumn, refreshBlocks } from "../render/mesher.js";
 import { notePortalFramesOnly, clearPortalFills, scanWorldPortals } from "../world/portals.js";
@@ -509,12 +509,16 @@ export function ultraBandRange(band) {
 // Tree canopies rooted in the ground band can overhang above it: flood up
 // from LOG cells at the band ceiling through LOG/LEAVES (capped), so band 1
 // takes the whole tree, not a floating canopy.
-function ultraOverhangCells() {
+function ultraOverhangCells(cx, cz) {
   const out = [];
   const seen = new Set();
   const stack = [];
-  for (let gx = -WORLD_RADIUS; gx <= WORLD_RADIUS; gx++)
-    for (let gz = -WORLD_RADIUS; gz <= WORLD_RADIUS; gz++)
+  // Infinite dims have no world edge to sweep: seed the flood from a box
+  // around the ignition instead (same capped flood below).
+  const B = dimBound();
+  const R = dimInfinite() ? 256 : WORLD_RADIUS;
+  for (let gx = Math.max(-B, Math.ceil(cx - R)); gx <= Math.min(B, Math.floor(cx + R)); gx++)
+    for (let gz = Math.max(-B, Math.ceil(cz - R)); gz <= Math.min(B, Math.floor(cz + R)); gz++)
       if (getBlock(gx, ULTRA_BAND1_HI, gz) === LOG) stack.push([gx, ULTRA_BAND1_HI, gz]);
   const NB = [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]];
   while (stack.length && out.length < 20000) {
@@ -641,7 +645,7 @@ function finishBandJob(job) {
     seeds.push([x, y, z]);
   };
   for (const [, gx, gz] of job.cols) {
-    pushSeed(gx, job.yHi === null ? colTops[dim][colTopIdx(gx, gz)] : job.yHi + 1, gz);
+    pushSeed(gx, job.yHi === null ? topAt(dim, gx, gz) : job.yHi + 1, gz);
     pushSeed(gx, job.yLo - 1, gz);
   }
   if (job.cells) {
@@ -664,7 +668,7 @@ function finishBandJob(job) {
 function carveBandCell(job, kind, gx, gy, gz, touched) {
   const bid = getBlock(gx, gy, gz);
   if (bid === AIR) return;
-  if (gy === 0) return; // bedrock
+  if (gy === 0 && !dimInfinite()) return; // bedrock (bounded dims only)
   const victimKind = isTntLike(bid) ? kindOfBlock(bid) : null;
   if (victimKind) {
     // Other-band ultras survive for their own blast; everything else in the
@@ -687,7 +691,7 @@ function carveBandCell(job, kind, gx, gy, gz, touched) {
 }
 function carveBandColumn(job, kind, gx, gz, touched) {
   let yHi = job.yHi;
-  const top = colTops[dim][colTopIdx(gx, gz)];
+  const top = topAt(dim, gx, gz);
   if (yHi === null || top < yHi) yHi = top;
   if (top < job.yLo) return;
   for (let gy = job.yLo; gy <= yHi; gy++) carveBandCell(job, kind, gx, gy, gz, touched);
@@ -736,7 +740,8 @@ function drainBandJobs(dt) {
 function explodeBand(cx, cy, cz, kind, refresh) {
   removeSprite(cx + "," + cy + "," + cz, kind);
   const band = ultraBandOf(cy);
-  const [yLo, yHi] = ultraBandRange(band);
+  const inf = dimInfinite();
+  const [yLo, yHi] = inf ? [Math.floor(cy - 90), Math.floor(cy + 90)] : ultraBandRange(band);
   for (const [k, t] of lit) {
     if (ultraBandOf(t.y) !== band) continue;
     lit.delete(k);
@@ -746,11 +751,12 @@ function explodeBand(cx, cy, cz, kind, refresh) {
     if (ultraBandOf(c.y) !== band) continue;
     pendingChain.delete(k);
   }
-  const R = ULTRA_FULL_R;
+  const R = inf ? 256 : ULTRA_FULL_R;
   const R2 = R * R;
   const cols = [];
-  for (let x = -WORLD_RADIUS; x <= WORLD_RADIUS; x++) {
-    for (let z = -WORLD_RADIUS; z <= WORLD_RADIUS; z++) {
+  const B = dimBound();
+  for (let x = Math.max(-B, Math.ceil(cx - R)); x <= Math.min(B, Math.floor(cx + R)); x++) {
+    for (let z = Math.max(-B, Math.ceil(cz - R)); z <= Math.min(B, Math.floor(cz + R)); z++) {
       const dx = x - cx, dz = z - cz;
       const d2 = dx * dx + dz * dz;
       if (d2 > R2) continue;
@@ -761,7 +767,7 @@ function explodeBand(cx, cy, cz, kind, refresh) {
   bandJobs.push({
     cx, cy, cz, band, yLo, yHi, kind: kind.key,
     cols, ci: 0,
-    cells: band === 1 ? ultraOverhangCells() : null, celli: 0,
+    cells: band === 1 && !inf ? ultraOverhangCells(cx, cz) : null, celli: 0,
     front2: 0, dirty: new Map(), fxAcc: 1, carveDone: false,
   });
   // A clearing kind leaves air behind instead of restoring the displaced
@@ -990,8 +996,8 @@ function drainCarveJobs() {
     let rem = 0;
     for (let mi = job0.mi; mi < job0.members.length; mi++) {
       const m0 = job0.members[mi], R0 = job0.radii[mi];
-      const cur = (mi === job0.mi && job0.x0 !== -Infinity) ? job0.x0 : Math.max(-WORLD_RADIUS, Math.ceil(m0.x - R0));
-      rem += Math.max(0, Math.min(WORLD_RADIUS, Math.floor(m0.x + R0)) - cur + 1);
+      const cur = (mi === job0.mi && job0.x0 !== -Infinity) ? job0.x0 : Math.max(-dimBound(), Math.ceil(m0.x - R0));
+      rem += Math.max(0, Math.min(dimBound(), Math.floor(m0.x + R0)) - cur + 1);
     }
     if (rem > 0) cols = Math.max(cols, Math.ceil(rem / 15));
   }
@@ -1004,8 +1010,8 @@ function drainCarveJobs() {
       continue;
     }
     const R = job.radii[job.mi];
-    if (job.x0 === -Infinity) job.x0 = Math.max(-WORLD_RADIUS, Math.ceil(m.x - R));
-    const x1 = Math.min(WORLD_RADIUS, Math.floor(m.x + R));
+    if (job.x0 === -Infinity) job.x0 = Math.max(-dimBound(), Math.ceil(m.x - R));
+    const x1 = Math.min(dimBound(), Math.floor(m.x + R));
     while (job.x0 <= x1 && cols > 0) {
       carvePoolColumn(job.x0, m, R, job.kind, job.touched);
       job.x0++;
@@ -1141,6 +1147,22 @@ export function cancelTNT(x, y, z) {
   lit.delete(k);
   removeSprite(k, t ? kindOf(t.kind) : null);
   pendingChain.delete(k);
+}
+
+// Streaming eviction hygiene (infinite dimensions): drop queued chains and
+// displaced-liquid records inside an evicted box. Lit fuses need no help —
+// tickTNT already kills any fuse whose block is gone, sprites included — and
+// stale megaIndex keys revalidate through getBlock on join.
+export function clearTNTBox(x0, y0, z0, x1, y1, z1) {
+  for (const [k, c] of pendingChain) {
+    if (c.x >= x0 && c.x <= x1 && c.y >= y0 && c.y <= y1 && c.z >= z0 && c.z <= z1) {
+      pendingChain.delete(k);
+    }
+  }
+  for (const k of [...displaced.keys()]) {
+    const [x, y, z] = k.split(",").map(Number);
+    if (x >= x0 && x <= x1 && y >= y0 && y <= y1 && z >= z0 && z <= z1) displaced.delete(k);
+  }
 }
 
 export function tickTNT(dt, refresh) {
@@ -1472,7 +1494,7 @@ function carveSphere(cx, cy, cz, kind, touched, pool = false, Reff = kind.radius
   const R = Reff;
   // Clear the ignited block itself first so its cell refreshes even in air.
   if (isTntLike(getBlock(cx, cy, cz))) clearCell(cx, cy, cz, touched);
-  for (let x = Math.max(-WORLD_RADIUS, Math.ceil(cx - R)); x <= Math.min(WORLD_RADIUS, Math.floor(cx + R)); x++) {
+  for (let x = Math.max(-dimBound(), Math.ceil(cx - R)); x <= Math.min(dimBound(), Math.floor(cx + R)); x++) {
     carvePoolColumn(x, { x: cx, y: cy, z: cz }, R, kind, touched, pool, open);
   }
 }
@@ -1482,12 +1504,14 @@ function carveSphere(cx, cy, cz, kind, touched, pool = false, Reff = kind.radius
 // round instead of square; mega pools keep the closed ball.
 function carvePoolColumn(x, m, R, kind, touched, pool = true, open = false) {
   const R2 = R * R;
-  for (let z = Math.max(-WORLD_RADIUS, Math.ceil(m.z - R)); z <= Math.min(WORLD_RADIUS, Math.floor(m.z + R)); z++) {
-    const yLo = Math.max(1, Math.ceil(m.y - R));
+  for (let z = Math.max(-dimBound(), Math.ceil(m.z - R)); z <= Math.min(dimBound(), Math.floor(m.z + R)); z++) {
+    // Bounded dims keep the y = 0 bedrock floor uncarved; infinite dims carve
+    // the full sphere (key range is the only floor, far out of reach).
+    const yLo = dimInfinite() ? Math.ceil(m.y - R) : Math.max(1, Math.ceil(m.y - R));
     let yHi = Math.floor(m.y + R);
     // Skip the air above the terrain: only the blast at or below the
     // column top can hit anything (same cells as before, half the scan).
-    const top = colTops[dim][colTopIdx(x, z)];
+    const top = topAt(dim, x, z);
     if (top < yHi) yHi = top;
     if (top < yLo) continue;
     for (let y = yLo; y <= yHi; y++) {

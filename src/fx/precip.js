@@ -11,7 +11,7 @@
 // rain later is one entry (faster fall, no sway, own active/groundY).
 import * as THREE from "three";
 import { AIR } from "../core/blocks.js";
-import { getBlock, colTops, colTopIdx, dim } from "../core/store.js";
+import { getBlock, topAt, dim } from "../core/store.js";
 import { MOON_SURFACE_Y } from "../world/moon.js";
 
 const PRECIP_DEFAULTS = {
@@ -39,7 +39,7 @@ export const PRECIP_TYPES = [
     active: (e) => dim === "over" && e.y >= MOON_SURFACE_Y - 8,
     // Drops land on the highest surface or the moon band, whichever is up.
     groundY: (bx, bz) => {
-      const ct = colTops[dim][colTopIdx(bx, bz)];
+      const ct = topAt(dim, bx, bz);
       return ct > MOON_SURFACE_Y ? ct : MOON_SURFACE_Y;
     },
     // Initial fill spans the moon band up to the spawn top.

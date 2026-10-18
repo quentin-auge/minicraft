@@ -2,7 +2,19 @@
 // No saves, no network — Play builds a fresh random world in the browser.
 import * as THREE from "three";
 import { generateOverworldAsync, getSeed } from "./src/world/overworld.js";
-import { generateTntDimensionAsync } from "./src/world/tntdim.js";
+import { tickTntStream, reseatTnt, TNT_CELL, TNT_SKY_GRAPPLE_MAX } from "./src/world/tntstream.js";
+
+// Hook-anchor pin for streaming eviction: the latched cloud never evicts
+// mid-pull, so a sky-grapple landing survives the trip over.
+function hookPin() {
+  const a = hookAnchor();
+  if (!a) return null;
+  return {
+    ix: Math.floor(a.x / TNT_CELL),
+    iy: Math.floor(a.y / TNT_CELL),
+    iz: Math.floor(a.z / TNT_CELL),
+  };
+}
 import {
   pos, vel, keys, setYaw, setPitch,
   spawnPlayer, updatePlayer, tickKnockback,
@@ -10,7 +22,7 @@ import {
 import * as player from "./src/player/physics.js";
 import { flyOn, setFly, updateFly } from "./src/player/fly.js";
 import { updateTarget, breakTarget, placeAtSelection, breakBlockAt, purgeFloatingLiquidsAround } from "./src/player/edit.js";
-import { fireHookTarget, grappleBlockPick, cancelHook, severHook, updateHook, hookActive, tickHookFx } from "./src/player/hook.js";
+import { fireHookTarget, fireSkyHook, grappleBlockPick, cancelHook, severHook, updateHook, hookActive, hookAnchor, tickHookFx } from "./src/player/hook.js";
 import { initRope } from "./src/player/rope.js";
 import { tickTNT, initTNTFx, resetTNTMemory, onExplode, onLiquidPurge, shakeSpecFor, bandFront, bandActive, drainBandRemesh, accumulateBandRefresh, megaImminent, megaCarveActive, megaFxActive, MEGA_BLAST_T, MEGA_BLAST_TIME_SCALE } from "./src/fx/tnt.js";
 import { initFx, tickFx, tickDenseFx, denseFxActive, prewarmDenseFx, spawnDense, flushDense, noteDenseSpawn } from "./src/fx/particles.js";
@@ -20,7 +32,7 @@ import { WATER, FLOWER, GLOWSTONE, MOON_WATER, BLOCK_INFO } from "./src/core/blo
 import { resetGlowstoneMemory } from "./src/world/glowstone.js";
 import { resetFlowerMemory } from "./src/world/flowers.js";
 import { initBlockLights, tickBlockLights, rebuildBlockLightIndexes, resetBlockLightMemory } from "./src/render/blocklights.js";
-import { initRenderer, rebuildAll, maybeStream, refreshBlocks, setEyeMedium, setRegionFade, nearestMissingDist, tickChunkFades, UNLOAD_MARGIN } from "./src/render/mesher.js";
+import { initRenderer, rebuildAll, maybeStream, refreshBlocks, queueRefreshBlocks, setEyeMedium, setRegionFade, nearestMissingDist, tickChunkFades, UNLOAD_MARGIN } from "./src/render/mesher.js";
 import { applyRegions } from "./src/render/regions.js";
 import { resetItems, select, selected, selectedId, initHotbarInput, setItem, getItems } from "./src/ui/hotbar.js";
 import { initMenu, enterGame, started, isLocked } from "./src/ui/menu.js";
@@ -34,7 +46,7 @@ import {
   notePortalFramesOnly, tickPortalFillFades, completeDimTravel,
 } from "./src/world/portals.js";
 import { villageFrames } from "./src/world/village.js";
-import { CHUNK, RENDER_DIST, dim, setDimension, setBlock, getBlock, isSolid, worlds } from "./src/core/store.js";
+import { CHUNK, renderDist, dim, setDimension, setBlock, getBlock, isSolid, worlds } from "./src/core/store.js";
 import { dimEnv, dimSpec, stashOverExit, takeOverExit } from "./src/world/dimensions.js";
 import { disposeAll } from "./src/render/mesher.js";
 import { PLAYER_HW, PLAYER_H, EYE } from "./src/player/physics.js";
@@ -295,7 +307,7 @@ async function buildWorld() {
   envAir.far = LOAD_FOG_FAR;
   await new Promise((r) => requestAnimationFrame(r));
   try {
-    const gen = BOOT_DIM === "tnt" ? generateTntDimensionAsync : generateOverworldAsync;
+    const gen = dimSpec(BOOT_DIM).generateAsync;
     const ok = await gen(Math.floor(Math.random() * 100000), aborted);
     if (!ok || aborted()) return;
     spawnPlayer();
@@ -464,7 +476,7 @@ function updateStreamingFog() {
   const baseFar = denv?.fogFar ?? readyFog.far;
   const baseNear = denv?.fogNear ?? readyFog.near;
   const dh = Math.max(0, camera.position.y - FOG_GROUND_REF);
-  const unloadHoriz = (RENDER_DIST + UNLOAD_MARGIN) * CHUNK;
+  const unloadHoriz = (renderDist() + UNLOAD_MARGIN) * CHUNK;
   const limitFar = Math.sqrt(unloadHoriz * unloadHoriz + dh * dh) - FOG_MARGIN;
   const missing = nearestMissingDist(camera.position.x, camera.position.y, camera.position.z);
   // The reveal curve caps the target too: one lerped writer from the first
@@ -534,7 +546,11 @@ document.addEventListener("mousedown", (e) => {
     }
   } else if (e.button === 1) {
     camera.getWorldDirection(_hookDir);
-    fireHookTarget(grappleBlockPick, camera.position, _hookDir);
+    // Sky-grapple fallback (TNT dimension only): a miss synthesizes a cloud
+    // past the fog instead of fizzling. Refusals (fly/hooked) stay refused.
+    if (!fireHookTarget(grappleBlockPick, camera.position, _hookDir)) {
+      fireSkyHook(camera.position, _hookDir, scene.fog.far + 40, TNT_SKY_GRAPPLE_MAX, refreshBlocks);
+    }
   }
 });
 document.addEventListener("mouseup", (e) => {
@@ -563,7 +579,9 @@ document.addEventListener("keydown", (e) => {
   }
   if (e.code === "KeyG" && !e.repeat && started && !isHelpOpen() && isLocked()) {
     camera.getWorldDirection(_hookDir);
-    fireHookTarget(grappleBlockPick, camera.position, _hookDir);
+    if (!fireHookTarget(grappleBlockPick, camera.position, _hookDir)) {
+      fireSkyHook(camera.position, _hookDir, scene.fog.far + 40, TNT_SKY_GRAPPLE_MAX, refreshBlocks);
+    }
     e.preventDefault();
     return;
   }
@@ -610,6 +628,10 @@ function loop(now) {
     highlight.visible = false;
     if (worldReady) updateStreamingFog();
     maybeStream(pos.x, pos.z, camera.position.y, scene.fog.near, scene.fog.far);
+    // Voxel streaming joins the mesher here: behind the menu, before play,
+    // and every frame after. Gated on worldReady so it never races the
+    // boot slice (same reason as the fog line above).
+    if (worldReady) tickTntStream(pos.x, pos.y, pos.z, dt, vel.length(), vel.y, queueRefreshBlocks, hookPin());
     tickChunkFades(dt, pos.x, camera.position.y, pos.z, scene.fog.far);
     tickPortalFillFades(dt, pos.x, camera.position.y, pos.z, scene.fog.far);
     renderer.render(scene, camera);
@@ -677,10 +699,16 @@ function loop(now) {
       if (flyOn) updateFly(dt);
       else updatePlayer(dt);
     }
-    if (pos.y < -20) {
+    // Per-dimension floor: the infinite sky falls until the far net, then
+    // reseats on the nearest streamed cloud (spawn would teleport home).
+    const floorY = dimSpec(dim).respawnY ?? -20;
+    if (pos.y < floorY) {
       vel.set(0, 0, 0);
       severHook();
-      spawnPlayer();
+      if (dim === "tnt") {
+        const s = reseatTnt(pos.x, pos.y, pos.z);
+        pos.set(s.x + 0.5, s.y + 1.01, s.z + 0.5);
+      } else spawnPlayer();
     }
     // While a band carves, blast refresh splits: portal frames track only
     // (fills heal from the dirty flag), chunk keys queue for the budgeted
@@ -793,6 +821,7 @@ function loop(now) {
     highlight.visible = false;
   }
   maybeStream(pos.x, pos.z, camera.position.y, scene.fog.near, scene.fog.far);
+  if (worldReady) tickTntStream(pos.x, pos.y, pos.z, dt, vel.length(), vel.y, queueRefreshBlocks, hookPin());
   tickChunkFades(dt, pos.x, camera.position.y, pos.z, scene.fog.far);
   tickPortalFillFades(dt, pos.x, camera.position.y, pos.z, scene.fog.far);
   renderer.render(scene, camera);

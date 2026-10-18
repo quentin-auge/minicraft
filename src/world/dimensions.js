@@ -11,10 +11,16 @@ import {
 } from "./overworld.js";
 import { findSpawn } from "./spawn.js";
 import {
-  generateTntDimension, generateTntDimensionAsync, findTntSpawn, TNT_ENV,
+  generateTntDimension, findTntSpawn, TNT_ENV,
 } from "./tntdim.js";
+import { bootTntStream, findTntStreamSpawn } from "./tntstream.js";
 import { TNT, MEGA_TNT, ULTRA_TNT } from "../core/blocks.js";
 import { BASE_ITEMS } from "../ui/hotbar.js";
+import { registerInfiniteDim } from "../core/store.js";
+
+// The TNT sky is the first infinite dimension: voxels stream around the
+// player with no walls (see tntstream.js), so the store lifts its bounds.
+registerInfiniteDim("tnt");
 
 export const DIMENSIONS = [
   {
@@ -32,11 +38,17 @@ export const DIMENSIONS = [
     key: "tnt",
     persistence: "regenerate",
     hasBedrockFloor: false,
-    respawnY: -20,
+    // Infinite sky: falling never ends until the far safety net, and the
+    // reseat lands on the nearest streamed cloud (see main.js).
+    respawnY: -4096,
     env: TNT_ENV,
+    infinite: true,
     generate: (seed) => generateTntDimension(seed),
-    generateAsync: (seed, abort) => generateTntDimensionAsync(seed, abort),
-    findSpawn: () => findTntSpawn(),
+    generateAsync: (seed) => bootTntStream(seed),
+    findSpawn: () => findTntStreamSpawn(null),
+    // Legacy cube spawn (headless + reference); the streamed world boots
+    // through findTntStreamSpawn above.
+    findSpawnLegacy: () => findTntSpawn(),
     // TNT tiers only — but all three: a return portal's frame needs at least
     // one mega and one ultra, so dropping ultra would strand visitors.
     hotbar: [TNT, MEGA_TNT, ULTRA_TNT],

@@ -12,7 +12,7 @@
 import * as THREE from "three";
 import { AIR, PORTAL, OBSIDIAN, TNT, MEGA_TNT, ULTRA_TNT, isLiquid } from "../core/blocks.js";
 import { materialsFor } from "../core/textures.js";
-import { WORLD_RADIUS, DIMENSION_KEYS, dim, key, keyXYZ, getBlock, isSolid } from "../core/store.js";
+import { DIMENSION_KEYS, dim, dimBound, key, keyXYZ, getBlock, isSolid } from "../core/store.js";
 import {
   pos, vel, yaw, keys, setYaw, setPitch,
   PLAYER_HW, PLAYER_H,
@@ -736,7 +736,7 @@ function findReturnSpot(win, dir, wins) {
       for (let ix = box.minX - r; ix <= box.maxX + r; ix++)
         for (let iz = box.minZ - r; iz <= box.maxZ + r; iz++) {
           if (chebDistToBox(ix, iz, box) !== r) continue;
-          if (ix < -WORLD_RADIUS || ix > WORLD_RADIUS || iz < -WORLD_RADIUS || iz > WORLD_RADIUS) continue;
+          if (ix < -dimBound() || ix > dimBound() || iz < -dimBound() || iz > dimBound()) continue;
           ring.push([ix, iz]);
         }
       if (n) ring.sort((a, b) => ((b[0] + 0.5 - px) * dx + (b[1] + 0.5 - pz) * dz) - ((a[0] + 0.5 - px) * dx + (a[1] + 0.5 - pz) * dz));
@@ -814,7 +814,7 @@ function resolveSpawn(sx, sy, sz) {
       for (let ix = cx - r; ix <= cx + r; ix++)
         for (let iz = cz - r; iz <= cz + r; iz++) {
           if (r > 0 && Math.max(Math.abs(ix - cx), Math.abs(iz - cz)) !== r) continue;
-          if (ix < -WORLD_RADIUS || ix > WORLD_RADIUS || iz < -WORLD_RADIUS || iz > WORLD_RADIUS) continue;
+          if (ix < -dimBound() || ix > dimBound() || iz < -dimBound() || iz > dimBound()) continue;
           if (!isSolid(ix, feetY - 1, iz)) continue;
           if (!returnBodyClear(ix + 0.5, feetY, iz + 0.5)) continue;
           if (inReturnPortalBody(wins, ix + 0.5, feetY, iz + 0.5)) continue;

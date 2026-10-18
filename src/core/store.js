@@ -10,22 +10,34 @@ export const WORLD_RADIUS = 96;
 export const WATER_LEVEL = 10;
 export const CHUNK = 16;
 export const RENDER_DIST = 8;
+// TNT mesh horizon (192): covers the 150 fog far + margin, so looking down
+// a dive always has geometry to show. Bounded dims keep 8; the fog guard
+// derives its unload distance from renderDist(), never the constant.
+export const TNT_RENDER_DIST = 12;
+export function renderDist(name = dim) {
+  return dimInfinite(name) ? TNT_RENDER_DIST : RENDER_DIST;
+}
 
-const KEY_OFF = 1024;
-const KEY_MZ = 2048;
-const KEY_YSTRIDE = 2048;
-const KEY_XSTRIDE = 4294967296; // 2^32
-const KEY_YMOD = KEY_XSTRIDE / KEY_YSTRIDE; // 2^21
+// Coordinate packing covers ±65535 on every axis (2^16 offset into 17-bit
+// fields, exact under 2^53: X stride 2^34 keeps the whole key below 2^52).
+// Bounded dimensions use a ±96 slice of it; infinite dimensions roam the
+// full 128k-cubed range — no reachable wall (hours of travel from spawn).
+const KEY_OFF = 65536; // 2^16
+const KEY_MZ = 131072; // 2^17
+const KEY_YSTRIDE = 131072; // 2^17
+const KEY_XSTRIDE = 17179869184; // 2^34
+const KEY_YMOD = KEY_XSTRIDE / KEY_YSTRIDE; // 2^17
 
 export function key(x, y, z) {
-  return (x + KEY_OFF) * KEY_XSTRIDE + y * KEY_YSTRIDE + (z + KEY_OFF);
+  return (x + KEY_OFF) * KEY_XSTRIDE + (y + KEY_OFF) * KEY_YSTRIDE + (z + KEY_OFF);
 }
 
 // Inverse of key(), kept beside the encoder so the strides never drift.
+// Exact for every in-range coordinate: the key never goes negative.
 export function keyXYZ(k) {
   const z = (k % KEY_YSTRIDE) - KEY_OFF;
   const t = Math.floor(k / KEY_YSTRIDE);
-  const y = t % KEY_YMOD;
+  const y = (t % KEY_YMOD) - KEY_OFF;
   const x = Math.floor(t / KEY_YMOD) - KEY_OFF;
   return [x, y, z];
 }
@@ -33,7 +45,17 @@ export function keyXYZ(k) {
 export const colTopIdx = (x, z) => (x + KEY_OFF) * KEY_MZ + (z + KEY_OFF);
 
 function makeColTops() {
-  return new Int32Array(KEY_MZ * KEY_MZ);
+  // Sparse: infinite dimensions roam far past any fixed array, and even the
+  // overworld only fills 37k of 16M typed-array slots. Missing entry = 0.
+  return new Map();
+}
+
+// Column-top reads (missing entry reads 0, matching the old filled arrays).
+export function topAt(name, x, z) {
+  return colTops[name].get(colTopIdx(x, z)) ?? 0;
+}
+export function bareTopAt(name, x, z) {
+  return colTopsBare[name].get(colTopIdx(x, z)) ?? 0;
 }
 
 // First-class dimensions: every dimension key owns one entry in each map.
@@ -71,11 +93,32 @@ export function setDimension(name) {
 
 export function resetWorld(name) {
   worlds[name].clear();
-  colTops[name].fill(0);
-  colTopsBare[name].fill(0);
+  colTops[name].clear();
+  colTopsBare[name].clear();
   colOcc[name].clear();
   colLiqTop[name].clear();
   if (dim === name) world = worlds[name];
+}
+
+// Infinite dimensions (TNT sky first): no XZ walls, no floor — voxels roam
+// the full key range. Bounded dimensions keep the ±96 cube and y >= 0.
+// Registered by world/dimensions.js so store never imports the registry.
+const infiniteDims = new Set();
+export function registerInfiniteDim(name) {
+  infiniteDims.add(name);
+}
+export function dimInfinite(name = dim) {
+  return infiniteDims.has(name);
+}
+// Half-extent of the walkable/voxel range for a dimension.
+export function dimBound(name = dim) {
+  return dimInfinite(name) ? KEY_OFF : WORLD_RADIUS;
+}
+// Out-of-world test for raycasts and floods: bounded dims keep the old
+// cube (and y < 0), infinite dims only run out at the key range edge.
+export function outOfWorld(x, y, z, name = dim) {
+  const B = dimBound(name);
+  return x < -B || x > B || z < -B || z > B || (dimInfinite(name) ? y < -B : y < 0);
 }
 
 export function getBlock(x, y, z) {
@@ -99,8 +142,8 @@ export function setBlock(x, y, z, id) {
     let set = occ.get(ci);
     if (!set) { set = new Set(); occ.set(ci, set); }
     set.add(y);
-    if (y > tops[ci]) tops[ci] = y;
-    if (id !== MOON && id !== MOON_WATER && y > bare[ci]) bare[ci] = y;
+    if (y > (tops.get(ci) ?? 0)) tops.set(ci, y);
+    if (id !== MOON && id !== MOON_WATER && y > (bare.get(ci) ?? 0)) bare.set(ci, y);
     if (isLiquid(id)) {
       const lt = colLiqTop[dim];
       if (y > (lt.get(ci) ?? -1)) lt.set(ci, y);
@@ -114,22 +157,24 @@ export function setBlock(x, y, z, id) {
     set.delete(y);
     if (!set.size) occ.delete(ci);
   }
-  if (y >= tops[ci]) {
-    let m = 0;
+  if (y >= (tops.get(ci) ?? 0)) {
+    let m = -KEY_OFF - 1;
     if (set) for (const yy of set) if (yy > m) m = yy;
-    tops[ci] = m;
+    if (m <= -KEY_OFF - 1) tops.delete(ci);
+    else tops.set(ci, m);
   }
   // Bare top rescan has its own gate: moon rock can sit far above the bare
   // top, so the tops gate above would miss terrain removals underneath it.
-  if (y >= bare[ci]) {
-    let bm = 0;
+  if (y >= (bare.get(ci) ?? 0)) {
+    let bm = -KEY_OFF - 1;
     if (set) for (const yy of set) {
       if (yy > bm) {
         const bid = world.get(key(x, yy, z)) || AIR;
         if (bid !== MOON && bid !== MOON_WATER) bm = yy;
       }
     }
-    bare[ci] = bm;
+    if (bm <= -KEY_OFF - 1) bare.delete(ci);
+    else bare.set(ci, bm);
   }
   const lt = colLiqTop[dim];
   if (y === lt.get(ci)) {
@@ -157,14 +202,14 @@ export function fillColumn(x, z, y0, y1, id) {
   if (!set) { set = new Set(); occ.set(ci, set); }
   const base = (x + KEY_OFF) * KEY_XSTRIDE + (z + KEY_OFF);
   for (let y = y0; y <= y1; y++) {
-    world.set(base + y * KEY_YSTRIDE, id);
+    world.set(base + (y + KEY_OFF) * KEY_YSTRIDE, id);
     set.add(y);
   }
   const tops = colTops[dim];
-  if (y1 > tops[ci]) tops[ci] = y1;
+  if (y1 > (tops.get(ci) ?? 0)) tops.set(ci, y1);
   if (id !== MOON && id !== MOON_WATER) {
     const bare = colTopsBare[dim];
-    if (y1 > bare[ci]) bare[ci] = y1;
+    if (y1 > (bare.get(ci) ?? 0)) bare.set(ci, y1);
   }
   if (isLiquid(id)) {
     const lt = colLiqTop[dim];
@@ -197,20 +242,22 @@ export const POCKET_FLOOD_LIMIT = 512;
 // moon pockets touching liquid (unbuildable seal, veil tint only), which do
 // not exist in generated worlds. Meshing is the only caller.
 export function isEnclosedAir(x, y, z, belowCap = false) {
-  if (Math.abs(x) > WORLD_RADIUS || Math.abs(z) > WORLD_RADIUS) return false;
-  if (colTops[dim][colTopIdx(x, z)] < y) return false;
-  const bare = belowCap ? colTopsBare[dim] : null;
+  if (outOfWorld(x, y, z)) return false;
+  if (topAt(dim, x, z) < y) return false;
+  const bare = belowCap ? dim : null;
   const seen = new Set([key(x, y, z)]);
   const stack = [[x, y, z]];
   while (stack.length) {
     if (seen.size > POCKET_FLOOD_LIMIT) return false;
     const [cx, cy, cz] = stack.pop();
-    if (colTops[dim][colTopIdx(cx, cz)] < cy) return false;
-    if (bare && bare[colTopIdx(cx, cz)] < cy) return false;
+    if (topAt(dim, cx, cz) < cy) return false;
+    if (bare && bareTopAt(bare, cx, cz) < cy) return false;
     const ns = [[cx, cy + 1, cz], [cx, cy - 1, cz], [cx - 1, cy, cz], [cx + 1, cy, cz], [cx, cy, cz + 1], [cx, cy, cz - 1]];
     for (const [nx, ny, nz] of ns) {
-      if (Math.abs(nx) > WORLD_RADIUS || Math.abs(nz) > WORLD_RADIUS) return false;
-      if (ny < 0) continue;
+      // Reaching the key-range floor or the world edge reads open (the old
+      // y < 0 continue only ever fired for in-bounds air at y = 0, which
+      // bedrock makes impossible — the observable behavior is unchanged).
+      if (outOfWorld(nx, ny, nz)) return false;
       if (getBlock(nx, ny, nz) !== AIR) continue;
       const k = key(nx, ny, nz);
       if (seen.has(k)) continue;
@@ -229,19 +276,17 @@ export function isEnclosedAir(x, y, z, belowCap = false) {
 // genuinely open maze with no sky cell within budget murks too —
 // atmospheric, and the documented direction (murk more, never less).
 export function isEyePocketed(x, y, z) {
-  if (Math.abs(x) > WORLD_RADIUS || Math.abs(z) > WORLD_RADIUS) return false;
-  const tops = colTops[dim];
-  if (tops[colTopIdx(x, z)] < y) return false;
+  if (outOfWorld(x, y, z)) return false;
+  if (topAt(dim, x, z) < y) return false;
   const seen = new Set([key(x, y, z)]);
   const stack = [[x, y, z]];
   while (stack.length) {
     if (seen.size > POCKET_FLOOD_LIMIT) return true;
     const [cx, cy, cz] = stack.pop();
-    if (tops[colTopIdx(cx, cz)] < cy) return false;
+    if (topAt(dim, cx, cz) < cy) return false;
     const ns = [[cx, cy + 1, cz], [cx, cy - 1, cz], [cx - 1, cy, cz], [cx + 1, cy, cz], [cx, cy, cz + 1], [cx, cy, cz - 1]];
     for (const [nx, ny, nz] of ns) {
-      if (Math.abs(nx) > WORLD_RADIUS || Math.abs(nz) > WORLD_RADIUS) return false;
-      if (ny < 0) continue;
+      if (outOfWorld(nx, ny, nz)) return false;
       if (getBlock(nx, ny, nz) !== AIR) continue;
       const k = key(nx, ny, nz);
       if (seen.has(k)) continue;
