@@ -21,7 +21,7 @@ import {
 } from "./src/player/physics.js";
 import * as player from "./src/player/physics.js";
 import { flyOn, setFly, updateFly } from "./src/player/fly.js";
-import { updateTarget, breakTarget, placeAtSelection, breakBlockAt, purgeFloatingLiquidsAround } from "./src/player/edit.js";
+import { updateTarget, breakTarget, placeAtSelection, breakBlockAt, pickBlock, tryPlace, currentBlock, flushChainBatch, purgeFloatingLiquidsAround } from "./src/player/edit.js";
 import { fireHookTarget, fireSkyHook, grapplePick, cancelHook, severHook, updateHook, hookActive, hookAnchor, tickHookFx } from "./src/player/hook.js";
 import { initRope } from "./src/player/rope.js";
 import { tickTNT, initTNTFx, resetTNTMemory, onExplode, onLiquidPurge, shakeSpecFor, bandFront, bandActive, drainBandRemesh, accumulateBandRefresh, megaImminent, megaCarveActive, megaFxActive, MEGA_BLAST_T, MEGA_BLAST_TIME_SCALE } from "./src/fx/tnt.js";
@@ -46,7 +46,13 @@ import {
   notePortalFramesOnly, tickPortalFillFades, completeDimTravel,
 } from "./src/world/portals.js";
 import { villageFrames } from "./src/world/village.js";
-import { CHUNK, renderDist, dim, setDimension, setBlock, getBlock, isSolid, worlds } from "./src/core/store.js";
+import {
+  createChainState, chainPressLeft, chainPressRight, chainReleaseLeft,
+  chainReleaseRight, chainResetOnUnlock, chainNoteMouseMove, chainSavePaintRay,
+  chainSaveDigRay, chainAnchorPush, chainNotePressPlace, chainHoldActive, tickChain,
+} from "./src/player/chain.js";
+const chain = createChainState();
+import { CHUNK, renderDist, dim, setDimension, setBlock, getBlock, isSolid, outOfWorld, worlds } from "./src/core/store.js";
 import { dimEnv, dimSpec, dimHasMoon, stashOverExit, takeOverExit } from "./src/world/dimensions.js";
 import { disposeAll } from "./src/render/mesher.js";
 import { PLAYER_HW, PLAYER_H, EYE } from "./src/player/physics.js";
@@ -531,18 +537,31 @@ document.addEventListener("mousemove", (e) => {
   setYaw(player.yaw - e.movementX * 0.0022);
   const p = player.pitch - e.movementY * 0.0022;
   setPitch(Math.max(-Math.PI / 2 + 0.01, Math.min(Math.PI / 2 - 0.01, p)));
+  chainNoteMouseMove(chain, e.movementX, e.movementY);
 });
 
 document.addEventListener("mousedown", (e) => {
   if (!isLocked() || isHelpOpen() || !started) return;
   if (e.button === 0) {
-    const changed = placeAtSelection(selectedId());
-    if (changed) refreshBlocks(changed);
+    chainPressLeft(chain, selectedId());
+    chainSavePaintRay(chain, camera);
+    const id = selectedId();
+    const face = currentBlock ? currentBlock.face : null;
+    const base = currentBlock ? [currentBlock.x, currentBlock.y, currentBlock.z] : null;
+    const changed = placeAtSelection(id);
+    if (changed) {
+      refreshBlocks(changed);
+      if (face && base) chainNotePressPlace(chain, base[0] + face[0], base[1] + face[1], base[2] + face[2]);
+      else for (const c of changed) chainAnchorPush(chain, c[0], c[1], c[2]);
+    }
   } else if (e.button === 2) {
+    chainPressRight(chain);
+    chainSaveDigRay(chain, camera);
     const bt = breakTarget(camera);
     if (bt) {
       const changed = breakBlockAt(bt.x, bt.y, bt.z);
       if (changed.length) refreshBlocks(changed);
+      chainAnchorPush(chain, bt.x, bt.y, bt.z);
     }
   } else if (e.button === 1) {
     camera.getWorldDirection(_hookDir);
@@ -554,6 +573,8 @@ document.addEventListener("mousedown", (e) => {
   }
 });
 document.addEventListener("mouseup", (e) => {
+  if (e.button === 0) chainReleaseLeft(chain);
+  if (e.button === 2) chainReleaseRight(chain);
   if (e.button === 1 && hookActive()) cancelHook(true);
 });
 document.addEventListener("contextmenu", (e) => e.preventDefault());
@@ -816,9 +837,34 @@ function loop(now) {
     } else {
       highlight.visible = false;
     }
+    // Hold-chain editing (paint / dig-sweep / still-hold bridge): one tick
+    // behind simActive, sim-time only, single batched refresh per frame.
+    // Held edits queue (budgeted drain) instead of rebuilding inline, so a
+    // max-rate bridge never pays a synchronous rebuildChunk per frame;
+    // discrete taps keep the sync path in the mousedown handlers above.
+    const touched = tickChain(chain, dt, {
+      camera,
+      currentBlock: hit,
+      selectedId: selectedId(),
+      pick: (eye, dir, skip) => pickBlock(eye, dir, skip),
+      // Batched chain writes: per-cell purge/portal/light work is deferred
+      // to flushChainBatch below, once per tick over the union of cells.
+      place: (id, x, y, z) => tryPlace(id, x, y, z, { batch: true }) || [],
+      breakAt: (x, y, z) => breakBlockAt(x, y, z, { batch: true }),
+      getBlock: (x, y, z) => getBlock(x, y, z),
+      isOob: (x, y, z) => outOfWorld(x, y, z),
+      pos,
+      yaw: player.yaw,
+    });
+    if (touched.length) {
+      for (const c of flushChainBatch(touched)) touched.push(c);
+      if (chainHoldActive(chain)) queueRefreshBlocks(touched);
+      else refreshBlocks(touched);
+    }
   } else {
     highlight.visible = false;
   }
+  if (!isLocked()) chainResetOnUnlock(chain);
   maybeStream(pos.x, pos.z, camera.position.y, scene.fog.near, scene.fog.far);
   if (worldReady) tickTntStream(pos.x, pos.y, pos.z, dt, vel.length(), vel.y, queueRefreshBlocks, hookPin());
   tickChunkFades(dt, pos.x, camera.position.y, pos.z, scene.fog.far);

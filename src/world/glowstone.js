@@ -72,6 +72,15 @@ export function noteGlowstonePlace(x, y, z) {
   glowVariants[dim].set(k, v);
 }
 
+// Batch-flush variant: register a stone with a known color (shared with an
+// adjacent stone flushed just before) instead of rescanning the stone set.
+// Same maps, same lights — only the variant lookup is skipped.
+export function noteGlowstonePlaceShared(x, y, z, v) {
+  const k = key(x, y, z);
+  glowstoneSets[dim].add(k);
+  glowVariants[dim].set(k, v);
+}
+
 export function clearGlowstoneAt(x, y, z) {
   const k = key(x, y, z);
   glowstoneSets[dim].delete(k);

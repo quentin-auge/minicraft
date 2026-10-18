@@ -9,10 +9,10 @@ import { pinTntCellAt } from "../world/tntstream.js";
 import { dimHasBedrock } from "../world/dimensions.js";
 import { PLAYER_HW, PLAYER_H, pos } from "./physics.js";
 import { igniteTNT, isLitTNT, detonateNow, noteTntPlaced, kindOfBlock, trackMegaPlaced } from "../fx/tnt.js";
-import { noteGlowstonePlace, clearGlowstoneAt } from "../world/glowstone.js";
+import { noteGlowstonePlace, noteGlowstonePlaceShared, glowVariantAt, clearGlowstoneAt } from "../world/glowstone.js";
 import { noteFlowerPlace, clearFlowerAt } from "../world/flowers.js";
 import { noteBlockLightEdit } from "../render/blocklights.js";
-import { notePortalEdit, notePortalEdits } from "../world/portals.js";
+import { notePortalEdit, notePortalEdits, notePortalFramesOnly } from "../world/portals.js";
 
 export let currentBlock = null;
 const _dir = new THREE.Vector3();
@@ -133,7 +133,15 @@ export function purgeFloatingLiquidsAround(coords) {
   return purged;
 }
 
-export function breakBlockAt(x, y, z) {
+// Batched chain path: with opts.batch, tryPlace/breakBlockAt skip the
+// per-cell liquid purge, portal fill refresh, and light recompute, and the
+// caller flushes once per tick via flushChainBatch. Discrete taps use the
+// default unbatched path, unchanged.
+const pendingChainGlow = [];
+let pendingChainGlowBreak = false;
+
+export function breakBlockAt(x, y, z, opts) {
+  const batched = !!opts?.batch;
   // Bedrock floor exists only in dimensions that declare it (overworld);
   // the TNT cube has no floor — nothing to protect at y = 0.
   if (y === 0 && dimHasBedrock(dim)) return [];
@@ -153,17 +161,22 @@ export function breakBlockAt(x, y, z) {
     igniteTNT(x, y, z);
     return [];
   }
-  if (bid === GLOWSTONE) clearGlowstoneAt(x, y, z);
+  if (bid === GLOWSTONE) {
+    clearGlowstoneAt(x, y, z);
+    if (batched) pendingChainGlowBreak = true;
+    else noteBlockLightEdit();
+  }
   if (bid === FLOWER) clearFlowerAt(x, y, z);
   setBlock(x, y, z, AIR);
   if (dimInfinite()) pinTntCellAt(x, y, z);
-  if (bid === GLOWSTONE) noteBlockLightEdit();
+  if (batched) return [[x, y, z]];
   notePortalEdit(x, y, z);
   const purged = purgeFloatingLiquidsAround([[x, y, z]]);
   return [[x, y, z], ...purged];
 }
 
-export function tryPlace(id, px, py, pz) {
+export function tryPlace(id, px, py, pz, opts) {
+  const batched = !!opts?.batch;
   if (!BLOCK_INFO[id] || !BLOCK_INFO[id].placeable) return null;
   // Bounded dims keep the y = 0 floor unplaceable; the infinite sky builds
   // anywhere in the key range.
@@ -176,15 +189,52 @@ export function tryPlace(id, px, py, pz) {
   // from them) never evict within a visit.
   if (dimInfinite()) pinTntCellAt(px, py, pz);
   if (id === GLOWSTONE) {
-    noteGlowstonePlace(px, py, pz);
-    noteBlockLightEdit();
+    // Variant assignment is deferred in batch mode (the remesh drain reads
+    // it later); the single light recompute happens in flushChainBatch.
+    if (batched) pendingChainGlow.push([px, py, pz]);
+    else {
+      noteGlowstonePlace(px, py, pz);
+      noteBlockLightEdit();
+    }
   }
   if (id === FLOWER) noteFlowerPlace(px, py, pz);
   if (kindOfBlock(id).pool) trackMegaPlaced(px, py, pz);
-  notePortalEdit(px, py, pz);
   if (isTntLike(id) && isLiquid(target)) noteTntPlaced(px, py, pz, target);
+  if (batched) return [[px, py, pz]];
+  notePortalEdit(px, py, pz);
   const purged = purgeFloatingLiquidsAround([[px, py, pz]]);
   return [[px, py, pz], ...purged];
+}
+
+// End-of-tick flush for the batched chain path: glowstone variants, one
+// light recompute, one liquid purge over the union, one portal frame pass
+// (fills heal from the dirty flag via the periodic scanner, like band wipes).
+// Adjacent pending stones share the previous variant instead of rescanning
+// the whole stone set each (pads stamp neighbours; the shared color is the
+// clustering intent); non-adjacent ones roll normally. Returns the purged
+// cells so the caller can refresh them too.
+export function flushChainBatch(cells) {
+  let glow = pendingChainGlowBreak;
+  pendingChainGlowBreak = false;
+  let last = null;
+  for (const [x, y, z] of pendingChainGlow.splice(0)) {
+    if (
+      last &&
+      Math.max(Math.abs(x - last[0]), Math.abs(y - last[1]), Math.abs(z - last[2])) <= 1
+    ) {
+      // Share last's variant: register directly instead of a fresh roll.
+      noteGlowstonePlaceShared(x, y, z, last[3]);
+    } else {
+      noteGlowstonePlace(x, y, z);
+    }
+    last = [x, y, z, glowVariantAt(x, y, z)];
+    glow = true;
+  }
+  if (glow) noteBlockLightEdit();
+  if (!cells.length) return [];
+  const purged = purgeFloatingLiquidsAround(cells);
+  notePortalFramesOnly(purged.length ? [...cells, ...purged] : cells);
+  return purged;
 }
 
 export function placeAtSelection(id) {
