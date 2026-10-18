@@ -498,7 +498,11 @@ export function rebuildChunk(cx, cz, fade = false) {
       }
     }
   }
-  if (!perId.size && !flowers.length && !glows.length && !liquidMaps.some((m) => m.size)) return;
+  if (!perId.size && !flowers.length && !glows.length && !liquidMaps.some((m) => m.size)) {
+    // Keep empty chunks registered as built so deferred edits can remesh them.
+    chunkMeshes.set(ck, new Map());
+    return;
+  }
   const meshes = new Map();
   // Non-region meshes share one static group per chunk so the whole ground
   // content culls as a unit when it sits past the fog (the Moon case).
@@ -978,11 +982,16 @@ export function refreshBlocks(coords) {
     for (const ck of columnKeys(x, z)) keys.add(ck);
   }
   for (const ck of keys) {
-    if (!chunkMeshes.has(ck) && !chunkQueue.includes(ck)) continue;
     if (chunkMeshes.has(ck)) {
       const [cx, cz] = parseChunkKey(ck);
       rebuildChunk(cx, cz);
+      continue;
     }
+    // Edit outside the built set (long-range sniping past the stream window):
+    // queue it for the budgeted build instead of dropping it — the chunk
+    // builds from live voxels so the placed block appears, and streamChunks
+    // prunes the entry if it never enters the window.
+    if (!chunkQueue.includes(ck)) chunkQueue.push(ck);
   }
 }
 
