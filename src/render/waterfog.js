@@ -50,10 +50,11 @@ export function tickWaterFog(scene, camera, dt, envAir, medium) {
   subSmooth += (target - subSmooth) * (1 - Math.exp(-dt * 8));
   if (Math.abs(subSmooth - target) < 0.002) subSmooth = target;
   if (subSmooth === 0) {
+    // Eye in air: the fog controller (main.js) owns near/far — copying
+    // envAir back here would snap the fog onto every target jump and void
+    // its easing. Background/color stay synced (same values, no-op).
     scene.background.copy(envAir.background);
     scene.fog.color.copy(envAir.background);
-    scene.fog.near = envAir.near;
-    scene.fog.far = envAir.far;
     return;
   }
   const spec = LIQUID_FOG[m.liquid] || LIQUID_FOG[WATER];

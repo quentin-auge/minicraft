@@ -345,6 +345,7 @@ function syncFills(accepted, cx, cy, cz, R) {
     if (!keys.has(k)) {
       sceneRef.remove(f.group);
       portalFills.delete(k);
+      purgeFillFade(k);
     }
   }
   for (const c of accepted) {
@@ -457,17 +458,62 @@ function ensurePortalFill(win) {
   const k = fillKey(win);
   if (portalFills.has(k)) return;
   const spec = specOf(win);
+  // Transient fade-in (see tickPortalFillFades): fills validate instantly
+  // at full opacity otherwise — high-contrast slabs popping in plain sight.
+  const shared = fillMat(spec);
+  const clone = shared.clone();
+  clone.transparent = true;
+  clone.opacity = 0;
   const group = new THREE.Group();
-  group.add(new THREE.Mesh(portalFillGeo, fillMat(spec)));
+  const mesh = new THREE.Mesh(portalFillGeo, clone);
+  group.add(mesh);
   layoutPortalFill(group, win);
   sceneRef.add(group);
   portalFills.set(k, { win, group });
+  fillFades.push({ key: k, mesh, shared, clone, base: shared.opacity, t: 0 });
+}
+
+// Transient per-fill fade-in: same pattern as the chunk fades in mesher.js
+// (fresh clone at opacity 0, ramped to base over FILL_FADE_T, shared spec
+// material restored, clone disposed). Ticked from the main loop next to
+// tickChunkFades on loader-exempt wall clock, so build-time fills fade
+// behind the menu too. Removals purge mid-fade entries with them.
+const FILL_FADE_T = 0.35;
+const fillFades = []; // { key, mesh, shared, clone, base, t }
+function finishFillFade(i) {
+  const f = fillFades[i];
+  f.mesh.material = f.shared;
+  f.clone.dispose();
+  fillFades.splice(i, 1);
+}
+function purgeFillFade(k) {
+  for (let i = fillFades.length - 1; i >= 0; i--) {
+    if (fillFades[i].key !== k) continue;
+    fillFades[i].clone.dispose();
+    fillFades.splice(i, 1);
+  }
+}
+export function tickPortalFillFades(dt, px, eyeY, pz, fogFar) {
+  const lim2 = fogFar * fogFar;
+  for (let i = fillFades.length - 1; i >= 0; i--) {
+    const f = fillFades[i];
+    // Beyond the fogged range the fade is invisible: snap it shut at once.
+    const dx = f.mesh.position.x - px, dy = f.mesh.position.y - eyeY, dz = f.mesh.position.z - pz;
+    if (dx * dx + dy * dy + dz * dz > lim2) { finishFillFade(i); continue; }
+    f.t += dt / FILL_FADE_T;
+    const t = Math.min(1, f.t);
+    const e = t * t * (3 - 2 * t);
+    f.clone.opacity = f.base * e;
+    if (t >= 1) finishFillFade(i);
+  }
 }
 
 export function clearPortalFills() {
   if (!sceneRef) { portalFills.clear(); return; }
   for (const f of portalFills.values()) sceneRef.remove(f.group);
   portalFills.clear();
+  for (const f of fillFades) f.clone.dispose();
+  fillFades.length = 0;
 }
 
 function refreshPortalFills(bx, by, bz) {

@@ -330,10 +330,20 @@ export function disposeAll() {
   }
   regionMatCache.clear();
   chunkQueue.length = 0;
+  // Fading meshes are all disposed above: drop the entries with them.
+  for (const f of fading) for (const c of f.clones) c.m.dispose();
+  fading.length = 0;
 }
 
 function disposeChunk(ck) {
   topMaxCache.delete(ck);
+  // A chunk rebuilt or evicted mid-fade drops its fade entries: the clones
+  // die with the meshes, steady state never holds one.
+  for (let i = fading.length - 1; i >= 0; i--) {
+    if (fading[i].ck !== ck) continue;
+    for (const c of fading[i].clones) c.m.dispose();
+    fading.splice(i, 1);
+  }
   // Dropping the rest group removes its whole subtree at once; per-mesh
   // dispose below still frees the instance buffers.
   const rest = chunkRest.get(ck);
@@ -352,7 +362,7 @@ function disposeChunk(ck) {
   chunkMeshes.delete(ck);
 }
 
-export function rebuildChunk(cx, cz) {
+export function rebuildChunk(cx, cz, fade = false) {
   const ck = cx + "_" + cz;
   topMaxCache.delete(ck);
   disposeChunk(ck);
@@ -650,9 +660,58 @@ export function rebuildChunk(cx, cz) {
   if (restGroup.children.length) {
     sceneRef.add(restGroup);
     chunkRest.set(ck, { group: restGroup, x0, x1, z0, z1, top: restTop });
+    // Streaming builds fade in (see tickChunkFades); edit/band remeshes
+    // pass fade=false and stay instant.
+    if (fade) fadeChunkIn(ck, cx, cz, restGroup);
   }
   cullVersion++;
   chunkMeshes.set(ck, meshes);
+}
+
+// Transient per-chunk fade-in: chunks that materialize inside the visible
+// range (clear-bubble sync builds, budget builds landing short of fogFar)
+// would otherwise pop at full opacity. Fresh rest meshes get cloned
+// materials at opacity 0, ramped to their base over FADE_T, then the shared
+// materials are restored and the clones disposed — steady state keeps zero
+// clones, and only a few chunks ever fade at once. Region meshes are
+// excluded (their reveal owns opacity); gated veils fade like any rest
+// mesh (only `visible` gates on the eye medium, never opacity).
+const FADE_T = 0.35;
+const fading = []; // { ck, cx, cz, mesh, shared, clones:[{m, base}], t }
+function fadeChunkIn(ck, cx, cz, group) {
+  for (const mesh of group.children) {
+    const shared = mesh.material;
+    const clones = [];
+    const wrap = (m) => {
+      const c = m.clone();
+      clones.push({ m: c, base: m.opacity });
+      c.transparent = true;
+      c.opacity = 0;
+      return c;
+    };
+    mesh.material = Array.isArray(shared) ? shared.map(wrap) : wrap(shared);
+    fading.push({ ck, cx, cz, mesh, shared, clones, t: 0 });
+  }
+}
+function finishFade(i) {
+  const f = fading[i];
+  f.mesh.material = f.shared;
+  for (const c of f.clones) c.m.dispose();
+  fading.splice(i, 1);
+}
+// Loader-exempt wall clock (see Pause contract): runs in every loop branch
+// next to maybeStream, paused or not.
+export function tickChunkFades(dt, px, eyeY, pz, fogFar) {
+  for (let i = fading.length - 1; i >= 0; i--) {
+    const f = fading[i];
+    // Beyond the fogged range the fade is invisible: snap it shut at once.
+    if (chunkDist3(px, eyeY, pz, f.cx, f.cz) > fogFar) { finishFade(i); continue; }
+    f.t += dt / FADE_T;
+    const t = Math.min(1, f.t);
+    const e = t * t * (3 - 2 * t);
+    for (const c of f.clones) c.m.opacity = c.base * e;
+    if (t >= 1) finishFade(i);
+  }
 }
 
 const chunkQueue = [];
@@ -706,6 +765,8 @@ export function rebuildAll(px, pz, syncRadius = 3) {
   chunkQueue.push(...far);
   for (const ck of near) {
     const [wx, wz] = ck.split("_").map(Number);
+    // No fade here: the spawn disc must stand complete on the first frame
+    // (a cut, not a parade) — streaming fades only apply past it.
     rebuildChunk(wx, wz);
   }
   lastStream.cx = cx;
@@ -798,7 +859,7 @@ export function maybeStream(px, pz, eyeY = TERRAIN_REF_Y, fogNear = 0, fogFar = 
     while (k < scored.length && scored[k][0] < fogNear) k++;
     for (let i = 0; i < k; i++) {
       if (chunkMeshes.has(scored[i][1])) continue;
-      rebuildChunk(scored[i][2], scored[i][3]);
+      rebuildChunk(scored[i][2], scored[i][3], true);
     }
     // The rest keeps its nearest-first order from streamChunks.
     for (let i = k; i < scored.length; i++) chunkQueue.push(scored[i][1]);
@@ -817,12 +878,25 @@ export function drainChunkQueue(all) {
     const ck = chunkQueue.shift();
     if (chunkMeshes.has(ck)) continue;
     const [wx, wz] = ck.split("_").map(Number);
-    rebuildChunk(wx, wz);
+    rebuildChunk(wx, wz, true);
   }
 }
 
 export function hasPendingChunks() {
   return chunkQueue.length > 0;
+}
+
+// Nearest queued (missing) chunk to the eye: the fog controller caps its
+// far plane on this so streaming always debuts fully fogged, however slow
+// the loader is. Infinity when nothing is queued.
+export function nearestMissingDist(px, eyeY, pz) {
+  let best = Infinity;
+  for (const ck of chunkQueue) {
+    const sep = ck.indexOf("_");
+    const d = chunkDist3(px, eyeY, pz, +ck.slice(0, sep), +ck.slice(sep + 1));
+    if (d < best) best = d;
+  }
+  return best;
 }
 
 export function pendingCount() {

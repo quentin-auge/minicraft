@@ -6,7 +6,7 @@ stored, how it flows, and how each system works. Read this before changing code.
 ## Tree
 
 - `index.html` — static shell: menu (no backdrop veil, solid `#1c2030` panel like help), help (controls + portal diagrams), hotbar DOM, mega-ignition flash/veil overlays, portal-travel spiral overlay, Three.js import map.
-- `main.js` — bootstrap: scene, input wiring, main loop, world startup. Owns the pause gate (`simActive`: locked + help closed + started + built): every sim/visual tick runs only behind it; the loader, the debug readout, and the final render run while paused. `X` is unbound; mega burns Firestorm Wall, ultra burns tornado + fat shock rings + wall + trimmed Titan smoke, countdown lights run one strobe swell (no style bindings); mega overlays decay on sim-time; dense mega FX, sliced carve jobs, and DPR dip run behind the gate (`fxDip` latches DPR 1 synchronously in `onExplode` — or early via `megaImminent()`, now also for lit ultras — so the blast frame itself renders cheap). Point-blank mega (camera inside R) fires full overlays + a camera-centered burst + max trauma + 5° FOV kick, then a furnace for the master blast clock only (`MEGA_BLAST_T` = 2.2 s — ember waves + crater burps + degressive veil floor while inside, stopping the moment you leave; inside/outside and R15/pool-of-20 all end on the same clock), trauma sustained at cap while inside. Outside the crater, overlays need voxel line of sight (`hasBlastLoS`) or they stay off — shake still goes through rock. Ultras reuse the same LoS overlay path with a fixed overlay, but keep band-front shake, no point-blank furnace, and unchanged band carve mechanics. `buildWorld` prewarms dense pools (scene-add + compile + one hidden render + reset) so blast #1 never compiles shaders. Ticks portals (fill refresh + loop travel) and notifies the portal index of blast edits.
+- `main.js` — bootstrap: scene, input wiring, main loop, world startup. Owns the pause gate (`simActive`: locked + help closed + started + built): every sim/visual tick runs only behind it; the loader, the fog reveal, the debug readout, and the final render run while paused. `X` is unbound; mega burns Firestorm Wall, ultra burns tornado + fat shock rings + wall + trimmed Titan smoke, countdown lights run one strobe swell (no style bindings); mega overlays decay on sim-time; dense mega FX, sliced carve jobs, and DPR dip run behind the gate (`fxDip` latches DPR 1 synchronously in `onExplode` — or early via `megaImminent()`, now also for lit ultras — so the blast frame itself renders cheap). Point-blank mega (camera inside R) fires full overlays + a camera-centered burst + max trauma + 5° FOV kick, then a furnace for the master blast clock only (`MEGA_BLAST_T` = 2.2 s — ember waves + crater burps + degressive veil floor while inside, stopping the moment you leave; inside/outside and R15/pool-of-20 all end on the same clock), trauma sustained at cap while inside. Outside the crater, overlays need voxel line of sight (`hasBlastLoS`) or they stay off — shake still goes through rock. Ultras reuse the same LoS overlay path with a fixed overlay, but keep band-front shake, no point-blank furnace, and unchanged band carve mechanics. `buildWorld` slices voxel gen across frames (`generateOverworldAsync`, 12 rows/slice, token-aborted), builds the spawn neighborhood (radius 2), then the loop enters the game on the first rendered world frame (`pendingPlay`: the Play click only arms entry plus a best-effort lock) while the fog reveal (`tickReveal`, per-frame, loader-exempt) expands underneath and far chunks stream in; dense-pool warmup (scene-add + compile + reset, no hidden render) runs post-unlock. Ticks portals (fill refresh + loop travel) and notifies the portal index of blast edits.
 - `src/ui/hotbar.js` — dynamic item list (add/remove/change/reset ops, selection tracked by id), rendered bar.
 - `src/core/blocks.js` — block ids, BLOCK_INFO (solid/opaque/placeable, plus `light` emitter key for emissive blocks), liquid/TNT predicates.
 - `src/core/noise.js` — deterministic hash2/valueNoise/fbm.
@@ -16,7 +16,7 @@ stored, how it flows, and how each system works. Read this before changing code.
 - `src/render/waterfog.js` — eye-in-liquid (or pocketed-air) fog/background murk while submerged.
 - `src/render/sky.js` — high-altitude sky (day-to-black past the clouds, stars); rewrites the murk's air baseline. Reveal regions fade separately (regions.js).
 - `src/render/regions.js` — reveal-region registry (`REGIONS`, moon first): each spec declares dimension, membership (`blocks` + `contains`), a camera-driven `factor` 0..1, and an optional `onFade` material hook; `regionOf` classifies a cell, `applyRegions` pushes factors each frame. Generic gating for any far body/structure — non-celestial volumes included.
-- `src/world/overworld.js` — height field, rivers, terrain fill, generation orchestrator.
+- `src/world/overworld.js` — height field, rivers, terrain fill, generation orchestrator (`generateOverworld` sync for tests/headless; `generateOverworldAsync` identical voxels in 12-row slices with `requestAnimationFrame` yields and token abort).
 - `src/world/moon.js` — Moon disc + lake shafts (`MOON_MIN_Y`/`MOON_SURFACE_Y`/`MOON_R`/`MOON_THICK`, surface derived upward from the hand-picked bottom); `MOON_MIN_Y` doubles as the Moon reveal region's volume bound. Surface (cap + lakes) builds with the world (tops final before spawn); the hollow underside fills lazily after the reveal in row slices (`generateMoonUnderRows`, idempotent), then built disc chunks remesh via `refreshBlocks`; below the moon band the fill finishes synchronously.
 - `src/world/glowstone.js` — glowstone color-variant registry (`GLOW_VARIANTS`, 7 entries), per-dimension variant maps + live block index, clustered placement picker (`glowVariantNear`: inherit within 10 blocks, else random).
 - `src/world/clouds.js` — climbable cloud decks (`CLOUD_MIN_Y`/`CLOUD_MAX_Y` bounds plus `generateClouds`); spawn and sky reuse the bounds instead of hard-coding altitudes.
@@ -25,7 +25,7 @@ stored, how it flows, and how each system works. Read this before changing code.
 - `src/world/flowers.js` — per-dimension per-flower look memory (variant + Y angle, three-free): `noteFlowerPlace` draws a fresh weighted-random look at placement, the mesher only reads it back, `clearFlowerAt`/ `resetFlowerMemory` drop it on break/blast/new world.
 - `src/world/village.js` — village layout and structure placement (houses, pen, pool); records worldgen-placed frame-block keys for the portal index (no full-map scan at build).
 - `src/world/spawn.js` — spawn selection on finished voxels (`findSpawn`): firm open ground with a frustum-wide clear vista.
-- `src/world/portals.js` — local-loop Nether/End portals: `PORTAL_TYPES` registry (End `PORTAL` frame, Nether `OBSIDIAN` frame; each spec carries frame block, sizes via anchors, fill color/material, travel action, help art — new families register a spec, the engine dispatches without family switches), frame validation (End 5×5/5×4 upright faces x/z + 5×5 flat, corners optional; Nether 5×4/4×5/4×4 upright faces x/z + 5×4/4×5 flat, corners required), interiors must be uniformly AIR or uniformly one liquid (anything else, including frame blocks, fails — solid slabs like the obsidian pool floor never validate), solid-color fills (End black, Nether purple, fogged like any block, always shown), body-overlap travel trigger, spiral + help-diagram builders, arrivals ~3 blocks out facing the crossed window. The spiral wait is a sim-time pending (`pendingTravel`, decremented in `tickPortals`), so pausing mid-spiral freezes it and the travel completes after unpausing; `tickPortals` freezes entirely (cooldown, scans, pending) while paused. Every edit refreshes fills around the edited cell the same frame (placement reach is unlimited, the player-centered scan alone would miss far windows).
+- `src/world/portals.js` — local-loop Nether/End portals: `PORTAL_TYPES` registry (End `PORTAL` frame, Nether `OBSIDIAN` frame; each spec carries frame block, sizes via anchors, fill color/material, travel action, help art — new families register a spec, the engine dispatches without family switches), frame validation (End 5×5/5×4 upright faces x/z + 5×5 flat, corners optional; Nether 5×4/4×5/4×4 upright faces x/z + 5×4/4×5 flat, corners required), interiors must be uniformly AIR or uniformly one liquid (anything else, including frame blocks, fails — solid slabs like the obsidian pool floor never validate), solid-color fills (End black, Nether purple, fogged like any block, always shown), body-overlap travel trigger, spiral + help-diagram builders, arrivals ~3 blocks out facing the crossed window. Fill slabs fade in over 0.35 s on a transient cloned material (`tickPortalFillFades`, loader-exempt, snapped past fog far, purged on removal) instead of popping. The spiral wait is a sim-time pending (`pendingTravel`, decremented in `tickPortals`), so pausing mid-spiral freezes it and the travel completes after unpausing; `tickPortals` freezes entirely (cooldown, scans, pending) while paused. Every edit refreshes fills around the edited cell the same frame (placement reach is unlimited, the player-centered scan alone would miss far windows).
 - `src/player/physics.js` — player state, movement, shared axis movers (`collideBody`); `spawnPlayer` applies the `findSpawn` pick.
 - `src/player/fly.js` — fly mode (pitch-aware thrust, no gravity) on the shared movers.
 - `src/player/hook.js` — hook-kind registry (`HOOK_TYPES`, grapple first); framework (fire → pull → arrive/release) dispatches through the spec.
@@ -34,8 +34,8 @@ stored, how it flows, and how each system works. Read this before changing code.
 - `src/fx/tnt.js` — blast-kind registry (`TNT_TYPES`, normal first), fuses, countdown visuals, delayed chain queue, spherical + pooled blasts, per-kind camera-shake specs, displaced-liquid memory, post-blast floating-liquid purge via injected callback. Chain dues are sim-time (`simNow`, advanced by `tickTNT`'s `dt`), so a pause freezes the cascade instead of firing it on resume. Second break-click detonates lit TNT at once. Blast deletions clear glowstone variants through the same `clearCell` choke point and re-sync block lights once per blast. Mega burns one style (Firestorm Wall, `MEGA_STYLE_KEY`); canonical mega phases live in shared builders (`MEGA_PHASES`: wall, tornado, rings, smoke) reused by ultra; countdown lights swell 12→own crater radius with the white heat (one light per pool member at its position, stragglers included via cluster membership; whole level for ultra bands) with physical falloff (decay 1), cutoff pushed to 1.6R so the bright edge lands on the crater rim instead of dying visibly short of it, locking on with a fixed white hold for the last 0.2 s; band spots step on fuse time (visible sweep across the whole level) with a near-black off-gate, and share a rescaled edge factor (16) and intensity cap (24000) for R271; pooled members share one union fireball at the centroid (radius = union bounding sphere capped at 64; density grows slightly with member count, hard-capped by the GPU pools) via a single `fxJobs` entry per pool (adaptive seed budget), one upload flush (`flushDense` with partial `updateRanges`) and one transient blast light. One ultra mix (tornado, fat shock rings ×1.4 radius / ×4 thickness / ×1.2 duration, wall, trimmed Titan smoke) chains whole canonical mega phases at `ULTRA_FULL_R` as one sim-time `fxJobs` entry per phase (`due`, drained in order under the adaptive budget, pause-safe; the smoke phase carries a `lifeScale` trimming its tail without touching the recipes), particles only (no mesh shells or flash spheres — `shells:false`, `shellMode:"off"`), one fixed overlay/light, unchanged band carve; ultra countdowns reuse the same light pipeline. `MEGA_BLAST_TIME_SCALE` (= 1) centralizes post-detonation lives/delays/flash expansion/blast light and the imported `MEGA_BLAST_T`; fuses stay 8 s. Even small pools skip synchronous remesh (cheap frame tracking + budgeted `bandPending` drain, 1–2 frames under the fireball). Big pools (over ~2600 columns) slice the carve into `carveJobs` (adaptive cols/tick, ~15 ticks for any size) and remesh through the budgeted `bandPending` drain instead of synchronous rebuilds; completion restores liquids, purges (Set-deduped), and tracks portal frames cheaply.
 - `src/fx/particles.js` — generic burst/flash effects backend (`spawnBurst`, `spawnFlash`, `tickFx`) plus the dense mega engine: preallocated GPU-seeded pools (`spawnDense`: fire 48k / ember 12k / smoke 16k plus depth-tested occluded twins (`occlude:true` default, so blasts hide behind terrain; camera-lens furnace bursts pass `occlude:false`), zero per-frame CPU integration — one `uTime` uniform per frame, batched upload at `flushDense` with partial ranges, `defer:true` layers; distributions come from precomputed unit-sphere/ball/disc tables instead of per-particle trig), shapes (ball/shell/column/ring/rain/inward), instanced voxel debris (`spawnDebris`, one burst at a time), shared flash geometry, `tickDenseFx`/`denseFxActive`/`prewarmDenseFx` helpers (pools sleep invisible at zero live particles: no dense draws in steady state). Bursts support a crater-filling spawn ball (`fillRadius`), a per-particle color `palette`, and a `foreground` mode (no depth test, drawn above everything); flashes support a constant-speed `maxRadius` fireball mode (expand then vanish in a frame — pops never retract — duration scales with radius; giant ones render double-sided and unfogged).
 - `src/fx/precip.js` — falling-precipitation backend (`PRECIP_TYPES` registry, snow first; rain later is one entry): camera-following drops at a 30 Hz step, wrap + cached landing heights, material fade-in over camera altitude. Its sway clock is the sim-time passed in by `main.js`, so snow freezes mid-air while paused.
-- `src/render/mesher.js` — chunked InstancedMesh renderer, streaming, local refresh, region-aware instance splitting (per-id, per-variant glowstone, flowers, liquid quads all split by `regionOf`, each group owning cloned materials and gated by its region fade; generic per-region opacity fade so anything in a region — rock, placed blocks, glowstone, liquids — reveals smoothly, with the moon's `onFade` keeping the rock opaque and tinting sky-colour→texture; combined `regionVisible && veilVisible` so a hidden region never flashes a pocket veil).
-- `src/ui/menu.js` — Play/Resume/New-World overlay, pointer-lock wiring (no saves). Play is clickable from the first frame and enters a finished world fading in through expanding fog; New World only once started and never during a build; Esc unlock shows Resume + New World. Boot builds instantly behind the menu; no spinner anywhere.
+- `src/render/mesher.js` — chunked InstancedMesh renderer, streaming, local refresh, region-aware instance splitting (per-id, per-variant glowstone, flowers, liquid quads all split by `regionOf`, each group owning cloned materials and gated by its region fade; generic per-region opacity fade so anything in a region — rock, placed blocks, glowstone, liquids — reveals smoothly, with the moon's `onFade` keeping the rock opaque and tinting sky-colour→texture; combined `regionVisible && veilVisible` so a hidden region never flashes a pocket veil). Streaming builds fade in (`rebuildChunk(..., fade=true)` from queue/clear-bubble only — the spawn `rebuildAll` stands atomic so the entry frame is complete, never edits or band remesh): transient cloned materials ramped over `FADE_T = 0.35` s then restored/disposed, snapped shut past fog far, purged on dispose; `nearestMissingDist` reports the closest queued chunk so fog caps on missing geometry.
+- `src/ui/menu.js` — Play/Resume/New-World overlay, pointer-lock wiring (no saves). Play is clickable from the first frame; entry waits for the first rendered world frame (`pendingPlay` in `main.js`: click arms entry plus a best-effort lock, pre-start lock never hides the menu); New World locks on click then rebuilds under closed-in fog (guarded against double builds); Esc unlock shows Resume + New World. Boot builds in slices behind the menu; no spinner anywhere.
 - `src/ui/debug.js` — `=` HUD readout (`fps N | x X  y Y  z Z`: FPS exponential moving average, quarter-second refresh, hidden until started; integer block coords are the floored feet position passed in from `main.js`).
 - `src/ui/help.js` — help overlay open/close. Shortcut table: Move, Jump, Sprint, Place, Break, Select, Fly, Grapple, Help, Debug. Portal frame diagrams are painted by `portals.js` (`buildPortalDom` at boot).
 
@@ -155,17 +155,26 @@ synchronously before the frame renders.
 
 ## Data flow (runtime)
 
-`main.js` loop: always render + camera follow. Boot loads a world instantly
-behind the translucent menu: voxels generate, the spawn neighborhood builds
-synchronously, then closed-in fog (12–30) expands to its tuned range on a
-smoothstep reveal while far chunks keep streaming in behind it — the reveal
-stays pure fog motion over a solid neighborhood, never ghost clarify, and
-the clear-bubble guard meshes anything entering visibility synchronously.
+`main.js` loop: always render + camera follow. Boot loads a world in slices
+behind the translucent menu: voxels generate 12 rows per frame, the spawn
+neighborhood (radius 2) builds, then movement unlocks at once while
+closed-in fog (8–20) opens to its tuned range on a pure wall-clock
+reveal (`tickReveal`, loader-exempt, monotonic — never stalls or recedes)
+and far chunks keep streaming in behind
+it — the reveal stays pure fog motion over existing geometry, never ghost
+clarify, and the clear-bubble guard meshes anything entering visibility
+synchronously.
 A tightening-only
 runtime fog guard caps fog far by
-the 3D distance to the nearest evictable slab (minus margin) and shrinks
+the 3D distance to the nearest evictable slab (minus margin), by the nearest
+still-missing chunk (streaming always debuts fully fogged), and shrinks
 the clear bubble with speed, so loading and unloading stay hidden at any
-altitude or pace; the dive-murk baseline tracks the guard. The loop
+altitude or pace; the dive-murk baseline tracks the guard. Chunks that still
+materialize inside the visible range
+fade in over 0.35 s instead of popping. Single writer: only the fog
+controller (reveal, then streaming guard) writes `scene.fog` near/far;
+`envAir` mirrors the eased scene values and the murk never copies it back,
+so the `k=0.12` easing always applies. The loop
 ticks the high-altitude sky first (`sky.js`: black past the clouds, stars,
 moon fading in over its approach band, never visible below), then
 a light underwater murk after the build settles (`waterfog.js`,
@@ -180,16 +189,16 @@ to unmeshed chunks persist in the voxel store and appear when their chunk
 builds (`refreshBlocks` skips queued chunks, rebuilds built ones). Pause (`simActive`: locked and help closed) gates every sim and visual tick — player/hook/TNT/portals, particles, snow, block lights, fog, sky, regions, murk, shake — while the loader, the debug readout, and the final render keep running (see Pause contract). While active: movement (hook, else fly, else walk) → TNT tick → portal tick → raycast target + highlight → stream nearby chunks. Falling below `y = -20`
 respawns. Portal windows refresh around the player (fills always exist but
 fog like anything else); stepping into a fill plays the spiral, then respawns beside the
-same window, ~3 blocks out and facing it) with a 1.5 s cooldown; pausing mid-spiral freezes the wait and the travel completes after unpausing. Play enters a finished world fading in through expanding fog; Esc
-shows Resume + New World (fresh seed, same instant-load flow, the only action
-that waits on a build). There is no
+same window, ~3 blocks out and facing it) with a 1.5 s cooldown; pausing mid-spiral freezes the wait and the travel completes after unpausing. Play is clickable from the first frame but entry waits for the first rendered world frame; Esc
+shows Resume + New World (fresh seed, same sliced-load flow; New World locks
+first, then rebuilds under closed-in fog). There is no
 persistence.
 
 ## Pause contract
 
 - Paused = pointer unlocked (menu) or help open. `main.js` computes one `simActive` (`worldReady && started && !building && isLocked() && !isHelpOpen()`) and every sim or visual tick runs only behind it: player/hook/knockback, `tickTNT`, `tickPortals`, `tickFx`, precip, block lights, hook visuals, streaming fog, sky, regions, dive murk, camera shake, highlight. Pausing freezes the frame; unpausing resumes it — nothing fires, decays, or catches up in between.
 - Time-based logic takes `dt` plus sim-time only — never `performance.now`/`Date.now`/`setTimeout`/`setInterval` in a tick path. Pending futures are state + `dt` countdowns decremented in their tick: TNT chains (`pendingChain.due` off `simNow`), portal travel (`pendingTravel.t`), precip sway (sim-time passed in by `main.js`).
-- Loader and UI-only code are the only wall-clock exemptions, named here so future agents don't "fix" them: chunk streaming/mesher budget + background moon fill (loading, not sim), `tickDebug` FPS readout, hotbar wheel throttle, `helpJustClosed` grace, toast/spiral DOM fades.
+- Loader and UI-only code are the only wall-clock exemptions, named here so future agents don't "fix" them: chunk streaming/mesher budget + background moon fill (loading, not sim), fog reveal (`tickReveal`, loading, not sim) + chunk/fill fade ticks (`tickChunkFades`/`tickPortalFillFades`, loading, not sim), `tickDebug` FPS readout, hotbar wheel throttle, `helpJustClosed` grace, toast/spiral DOM fades.
 - New features ship pausable or they don't ship: wire every new `tick*`/`update*` behind `simActive`, keep every countdown in sim-time, and extend this section when adding a new exemption or pending-future shape.
 
 ## Broad logic (world)
@@ -289,7 +298,7 @@ persistence.
 
 ## Tuning constants (render)
 
-- `CHUNK = 16`, `RENDER_DIST = 8`, chunk build budget 6 ms/frame, spawn sync radius 3. Unload lags
+- `CHUNK = 16`, `RENDER_DIST = 8`, chunk build budget 6 ms/frame, spawn sync radius 2. Unload lags
   load by three rings (`UNLOAD_MARGIN = 3`, free: the rings clip to the
   finite world) and past the fogged range
   (`DISPOSE_MARGIN = 10` beyond fog far, 3D slab distance), so border
@@ -299,8 +308,12 @@ persistence.
   the nearest evictable slab distance at any altitude (tightening-only guard
   caps it by the 3D unload distance minus margin, clear bubble shrinks 20%
   at full sprint speed), so loading chunks debut fully fogged and evicted
-  chunks are fully fogged first. First load builds everything synchronously,
-  then closed-in fog (12–30) expands over `REVEAL_MS = 1200`.
+chunks are fully fogged first. Voxels generate in 12-row slices, the spawn
+neighborhood builds at radius 2, then closed-in fog (8–20) opens over
+`REVEAL_MS = 1200` without gating movement — one lerped writer
+(`updateStreamingFog` from the first frame, target also capped by the
+slow-start reveal curve) so the fog never snaps or recedes, however slow
+the loader is.
 - Region reveals: one factor band per region (Moon 495→515), generic material
   opacity fade owned per region (a region touching bespoke materials overrides
   them in its `onFade`).

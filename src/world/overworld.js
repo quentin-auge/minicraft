@@ -133,7 +133,7 @@ function isVillage(x, z) {
   return intersectsVillage(x, z);
 }
 
-export function generateOverworld(newSeed) {
+function setupOverworld(newSeed) {
   seed = newSeed;
   setDimension("over");
   resetWorld("over");
@@ -158,35 +158,68 @@ export function generateOverworld(newSeed) {
   forestThresh = fvals[(fvals.length * 0.5) | 0];
   computeLayout(seed, heightAt);
   // Shared per-column context for the tree registry; only `forest` varies.
-  const treeCtx = { seed, forest: false, getBlock, setBlock, heightAt, riverClearance };
+  return { seed, forest: false, getBlock, setBlock, heightAt, riverClearance };
+}
 
-  for (let x = -WORLD_RADIUS; x <= WORLD_RADIUS; x++) {
-    for (let z = -WORLD_RADIUS; z <= WORLD_RADIUS; z++) {
-      const inVillage = x >= village.minX && x <= village.maxX && z >= village.minZ && z <= village.maxZ;
-      let h = heightAt(x, z);
-      if (inVillage) h = village.center.y;
-      // Bulk runs, not per-block writes: identical voxels, one index pass
-      // per run (stone body, dirt band, top cell, then water fill).
-      const topId = inVillage ? STONE : (h <= WATER_LEVEL + 1 ? SAND : GRASS);
-      if (h >= 3) fillColumn(x, z, 0, h - 3, STONE);
-      if (h >= 1) fillColumn(x, z, Math.max(0, h - 2), h - 1, DIRT);
-      fillColumn(x, z, h, h, topId);
-      if (!inVillage && h < WATER_LEVEL) fillColumn(x, z, h + 1, WATER_LEVEL, WATER);
-      if (inVillage) continue;
-      treeCtx.forest = fbm(x * 0.01 + 500, z * 0.01 + 500, seed + 888) > forestThresh;
-      const grown = tryGrowTree(treeCtx, x, h, z);
-      if (!grown && getBlock(x, h, z) === GRASS && getBlock(x, h + 1, z) === AIR && hash2(x, z, seed + 7777) < TERRAIN.flowerDensity) {
-        setBlock(x, h + 1, z, FLOWER);
-        noteFlowerPlace(x, h + 1, z);
-      }
-    }
+function fillTerrainColumn(treeCtx, x, z) {
+  const inVillage = x >= village.minX && x <= village.maxX && z >= village.minZ && z <= village.maxZ;
+  let h = heightAt(x, z);
+  if (inVillage) h = village.center.y;
+  // Bulk runs, not per-block writes: identical voxels, one index pass
+  // per run (stone body, dirt band, top cell, then water fill).
+  const topId = inVillage ? STONE : (h <= WATER_LEVEL + 1 ? SAND : GRASS);
+  if (h >= 3) fillColumn(x, z, 0, h - 3, STONE);
+  if (h >= 1) fillColumn(x, z, Math.max(0, h - 2), h - 1, DIRT);
+  fillColumn(x, z, h, h, topId);
+  if (!inVillage && h < WATER_LEVEL) fillColumn(x, z, h + 1, WATER_LEVEL, WATER);
+  if (inVillage) return;
+  treeCtx.forest = fbm(x * 0.01 + 500, z * 0.01 + 500, seed + 888) > forestThresh;
+  const grown = tryGrowTree(treeCtx, x, h, z);
+  if (!grown && getBlock(x, h, z) === GRASS && getBlock(x, h + 1, z) === AIR && hash2(x, z, seed + 7777) < TERRAIN.flowerDensity) {
+    setBlock(x, h + 1, z, FLOWER);
+    noteFlowerPlace(x, h + 1, z);
   }
+}
+
+function finishOverworld() {
   placeVillage(setBlock, getBlock);
   generateClouds(seed, setBlock);
   // Moon surface only (spawn-exact tops); the hollow underside fills
   // lazily after the reveal, its flag reset per world below.
   generateMoonSurface(seed, setBlock);
   resetMoon();
+}
+
+export function generateOverworld(newSeed) {
+  const treeCtx = setupOverworld(newSeed);
+  for (let x = -WORLD_RADIUS; x <= WORLD_RADIUS; x++) {
+    for (let z = -WORLD_RADIUS; z <= WORLD_RADIUS; z++) {
+      fillTerrainColumn(treeCtx, x, z);
+    }
+  }
+  finishOverworld();
+}
+
+// Sliced twin of generateOverworld: identical voxels in the same order,
+// but yields to the event loop every few rows so the menu, Play clicks,
+// and renders interleave instead of freezing for ~1s. Aborts fast when
+// isAborted() turns true (a newer world started).
+export async function generateOverworldAsync(newSeed, isAborted) {
+  const treeCtx = setupOverworld(newSeed);
+  const ROWS_PER_SLICE = 12;
+  let rows = 0;
+  for (let x = -WORLD_RADIUS; x <= WORLD_RADIUS; x++) {
+    for (let z = -WORLD_RADIUS; z <= WORLD_RADIUS; z++) {
+      fillTerrainColumn(treeCtx, x, z);
+    }
+    if (++rows % ROWS_PER_SLICE === 0) {
+      if (isAborted && isAborted()) return false;
+      await new Promise((r) => requestAnimationFrame(r));
+    }
+  }
+  if (isAborted && isAborted()) return false;
+  finishOverworld();
+  return true;
 }
 
 export { village };

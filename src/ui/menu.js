@@ -1,10 +1,10 @@
-// Start menu: Play enters the pre-built world from the first frame, even
-// while it is still streaming in; Resume re-locks pointer; New World
-// generates a fresh seed. No backdrop veil: the world shows through behind
-// the menu; the panel is solid (#1c2030, same as help). The game is
-// fully static, no saves. Only New World waits on a
-// running build (double-regen protection); everything else stays clickable,
-// with no spinner.
+// Start menu: Play is clickable from the first frame but entry waits for
+// the first rendered world frame (see pendingPlay in main.js); Resume
+// re-locks pointer; New World generates a fresh seed. No backdrop veil:
+// the world shows through behind the menu; the panel is solid (#1c2030,
+// same as help). The game is fully static, no saves. Only New World waits
+// on a running build (double-regen protection); everything else stays
+// clickable, with no spinner.
 export let started = false;
 export let locked = false;
 
@@ -65,6 +65,9 @@ export function initMenu(renderer, onPlay, onNewWorld, isHelpOpen, isBuilding) {
   document.addEventListener("pointerlockchange", () => {
     locked = document.pointerLockElement === renderer.domElement;
     if (isHelpOpen()) return;
+    // Pre-start lock (Play clicked mid-build) never hides the menu: entry
+    // happens on the first rendered world frame, which hides it itself.
+    if (!started) { refreshButtons(); return; }
     overlay().style.display = locked ? "none" : "flex";
     crosshair().style.display = locked ? "block" : "none";
     hotbar().style.display = locked ? "flex" : "none";

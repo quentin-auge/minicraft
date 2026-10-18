@@ -1,7 +1,7 @@
 // MiniCraft static bootstrap: scene, input, main loop, world startup.
 // No saves, no network — Play builds a fresh random world in the browser.
 import * as THREE from "three";
-import { generateOverworld, getSeed } from "./src/world/overworld.js";
+import { generateOverworldAsync, getSeed } from "./src/world/overworld.js";
 import {
   pos, vel, keys, setYaw, setPitch,
   spawnPlayer, updatePlayer, tickKnockback,
@@ -19,7 +19,7 @@ import { WATER, FLOWER, GLOWSTONE, MOON_WATER, BLOCK_INFO } from "./src/core/blo
 import { resetGlowstoneMemory } from "./src/world/glowstone.js";
 import { resetFlowerMemory } from "./src/world/flowers.js";
 import { initBlockLights, tickBlockLights, rebuildBlockLightIndexes, resetBlockLightMemory } from "./src/render/blocklights.js";
-import { initRenderer, rebuildAll, maybeStream, refreshBlocks, setEyeMedium, setRegionFade, UNLOAD_MARGIN } from "./src/render/mesher.js";
+import { initRenderer, rebuildAll, maybeStream, refreshBlocks, setEyeMedium, setRegionFade, nearestMissingDist, tickChunkFades, UNLOAD_MARGIN } from "./src/render/mesher.js";
 import { applyRegions } from "./src/render/regions.js";
 import { resetItems, select, selected, selectedId, initHotbarInput, setItem, getItems } from "./src/ui/hotbar.js";
 import { initMenu, enterGame, started, isLocked } from "./src/ui/menu.js";
@@ -30,7 +30,7 @@ import { initSky, tickSky } from "./src/render/sky.js";
 import {
   initPortals, buildPortalDom, setPortalTravelHook, tickPortals,
   resetFrameSet, scanWorldPortals, clearPortalFills, notePortalEdits,
-  notePortalFramesOnly,
+  notePortalFramesOnly, tickPortalFillFades,
 } from "./src/world/portals.js";
 import { villageFrames } from "./src/world/village.js";
 import { CHUNK, RENDER_DIST, setBlock, getBlock } from "./src/core/store.js";
@@ -45,10 +45,11 @@ const readyFog = { near: scene.fog.near, far: scene.fog.far };
 // Air baseline for the dive murk: tracks the fog controller below, so the
 // murk always relaxes back to current visibility instead of a stale range.
 const envAir = { background: scene.background.clone(), near: readyFog.near, far: readyFog.far };
-// Closed-in fog for the instant-load reveal: the world is already fully
-// built behind it, so the reveal is pure fog expansion, never ghost clarify.
-const LOAD_FOG_NEAR = 12;
-const LOAD_FOG_FAR = 30;
+// Closed-in fog for the sliced-load reveal: far chunks still stream in
+// behind it, so the reveal only opens over geometry that already exists
+// (see tickReveal) — never ghost clarify, never visible pop-in.
+const LOAD_FOG_NEAR = 8;
+const LOAD_FOG_FAR = 20;
 // Reveal duration: the closed-in fog eases open over this long, no snapping.
 const REVEAL_MS = 1200;
 // The fog controller only ever tightens past the tuned range, never loosens.
@@ -242,20 +243,34 @@ function updateCamera(dt = 0) {
 
 let worldReady = false;
 let building = false;
+// Play is clickable from the first frame, but entry waits for the first
+// rendered world frame: the click only arms this flag (plus a best-effort
+// pointer lock while the gesture is fresh), and the loop enters the game
+// once voxels exist — never an empty skybox.
+let pendingPlay = false;
+// Fog reveal progress 0..1 (1 = done): advances per frame once the spawn
+// neighborhood exists, never gating movement. Loader-exempt wall clock.
+let revealT = 1;
+let buildToken = 0;
 // DPR-dip state for band wipes (false = full resolution).
 let bandDpr = false;
 // Moon-band hotbar (slots flip at the Moon's lower end); reset per world.
 let moonBand = false;
 
-// The level loads behind the translucent menu: voxels generate, the spawn
-// neighborhood builds synchronously (a short freeze is accepted), then
-// closed-in fog expands to reveal the world while far chunks keep streaming
-// in under the frame budget — invisible behind the fog, and the clear-bubble
-// guard builds anything entering visibility synchronously, so Play enters a
-// solid world from the first frame and nothing ever pops in.
+// The level loads behind the translucent menu in slices: voxels generate a
+// dozen rows per frame, then the spawn neighborhood builds (radius 2: the
+// closed-in fog only shows ~30 blocks, the clear-bubble guard covers the
+// rest). Play stays clickable throughout but entry waits for the first
+// rendered world frame, while far chunks stream in under the frame budget
+// and the fog expands underneath. Shader warmup compiles after unlock so
+// it never stacks onto the entry freeze.
 async function buildWorld() {
   if (building) return;
+  const token = ++buildToken;
+  const aborted = () => token !== buildToken;
   building = true;
+  worldReady = false;
+  revealT = 0;
   severHook();
   resetTNTMemory();
   bandDpr = false;
@@ -265,14 +280,18 @@ async function buildWorld() {
   resetBlockLightMemory();
   scene.fog.near = LOAD_FOG_NEAR;
   scene.fog.far = LOAD_FOG_FAR;
-  await new Promise((r) => setTimeout(r, 30));
+  envAir.near = LOAD_FOG_NEAR;
+  envAir.far = LOAD_FOG_FAR;
+  await new Promise((r) => requestAnimationFrame(r));
   try {
-    generateOverworld(Math.floor(Math.random() * 100000));
+    const ok = await generateOverworldAsync(Math.floor(Math.random() * 100000), aborted);
+    if (!ok || aborted()) return;
     spawnPlayer();
     // No glowstone rescan: worldgen places none and the live index starts
     // empty (player edits track themselves).
     rebuildBlockLightIndexes();
-    rebuildAll(pos.x, pos.z);
+    rebuildAll(pos.x, pos.z, 2);
+    if (aborted()) return;
     clearPortalFills();
     resetFrameSet(villageFrames);
     scanWorldPortals();
@@ -280,34 +299,40 @@ async function buildWorld() {
     resetItems();
     select(0);
     updateCamera();
-    // Dense-FX warmup behind the menu: pools enter the scene and their
-    // shader programs compile on one hidden render, so the first mega of
-    // the world never pays scene-add + compile + first upload mid-blast.
-    prewarmDenseFx();
-    renderer.compile(scene, camera);
-    renderer.render(scene, camera);
     resetTNTMemory();
     worldReady = true;
-    // Expanding-fog reveal: ease from closed-in to the tuned range on a
-    // smoothstep over REVEAL_MS, then hand off to the runtime controller.
-    // Far chunks stream in behind the fog under the frame budget meanwhile.
-    const revealStart = performance.now();
-    for (;;) {
-      const t = Math.min(1, (performance.now() - revealStart) / REVEAL_MS);
-      const e = t * t * (3 - 2 * t);
-      scene.fog.near = LOAD_FOG_NEAR + (readyFog.near - LOAD_FOG_NEAR) * e;
-      scene.fog.far = LOAD_FOG_FAR + (readyFog.far - LOAD_FOG_FAR) * e;
-      if (t >= 1) break;
-      await new Promise((r) => requestAnimationFrame(r));
-    }
   } finally {
-    building = false;
-    scene.fog.near = readyFog.near;
-    scene.fog.far = readyFog.far;
-    envAir.near = readyFog.near;
-    envAir.far = readyFog.far;
+    if (token === buildToken) building = false;
   }
-  if (worldReady) fillMoonUnder(getSeed());
+  if (aborted() || !worldReady) return;
+  fillMoonUnder(getSeed());
+  warmupFx(token);
+}
+
+// Post-unlock shader warmup: pools enter the scene and compile while the
+// player already moves under closed-in fog, so blast #1 never pays
+// scene-add + compile + first upload mid-blast and entry never pays it.
+async function warmupFx(token) {
+  await new Promise((r) => requestAnimationFrame(r));
+  await new Promise((r) => requestAnimationFrame(r));
+  if (token !== buildToken || !worldReady) return;
+  prewarmDenseFx();
+  renderer.compile(scene, camera);
+  resetTNTMemory();
+}
+
+// Reveal clock: pure wall time 0→1 over REVEAL_MS, monotonic by
+// construction — it never stalls on slow chunks and never recedes when the
+// player walks, unlike the old built-fraction gate. Hiding unbuilt geometry
+// is the fog cap's job (see updateStreamingFog), which eases smoothly.
+function tickReveal(dt) {
+  if (revealT >= 1 || !worldReady) return;
+  revealT = Math.min(1, revealT + dt / (REVEAL_MS / 1000));
+}
+// Slow-start reveal curve (t^2.5): keeps the fog dense through the first
+// half regardless of loader speed.
+function revealEase() {
+  return Math.pow(revealT, 2.5);
 }
 
 // Lazy moon underside (startup perf): spawn stands on the eagerly-built
@@ -341,15 +366,23 @@ async function fillMoonUnder(seed) {
 }
 
 // Runtime fog: a tightening-only guard so chunk loading and unloading stay
-// hidden at any altitude or speed. Fog is spherical while chunk rings are
+// hidden at any altitude or speed, eased every frame toward its target so it
+// never snaps or recedes. Fog is spherical while chunk rings are
 // cylindrical, so the far plane is capped by the 3D distance to the nearest
-// evictable slab (minus margin); the clear bubble shrinks further with
-// speed so fast flight never outruns the loader into clear view.
+// evictable slab (minus margin) — and by the nearest still-missing chunk,
+// so streaming always debuts fully fogged; the reveal curve caps it too,
+// so there is no handoff between reveal and runtime. The clear bubble
+// shrinks further with speed so fast flight never outruns the loader
+// into clear view.
 function updateStreamingFog() {
   const dh = Math.max(0, camera.position.y - FOG_GROUND_REF);
   const unloadHoriz = (RENDER_DIST + UNLOAD_MARGIN) * CHUNK;
   const limitFar = Math.sqrt(unloadHoriz * unloadHoriz + dh * dh) - FOG_MARGIN;
-  const targetFar = Math.max(Math.min(readyFog.far, limitFar), LOAD_FOG_FAR);
+  const missing = nearestMissingDist(camera.position.x, camera.position.y, camera.position.z);
+  // The reveal curve caps the target too: one lerped writer from the first
+  // frame, no handoff, so the fog can never snap or recede.
+  const revealFar = LOAD_FOG_FAR + (readyFog.far - LOAD_FOG_FAR) * revealEase();
+  const targetFar = Math.max(Math.min(readyFog.far, limitFar, missing - FOG_MARGIN, revealFar), LOAD_FOG_FAR);
   const ratio = readyFog.near / readyFog.far;
   const targetNear = Math.max(
     Math.min(targetFar * ratio * (1 - 0.2 * Math.min(1, vel.length() / 30)), targetFar - 1),
@@ -358,19 +391,28 @@ function updateStreamingFog() {
   const k = 0.12;
   scene.fog.near += (targetNear - scene.fog.near) * k;
   scene.fog.far += (targetFar - scene.fog.far) * k;
-  envAir.near = targetNear;
-  envAir.far = targetFar;
+  // envAir mirrors the eased scene values, not the target: tickWaterFog
+  // copies envAir back into scene.fog every frame, so recording the target
+  // here would bypass this easing and snap the fog onto every target jump.
+  envAir.near = scene.fog.near;
+  envAir.far = scene.fog.far;
 }
 
-initMenu(renderer, async () => {
+initMenu(renderer, () => {
+  // Entry itself waits for the first rendered world frame (see loop); the
+  // lock is attempted now, while the click gesture is still fresh.
+  pendingPlay = true;
+  requestLockNow();
+}, () => {
+  // Lock on the click gesture (browsers demand it), then rebuild under the
+  // closed-in fog: frames keep rendering, movement resumes at spawn.
   enterGame(renderer);
-}, async () => {
-  await buildWorld();
-  enterGame(renderer);
+  buildWorld();
 }, isHelpOpen, () => building);
 
-// Pre-build the world behind the translucent menu; Play enters a finished
-// world fading in through expanding fog.
+// Pre-build the world behind the translucent menu; a Play click enters on
+// the first rendered world frame, movement unlocks as soon as the spawn
+// neighborhood exists, while far chunks stream in and fog expands underneath.
 buildWorld();
 
 initHelp(() => {
@@ -466,12 +508,22 @@ function loop(now) {
   last = now;
   // Pause = pointer unlocked (menu) or help open: everything sim and visual
   // freezes; only the loader, the debug readout, and the final render run.
+  // The fog reveal is loader, not sim: it advances whenever voxels exist.
+  tickReveal(dt);
+  // Deferred Play entry: the click only armed pendingPlay, and this frame
+  // renders voxels — so the world is entered on its first rendered frame.
+  if (pendingPlay && worldReady) {
+    pendingPlay = false;
+    enterGame(renderer);
+  }
   const simActive = worldReady && started && !building && isLocked() && !isHelpOpen();
   updateCamera(simActive ? dt : 0);
   if (!worldReady || !started) {
     highlight.visible = false;
-    if (worldReady && !building) updateStreamingFog();
+    if (worldReady) updateStreamingFog();
     maybeStream(pos.x, pos.z, camera.position.y, scene.fog.near, scene.fog.far);
+    tickChunkFades(dt, pos.x, camera.position.y, pos.z, scene.fog.far);
+    tickPortalFillFades(dt, pos.x, camera.position.y, pos.z, scene.fog.far);
     renderer.render(scene, camera);
     return;
   }
@@ -491,10 +543,9 @@ function loop(now) {
     tickBlockLights(dt, camera);
     tickHookFx(dt);
     // Streaming fog first, so the loader sees the tightened range; dive murk
-    // after (gated on building so it never fights the reveal), restoring the
-    // tracked air baseline on resurface. The pocket veil gate rides along:
-    // water-side white shows only for divers, the tinted veil only for
-    // open-air eyes, flipping together with the murk.
+    // after, restoring the tracked air baseline on resurface. The pocket
+    // veil gate rides along: water-side white shows only for divers, the
+    // tinted veil only for open-air eyes, flipping together with the murk.
     updateStreamingFog();
     tickSky(scene, camera, sun, hemi, envAir);
     applyRegions(camera.position, scene.background, setRegionFade);
@@ -651,6 +702,8 @@ function loop(now) {
     highlight.visible = false;
   }
   maybeStream(pos.x, pos.z, camera.position.y, scene.fog.near, scene.fog.far);
+  tickChunkFades(dt, pos.x, camera.position.y, pos.z, scene.fog.far);
+  tickPortalFillFades(dt, pos.x, camera.position.y, pos.z, scene.fog.far);
   renderer.render(scene, camera);
 }
 
