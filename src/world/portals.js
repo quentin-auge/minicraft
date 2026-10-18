@@ -10,7 +10,7 @@
 // frame block, sizes, fill, travel action) register a spec and nothing else
 // changes.
 import * as THREE from "three";
-import { AIR, PORTAL, OBSIDIAN } from "../core/blocks.js";
+import { AIR, PORTAL, OBSIDIAN, isLiquid } from "../core/blocks.js";
 import { WORLD_RADIUS, key, keyXYZ, getBlock, isSolid } from "../core/store.js";
 import {
   pos, vel, yaw, keys, setYaw, setPitch,
@@ -90,38 +90,35 @@ export function resetFrameSet(keys) {
 
 // --- Window evaluation (shapes from master) ---
 //
-// A window is edge-valid when its ring matches; its interior may hold AIR
-// or frame blocks (PORTAL/OBSIDIAN) of a crossing window — anything else
-// fails. Evaluators return null, or the interior frame cells plus the ring
-// cells for the support-closure pass below.
+// A window is edge-valid when its ring matches; its interior must be
+// uniformly AIR or uniformly one liquid (a portal filled with water, lava,
+// or moon water is legit; a mix, or any solid — including frame blocks —
+// is not). Evaluators return null, or true.
 
-function innerCell(id, inner, x, y, z) {
-  if (id === AIR) return true;
-  if (isFrameBlock(id)) { inner.push([x, y, z]); return true; }
-  return false;
+function innerCell(id, mix) {
+  if (id !== AIR && !isLiquid(id)) return false;
+  if (mix.id === null) mix.id = id;
+  else if (id !== mix.id) return false;
+  return true;
 }
 
 function evalEndFlat(minX, minZ, by) {
-  const inner = [], frame = [];
+  const mix = { id: null };
   for (let x = minX; x <= minX + 4; x++)
     for (let z = minZ; z <= minZ + 4; z++) {
       const isCorner = (x === minX || x === minX + 4) && (z === minZ || z === minZ + 4);
       const isEdge = x === minX || x === minX + 4 || z === minZ || z === minZ + 4;
       const id = getBlock(x, by, z);
-      if (isCorner) {
-        if (isFrameBlock(id)) frame.push([x, by, z]);
-        continue;
-      }
+      if (isCorner) continue;
       if (isEdge) {
         if (id !== PORTAL) return null;
-        frame.push([x, by, z]);
-      } else if (!innerCell(id, inner, x, by, z)) return null;
+      } else if (!innerCell(id, mix)) return null;
     }
-  return { inner, frame };
+  return true;
 }
 
 function evalEndVert(minX, minY, minZ, h, face = "z") {
-  const inner = [], frame = [];
+  const mix = { id: null };
   const top = h === 4 ? minY + 3 : minY + 4;
   if (face === "x") {
     for (let y = minY; y <= top; y++)
@@ -129,36 +126,28 @@ function evalEndVert(minX, minY, minZ, h, face = "z") {
         const isCorner = (z === minZ || z === minZ + 4) && (y === minY || y === top);
         const isEdge = z === minZ || z === minZ + 4 || y === minY || y === top;
         const id = getBlock(minX, y, z);
-        if (isCorner) {
-          if (isFrameBlock(id)) frame.push([minX, y, z]);
-          continue;
-        }
+        if (isCorner) continue;
         if (isEdge) {
           if (id !== PORTAL) return null;
-          frame.push([minX, y, z]);
-        } else if (!innerCell(id, inner, minX, y, z)) return null;
+        } else if (!innerCell(id, mix)) return null;
       }
-    return { inner, frame };
+    return true;
   }
   for (let y = minY; y <= top; y++)
-    for (let x = minX; x <= minX + 4; x++) {
-      const isCorner = (x === minX || x === minX + 4) && (y === minY || y === top);
-      const isEdge = x === minX || x === minX + 4 || y === minY || y === top;
-      const id = getBlock(x, y, minZ);
-      if (isCorner) {
-        if (isFrameBlock(id)) frame.push([x, y, minZ]);
-        continue;
-      }
-      if (isEdge) {
-        if (id !== PORTAL) return null;
-        frame.push([x, y, minZ]);
-      } else if (!innerCell(id, inner, x, y, minZ)) return null;
-    }
-  return { inner, frame };
+  for (let x = minX; x <= minX + 4; x++) {
+    const isCorner = (x === minX || x === minX + 4) && (y === minY || y === top);
+    const isEdge = x === minX || x === minX + 4 || y === minY || y === top;
+    const id = getBlock(x, y, minZ);
+    if (isCorner) continue;
+    if (isEdge) {
+      if (id !== PORTAL) return null;
+    } else if (!innerCell(id, mix)) return null;
+  }
+  return true;
 }
 
 function evalNetherVert(minX, minY, minZ, w, h, face) {
-  const inner = [], frame = [];
+  const mix = { id: null };
   for (let y = minY; y < minY + h; y++)
     for (let u = 0; u < w; u++) {
       const isEdge = u === 0 || u === w - 1 || y === minY || y === minY + h - 1;
@@ -167,24 +156,22 @@ function evalNetherVert(minX, minY, minZ, w, h, face) {
       const id = getBlock(x, y, z);
       if (isEdge) {
         if (id !== OBSIDIAN) return null;
-        frame.push([x, y, z]);
-      } else if (!innerCell(id, inner, x, y, z)) return null;
+      } else if (!innerCell(id, mix)) return null;
     }
-  return { inner, frame };
+  return true;
 }
 
 function evalNetherFlat(minX, minZ, by, ww, dd) {
-  const inner = [], frame = [];
+  const mix = { id: null };
   for (let x = minX; x <= minX + ww - 1; x++)
     for (let z = minZ; z <= minZ + dd - 1; z++) {
       const isEdge = x === minX || x === minX + ww - 1 || z === minZ || z === minZ + dd - 1;
       const id = getBlock(x, by, z);
       if (isEdge) {
         if (id !== OBSIDIAN) return null;
-        frame.push([x, by, z]);
-      } else if (!innerCell(id, inner, x, by, z)) return null;
+      } else if (!innerCell(id, mix)) return null;
     }
-  return { inner, frame };
+  return true;
 }
 
 function evalEndWin(w) {
@@ -305,7 +292,7 @@ function gatherFrom(px, py, pz, seen, out) {
       const k = fillKey(win);
       if (seen.has(k)) continue;
       seen.add(k);
-      out.push({ win, inner: ev.inner, frame: ev.frame, key: k });
+      out.push({ win, key: k });
     }
   }
 }
@@ -327,31 +314,11 @@ function gatherAll() {
   return out;
 }
 
+// Interiors hold only AIR or one liquid (enforced per cell by the
+// evaluators), so there is nothing left to support-close: every evaluated
+// candidate stands on its own ring.
 function resolveWindows(cands) {
-  const alive = new Set(cands.map((_, i) => i));
-  const ringUsers = new Map(); // "x,y,z" -> candidate indices whose ring holds it
-  cands.forEach((c, i) => {
-    for (const [x, y, z] of c.frame) {
-      const k = x + "," + y + "," + z;
-      let s = ringUsers.get(k);
-      if (!s) { s = new Set(); ringUsers.set(k, s); }
-      s.add(i);
-    }
-  });
-  let changed = true;
-  while (changed) {
-    changed = false;
-    for (const i of [...alive]) {
-      let ok = true;
-      for (const [x, y, z] of cands[i].inner) {
-        if (getBlock(x, y, z) === AIR) continue;
-        const users = ringUsers.get(x + "," + y + "," + z);
-        if (!users || ![...users].some((j) => j !== i && alive.has(j))) { ok = false; break; }
-      }
-      if (!ok) { alive.delete(i); changed = true; }
-    }
-  }
-  return cands.filter((_, i) => alive.has(i));
+  return cands;
 }
 
 function winNear(win, cx, cy, cz, R) {
