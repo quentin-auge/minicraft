@@ -7,8 +7,8 @@
 // strings (key, blastKind, countdownKind, fxKind) are stable identifiers,
 // never branch conditions.
 // Normal (radius 3, 3 s fuse), mega (pooled radius 15 / 22.5 / 33.75,
-// capped at 40, 8 s fuse, simultaneous blasts, player knockback,
-// threatening lit look), and ultra (black mega look, 8 s fuse, wipes one
+// capped at 40, 8 s fuse, simultaneous blasts, player knockback, one
+// Firestorm Wall style), and ultra (black mega look, 8 s fuse, wipes one
 // altitude band of the whole level across frames) ship as entries.
 // Bedrock (y=0) is always spared; liquids survive unless the kind sets
 // clearsLiquids (mega). A non-clearing TNT placed in liquid restores that
@@ -23,7 +23,7 @@ import { rebuildChunk, isChunkBuilt, chunkKeysForColumn, refreshBlocks } from ".
 import { notePortalFramesOnly, clearPortalFills, scanWorldPortals } from "../world/portals.js";
 import { GRAVITY, pos, vel, setOnGround, addPlayerKnockback, KNOCK_DECAY } from "../player/physics.js";
 import { flyOn } from "../player/fly.js";
-import { spawnBurst, spawnFlash, initBandShell, updateBandShell, hideBandShell } from "./particles.js";
+import { spawnBurst, spawnFlash, sharedFlashGeo, initBandShell, updateBandShell, hideBandShell, spawnDense, denseCount, noteDenseSpawn, resetDenseFx, flushDense } from "./particles.js";
 import { clearGlowstoneAt } from "../world/glowstone.js";
 import { clearFlowerAt } from "../world/flowers.js";
 import { noteBlockLightEdit } from "../render/blocklights.js";
@@ -81,8 +81,10 @@ function megaWhiteEff(fuse, total) {
 }
 
 // Lit-mega overlays: an additive blue veil box plus a white-heat box hugging
-// the block (no mesher change, no remesh during the countdown).
-const megaVeils = new Map(); // "x,y,z" -> { veil, heat }
+// the block (no mesher change, no remesh during the countdown), plus one
+// telegraph shell per lit mega: it grows as the fuse burns down, so a field
+// of lit megas reads as rising balls BEFORE anything explodes.
+const megaVeils = new Map(); // "x,y,z" -> { veil, heat, shell }
 let megaVeilGeo = null;
 function megaVeilGeometry() {
   if (!megaVeilGeo) megaVeilGeo = new THREE.BoxGeometry(1.04, 1.04, 1.04);
@@ -90,6 +92,21 @@ function megaVeilGeometry() {
 }
 function veilColorFor(kind) {
   return (kind && kind.countdownColor) ?? MEGA_BLINK;
+}
+// One transient light per pooled member blast (not per countdown bucket).
+const blastLights = []; // { light, life, max }
+function tickBlastLights(dt) {
+  for (let i = blastLights.length - 1; i >= 0; i--) {
+    const b = blastLights[i];
+    b.life -= dt;
+    if (b.life <= 0) {
+      if (sceneRef) sceneRef.remove(b.light);
+      blastLights.splice(i, 1);
+      continue;
+    }
+    const f = b.life / b.max;
+    b.light.intensity = 900 * f * f;
+  }
 }
 function makeMegaLitVisual(x, y, z, kind) {
   const k = x + "," + y + "," + z;
@@ -106,7 +123,14 @@ function makeMegaLitVisual(x, y, z, kind) {
   heat.position.copy(veil.position);
   sceneRef.add(veil);
   sceneRef.add(heat);
-  megaVeils.set(k, { veil, heat });
+  const shell = new THREE.Mesh(
+    sharedFlashGeo(),
+    new THREE.MeshBasicMaterial({ color: veilColorFor(kind), transparent: true, opacity: 0, blending: THREE.AdditiveBlending, depthWrite: false, fog: false })
+  );
+  shell.position.copy(veil.position);
+  shell.scale.setScalar(0.001);
+  sceneRef.add(shell);
+  megaVeils.set(k, { veil, heat, shell });
   syncMegaLights();
 }
 function tickMegaLitVisual(k, t, kind) {
@@ -118,6 +142,11 @@ function tickMegaLitVisual(k, t, kind) {
     v.veil.material.color.setHex(veilColorFor(kind)).lerp(megaWhiteHeat, eff);
     v.veil.material.opacity = 0.05 + 0.45 * b * w + 0.1 * eff;
     v.heat.material.opacity = Math.min(0.9, eff);
+    // Telegraph ball: grows 0.3 -> 1.2 blocks over the last 3 s of fuse.
+    const g = Math.max(0, Math.min(1, (3 - Math.max(0, t.fuse)) / 3));
+    v.shell.scale.setScalar(Math.max(0.001, 0.3 + 0.9 * g));
+    v.shell.material.color.setHex(veilColorFor(kind));
+    v.shell.material.opacity = 0.45 * g;
   }
   syncMegaLights();
 }
@@ -128,71 +157,152 @@ function clearMegaLitVisual(k) {
     if (sceneRef) {
       sceneRef.remove(v.veil);
       sceneRef.remove(v.heat);
+      sceneRef.remove(v.shell);
     }
     v.veil.material.dispose();
     v.heat.material.dispose();
+    v.shell.material.dispose();
   }
   syncMegaLights();
 }
 
-// Pooled surrounding lights for lit megas (master: max 8, 5-cell buckets,
-// nearest-bucket assignment simplified to insertion order here).
+// Pooled surrounding lights for lit megas (max 8, one per crater sphere).
 const MEGA_LIGHT_MAX = 8;
-const MEGA_LIGHT_CELL = 5;
 const megaLights = []; // { light, key }
-const megaLightBeats = new Map(); // bucketKey -> { beats, was }
-function megaBucket(x, y, z) {
-  return Math.floor(x / MEGA_LIGHT_CELL) + "," + Math.floor(y / MEGA_LIGHT_CELL) + "," + Math.floor(z / MEGA_LIGHT_CELL);
+const megaLightBeats = new Map(); // spotKey -> { beats, was }
+// Pool clustering for countdown lights: each lit mega maps to the crater
+// radius its pool will actually carve (same clustering as detonation), so
+// the light swell ends exactly at the crater edge — 15 for a solo mega,
+// never a flat 44 over everything. Placement version: bumped whenever the
+// mega index changes, so the light spots below recompute. Never ticked per
+// frame.
+let clusterVersion = 0;
+function markClusterDirty() { clusterVersion++; }
+// Countdown swell: how the pre-blast lights reach the full crater radius.
+// Arrival is driven by fuse time (ease-out, locking on R exactly at
+// detonation with a fixed white hold for the last 0.2 s), never by the
+// blink phase. Applies to mega and ultra alike (ultra rides the same
+// bucket path with whole-level range); band spots step on fuse time
+// instead of white heat, so the sweep visibly crosses the whole level
+// with a near-black off-gate for full-level contrast.
+// Arrival progress 0→1 across the whole fuse (0 at ignition, 1 exactly at
+// detonation), eased-out downstream. Unlike eff (white heat, blink-gated),
+// this never stutters: the swell below always lands smoothly on R.
+function arrivalProgress(fuse, total) {
+  const t = Math.max(0, Math.min(1, (total - fuse) / Math.max(0.001, total)));
+  return t * t * (3 - 2 * t);
+}
+// Light spots, recomputed only when placements or the lit set change
+// (version + lit signature); fuses are read live every frame. One spot per
+// crater sphere — including unlit stragglers, which detonate with the pool
+// — so the lit union matches the carved union exactly.
+let spotCache = { sig: null, spots: [] };
+function computeLightSpots() {
+  const spots = [];
+  const seen = new Set();
+  for (const t of lit.values()) {
+    const tk = kindOf(t.kind);
+    if (!tk.light) continue;
+    const k = t.x + "," + t.y + "," + t.z;
+    if (seen.has(k)) continue;
+    if (tk.band) {
+      spots.push({ x: t.x + 0.5, y: t.y + 0.5, z: t.z + 0.5, band: true, R: ULTRA_FULL_R, kind: t.kind, fminKey: k, total: t.total, key: "band:" + k });
+      seen.add(k);
+      continue;
+    }
+    const { members, sized } = collectMegaCluster(t.x, t.y, t.z, tk);
+    if (!members.length) continue;
+    // Cluster fuse = earliest lit member (stragglers have no fuse of their
+    // own but detonate with the pool, flickering in sync).
+    let fminKey = null, fmin = Infinity, tot = t.total;
+    for (const m of members) {
+      const lt = lit.get(m.key);
+      if (lt && lt.fuse < fmin) { fmin = lt.fuse; fminKey = m.key; tot = lt.total; }
+    }
+    if (fminKey === null) continue;
+    for (let i = 0; i < members.length; i++) {
+      const m = members[i];
+      if (seen.has(m.key)) continue;
+      seen.add(m.key);
+      spots.push({ x: m.x + 0.5, y: m.y + 0.5, z: m.z + 0.5, band: false, R: sized[i]?.r ?? tk.radius, kind: t.kind, fminKey, total: tot, key: m.key });
+    }
+  }
+  // Largest craters first so the 8-light cap covers the most ground.
+  spots.sort((a, b) => b.R - a.R);
+  return spots;
 }
 function syncMegaLights() {
-  const groups = new Map(); // bucket -> { sx, sy, sz, n, fuse, total }
-  for (const t of lit.values()) {
-    if (!kindOf(t.kind).light) continue;
-    const bk = megaBucket(t.x, t.y, t.z);
-    let g = groups.get(bk);
-    if (!g) {
-      g = { sx: 0, sy: 0, sz: 0, n: 0, fuse: Infinity, total: t.total };
-      groups.set(bk, g);
-    }
-    g.sx += t.x + 0.5;
-    g.sy += t.y + 0.5;
-    g.sz += t.z + 0.5;
-    g.n++;
-    if (t.fuse < g.fuse) {
-      g.fuse = t.fuse;
-      g.total = t.total;
-    }
+  let sig = clusterVersion + "|";
+  const lk = [...lit.keys()].sort();
+  sig += lk.join(";");
+  if (spotCache.sig !== sig) spotCache = { sig, spots: computeLightSpots() };
+  const use = spotCache.spots.slice(0, MEGA_LIGHT_MAX);
+  const useKeys = new Set(use.map((s) => s.key));
+  for (const k of [...megaLightBeats.keys()]) {
+    if (!useKeys.has(k)) megaLightBeats.delete(k);
   }
-  for (const bk of [...megaLightBeats.keys()]) {
-    if (!groups.has(bk)) megaLightBeats.delete(bk);
-  }
-  const keys = [...groups.keys()].slice(0, MEGA_LIGHT_MAX);
-  keys.forEach((bk, i) => {
+  use.forEach((s, i) => {
     let L = megaLights[i];
     if (!L) {
       L = { light: new THREE.PointLight(MEGA_BLINK, 60, 7, 1), key: null };
       if (sceneRef) sceneRef.add(L.light);
       megaLights[i] = L;
     }
-    const g = groups.get(bk);
-    const b = megaBlinkSmooth(g.fuse, g.total);
-    const eff = megaWhiteEff(g.fuse, g.total);
-    const kk = Math.max(0, Math.min(1, (5 - g.fuse) / 4));
-    let st = megaLightBeats.get(bk);
+    const lt = lit.get(s.fminKey);
+    if (!lt) {
+      L.light.visible = false;
+      L.key = null;
+      return;
+    }
+    const b = megaBlinkSmooth(lt.fuse, s.total);
+    const eff = megaWhiteEff(lt.fuse, s.total);
+    const kk = Math.max(0, Math.min(1, (5 - lt.fuse) / 4));
+    let st = megaLightBeats.get(s.key);
     if (!st) {
       st = { beats: 0, was: 0 };
-      megaLightBeats.set(bk, st);
+      megaLightBeats.set(s.key, st);
     }
     if (b >= 0.5 && st.was < 0.5) st.beats++;
     st.was = b;
-    L.key = bk;
+    L.key = s.key;
     L.light.visible = true;
-    L.light.position.set(g.sx / g.n, g.sy / g.n + 1, g.sz / g.n);
-    L.light.color.setHex(MEGA_BLINK).lerp(megaWhiteHeat, eff);
-    L.light.intensity = 30 + b * (50 + 90 * kk) + eff * 60;
-    L.light.distance = Math.min(34, 7 + 1.5 * st.beats + 12 * kk);
+    L.light.position.set(s.x, s.y + 1, s.z);
+    // Range swells with the white heat to this member's own carved radius
+    // (ultra bands cover the whole level). Edge brightness scales with R so
+    // big pools stay readable at their rim. Physical falloff (decay 1) kills
+    // the rim well inside the cutoff, so the cutoff is pushed 60 % past the
+    // crater: the bright disc still reads out to R, fading to zero just
+    // outside instead of dying visibly short of it. Band spots covering the
+    // whole level get a stronger edge factor and intensity cap — same
+    // formula, rescaled for R271 instead of a 15 crater.
+    const Rcover = s.band ? ULTRA_FULL_R : Math.max(s.R, 12);
+    let base = 60 + b * (80 + 140 * kk) + eff * 120;
+    const edge = s.band ? Math.min(16, Rcover / 15) : Math.min(8, Rcover / 15);
+    // Arrival progress 0→1 across the whole fuse (1 exactly at detonation):
+    // the swell eases out onto R and never overshoots, then locks on with
+    // a fixed white hold for the last 0.2 s.
+    const arr = arrivalProgress(lt.fuse, s.total);
+    let dist, mult;
+    // Hard gate on the chirp + stepped range: full R by quarter-steps.
+    // Band spots (whole level) step on fuse time instead of white heat, so
+    // the sweep visibly crosses the level instead of jumping at the
+    // end; their off-gate runs near-black for full-level contrast.
+    if (lt.fuse <= 0.2) {
+      dist = Rcover;
+      mult = 2.5;
+      base = Math.max(base, 500);
+      L.light.color.setHex(0xffffff);
+    } else {
+      const gate = b > 0.5 ? 1 : (s.band ? 0.05 : 0.15);
+      const prog = s.band ? arr : eff;
+      dist = 12 + (Rcover - 12) * Math.min(1, Math.floor(prog * 4.999) / 4);
+      mult = 3 * gate;
+      L.light.color.setHex(MEGA_BLINK).lerp(megaWhiteHeat, eff);
+    }
+    L.light.intensity = Math.min(s.band ? 24000 : 6000, base * mult * edge);
+    L.light.distance = dist * 1.6;
   });
-  for (let i = keys.length; i < megaLights.length; i++) {
+  for (let i = use.length; i < megaLights.length; i++) {
     megaLights[i].light.visible = false;
     megaLights[i].key = null;
   }
@@ -208,42 +318,175 @@ function megaPoolRadius(kind, n) {
 }
 
 // Mega blast FX scales with the member count; the pooled radius above
-// decides the crater and knockback reach. Layered nuclear fireball: a dense
-// white-hot core inside an orange halo (both well inside the crater — the
-// particle ball stays the star), then the usual burst layers.
-function spawnMegaBlastFx(x, y, z, kind, mult = 1) {
+// decides the crater and knockback reach. One dense GPU engine
+// (spawnDense): counts scale with R^3 so big pools get denser, and the
+// fireball fills the full crater.
+const FIRE = [[1, 0.8, 0.1], [1, 0.45, 0.05], [0.9, 0.1, 0.02]];
+const EMBERW = [1, 0.95, 0.8];
+function D(R, per, min, max) { return denseCount(R, per, min, max); }
+// Single post-detonation clock for every mega/ultra visual: recipes stay
+// authored in base seconds, and the shared clock paces them.
+export const MEGA_BLAST_TIME_SCALE = 1;
+export const MEGA_BLAST_T = 2.2 * MEGA_BLAST_TIME_SCALE;
+// Pooled and ultra union shells share one cap: a full-level sphere would be
+// screens of overdraw, while R64 already reads as enormous.
+export const MEGA_UNION_SHELL_R = 64;
+function blastSeconds(s) { return s * MEGA_BLAST_TIME_SCALE; }
+function blastSpeed(v) {
+  if (!Number.isFinite(v) || v >= 1e8) return v; // pops stay instant
+  return v / MEGA_BLAST_TIME_SCALE;
+}
+// Base lives per mega recipe family. Ultra phases reuse the same bases, so
+// staging a mega component never changes its authored duration.
+function megaBaseLives(key) {
+  return {
+    fire: key === "smoke" ? 1.2 : 1.6,
+    smoke: key === "smoke" ? 4.0 : 2.4,
+  };
+}
+// Rolling-ignition base delay, set while draining queued FX members so one
+// member's layers all share its stagger offset (snapshot per job).
+let fxBaseDelay = 0;
+function shell2(cx, cy, cz, R, c1, c2, t1, e1, t2, e2) {
+  // Pops, never retracting spheres: expand at the staged speed, then vanish
+  // in a frame instead of visibly shrinking back.
+  spawnFlash({ x: cx, y: cy, z: cz, color: c1, maxRadius: R, speed: blastSpeed(R / t1), retractSpeed: 1e9, doubleside: true, fogOff: true });
+  spawnFlash({ x: cx, y: cy, z: cz, color: c2, maxRadius: 0.55 * R, speed: blastSpeed((0.55 * R) / t2), retractSpeed: 1e9, doubleside: true, fogOff: true });
+}
+// Reusable mega phase builder helper. Ultra schedules whole canonical
+// phases as sim-time FX jobs, so each phase seeds alone and needs no quota:
+// volumes scale with R^3 via denseCount, hard-capped by the GPU pools.
+function phaseLayer(h, o, role, per, min, max, rest = {}) {
+  const { delay = 0, life = 1.5, R = h.R, ...props } = rest;
+  // Per-phase life scale (ultra trims the Titan smoke tail without touching
+  // the canonical recipes; mega never sets it, so its visuals stay exact).
+  const scaledLife = life * (h.lifeScale ?? 1);
+  const start = delay + (h.baseDelay ?? 0) + (o.delay ?? 0);
+  h.maxEnd = Math.max(h.maxEnd ?? 0, start + scaledLife);
+  return spawnDense({
+    x: h.cx, y: h.cy, z: h.cz, R, role,
+    count: D(R, per, min, max),
+    defer: true, ...props, life: blastSeconds(scaledLife), delay: blastSeconds(start),
+  });
+}
+// Shell scope for one phase. Mega burns with "full" shells; ultra passes
+// shells:false + shellMode:"off", keeping full-level density in particles
+// only.
+function shellScope(h, mode) {
+  const m = mode ?? h.shellMode ?? (h.shells ? "full" : "off");
+  const on = m !== "off" && h.shells !== false;
+  return {
+    shell: (c1, c2, t1, e1, t2, e2) => { if (on) shell2(h.cx, h.cy, h.cz, h.R, c1, c2, t1, e1, t2, e2); },
+    flash: (o) => {
+      if (!on) return;
+      spawnFlash({ ...o, retractSpeed: 1e9 });
+    },
+  };
+}
+// Single mega style: Firestorm Wall. The V-cycled style registry is gone;
+// the canonical phase builders below serve it and the ultra mix directly.
+const MEGA_STYLE_KEY = "wall";
+// Canonical mega phase builders. Mega and ultra compose them, so the same
+// recipe cannot drift between tiers.
+function buildWallBurst(h, o = {}) {
+  const s = shellScope(h, o.shell);
+  s.flash({ x: h.cx, y: h.cy, z: h.cz, color: 0xff7a1a, maxRadius: h.R, speed: h.R / 0.9, doubleside: true, fogOff: true });
+  phaseLayer(h, o, "fire", 0.7 * h.boost, 5000, 20000, { life: 1.5, palette: FIRE, speedMin: 8, speedMax: 20, up: 5, gravity: 4, size: 28, shape: "shell" });
+  phaseLayer(h, o, "ember", 0.3 * h.boost, 2000, 9000, { life: 1.2, palette: FIRE, speedMin: 4, speedMax: 12, up: 8, gravity: -2, size: 22, shape: "ball" });
+  phaseLayer(h, o, "smoke", 0.25 * h.boost, 1500, 9000, { life: h.lives.smoke, color: [0.25, 0.22, 0.2], variance: [0.1, 0.1, 0.1], speedMin: 1, speedMax: 6, up: 10, gravity: -3, size: 42, shape: "ball" });
+}
+function buildTornadoColumn(h, o = {}) {
+  const s = shellScope(h, o.shell);
+  s.flash({ x: h.cx, y: h.cy, z: h.cz, color: 0xfff3d0, maxRadius: 0.6 * h.R, speed: (0.6 * h.R) / 0.5, doubleside: true, fogOff: true });
+  phaseLayer(h, o, "fire", 0.75 * h.boost, 5000, 22000, { life: 2.0, palette: FIRE, speedMin: 2, speedMax: 8, up: 10, gravity: -8, size: 28, shape: "column" });
+  phaseLayer(h, o, "ember", 0.3 * h.boost, 2000, 9000, { life: 1.4, color: EMBERW, variance: [0, 0.05, 0.1], speedMin: 4, speedMax: 14, up: 16, gravity: -6, size: 22, shape: "column" });
+  phaseLayer(h, o, "smoke", 0.2 * h.boost, 1500, 8000, { life: h.lives.smoke, color: [0.25, 0.22, 0.2], variance: [0.1, 0.1, 0.1], speedMin: 1, speedMax: 5, up: 14, gravity: -4, shape: "column", size: 42 });
+}
+function buildShockRings(h, o = {}) {
+  const s = shellScope(h, o.shell);
+  // Fat centered shock rings: no offsets, ×4 vertical thickness.
+  for (let i = 0; i < 3; i++)
+    s.flash({ x: h.cx, y: h.cy, z: h.cz, color: [0xfff3d0, 0xff7a1a, 0xc22400][i], maxRadius: (0.6 + 0.2 * i) * h.R, speed: h.R / (0.4 + 0.25 * i), doubleside: true, fogOff: true });
+  phaseLayer(h, o, "fire", 0.7 * h.boost, 5000, 20000, { life: 1.4, palette: FIRE, speedMin: 14, speedMax: 30, up: 2, gravity: 6, size: 24, shape: "ring", vSpread: 4 });
+  phaseLayer(h, o, "smoke", 0.25 * h.boost, 1500, 9000, { life: h.lives.smoke, color: [0.25, 0.22, 0.2], variance: [0.1, 0.1, 0.1], speedMin: 2, speedMax: 7, up: 8, gravity: -3, size: 40, shape: "ball" });
+}
+function buildTitanSmoke(h, o = {}) {
+  const s = shellScope(h, o.shell);
+  s.flash({ x: h.cx, y: h.cy, z: h.cz, color: 0xff7a1a, maxRadius: 0.6 * h.R, speed: (0.6 * h.R) / 0.5 });
+  phaseLayer(h, o, "fire", 0.35 * h.boost, 2500, 10000, { life: h.lives.fire, palette: FIRE, speedMin: 3, speedMax: 10, up: 7, gravity: -4, size: 28, shape: "ball" });
+  phaseLayer(h, o, "smoke", 0.95 * h.boost, 6500, 24000, { life: h.lives.smoke, color: [0.32, 0.28, 0.24], variance: [0.1, 0.1, 0.1], speedMin: 2, speedMax: 9, up: 11, gravity: -3, size: 48, shape: "ball" });
+  phaseLayer(h, o, "smoke", 0.4 * h.boost, 3000, 12000, { life: h.lives.smoke, color: [0.16, 0.14, 0.13], variance: [0.06, 0.06, 0.06], speedMin: 1, speedMax: 5, up: 13, gravity: -2, size: 52, shape: "ball", delay: 0.3 });
+}
+// Shared dispatch for the phases mega and ultra stage.
+const MEGA_PHASES = {
+  wall: buildWallBurst,
+  tornado: buildTornadoColumn,
+  rings: buildShockRings,
+  smoke: buildTitanSmoke,
+};
+function spawnMegaBlastFx(x, y, z, kind, mult = 1, fx = null) {
   const m = Math.max(1, Math.min(mult, 6));
-  const R = megaPoolRadius(kind, mult);
-  // Fine, vivid, foreground particles: yellow/red/orange palette on the
-  // fire layer, near-white embers, gray smoke — all drawn above everything.
-  const FIRE = [[1, 0.8, 0.1], [1, 0.45, 0.05], [0.9, 0.1, 0.02]];
-  const fireLife = 1.5; // fire bursts, core and halo all end together here
-  const tailLife = 2.0; // gray smoke trails alone afterwards
-  // White-hot core: snappy constant expand, retracting to end with the fire.
-  const coreR = 1.5 * R, coreExpand = 0.5;
-  spawnFlash({ x: x + 0.5, y: y + 0.5, z: z + 0.5, color: 0xfff3d0, maxRadius: coreR, speed: coreR / coreExpand, retractSpeed: coreR / Math.max(0.1, fireLife - coreExpand) });
-  // Halo synced to the fire particles' end: fast constant expand
-  // (~0.4 s), then a retract lasting fireLife - expand, at any pool size.
-  // General rule: retract duration = fire end - expand time.
-  const haloR = 1.5 * R;
-  const haloExpand = haloR / 0.4;
-  spawnFlash({ x: x + 0.5, y: y + 0.5, z: z + 0.5, color: 0xff7a1a, maxRadius: haloR, speed: haloExpand, retractSpeed: haloR / Math.max(0.1, fireLife - haloR / haloExpand) });
-  spawnBurst({ x: x + 0.5, y: y + 0.5, z: z + 0.5, count: Math.min(2500, Math.round(400 * m)), life: fireLife, size: 1.1, fillRadius: R, palette: FIRE, foreground: true, speedMin: 2, speedMax: 12 });
-  spawnBurst({ x: x + 0.5, y: y + 0.5, z: z + 0.5, count: Math.min(1200, Math.round(200 * m)), life: 1.0, size: 0.9, fillRadius: R, foreground: true, color: [1, 0.95, 0.8], variance: [0, 0.05, 0.1], speedMin: 4, speedMax: 12, up: 4 });
-  spawnBurst({ x: x + 0.5, y: y + 0.5, z: z + 0.5, count: Math.min(1200, Math.round(200 * m)), life: tailLife, size: 1.3, fillRadius: R, foreground: true, additive: false, gravity: -2, color: [0.3, 0.25, 0.2], variance: [0.1, 0.1, 0.1], speedMin: 1, speedMax: 6, up: 3 });
+  const cx = x + 0.5, cy = y + 0.5, cz = z + 0.5;
+  const key = fx?.key ?? MEGA_STYLE_KEY;
+  // Explicit-R override (ultra phases burn at full-level diameter);
+  // otherwise the pooled radius from member count and linkage.
+  const R = fx?.R ?? megaPoolRadius(kind, mult);
+  // Density grows slightly with member count (boost), hard-capped by the
+  // GPU pools so looots of megas never freeze the frame.
+  const share = fx?.share ?? 1;
+  const shells = fx?.shells ?? true;
+  fxBaseDelay = fx?.delay ?? 0;
+  const boost = (1 + 0.15 * (m - 1)) * share;
+  const lives = megaBaseLives(key);
+  const h = { cx, cy, cz, R, boost, lives, shells, shellMode: fx?.shellMode ?? null, baseDelay: fxBaseDelay, maxEnd: 0, m, lifeScale: fx?.lifeScale ?? 1 };
+  // One union fireball per pooled blast (single fx job at the centroid),
+  // so shells never multiply. Pops vanish instead
+  // of retracting (see shell2) — no shrinking sphere anywhere.
+  MEGA_PHASES[key]?.(h);
+  // No per-member uploads or lights here: the pooled blast flushes once and
+  // owns a single light (see explodePool), so mass detonations stay flat.
+  noteDenseSpawn(Math.max(blastSeconds(h.maxEnd), blastSeconds(Math.max(lives.fire, lives.smoke))) + 0.5);
+}
+// Single pooled-blast light, shared by all members (uploads flush in
+// drainFxJobs, so queued members never pay per-member re-uploads).
+function poolLight(ax, ay, az, R, key, color = null) {
+  if (sceneRef) {
+    const col = color ?? 0xff8a2a;
+    const L = new THREE.PointLight(col, 900, Math.max(60, R * 3), 1.6);
+    L.position.set(ax + 0.5, ay + 2.5, az + 0.5);
+    sceneRef.add(L);
+    const life = blastSeconds(1.2);
+    blastLights.push({ light: L, life, max: life });
+  }
 }
 
-// Ultra blast FX scales to the whole level: no single fireball (it would
-// fill the sky), but band-wide foreground bursts — fire across the full
-// radius, near-white embers, a long gray smoke tail — plus small ember
-// bursts spawned per drain slice on the advancing front (spawnBandEmbers).
+// Single ultra mix: tornado, fat shock rings, wall, trimmed Titan smoke —
+// one sim-time FX job per phase: each canonical style spawns alone through
+// the shared mega dispatcher (full recipe, particles only — no mesh shells
+// or flash spheres at full-level radius), so phases never evict each other
+// from the pools. The rings burn fat and centered: ×1.4 radius, ×4
+// thickness, ×1.2 duration. The band carve underneath is unchanged.
+const ULTRA_PHASES = [
+  { style: "tornado", delay: 0 },
+  { style: "rings", delay: 0.25 },
+  { style: "wall", delay: 0.5 },
+  { style: "smoke", delay: 0.5, lifeScale: 0.5 },
+];
+const ULTRA_RING_R = 1.4, ULTRA_RING_DUR = 1.2;
 function spawnUltraBlastFx(x, y, z, kind) {
-  // The persistent shell carries the ongoing spectacle; the ignition is a
-  // single modest band-wide flash, not thousands of CPU-integrated particles.
-  const R = ULTRA_FULL_R;
-  const FIRE = [[1, 0.8, 0.1], [1, 0.45, 0.05], [0.9, 0.1, 0.02]];
-  spawnBurst({ x: x + 0.5, y: y + 0.5, z: z + 0.5, count: 1200, life: 1.2, size: 1.1, fillRadius: R, palette: FIRE, foreground: true, speedMin: 2, speedMax: 8 });
-  spawnBurst({ x: x + 0.5, y: y + 0.5, z: z + 0.5, count: 600, life: 1.6, size: 1.2, fillRadius: R, foreground: true, additive: false, gravity: -2, color: [0.25, 0.22, 0.2], variance: [0.1, 0.1, 0.1], speedMin: 1, speedMax: 5, up: 3 });
+  // lifeScale is applied when each job drains (see spawnMegaBlastFx): the
+  // queued job only carries the authored phase options.
+  for (const phase of ULTRA_PHASES) {
+    const isRing = phase.style === "rings";
+    fxJobs.push({
+      x, y, z, kind, k: 1, share: 1, shells: false, shellMode: "off",
+      key: phase.style, delay: 0,
+      R: isRing ? ULTRA_FULL_R * ULTRA_RING_R : ULTRA_FULL_R,
+      lifeScale: (phase.lifeScale ?? 1) * (isRing ? ULTRA_RING_DUR : 1),
+      due: simNow + blastSeconds(phase.delay ?? 0),
+    });
+  }
+  poolLight(x, y, z, ULTRA_FULL_R, "ultra", 0xff7a1a);
 }
 
 // Ultra bands: the overworld is wiped one altitude band per blast — ground
@@ -503,7 +746,8 @@ function explodeBand(cx, cy, cz, kind, refresh) {
     if (ultraBandOf(c.y) !== band) continue;
     pendingChain.delete(k);
   }
-  const R = ULTRA_FULL_R, R2 = R * R;
+  const R = ULTRA_FULL_R;
+  const R2 = R * R;
   const cols = [];
   for (let x = -WORLD_RADIUS; x <= WORLD_RADIUS; x++) {
     for (let z = -WORLD_RADIUS; z <= WORLD_RADIUS; z++) {
@@ -640,12 +884,19 @@ export function onLiquidPurge(fn) {
 }
 
 // Purges blast-stranded floating liquids and folds the purged cells into
-// touched so they remesh with the rest.
+// touched so they remesh with the rest. Keyed-set merge (not .some scans)
+// so 100k-cell mega craters never go quadratic.
 function purgeBlastLiquids(touched) {
   if (!onPurge || !touched.length) return touched;
   const purged = onPurge(touched) ?? [];
+  if (!purged.length) return touched;
+  const seen = new Set();
+  for (const [x, y, z] of touched) seen.add(x + "," + y + "," + z);
   for (const c of purged) {
-    if (!touched.some(([x, y, z]) => x === c[0] && y === c[1] && z === c[2])) touched.push(c);
+    const k = c[0] + "," + c[1] + "," + c[2];
+    if (seen.has(k)) continue;
+    seen.add(k);
+    touched.push(c);
   }
   return touched;
 }
@@ -661,17 +912,143 @@ export function resetTNTMemory() {
   pendingChain.clear();
   displaced.clear();
   megaIndex.clear();
+  markClusterDirty();
   for (const k of [...megaVeils.keys()]) clearMegaLitVisual(k);
   for (const L of megaLights) {
     if (sceneRef) sceneRef.remove(L.light);
   }
   megaLights.length = 0;
   megaLightBeats.clear();
+  for (const b of blastLights) {
+    if (sceneRef) sceneRef.remove(b.light);
+  }
+  blastLights.length = 0;
   pooling.clear();
   wakeMegas = null;
   bandJobs.length = 0;
   bandPending.clear();
   hideBandShell();
+  resetDenseFx();
+  fxJobs.length = 0;
+  carveJobs.length = 0;
+  fxBaseDelay = 0;
+}
+
+// Mass-blast pipeline: one FX job per pooled blast (single union fireball
+// at the centroid), carve in column slices, so looots of megas read as one
+// simultaneous explosion instead of N fireballs or one frozen frame.
+// Solo/small blasts keep the instant carve path.
+const fxJobs = []; // { x,y,z,kind,k,share,shells,shellMode,key,delay,R,due,lifeScale }
+const FX_SEED_PER_TICK = 30000;
+function fxJobCost(j) {
+  const R = j.R ?? megaPoolRadius(j.kind, j.k);
+  return Math.min(47000, Math.round(2.2 * j.share * R * R * R));
+}
+export function megaFxActive() { return fxJobs.length > 0; }
+function drainFxJobs() {
+  if (!fxJobs.length) return;
+  // Adaptive budget: the queue always drains in ~8 ticks whatever its size,
+  // so a pool of 20 ends at the same time as a solo blast. Jobs may carry a
+  // sim-time `due`: ultra mix phases wait their turn while due mega jobs
+  // still drain around them (scan, never head-blocked).
+  let est = 0;
+  for (const j of fxJobs) est += fxJobCost(j);
+  let budget = Math.max(FX_SEED_PER_TICK, Math.ceil(est / 8));
+  let flushed = false;
+  let i = 0;
+  while (i < fxJobs.length && budget > 0) {
+    const j = fxJobs[i];
+    if (j.due != null && j.due > simNow) { i++; continue; }
+    const cost = fxJobCost(j);
+    if (flushed && cost > budget) break;
+    fxJobs.splice(i, 1);
+    budget -= cost;
+    flushed = true;
+    spawnMegaBlastFx(j.x, j.y, j.z, j.kind, j.k, { share: j.share, shells: j.shells, shellMode: j.shellMode, key: j.key, delay: j.delay, R: j.R, lifeScale: j.lifeScale });
+  }
+  if (flushed) {
+    flushDense();
+    noteDenseSpawn(3.0);
+  }
+}
+// Sliced pooled carve: members carve in x-column slices under a per-tick
+// budget (same shape as the band-wipe drain). FX/knockback/shake/overlay
+// fire instantly; the crater lands within ~0.25 s. Completion reuses the
+// budgeted remesh drain (bandPending) instead of synchronous rebuilds.
+const carveJobs = []; // { members, radii, kind, mi, x0, touched }
+const CARVE_COLS_PER_TICK = 1536;
+export function megaCarveActive() { return carveJobs.length > 0; }
+  // Rolling-ignition base delay, set while draining queued FX members so one
+  // member's layers all share its stagger offset (snapshot per job).
+function drainCarveJobs() {
+  if (!carveJobs.length) return;
+  // Adaptive budget: every pool finishes carving in ~15 ticks whatever its
+  // size, so craters land on the same beat at R=15 and R=40.
+  let cols = CARVE_COLS_PER_TICK;
+  {
+    const job0 = carveJobs[0];
+    let rem = 0;
+    for (let mi = job0.mi; mi < job0.members.length; mi++) {
+      const m0 = job0.members[mi], R0 = job0.radii[mi];
+      const cur = (mi === job0.mi && job0.x0 !== -Infinity) ? job0.x0 : Math.max(-WORLD_RADIUS, Math.ceil(m0.x - R0));
+      rem += Math.max(0, Math.min(WORLD_RADIUS, Math.floor(m0.x + R0)) - cur + 1);
+    }
+    if (rem > 0) cols = Math.max(cols, Math.ceil(rem / 15));
+  }
+  while (carveJobs.length && cols > 0) {
+    const job = carveJobs[0];
+    const m = job.members[job.mi];
+    if (!m) {
+      carveJobs.shift();
+      finishCarveJob(job);
+      continue;
+    }
+    const R = job.radii[job.mi];
+    if (job.x0 === -Infinity) job.x0 = Math.max(-WORLD_RADIUS, Math.ceil(m.x - R));
+    const x1 = Math.min(WORLD_RADIUS, Math.floor(m.x + R));
+    while (job.x0 <= x1 && cols > 0) {
+      carvePoolColumn(job.x0, m, R, job.kind, job.touched);
+      job.x0++;
+      cols--;
+    }
+    if (job.x0 > x1) { job.mi++; job.x0 = -Infinity; }
+  }
+}
+function finishCarveJob(job) {
+  const touched = job.touched;
+  // Displaced-liquid restore per member (clearing kinds leave air behind).
+  if (touched.length) {
+    const seen = new Set();
+    for (const [x, y, z] of touched) seen.add(x + "," + y + "," + z);
+    for (const m of job.members) {
+      const dk = m.x + "," + m.y + "," + m.z;
+      const fill = displaced.get(dk) ?? null;
+      displaced.delete(dk);
+      if (fill !== null && !job.kind.clearsLiquids) {
+        setBlock(m.x, m.y, m.z, fill);
+        if (!seen.has(dk)) { seen.add(dk); touched.push([m.x, m.y, m.z]); }
+      }
+    }
+  } else {
+    for (const m of job.members) displaced.delete(m.x + "," + m.y + "," + m.z);
+  }
+  purgeBlastLiquids(touched);
+  syncGlowAfterBlast();
+  // Cheap frame tracking only; chunk rebuilds drain under the 6 ms budget
+  // in drainBandRemesh and portal fills heal from the dirty-flag scanner.
+  if (touched.length) {
+    notePortalFramesOnly(touched);
+    accumulateBandRefresh(touched);
+  }
+}
+// A lit mega or ultra within 0.6 s of detonation: main.js dips DPR early so
+// the resize hitch lands before the blast frame instead of on top of it.
+export function megaImminent() {
+  for (const t of lit.values()) {
+    const kind = kindOf(t.kind);
+    if ((kind.pool || kind.band) && t.fuse < 0.6) return true;
+  }
+  return false;
 }
 
 // Simultaneous mega pool: every mega within blast distance of another mega,
@@ -790,6 +1167,9 @@ export function tickTNT(dt, refresh) {
   }
   tickChain(simNow, refresh);
   drainBandJobs(dt);
+  drainCarveJobs();
+  drainFxJobs();
+  tickBlastLights(dt);
 }
 
 // Delayed chained blasts: each queued TNT detonates with its own full
@@ -845,7 +1225,9 @@ function explode(cx, cy, cz, kind, refresh) {
     if (typeof kind.carveBlast === "function") {
       kind.carveBlast(cx, cy, cz, kind, queueChained, touched);
     } else {
-      carveSphere(cx, cy, cz, kind, touched);
+      // Normal blast: open ball (strict sphere test) for a round crater at
+      // the same radius; pools keep the closed ball below.
+      carveSphere(cx, cy, cz, kind, touched, false, kind.radius, true);
     }
   } finally {
     const wake = wakeMegas;
@@ -896,9 +1278,11 @@ function queueChained(x, y, z, kind) {
 const megaIndex = new Set(); // "x,y,z"
 export function trackMegaPlaced(x, y, z) {
   megaIndex.add(x + "," + y + "," + z);
+  markClusterDirty();
 }
 function untrackMega(x, y, z) {
   megaIndex.delete(x + "," + y + "," + z);
+  markClusterDirty();
 }
 // Single choke point for blast deletions: keeps the indexes in sync.
 // Glowstone variants clear cheaply here (map deletes only); the light
@@ -1002,6 +1386,15 @@ function explodePool(cx, cy, cz, kind) {
     ax /= mult;
     ay /= mult;
     az /= mult;
+    // Single union fireball: smallest sphere around the centroid covering
+    // every member crater, capped so spread-out pools never fill the sky.
+    let Rfx = 0;
+    for (let i = 0; i < members.length; i++) {
+      const m = members[i];
+      const d = Math.hypot(m.x - ax, m.y - ay, m.z - az) + radii[i];
+      if (d > Rfx) Rfx = d;
+    }
+    Rfx = Math.min(MEGA_UNION_SHELL_R, Rfx);
     const inRegion = (x, y, z) => members.some((m, i) => {
       const dx = x - m.x, dy = y - m.y, dz = z - m.z;
       return dx * dx + dy * dy + dz * dz <= radii[i] * radii[i];
@@ -1022,89 +1415,131 @@ function explodePool(cx, cy, cz, kind) {
       if (kindOf(c.kind).band) continue;
       if (inRegion(c.x, c.y, c.z)) pendingChain.delete(k);
     }
-    const touched = [];
-    for (let i = 0; i < members.length; i++) {
-      carveSphere(members[i].x, members[i].y, members[i].z, kind, touched, true, radii[i]);
-    }
-    // Each pooled mega restores the liquid it was placed in, if any —
-    // unless it clears liquids, in which case its cell stays air.
-    for (const m of members) {
-      const dk = m.x + "," + m.y + "," + m.z;
-      const fill = displaced.get(dk) ?? null;
-      displaced.delete(dk);
-      if (fill !== null && !kind.clearsLiquids) {
-        setBlock(m.x, m.y, m.z, fill);
-        if (!touched.some(([x, y, z]) => x === m.x && y === m.y && z === m.z)) touched.push([m.x, m.y, m.z]);
-      }
-    }
-    // Each mega gets its own fireball at its own radius; knockback and
-    // shake stay single, from the centroid with the dominant reach.
-    for (let i = 0; i < members.length; i++) {
-      spawnMegaBlastFx(members[i].x, members[i].y, members[i].z, kind, local[i].k);
-    }
+    // Small pools carve synchronously (snappy solo megas); big ones slice
+    // across frames. Column estimate: one R=22.5 member is ~2k columns.
+    let totalCols = 0;
+    for (let i = 0; i < members.length; i++) totalCols += (2 * Math.ceil(radii[i]) + 1) ** 2;
+    const styleKey = MEGA_STYLE_KEY;
+    // Knockback stays on R (max member crater): launch physics unchanged,
+    // whatever the visual union looks like.
     applyMegaKnockback(ax, ay, az, kind, R);
-    if (onBlast) onBlast(ax, ay, az, R, kind.key);
+    // Shake, overlays, furnace and LoS follow the single visible fireball.
+    if (onBlast) onBlast(ax, ay, az, Rfx, kind.key);
+    if (totalCols <= 2600) {
+      const touched = [];
+      for (let i = 0; i < members.length; i++) {
+        carveSphere(members[i].x, members[i].y, members[i].z, kind, touched, true, radii[i]);
+      }
+      // Each pooled mega restores the liquid it was placed in, if any —
+      // unless it clears liquids, in which case its cell stays air.
+      const seen = new Set();
+      for (const [x, y, z] of touched) seen.add(x + "," + y + "," + z);
+      for (const m of members) {
+        const dk = m.x + "," + m.y + "," + m.z;
+        const fill = displaced.get(dk) ?? null;
+        displaced.delete(dk);
+        if (fill !== null && !kind.clearsLiquids) {
+          setBlock(m.x, m.y, m.z, fill);
+          if (!seen.has(dk)) { seen.add(dk); touched.push([m.x, m.y, m.z]); }
+        }
+      }
+      // Instant carve for the small path; the single union fireball queues
+      // and drains end-of-tick (same frame). Remesh goes through the budgeted
+      // drain (1–2 frames, hidden under the fireball) instead of freezing on
+      // synchronous rebuilds.
+      fxJobs.push({ x: ax, y: ay, z: az, kind, k: mult, share: 1, shells: true, key: styleKey, delay: 0, R: Rfx });
+      poolLight(ax, ay, az, Rfx, styleKey);
+      syncGlowAfterBlast();
+      purgeBlastLiquids(touched);
+      notePortalFramesOnly(touched);
+      accumulateBandRefresh(touched);
+      return [];
+    }
+    // Big-pool path: one light up front, one simultaneous union fireball,
+    // carve drains in column slices. Same total power and same timeline
+    // at any size.
+    fxJobs.push({ x: ax, y: ay, z: az, kind, k: mult, share: 1, shells: true, key: styleKey, delay: 0, R: Rfx });
+    carveJobs.push({ members: [...members], radii: [...radii], kind, mi: 0, x0: -Infinity, touched: [] });
+    poolLight(ax, ay, az, Rfx, styleKey);
     syncGlowAfterBlast();
-    return touched;
+    return [];
   } finally {
     for (const m of members) pooling.delete(m.x + "," + m.y + "," + m.z);
   }
 }
 
-function carveSphere(cx, cy, cz, kind, touched, pool = false, Reff = kind.radius) {
-  const R = Reff, R2 = R * R;
+function carveSphere(cx, cy, cz, kind, touched, pool = false, Reff = kind.radius, open = false) {
+  const R = Reff;
   // Clear the ignited block itself first so its cell refreshes even in air.
   if (isTntLike(getBlock(cx, cy, cz))) clearCell(cx, cy, cz, touched);
   for (let x = Math.max(-WORLD_RADIUS, Math.ceil(cx - R)); x <= Math.min(WORLD_RADIUS, Math.floor(cx + R)); x++) {
-    for (let z = Math.max(-WORLD_RADIUS, Math.ceil(cz - R)); z <= Math.min(WORLD_RADIUS, Math.floor(cz + R)); z++) {
-      const yLo = Math.max(1, Math.ceil(cy - R));
-      let yHi = Math.floor(cy + R);
-      // Skip the air above the terrain: only the blast at or below the
-      // column top can hit anything (same cells as before, half the scan).
-      const top = colTops[dim][colTopIdx(x, z)];
-      if (top < yHi) yHi = top;
-      if (top < yLo) continue;
-      for (let y = yLo; y <= yHi; y++) {
-        const dx = x - cx, dy = y - cy, dz = z - cz;
-        if (dx * dx + dy * dy + dz * dz > R2) continue;
-        const bid = getBlock(x, y, z);
-        if (bid === AIR) continue;
-        // Liquids survive blasts unless the kind clears them; otherwise
-        // the blast passes through them. Custom carveBlast tiers must keep
-        // this guard.
-        if (isLiquid(bid) && !kind.clearsLiquids) continue;
-      const victimKind = isTntLike(bid) ? kindOfBlock(bid) : null;
-      // Ultras never pool and are never consumed: any carve uncovering one
-      // queues its own band blast instead.
-      if (victimKind && victimKind.band) {
-        queueChained(x, y, z, victimKind);
-        continue;
-      }
-      if (victimKind && victimKind.pool) {
-          if (pool) {
-            // Pool carve consumes megas silently, members and stragglers alike.
-            clearCell(x, y, z, touched);
-          } else if (wakeMegas) {
-            // Normal carve leaves mega victims standing for the pool.
-            wakeMegas.push([x, y, z]);
-          } else {
-            clearCell(x, y, z, touched);
-          }
-          continue;
-        }
-        if (victimKind) {
-          if (pool) {
-            // Normals inside a mega pool go off with it, no delayed cascade.
-            clearCell(x, y, z, touched);
-            continue;
-          }
-          queueChained(x, y, z, victimKind);
-          continue;
-        }
-        clearCell(x, y, z, touched);
-      }
+    carvePoolColumn(x, { x: cx, y: cy, z: cz }, R, kind, touched, pool, open);
+  }
+}
+// One x-column of a pooled carve (shared by the sync sphere above and the
+// sliced carve jobs): column-top clamp first, sphere test per cell. The
+// normal blast uses the open ball (strict test) so its small crater reads
+// round instead of square; mega pools keep the closed ball.
+function carvePoolColumn(x, m, R, kind, touched, pool = true, open = false) {
+  const R2 = R * R;
+  for (let z = Math.max(-WORLD_RADIUS, Math.ceil(m.z - R)); z <= Math.min(WORLD_RADIUS, Math.floor(m.z + R)); z++) {
+    const yLo = Math.max(1, Math.ceil(m.y - R));
+    let yHi = Math.floor(m.y + R);
+    // Skip the air above the terrain: only the blast at or below the
+    // column top can hit anything (same cells as before, half the scan).
+    const top = colTops[dim][colTopIdx(x, z)];
+    if (top < yHi) yHi = top;
+    if (top < yLo) continue;
+    for (let y = yLo; y <= yHi; y++) {
+      carvePoolCell(x, y, z, m.x, m.y, m.z, R2, kind, touched, pool, open);
     }
   }
+}
+function carvePoolCell(x, y, z, cx, cy, cz, R2, kind, touched, pool, open = false) {
+  const dx = x - cx, dy = y - cy, dz = z - cz;
+  const d2 = dx * dx + dy * dy + dz * dz;
+  if (d2 > R2) return;
+  if (open && d2 >= R2 - 1 && dx * dx !== R2 && dy * dy !== R2 && dz * dz !== R2) {
+    // Open ball: trim the corner shell just inside R (it voxelizes as a
+    // square at this radius) but keep the six axis tips, so the crater
+    // reads round at the same reach and depth.
+    return;
+  }
+  const bid = getBlock(x, y, z);
+  if (bid === AIR) return;
+  // Liquids survive blasts unless the kind clears them; otherwise
+  // the blast passes through them. Custom carveBlast tiers must keep
+  // this guard.
+  if (isLiquid(bid) && !kind.clearsLiquids) return;
+  const victimKind = isTntLike(bid) ? kindOfBlock(bid) : null;
+  // Ultras never pool and are never consumed: any carve uncovering one
+  // queues its own band blast instead.
+  if (victimKind && victimKind.band) {
+    queueChained(x, y, z, victimKind);
+    return;
+  }
+  if (victimKind && victimKind.pool) {
+    if (pool) {
+      // Pool carve consumes megas silently, members and stragglers alike.
+      clearCell(x, y, z, touched);
+    } else if (wakeMegas) {
+      // Normal carve leaves mega victims standing for the pool.
+      wakeMegas.push([x, y, z]);
+    } else {
+      clearCell(x, y, z, touched);
+    }
+    return;
+  }
+  if (victimKind) {
+    if (pool) {
+      // Normals inside a mega pool go off with it, no delayed cascade.
+      clearCell(x, y, z, touched);
+      return;
+    }
+    queueChained(x, y, z, victimKind);
+    return;
+  }
+  clearCell(x, y, z, touched);
 }
 
 export function litCount() {

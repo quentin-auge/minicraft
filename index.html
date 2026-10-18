@@ -111,6 +111,24 @@
       background: rgba(0,0,0,0.5); padding: 12px 22px; border-radius: 10px;
       opacity: 0; transition: opacity .4s; pointer-events: none; text-align: center;
     }
+    /* Mega-ignition overlays (fullscreen; opacity driven from the sim loop
+       on sim-time so pausing freezes the glare mid-fade) */
+    #blastFlash {
+      position: fixed; inset: 0; z-index: 40;
+      background: radial-gradient(circle at 50% 55%,
+        rgba(255,250,230,0.95) 0%, rgba(255,170,60,0.55) 35%,
+        rgba(255,90,10,0.25) 60%, transparent 80%);
+      opacity: 0; pointer-events: none;
+      display: none;
+    }
+    #fireVeil {
+      position: fixed; inset: 0; z-index: 39;
+      background: radial-gradient(circle at 50% 50%,
+        rgba(255,150,30,0.55) 0%, rgba(255,110,10,0.45) 55%,
+        rgba(200,60,0,0.4) 100%);
+      opacity: 0; pointer-events: none;
+      display: none;
+    }
     /* Portal travel spiral (fullscreen overlay; opacity + rotate run on the
        compositor, so the spiral keeps spinning through the teleport) */
     #portalSpiral {
@@ -150,6 +168,8 @@
   <div id="crosshair"></div>
   <div id="hotbar"></div>
   <div id="toast"></div>
+  <div id="blastFlash"></div>
+  <div id="fireVeil"></div>
   <div id="portalSpiral">
     <div class="swirl-wrap back"><svg id="portalSpiralBack" viewBox="-100 -100 200 200"></svg></div>
     <div class="swirl-wrap front"><svg id="portalSpiralFront" viewBox="-100 -100 200 200"></svg></div>
