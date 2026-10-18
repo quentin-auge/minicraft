@@ -22,7 +22,7 @@ import {
 import * as player from "./src/player/physics.js";
 import { flyOn, setFly, updateFly } from "./src/player/fly.js";
 import { updateTarget, breakTarget, placeAtSelection, breakBlockAt, purgeFloatingLiquidsAround } from "./src/player/edit.js";
-import { fireHookTarget, fireSkyHook, grappleBlockPick, cancelHook, severHook, updateHook, hookActive, hookAnchor, tickHookFx } from "./src/player/hook.js";
+import { fireHookTarget, fireSkyHook, grapplePick, cancelHook, severHook, updateHook, hookActive, hookAnchor, tickHookFx } from "./src/player/hook.js";
 import { initRope } from "./src/player/rope.js";
 import { tickTNT, initTNTFx, resetTNTMemory, onExplode, onLiquidPurge, shakeSpecFor, bandFront, bandActive, drainBandRemesh, accumulateBandRefresh, megaImminent, megaCarveActive, megaFxActive, MEGA_BLAST_T, MEGA_BLAST_TIME_SCALE } from "./src/fx/tnt.js";
 import { initFx, tickFx, tickDenseFx, denseFxActive, prewarmDenseFx, spawnDense, flushDense, noteDenseSpawn } from "./src/fx/particles.js";
@@ -548,7 +548,7 @@ document.addEventListener("mousedown", (e) => {
     camera.getWorldDirection(_hookDir);
     // Sky-grapple fallback (TNT dimension only): a miss synthesizes a cloud
     // past the fog instead of fizzling. Refusals (fly/hooked) stay refused.
-    if (!fireHookTarget(grappleBlockPick, camera.position, _hookDir)) {
+    if (!fireHookTarget(grapplePick, camera.position, _hookDir)) {
       fireSkyHook(camera.position, _hookDir, scene.fog.far + 40, TNT_SKY_GRAPPLE_MAX, refreshBlocks);
     }
   }
@@ -579,7 +579,7 @@ document.addEventListener("keydown", (e) => {
   }
   if (e.code === "KeyG" && !e.repeat && started && !isHelpOpen() && isLocked()) {
     camera.getWorldDirection(_hookDir);
-    if (!fireHookTarget(grappleBlockPick, camera.position, _hookDir)) {
+    if (!fireHookTarget(grapplePick, camera.position, _hookDir)) {
       fireSkyHook(camera.position, _hookDir, scene.fog.far + 40, TNT_SKY_GRAPPLE_MAX, refreshBlocks);
     }
     e.preventDefault();

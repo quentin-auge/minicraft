@@ -543,6 +543,77 @@ function layoutPortalFill(group, win) {
   m.scale.set(b.sx, b.sy, b.sz);
 }
 
+// Ray vs fill-slab box: standard per-axis slab test. Returns the entry
+// distance plus the entry face normal (tip visual), or null on a miss.
+function raySlabBox(origin, dir, b) {
+  const lo = [b.cx - b.sx / 2, b.cy - b.sy / 2, b.cz - b.sz / 2];
+  const hi = [b.cx + b.sx / 2, b.cy + b.sy / 2, b.cz + b.sz / 2];
+  const o = [origin.x, origin.y, origin.z], d = [dir.x, dir.y, dir.z];
+  let tmin = -Infinity, tmax = Infinity;
+  const face = [0, 1, 0];
+  for (let i = 0; i < 3; i++) {
+    if (d[i] === 0) {
+      if (o[i] < lo[i] || o[i] > hi[i]) return null;
+      continue;
+    }
+    const t1 = (lo[i] - o[i]) / d[i], t2 = (hi[i] - o[i]) / d[i];
+    const tn = Math.min(t1, t2), tf = Math.max(t1, t2);
+    if (tn > tmin) {
+      tmin = tn;
+      face[0] = 0; face[1] = 0; face[2] = 0;
+      face[i] = d[i] > 0 ? -1 : 1;
+    }
+    if (tf < tmax) tmax = tf;
+    if (tmin > tmax) return null;
+  }
+  if (tmax < 0) return null;
+  if (tmin === -Infinity) return { t: 0, face }; // origin inside the slab
+  return { t: Math.max(tmin, 0), face };
+}
+
+// Grapple picker: the fills are visual meshes over AIR/liquid, not blocks,
+// so the block DDA flies through them — this ray-tests the live slabs
+// directly. Nearest slab wins; the descriptor carries the hit point, its
+// player-facing normal, and the fill center the pull lands on (inside the
+// fill, so the normal touch-travel fires on arrival).
+export function pickPortalFill(origin, dir, maxDist = Infinity) {
+  let best = null;
+  for (const f of portalFills.values()) {
+    const b = portalFillBox(f.win);
+    const hit = raySlabBox(origin, dir, b);
+    if (!hit || hit.t > maxDist) continue;
+    const px = origin.x + dir.x * hit.t, py = origin.y + dir.y * hit.t, pz = origin.z + dir.z * hit.t;
+    const dist = Math.hypot(px - origin.x, py - origin.y, pz - origin.z);
+    if (dist > maxDist || (best && dist >= best.dist)) continue;
+    best = { kind: "portal", win: f.win, dist, px, py, pz, cx: b.cx, cy: b.cy, cz: b.cz, face: hit.face };
+  }
+  return best;
+}
+
+// Liveness check for hooks latched onto a fill: a broken frame purges its
+// fill from portalFills, and the hook retracts instead of pulling to air.
+export function portalWindowLive(win) {
+  return portalFills.has(fillKey(win));
+}
+
+// Ghost test for portal pulls: the window's frame ring is passable, so a
+// pull aimed at the fill slides through the ring into the slab instead of
+// stalling on it (top-landing block grapples ghost their anchor column the
+// same way). Interior cells keep normal rules — landing there is still real
+// collision — and everything outside the frame box collides normally. The
+// ring is the frame box minus the fill box, so all families share it.
+export function portalGhostCell(win, bx, by, bz) {
+  const spec = specOf(win);
+  const b = spec.bbox(win);
+  if (bx < b.minX || bx > b.maxX || by < b.baseY || by > b.topY || bz < b.minZ || bz > b.maxZ) return false;
+  const f = portalFillBox(win);
+  const x0 = f.cx - f.sx / 2, x1 = f.cx + f.sx / 2;
+  const y0 = f.cy - f.sy / 2, y1 = f.cy + f.sy / 2;
+  const z0 = f.cz - f.sz / 2, z1 = f.cz + f.sz / 2;
+  if (bx >= x0 && bx < x1 && by >= y0 && by < y1 && bz >= z0 && bz < z1) return false;
+  return true;
+}
+
 function fillKey(win) {
   return `${win.type}:${win.orient}:${win.face || "z"}:${win.minX},${win.minY},${win.minZ}${win.dims || ""}${win.h || ""}`;
 }

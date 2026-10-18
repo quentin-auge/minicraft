@@ -17,6 +17,7 @@
 import { pos, vel, playerBody, collideBody, headInWater, setOnGround, setGhostPass, setHookPlanar, setHookWet, PLAYER_HW, PLAYER_H, EYE } from "./physics.js";
 import { dim, isSolid } from "../core/store.js";
 import { skyGrappleTarget } from "../world/tntstream.js";
+import { pickPortalFill, portalWindowLive, portalGhostCell } from "../world/portals.js";
 import { isSolidId } from "../core/blocks.js";
 import { showRope, showPinnedRope, showTip, hideRope, hideLine, hideTip } from "./rope.js";
 import { pickBlock } from "./edit.js";
@@ -79,6 +80,19 @@ export function grappleBlockPick(origin, dir) {
   return hit ? { kind: "block", x: hit.x, y: hit.y, z: hit.z, id: hit.id, face: hit.face } : null;
 }
 
+// Combined grapple picker: block DDA plus the live portal-fill slabs (which
+// are meshes, not blocks, so the DDA flies through them). Nearer hit wins —
+// aiming at a fill beats the frame/wall behind it, aiming at a frame block
+// still latches the block.
+export function grapplePick(origin, dir) {
+  const block = grappleBlockPick(origin, dir);
+  const portal = pickPortalFill(origin, dir);
+  if (!portal) return block;
+  if (!block) return portal;
+  const bd = Math.hypot(block.x + 0.5 - origin.x, block.y + 0.5 - origin.y, block.z + 0.5 - origin.z);
+  return portal.dist <= bd ? portal : block;
+}
+
 // Anchor readout for streaming eviction pins (null when unhooked).
 export function hookAnchor() {
   if (!hook) return null;
@@ -118,17 +132,57 @@ function fireBlock(t, spec) {
   if (!isSolidId(t.id)) return false;
   const face = t.face ?? [0, 1, 0];
   const a = { kind: "block", spec, bx: t.x, by: t.y, bz: t.z, fx: face[0], fy: face[1], fz: face[2] };
-  spec.retarget(a);
+  hookRetarget(a);
   const sx = pos.x, sy = pos.y + spec.eyeDy, sz = pos.z;
   if (Math.hypot(a.tx - sx, a.ty - sy, a.tz - sz) < 0.3) return false;
   const dist = Math.hypot(a.ax - sx, a.ay - sy, a.az - sz);
   hook = { ...a, spec, sx, sy, sz, tx: a.tx, ty: a.ty, tz: a.tz, hx: sx, hy: sy, hz: sz, fly: 0, dist, flying: true, arrived: false, hang: false, pulling: false, stuck: 0 };
   line = { spec, hx: sx, hy: sy, hz: sz, retracting: false };
-  setGhostPass((bx, by, bz) => !!hook && !hook.arrived && hook.spec.ghost(bx, by, bz, hook));
+  setGhostPass((bx, by, bz) => !!hook && !hook.arrived && hookGhost(bx, by, bz, hook));
   return true;
 }
 
-const TARGET_FILTERS = { block: fireBlock };
+// Portal-fill grapple: fills are visual slabs over AIR/liquid, so the anchor
+// is the slab hit point and the landing is the fill center — arriving snaps
+// the body inside the fill and the normal touch-travel fires (mid-pull, too,
+// if the body crosses the slab first). The frame ring ghosts, so the ride
+// slides through it into the slab instead of stalling on it; the window is
+// static while live, so re-resolution is a no-op (anchor and landing stay
+// as fired).
+function firePortal(t, spec) {
+  if (!portalWindowLive(t.win)) return false;
+  const a = {
+    kind: "portal", spec, win: t.win,
+    fx: t.face[0], fy: t.face[1], fz: t.face[2],
+    tx: t.cx, ty: t.cy, tz: t.cz,
+    ax: t.px, ay: t.py, az: t.pz,
+    topLand: true, retarget: retargetPortal,
+    ghost: (bx, by, bz, h) => portalGhostCell(h.win, bx, by, bz),
+  };
+  hookRetarget(a);
+  const sx = pos.x, sy = pos.y + spec.eyeDy, sz = pos.z;
+  if (Math.hypot(a.tx - sx, a.ty - sy, a.tz - sz) < 0.3) return false;
+  const dist = Math.hypot(a.ax - sx, a.ay - sy, a.az - sz);
+  hook = { ...a, sx, sy, sz, hx: sx, hy: sy, hz: sz, fly: 0, dist, flying: true, arrived: false, hang: false, pulling: false, stuck: 0 };
+  line = { spec, hx: sx, hy: sy, hz: sz, retracting: false };
+  setGhostPass((bx, by, bz) => !!hook && !hook.arrived && hookGhost(bx, by, bz, hook));
+  return true;
+}
+
+function retargetPortal(h) {
+  void h;
+  // Fills never move while live: anchor and landing stay as fired. The
+  // no-op override matters — falling back to the block resolver would read
+  // undefined cells into NaN anchor/landing.
+}
+
+// Target-level dispatch, no kind switches: a target may override its kind
+// spec's re-resolution/ghosting (portal fills do — static anchor,
+// frame-ring ghost); blocks fall through to the grapple spec.
+function hookRetarget(h) { (h.retarget ?? h.spec.retarget)(h); }
+function hookGhost(bx, by, bz, h) { return (h.ghost ?? h.spec.ghost)(bx, by, bz, h); }
+
+const TARGET_FILTERS = { block: fireBlock, portal: firePortal };
 
 // Re-resolve every frame (flight and pull): the rope anchor sits centered
 // on the aimed face plane (top faces: column-top surface point;
@@ -294,7 +348,7 @@ export function updateHook(dt) {
   }
   const spec = hook.spec;
   if (hook.flying) {
-    spec.retarget(hook); // track column edits (mob kinds: mob.pos) mid-flight
+    hookRetarget(hook); // track column edits (mob kinds: mob.pos) mid-flight
     const step = spec.throwSpeed * spec.boost * dt;
     hook.fly += step / hook.dist;
     if (hook.fly >= 1) {
@@ -322,8 +376,7 @@ export function updateHook(dt) {
 // collision + slide until close, then stand or hang by targeting.
 function pullSelfToAnchor(dt) {
   const spec = hook.spec;
-  spec.retarget(hook);
-  line.hx = hook.ax; line.hy = hook.ay; line.hz = hook.az;
+  hookRetarget(hook);
   const dx = hook.tx - pos.x, dy = hook.ty - pos.y, dz = hook.tz - pos.z;
   const dist = Math.hypot(dx, dy, dz);
   const step = spec.pullSpeed * dt;
