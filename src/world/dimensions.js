@@ -57,10 +57,10 @@ export const DIMENSIONS = [
     env: TNT_ENV,
     infinite: true,
     // No moon, no space fade (TNT_ENV.space), no bands: ultras wipe an
-    // ignition-centered window instead. Sky-grapple allowed (synthesized
-    // lattice clouds past the fog).
+    // ignition-centered window instead (256-disc, ±256: height matches the
+    // radius). Sky-grapple allowed (synthesized lattice clouds past the fog).
     moon: false,
-    ultra: { bands: false, windowR: 256, windowHalfH: 90 },
+    ultra: { bands: false, windowR: 256, windowHalfH: 256 },
     skyGrapple: true,
     generate: (seed) => generateTntDimension(seed),
     generateAsync: (seed) => bootTntStream(seed),
