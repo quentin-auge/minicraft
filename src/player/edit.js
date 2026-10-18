@@ -10,7 +10,7 @@ import { igniteTNT, isLitTNT, detonateNow, noteTntPlaced, kindOfBlock, trackMega
 import { noteGlowstonePlace, clearGlowstoneAt } from "../world/glowstone.js";
 import { noteFlowerPlace, clearFlowerAt } from "../world/flowers.js";
 import { noteBlockLightEdit } from "../render/blocklights.js";
-import { notePortalEdit } from "../world/portals.js";
+import { notePortalEdit, notePortalEdits } from "../world/portals.js";
 
 export let currentBlock = null;
 const _dir = new THREE.Vector3();
@@ -136,7 +136,15 @@ export function breakBlockAt(x, y, z) {
   if (bid === AIR) return [];
   if (isLiquid(bid)) return [];
   if (isTntLike(bid)) {
-    if (isLitTNT(x, y, z)) return detonateNow(x, y, z);
+    // Second click detonates at once with no refresh callback in play, so
+    // the blast itself must notify the portal index — otherwise destroyed
+    // frames keep stale fills until the player walks within scanner range.
+    // (Ultra returns [] here; its band path owns fills end-to-end.)
+    if (isLitTNT(x, y, z)) {
+      const touched = detonateNow(x, y, z);
+      notePortalEdits(touched);
+      return touched;
+    }
     igniteTNT(x, y, z);
     return [];
   }

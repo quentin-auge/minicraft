@@ -72,6 +72,75 @@ export function spawnBurst(o) {
   bursts.push({ pts, vel, life, max: life, gravity });
 }
 
+// Persistent band-wipe shell (master's ultraShell recipe): one Points cloud
+// with fixed per-particle directions, repositioned in place from the current
+// front radius — a single draw call, zero per-frame allocation, however big
+// the band gets. Respawn a small fraction per update so the wall shimmers
+// instead of flickering.
+const BAND_SHELL_N = 8000;
+let bandShell = null; // { pts, dir, off, n }
+export function initBandShell() {
+  if (!sceneRef) return;
+  if (!bandShell) {
+    const geo = new THREE.BufferGeometry();
+    const pos = new Float32Array(BAND_SHELL_N * 3);
+    const col = new Float32Array(BAND_SHELL_N * 3);
+    const dir = new Float32Array(BAND_SHELL_N * 3);
+    const off = new Float32Array(BAND_SHELL_N);
+    for (let i = 0; i < BAND_SHELL_N; i++) {
+      seedBandDir(dir, off, i);
+      const r = Math.random();
+      let c;
+      if (r < 0.55) c = [1, 0.42 + Math.random() * 0.16, 0.05]; // embers
+      else if (r < 0.8) c = [1, 0.7 + Math.random() * 0.2, 0.12]; // hot sparks
+      else { const g = 0.22 + Math.random() * 0.16; c = [g + 0.12, g * 0.9, g * 0.7]; } // smoke
+      col[i * 3] = c[0]; col[i * 3 + 1] = c[1]; col[i * 3 + 2] = c[2];
+    }
+    geo.setAttribute("position", new THREE.BufferAttribute(pos, 3));
+    geo.setAttribute("color", new THREE.BufferAttribute(col, 3));
+    const mat = new THREE.PointsMaterial({
+      size: 3, sizeAttenuation: false, vertexColors: true,
+      transparent: true, opacity: 1, depthWrite: false, depthTest: false,
+      blending: THREE.AdditiveBlending,
+    });
+    const pts = new THREE.Points(geo, mat);
+    pts.frustumCulled = false;
+    pts.renderOrder = 997;
+    pts.visible = false;
+    sceneRef.add(pts);
+    bandShell = { pts, dir, off, n: BAND_SHELL_N };
+  }
+  bandShell.pts.visible = true;
+}
+function seedBandDir(dir, off, i) {
+  const u = Math.random() * 2 - 1, a = Math.random() * Math.PI * 2;
+  const s = Math.sqrt(Math.max(0, 1 - u * u));
+  dir[i * 3] = s * Math.cos(a);
+  dir[i * 3 + 1] = u;
+  dir[i * 3 + 2] = s * Math.sin(a);
+  off[i] = -Math.random() * 15;
+}
+export function updateBandShell(cx, cy, cz, front, yLo, yHi) {
+  if (!bandShell) return;
+  const { pts, dir, off, n } = bandShell;
+  const arr = pts.geometry.attributes.position.array;
+  for (let i = 0; i < n; i++) {
+    if (Math.random() < 0.04) seedBandDir(dir, off, i);
+    const r = Math.max(0, front + off[i]);
+    let py = cy + dir[i * 3 + 1] * r;
+    if (py < yLo) py = yLo;
+    else if (yHi !== null && yHi !== undefined && py > yHi) py = yHi;
+    arr[i * 3] = cx + dir[i * 3] * r;
+    arr[i * 3 + 1] = py;
+    arr[i * 3 + 2] = cz + dir[i * 3 + 2] * r;
+  }
+  pts.geometry.attributes.position.needsUpdate = true;
+  pts.visible = true;
+}
+export function hideBandShell() {
+  if (bandShell) bandShell.pts.visible = false;
+}
+
 export function spawnFlash(o) {
   if (!sceneRef) return;
   const { x, y, z, color = 0xffdd77, life = 0.28, size = 1, growth = 4.2, maxRadius = null, speed = 30, retractSpeed = null } = o;

@@ -5,13 +5,13 @@
 // click all select with wraparound over the live list.
 import {
   GRASS, DIRT, STONE, SAND, LOG, PLANKS, GLASS, LEAVES, WATER,
-  FLOWER, TNT, MEGA_TNT, PORTAL, OBSIDIAN,
+  FLOWER, TNT, MEGA_TNT, ULTRA_TNT, PORTAL, OBSIDIAN,
 } from "../core/blocks.js";
 import { materialsFor } from "../core/textures.js";
 
 const BASE_ITEMS = [
   GRASS, DIRT, STONE, SAND, LOG, PLANKS, GLASS, LEAVES,
-  WATER, FLOWER, TNT, MEGA_TNT, PORTAL, OBSIDIAN,
+  WATER, FLOWER, TNT, MEGA_TNT, ULTRA_TNT, PORTAL, OBSIDIAN,
 ];
 
 let items = BASE_ITEMS.slice();

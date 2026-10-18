@@ -63,6 +63,15 @@ export function notePortalEdit(x, y, z) {
   refreshPortalFills(x, y, z);
 }
 
+// Band-wipe fast path: track frames exactly like notePortalEdits but skip
+// the per-cell fill refresh (thousands of redundant R=12 window evaluations
+// per carve slice); the periodic scanner heals fills from the dirty flag.
+export function notePortalFramesOnly(coords) {
+  if (!coords) return;
+  for (const [x, y, z] of coords) trackFrame(x, y, z, getBlock(x, y, z));
+  portalDirty = true;
+}
+
 export function notePortalEdits(coords) {
   if (!coords) return;
   const seen = new Set();

@@ -12,7 +12,7 @@ export const WATER = 7;
 export const PLANKS = 8;
 export const GLASS = 9;
 export const TNT = 10;
-// Append-only ids: 22 shipped as mega (placeable), 23 reserved for ultra.
+// Append-only ids: 22 shipped as mega, 23 as ultra (both placeable).
 export const MEGA_TNT = 22;
 export const ULTRA_TNT = 23;
 export const FLOWER = 11;
@@ -39,6 +39,7 @@ export const BLOCK_INFO = {
   [GLASS]: { name: "Glass", solid: true, opaque: false, placeable: true },
   [TNT]: { name: "TNT", solid: true, opaque: true, placeable: true },
   [MEGA_TNT]: { name: "Mega TNT", solid: true, opaque: true, placeable: true },
+  [ULTRA_TNT]: { name: "Ultra TNT", solid: true, opaque: true, placeable: true },
   [FLOWER]: { name: "Flower", solid: false, opaque: false, placeable: true },
   // Opaque despite the glow: the texture is fully solid, so meshing must
   // cull neighbor faces and liquid sheets against it like any solid wall —
@@ -65,5 +66,5 @@ export function isLiquid(id) {
 }
 
 export function isTntLike(id) {
-  return id === TNT || id === MEGA_TNT;
+  return id === TNT || id === MEGA_TNT || id === ULTRA_TNT;
 }

@@ -11,7 +11,7 @@ import { flyOn, setFly, updateFly } from "./src/player/fly.js";
 import { updateTarget, breakTarget, placeAtSelection, breakBlockAt, purgeFloatingLiquidsAround } from "./src/player/edit.js";
 import { fireHookTarget, grappleBlockPick, cancelHook, severHook, updateHook, hookActive, tickHookFx } from "./src/player/hook.js";
 import { initRope } from "./src/player/rope.js";
-import { tickTNT, initTNTFx, resetTNTMemory, onExplode, onLiquidPurge, shakeSpecFor } from "./src/fx/tnt.js";
+import { tickTNT, initTNTFx, resetTNTMemory, onExplode, onLiquidPurge, shakeSpecFor, bandFront, bandActive, drainBandRemesh, accumulateBandRefresh } from "./src/fx/tnt.js";
 import { initFx, tickFx } from "./src/fx/particles.js";
 import { initPrecip, tickSnow } from "./src/fx/precip.js";
 import { MOON_MIN_Y, MOON_R, generateMoon, generateMoonUnderRows, markMoonBuilt, moonReady, moonChunkCenters } from "./src/world/moon.js";
@@ -30,6 +30,7 @@ import { initSky, tickSky } from "./src/render/sky.js";
 import {
   initPortals, buildPortalDom, setPortalTravelHook, tickPortals,
   resetFrameSet, scanWorldPortals, clearPortalFills, notePortalEdits,
+  notePortalFramesOnly,
 } from "./src/world/portals.js";
 import { villageFrames } from "./src/world/village.js";
 import { CHUNK, RENDER_DIST, setBlock } from "./src/core/store.js";
@@ -135,6 +136,8 @@ function updateCamera(dt = 0) {
 
 let worldReady = false;
 let building = false;
+// DPR-dip state for band wipes (false = full resolution).
+let bandDpr = false;
 // Moon-band hotbar (slots flip at the Moon's lower end); reset per world.
 let moonBand = false;
 
@@ -149,6 +152,8 @@ async function buildWorld() {
   building = true;
   severHook();
   resetTNTMemory();
+  bandDpr = false;
+  renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
   resetGlowstoneMemory();
   resetFlowerMemory();
   resetBlockLightMemory();
@@ -414,7 +419,33 @@ function loop(now) {
       severHook();
       spawnPlayer();
     }
-    tickTNT(dt, (touched) => { notePortalEdits(touched); refreshBlocks(touched); });
+    // While a band carves, blast refresh splits: portal frames track only
+    // (fills heal from the dirty flag), chunk keys queue for the budgeted
+    // remesh drain below — never a synchronous rebuild avalanche.
+    tickTNT(dt, (touched) => {
+      if (bandActive()) {
+        notePortalFramesOnly(touched);
+        accumulateBandRefresh(touched);
+      } else {
+        notePortalEdits(touched);
+        refreshBlocks(touched);
+      }
+    });
+    drainBandRemesh(pos.x, pos.z);
+    // GPU relief while the wipe runs (master's quality-tier dip): full
+    // resolution restores the frame the queue empties.
+    const bandNow = bandActive();
+    if (bandNow !== bandDpr) {
+      bandDpr = bandNow;
+      renderer.setPixelRatio(bandNow ? 1 : Math.min(devicePixelRatio, 2));
+    }
+    // Ultra bands re-top the shake while the camera sits inside the
+    // advancing front (decays naturally once outside); pause-safe, dt-driven.
+    const bf = bandFront();
+    if (bf) {
+      const bdx = camera.position.x - bf.x, bdy = camera.position.y - bf.y, bdz = camera.position.z - bf.z;
+      if (bdx * bdx + bdy * bdy + bdz * bdz < bf.r * bf.r) addCamShake(dt * 2);
+    }
     tickPortals(dt, true);
     const hit = updateTarget(camera, selectedId());
     if (hit) {

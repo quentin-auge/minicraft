@@ -829,6 +829,16 @@ export function pendingCount() {
   return chunkQueue.length;
 }
 
+// Chunk keys touched by editing column (x, z), for remesh scheduling
+// outside the mesher (band-wipe frontier gating accumulates these).
+export function chunkKeysForColumn(x, z) {
+  return columnKeys(x, z);
+}
+
+export function isChunkBuilt(ck) {
+  return chunkMeshes.has(ck);
+}
+
 function columnKeys(x, z) {
   const cx = chunkOf(x), cz = chunkOf(z);
   const out = [cx + "_" + cz];
