@@ -40,7 +40,10 @@ export const BLOCK_INFO = {
   [TNT]: { name: "TNT", solid: true, opaque: true, placeable: true },
   [MEGA_TNT]: { name: "Mega TNT", solid: true, opaque: true, placeable: true },
   [FLOWER]: { name: "Flower", solid: false, opaque: false, placeable: true },
-  [PORTAL]: { name: "Portal", solid: true, opaque: false, placeable: true },
+  // Opaque despite the glow: the texture is fully solid, so meshing must
+  // cull neighbor faces and liquid sheets against it like any solid wall —
+  // otherwise coplanar sheets shimmer at the contact while moving.
+  [PORTAL]: { name: "Portal", solid: true, opaque: true, placeable: true },
   [ENDSTONE]: { name: "End Stone", solid: true, opaque: true, placeable: false },
   [CLOUD]: { name: "Cloud", solid: true, opaque: true, placeable: false },
   [OBSIDIAN]: { name: "Obsidian", solid: true, opaque: true, placeable: true },

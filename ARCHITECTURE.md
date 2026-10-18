@@ -42,7 +42,7 @@ stored, how it flows, and how each system works. Read this before changing code.
 ## Data model
 
 - Block ids are stable integers (`AIR = 0` … `MOON_WATER = 21`); new blocks only append.
-- `BLOCK_INFO[id]` carries `solid`, `opaque`, `placeable`, and the `light` emitter key for emissive blocks (glowstone first). Physics and meshing both derive from it; block lights dispatch through it.
+- `BLOCK_INFO[id]` carries `solid`, `opaque`, `placeable`, and the `light` emitter key for emissive blocks (glowstone first). Physics and meshing both derive from it; block lights dispatch through it. `opaque` means fully occluding for meshing culls (PORTAL included — its texture is solid, so water sheets and neighbor faces cull against it instead of z-fighting at the contact).
 - Voxel key: `(x + 1024) * 2^32 + y * 2048 + (z + 1024)` (decoded by `keyXYZ`, kept beside the encoder); one `Map` per dimension in `worlds`.
 - No ceiling: columns run any `y >= 0` (floor `y = 0` bedrock stays); `dim`/`world` point at the active dimension's map and tops.
 - Noise (`noise.js`) matches master's formulas exactly, including its z-flipped
