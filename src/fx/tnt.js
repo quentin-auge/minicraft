@@ -132,7 +132,6 @@ function makeMegaLitVisual(x, y, z, kind) {
   shell.scale.setScalar(0.001);
   sceneRef.add(shell);
   megaVeils.set(k, { veil, heat, shell });
-  syncMegaLights();
 }
 function tickMegaLitVisual(k, t, kind) {
   const v = megaVeils.get(k);
@@ -149,7 +148,6 @@ function tickMegaLitVisual(k, t, kind) {
     v.shell.material.color.setHex(veilColorFor(kind));
     v.shell.material.opacity = 0.45 * g;
   }
-  syncMegaLights();
 }
 function clearMegaLitVisual(k) {
   const v = megaVeils.get(k);
@@ -164,7 +162,6 @@ function clearMegaLitVisual(k) {
     v.heat.material.dispose();
     v.shell.material.dispose();
   }
-  syncMegaLights();
 }
 
 // Pooled surrounding lights for lit megas (max 8, one per crater sphere).
@@ -201,6 +198,9 @@ let spotCache = { sig: null, spots: [] };
 function computeLightSpots() {
   const spots = [];
   const seen = new Set();
+  // One cluster search per pool, not per lit member: results are memoised by
+  // every member key, so a mass ignition recomputes each cluster once.
+  const clusterOf = new Map();
   for (const t of lit.values()) {
     const tk = kindOf(t.kind);
     if (!tk.light) continue;
@@ -211,21 +211,26 @@ function computeLightSpots() {
       seen.add(k);
       continue;
     }
-    const { members, sized } = collectMegaCluster(t.x, t.y, t.z, tk);
-    if (!members.length) continue;
-    // Cluster fuse = earliest lit member (stragglers have no fuse of their
-    // own but detonate with the pool, flickering in sync).
-    let fminKey = null, fmin = Infinity, tot = t.total;
-    for (const m of members) {
-      const lt = lit.get(m.key);
-      if (lt && lt.fuse < fmin) { fmin = lt.fuse; fminKey = m.key; tot = lt.total; }
+    let cl = clusterOf.get(k);
+    if (!cl) {
+      const { members, sized } = collectMegaCluster(t.x, t.y, t.z, tk);
+      if (!members.length) continue;
+      // Cluster fuse = earliest lit member (stragglers have no fuse of their
+      // own but detonate with the pool, flickering in sync).
+      let fminKey = null, fmin = Infinity, tot = t.total;
+      for (const m of members) {
+        const lt = lit.get(m.key);
+        if (lt && lt.fuse < fmin) { fmin = lt.fuse; fminKey = m.key; tot = lt.total; }
+      }
+      if (fminKey === null) continue;
+      cl = { members, sized, fminKey, tot };
+      for (const m of members) clusterOf.set(m.key, cl);
     }
-    if (fminKey === null) continue;
-    for (let i = 0; i < members.length; i++) {
-      const m = members[i];
+    for (let i = 0; i < cl.members.length; i++) {
+      const m = cl.members[i];
       if (seen.has(m.key)) continue;
       seen.add(m.key);
-      spots.push({ x: m.x + 0.5, y: m.y + 0.5, z: m.z + 0.5, band: false, R: sized[i]?.r ?? tk.radius, kind: t.kind, fminKey, total: tot, key: m.key });
+      spots.push({ x: m.x + 0.5, y: m.y + 0.5, z: m.z + 0.5, band: false, R: cl.sized[i]?.r ?? tk.radius, kind: t.kind, fminKey: cl.fminKey, total: cl.tot, key: m.key });
     }
   }
   // Largest craters first so the 8-light cap covers the most ground.
@@ -580,29 +585,41 @@ function markBandDirty(job, gx, gz, idx) {
 function cellsDone(job) {
   return !job.cells || job.celli >= job.cells.length;
 }
-// Budgeted remesh drain, called every sim frame from main.js: pending
-// non-band chunks first (ungated), then frontier-ready band chunks
-// nearest-first. Unbuilt chunks drop out — streaming builds them with the
-// voxels already in place. Finishes the job (end-of-job purge, shell hide)
-// once the carve and the dirty set both drain.
+// Budgeted remesh drain, called every sim frame from main.js: frontier-ready
+// mega chunks first, then other pending chunks and band-frontier chunks.
+// Unbuilt chunks drop out — streaming builds them with the voxels already in
+// place. Carve jobs finish after their frontier-ready remeshes drain.
 export function drainBlastRemesh(px, pz) {
-  if (!blastRefreshPending.size && !bandJobs.length) return;
+  if (!blastRefreshPending.size && !bandJobs.length && !carveJobs.length) return;
   const deadline = performance.now() + REMESH_BUDGET_MS;
   const dist2 = (ck) => {
     const u = ck.indexOf("_");
     const dx = (+ck.slice(0, u)) * 16 + 8 - px, dz = (+ck.slice(u + 1)) * 16 + 8 - pz;
     return dx * dx + dz * dz;
   };
+  const rebuiltThisPass = new Set();
   const rebuildWithin = (cks) => {
     cks.sort((a, b) => dist2(a) - dist2(b));
     let i = 0;
     for (; i < cks.length; i++) {
+      if (rebuiltThisPass.has(cks[i])) continue;
       if (performance.now() >= deadline) break;
       const u = cks[i].indexOf("_");
       rebuildChunk(+cks[i].slice(0, u), +cks[i].slice(u + 1));
+      rebuiltThisPass.add(cks[i]);
     }
     return cks.slice(i); // leftovers stay dirty
   };
+  const carveJob = carveJobs[0];
+  if (carveJob?.ready.size) {
+    const ready = [];
+    for (const ck of carveJob.ready) {
+      carveJob.ready.delete(ck);
+      blastRefreshPending.delete(ck);
+      if (isChunkBuilt(ck)) ready.push(ck);
+    }
+    for (const ck of rebuildWithin(ready)) carveJob.ready.add(ck);
+  }
   if (blastRefreshPending.size) {
     const rest = [];
     for (const ck of blastRefreshPending) {
@@ -611,22 +628,28 @@ export function drainBlastRemesh(px, pz) {
     blastRefreshPending.clear();
     for (const ck of rebuildWithin(rest)) blastRefreshPending.add(ck);
   }
-  const job = bandJobs[0];
-  if (!job) return;
-  if (job.dirty.size) {
-    const ready = [];
-    for (const [ck, m] of job.dirty) {
-      if (!cellsDone(job) || m >= job.ci) continue; // frontier hasn't passed
-      job.dirty.delete(ck);
-      if (isChunkBuilt(ck)) ready.push(ck);
+  const bandJob = bandJobs[0];
+  if (bandJob) {
+    if (bandJob.dirty.size) {
+      const ready = [];
+      for (const [ck, m] of bandJob.dirty) {
+        if (!cellsDone(bandJob) || m >= bandJob.ci) continue; // frontier hasn't passed
+        bandJob.dirty.delete(ck);
+        if (isChunkBuilt(ck)) ready.push(ck);
+      }
+      // Unbuilt chunks never need a refresh: streaming builds them current.
+      for (const [ck] of bandJob.dirty) {
+        if (!isChunkBuilt(ck)) bandJob.dirty.delete(ck);
+      }
+      for (const ck of rebuildWithin(ready)) bandJob.dirty.set(ck, -1);
     }
-    // Unbuilt chunks never need a refresh: streaming builds them current.
-    for (const [ck] of job.dirty) {
-      if (!isChunkBuilt(ck)) job.dirty.delete(ck);
-    }
-    for (const ck of rebuildWithin(ready)) job.dirty.set(ck, -1);
+    if (bandJob.carveDone && bandJob.dirty.size === 0) finishBandJob(bandJob);
   }
-  if (job.carveDone && job.dirty.size === 0) finishBandJob(job);
+
+  if (carveJob && carveJob.carveDone && carveJob.dirty.size === 0 && carveJob.ready.size === 0) {
+    carveJobs.shift();
+    finishCarveJob(carveJob);
+  }
 }
 // End of a band wipe, once carve and remesh both drain: one floating-liquid
 // purge seeded from the band boundary (in-band liquids were cleared; only
@@ -988,75 +1011,131 @@ function drainFxJobs() {
     noteDenseSpawn(3.0);
   }
 }
-// Sliced pooled carve: members carve in x-column slices under a per-tick
-// budget (same shape as the band-wipe drain). FX/knockback/shake/overlay
-// fire instantly; the crater lands within ~0.25 s. Completion reuses the
-// budgeted remesh drain (blastRefreshPending) instead of synchronous rebuilds.
-const carveJobs = []; // { members, radii, kind, mi, x0, touched }
-const CARVE_COLS_PER_TICK = 1536;
+// Pooled carve jobs dedupe the union's x-z columns, then remesh completed
+// chunks as the carve frontier passes them.
+const carveJobs = []; // { members, radii, kind, columns, chunkLast, dirty, ready, touched }
+const CARVE_BUDGET_MS = 8;
+const CARVE_COLUMNS_PER_TICK = 2048;
+const CARVE_PLAN_COLUMNS_PER_TICK = 16384;
 export function megaCarveActive() { return carveJobs.length > 0; }
-  // Rolling-ignition base delay, set while draining queued FX members so one
-  // member's layers all share its stagger offset (snapshot per job).
 function drainCarveJobs() {
   if (!carveJobs.length) return;
-  // Adaptive budget: every pool finishes carving in ~15 ticks whatever its
-  // size, so craters land on the same beat at R=15 and R=40.
-  let cols = CARVE_COLS_PER_TICK;
-  {
-    const job0 = carveJobs[0];
-    let rem = 0;
-    for (let mi = job0.mi; mi < job0.members.length; mi++) {
-      const m0 = job0.members[mi], R0 = job0.radii[mi];
-      const cur = (mi === job0.mi && job0.x0 !== -Infinity) ? job0.x0 : Math.max(-dimBound(), Math.ceil(m0.x - R0));
-      rem += Math.max(0, Math.min(dimBound(), Math.floor(m0.x + R0)) - cur + 1);
-    }
-    if (rem > 0) cols = Math.max(cols, Math.ceil(rem / 15));
-  }
-  while (carveJobs.length && cols > 0) {
+  const deadline = performance.now() + CARVE_BUDGET_MS;
+  let planned = 0, carved = 0;
+  while (carveJobs.length) {
     const job = carveJobs[0];
-    const m = job.members[job.mi];
-    if (!m) {
-      carveJobs.shift();
-      finishCarveJob(job);
-      continue;
+    const carving = job.columnsReady;
+    if (!job.columnsReady) {
+      const p = nextMegaProjectionColumn(job);
+      if (!p) {
+        job.columnsReady = true;
+        continue;
+      }
+      const [x, z] = p;
+      const index = job.columns.length;
+      job.columns.push([x, z]);
+      for (const ck of chunkKeysForColumn(x, z)) job.chunkLast.set(ck, index);
+      planned++;
+    } else if (job.ci < job.columns.length) {
+      const index = job.ci++;
+      const [x, z] = job.columns[index];
+      const before = job.touched.length;
+      carveMegaUnionColumn(x, z, job.columnGrid, job.members, job.radii, job.kind, job.touched);
+      const keys = chunkKeysForColumn(x, z);
+      if (job.touched.length > before) {
+        for (const ck of keys) job.dirty.add(ck);
+      }
+      for (const ck of keys) {
+        if (job.chunkLast.get(ck) !== index) continue;
+        job.chunkLast.delete(ck);
+        if (job.dirty.delete(ck)) job.ready.add(ck);
+      }
+      carved++;
+    } else {
+      job.carveDone = true;
+      break;
     }
-    const R = job.radii[job.mi];
-    if (job.x0 === -Infinity) job.x0 = Math.max(-dimBound(), Math.ceil(m.x - R));
-    const x1 = Math.min(dimBound(), Math.floor(m.x + R));
-    while (job.x0 <= x1 && cols > 0) {
-      carvePoolColumn(job.x0, m, R, job.kind, job.touched);
-      job.x0++;
-      cols--;
-    }
-    if (job.x0 > x1) { job.mi++; job.x0 = -Infinity; }
+    if ((!carving && planned >= CARVE_PLAN_COLUMNS_PER_TICK) || (carving && carved >= CARVE_COLUMNS_PER_TICK)) break;
+    if ((carving || (planned & 127) === 0) && performance.now() >= deadline) break;
   }
 }
 function finishCarveJob(job) {
-  const touched = job.touched;
-  // Displaced-liquid restore per member (clearing kinds leave air behind).
-  if (touched.length) {
-    const seen = new Set();
-    for (const [x, y, z] of touched) seen.add(x + "," + y + "," + z);
-    for (const m of job.members) {
-      const dk = m.x + "," + m.y + "," + m.z;
-      const fill = displaced.get(dk) ?? null;
-      displaced.delete(dk);
-      if (fill !== null && !job.kind.clearsLiquids) {
-        setBlock(m.x, m.y, m.z, fill);
-        if (!seen.has(dk)) { seen.add(dk); touched.push([m.x, m.y, m.z]); }
+  try {
+    const touched = job.touched;
+    const finalChanges = [];
+    if (job.kind.clearsLiquids) {
+      for (const m of job.members) displaced.delete(m.x + "," + m.y + "," + m.z);
+    } else if (touched.length) {
+      const seen = new Set();
+      for (const [x, y, z] of touched) seen.add(x + "," + y + "," + z);
+      for (const m of job.members) {
+        const dk = m.x + "," + m.y + "," + m.z;
+        const fill = displaced.get(dk) ?? null;
+        displaced.delete(dk);
+        if (fill !== null && !job.kind.clearsLiquids) {
+          setBlock(m.x, m.y, m.z, fill);
+          if (!seen.has(dk)) {
+            seen.add(dk);
+            const c = [m.x, m.y, m.z];
+            touched.push(c);
+            finalChanges.push(c);
+          }
+        }
+      }
+    } else {
+      for (const m of job.members) displaced.delete(m.x + "," + m.y + "," + m.z);
+    }
+    const beforePurge = touched.length;
+    purgeBlastLiquids(touched);
+    syncGlowAfterBlast();
+    for (let i = beforePurge; i < touched.length; i++) finalChanges.push(touched[i]);
+    if (touched.length) notePortalFramesOnly(touched);
+    if (finalChanges.length) queueBlastRefresh(finalChanges);
+  } finally {
+    for (const m of job.members) pooling.delete(m.key);
+  }
+}
+function nextMegaProjectionColumn(job) {
+  const B = dimBound();
+  while (job.buildX <= job.buildXMax) {
+    if (job.buildZ !== null && job.buildZ <= job.buildZEnd) return [job.buildX, job.buildZ++];
+    if (job.zIntervalIndex < job.zIntervals.length) {
+      const [z0, z1] = job.zIntervals[job.zIntervalIndex++];
+      job.buildZ = z0;
+      job.buildZEnd = z1;
+      continue;
+    }
+    job.buildX++;
+    if (job.buildX > job.buildXMax) return null;
+    job.activeMembers = job.activeMembers.filter((e) => e.x1 >= job.buildX);
+    while (job.xStart < job.xRanges.length && job.xRanges[job.xStart].x0 <= job.buildX) {
+      const e = job.xRanges[job.xStart++];
+      if (e.x1 >= job.buildX) job.activeMembers.push(e);
+    }
+    const spans = [];
+    for (const e of job.activeMembers) {
+      const m = job.members[e.i], R = job.radii[e.i];
+      const dx = job.buildX - m.x;
+      const zRadius = Math.sqrt(Math.max(0, R * R - dx * dx));
+      const z0 = Math.max(-B, Math.ceil(m.z - zRadius));
+      const z1 = Math.min(B, Math.floor(m.z + zRadius));
+      if (z0 <= z1) spans.push([z0, z1]);
+    }
+    spans.sort((a, b) => a[0] - b[0]);
+    job.zIntervals = [];
+    for (const [z0, z1] of spans) {
+      const last = job.zIntervals[job.zIntervals.length - 1];
+      if (last && z0 <= last[1] + 1) {
+        if (z1 > last[1]) last[1] = z1;
+      } else {
+        job.zIntervals.push([z0, z1]);
       }
     }
-  } else {
-    for (const m of job.members) displaced.delete(m.x + "," + m.y + "," + m.z);
+    job.zIntervalIndex = 0;
+    job.buildZ = null;
+    job.buildZEnd = -1;
   }
-  purgeBlastLiquids(touched);
-  syncGlowAfterBlast();
-  // Cheap frame tracking only; chunk rebuilds drain under the 6 ms budget
-  // in drainBlastRemesh and portal fills heal from the dirty-flag scanner.
-  if (touched.length) {
-    notePortalFramesOnly(touched);
-    queueBlastRefresh(touched);
-  }
+  return null;
 }
 // A lit mega or ultra within 0.6 s of detonation: main.js dips DPR early so
 // the resize hitch lands before the blast frame instead of on top of it.
@@ -1070,9 +1149,9 @@ export function megaImminent() {
 
 // Simultaneous mega pool: every mega within blast distance of another mega,
 // transitively, detonates in the same blast. Normals caught inside go off
-// with the pool instead of cascading. Guarded against re-entry while a pool
-// carves, and woken up after normal blasts that uncover megas.
-const pooling = new Set(); // "x,y,z" keys consumed by the running pool
+// with the pool instead of cascading. Queued carve members stay reserved
+// until their pool finishes; normal blasts wake uncovered megas afterwards.
+const pooling = new Set(); // "x,y,z" keys consumed by a running or queued pool
 let wakeMegas = null; // mega victims found by a normal carve, pooled after it
 
 export function igniteTNT(x, y, z, kindKey = null) {
@@ -1198,6 +1277,9 @@ export function tickTNT(dt, refresh) {
     }
     for (const k of done) lit.delete(k);
   }
+  // Countdown lights sync once per frame, after the whole lit set is ticked
+  // (calling it per lit mega made the signature sort O(N^2 log N) a frame).
+  syncMegaLights();
   tickChain(simNow, refresh);
   drainBandJobs(dt);
   drainCarveJobs();
@@ -1384,11 +1466,52 @@ function clearCell(x, y, z, touched) {
   touched.push([x, y, z]);
 }
 
+// Spatial hash for mega clustering: cells sized to the max link radius, so a
+// query radius <= 40 only ever visits the 27 neighbouring cells. Keeps the
+// growth/linkage scans and the "inside the pool" test local instead of
+// O(members x candidates) on a big pool.
+const MEGA_CELL = MEGA_POOL_RADIUS_MAX;
+function gridInsert(grid, x, y, z, val) {
+  const k = Math.floor(x / MEGA_CELL) + "," + Math.floor(y / MEGA_CELL) + "," + Math.floor(z / MEGA_CELL);
+  let b = grid.get(k);
+  if (!b) { b = []; grid.set(k, b); }
+  b.push(val);
+}
+function gridNear(grid, x, y, z, radius, fn) {
+  const x0 = Math.floor((x - radius) / MEGA_CELL), x1 = Math.floor((x + radius) / MEGA_CELL);
+  const y0 = Math.floor((y - radius) / MEGA_CELL), y1 = Math.floor((y + radius) / MEGA_CELL);
+  const z0 = Math.floor((z - radius) / MEGA_CELL), z1 = Math.floor((z + radius) / MEGA_CELL);
+  for (let gx = x0; gx <= x1; gx++)
+    for (let gy = y0; gy <= y1; gy++)
+      for (let gz = z0; gz <= z1; gz++) {
+        const b = grid.get(gx + "," + gy + "," + gz);
+        if (b) for (let i = 0; i < b.length; i++) fn(b[i]);
+      }
+}
+function gridInsert2D(grid, x, z, val) {
+  const k = Math.floor(x / MEGA_CELL) + "," + Math.floor(z / MEGA_CELL);
+  let b = grid.get(k);
+  if (!b) { b = []; grid.set(k, b); }
+  b.push(val);
+}
+function gridNear2D(grid, x, z, radius, fn) {
+  const x0 = Math.floor((x - radius) / MEGA_CELL), x1 = Math.floor((x + radius) / MEGA_CELL);
+  const z0 = Math.floor((z - radius) / MEGA_CELL), z1 = Math.floor((z + radius) / MEGA_CELL);
+  for (let gx = x0; gx <= x1; gx++)
+    for (let gz = z0; gz <= z1; gz++) {
+      const b = grid.get(gx + "," + gz);
+      if (b) for (let i = 0; i < b.length; i++) fn(b[i]);
+    }
+}
+
 // Upfront neighbor search over the mega index (no voxel scans). Growth via
 // counted neighbours within the member's current R/2 (+50% compound each,
 // capped at 40); linkage within its current R, transitively, until radii and
 // membership stabilize. Terminates: membership and counted sets only grow
-// (bounded by placed megas) and radii are capped.
+// (bounded by placed megas) and radii are capped. The candidate census is
+// parsed once (the set is stable: take only re-adds indexed keys) and scanned
+// through a spatial hash, so a big pool never re-parses the whole index every
+// growth iteration.
 function collectMegaCluster(sx, sy, sz, kind) {
   const members = []; // { x, y, z, key, counted: Set, r }
   const seen = new Set();
@@ -1402,43 +1525,44 @@ function collectMegaCluster(sx, sy, sz, kind) {
     return true;
   };
   if (!take(sx, sy, sz)) return { members: [], sized: [] };
-  // Live positions this search: parsed once, stale keys purged.
-  const census = () => {
-    const out = [];
-    for (const key of megaIndex) {
-      const [px, py, pz] = key.split(",").map(Number);
-      if (getBlock(px, py, pz) !== kind.blockId) {
-        megaIndex.delete(key);
-        continue;
-      }
-      out.push([key, px, py, pz]);
-    }
-    return out;
-  };
+  // Live candidates, parsed once (stale keys purged once).
+  const gx = [], gy = [], gz = [], gkey = [];
+  const grid = new Map();
+  for (const key of megaIndex) {
+    const a = key.indexOf(",");
+    const b = key.indexOf(",", a + 1);
+    const x = +key.slice(0, a), y = +key.slice(a + 1, b), z = +key.slice(b + 1);
+    if (getBlock(x, y, z) !== kind.blockId) { megaIndex.delete(key); continue; }
+    const i = gx.length;
+    gx.push(x); gy.push(y); gz.push(z); gkey.push(key);
+    gridInsert(grid, x, y, z, i);
+  }
   for (let grew = true; grew;) {
     grew = false;
-    const pop = census();
     // Growth: uncounted megas within R/2 widen their member.
     for (const m of members) {
       const hR = m.r / 2, hR2 = hR * hR;
-      for (const [key, ox, oy, oz] of pop) {
-        if (key === m.key || m.counted.has(key)) continue;
-        const dx = ox - m.x, dy = oy - m.y, dz = oz - m.z;
-        if (dx * dx + dy * dy + dz * dz > hR2) continue;
+      gridNear(grid, m.x, m.y, m.z, hR, (i) => {
+        const key = gkey[i];
+        if (key === m.key || m.counted.has(key)) return;
+        const dx = gx[i] - m.x, dy = gy[i] - m.y, dz = gz[i] - m.z;
+        if (dx * dx + dy * dy + dz * dz > hR2) return;
         m.counted.add(key);
         m.r = megaPoolRadius(kind, 1 + m.counted.size);
         grew = true;
-      }
+      });
     }
     // Linkage: unjoined megas within a member's current radius join the pool.
-    for (const m of [...members]) {
+    const snapshot = members.slice();
+    for (const m of snapshot) {
       const R2 = m.r * m.r;
-      for (const [key, ox, oy, oz] of pop) {
-        if (seen.has(key)) continue;
-        const dx = ox - m.x, dy = oy - m.y, dz = oz - m.z;
-        if (dx * dx + dy * dy + dz * dz > R2) continue;
-        if (take(ox, oy, oz)) grew = true;
-      }
+      gridNear(grid, m.x, m.y, m.z, m.r, (i) => {
+        const key = gkey[i];
+        if (seen.has(key)) return;
+        const dx = gx[i] - m.x, dy = gy[i] - m.y, dz = gz[i] - m.z;
+        if (dx * dx + dy * dy + dz * dz > R2) return;
+        if (take(gx[i], gy[i], gz[i])) grew = true;
+      });
     }
   }
   const sized = members.map((m) => ({ k: 1 + m.counted.size, r: m.r }));
@@ -1455,7 +1579,8 @@ function explodePool(cx, cy, cz, kind) {
   const mult = members.length;
   const radii = local.map((e) => e.r);
   const R = Math.max(...radii);
-  for (const m of members) pooling.add(m.x + "," + m.y + "," + m.z);
+  for (const m of members) pooling.add(m.key);
+  let deferredCarve = false;
   try {
     let ax = 0, ay = 0, az = 0;
     for (const m of members) {
@@ -1475,10 +1600,24 @@ function explodePool(cx, cy, cz, kind) {
       if (d > Rfx) Rfx = d;
     }
     Rfx = Math.min(MEGA_UNION_SHELL_R, Rfx);
-    const inRegion = (x, y, z) => members.some((m, i) => {
-      const dx = x - m.x, dy = y - m.y, dz = z - m.z;
-      return dx * dx + dy * dy + dz * dz <= radii[i] * radii[i];
-    });
+    // Member hash so "inside the pool" checks stay local (O(neighbours)
+    // instead of O(members) per victim).
+    const mgrid = new Map();
+    const columnGrid = new Map();
+    for (let i = 0; i < members.length; i++) {
+      gridInsert(mgrid, members[i].x, members[i].y, members[i].z, i);
+      gridInsert2D(columnGrid, members[i].x, members[i].z, i);
+    }
+    const inRegion = (x, y, z) => {
+      let hit = false;
+      gridNear(mgrid, x, y, z, MEGA_POOL_RADIUS_MAX, (i) => {
+        if (hit) return;
+        const m = members[i], r = radii[i];
+        const dx = x - m.x, dy = y - m.y, dz = z - m.z;
+        if (dx * dx + dy * dy + dz * dz <= r * r) hit = true;
+      });
+      return hit;
+    };
     // Lit fuses and queued blasts inside the region go off with the pool —
     // except ultras, which always detonate as their own band blast instead.
     for (const [k, t] of lit) {
@@ -1536,15 +1675,43 @@ function explodePool(cx, cy, cz, kind) {
       return [];
     }
     // Big-pool path: one light up front, one simultaneous union fireball,
-    // carve drains in column slices. Same total power and same timeline
-    // at any size.
+    // carve drains in slices. The member blocks are removed immediately;
+    // overlapping crater volume is then visited once through the union.
     fxJobs.push({ x: ax, y: ay, z: az, kind, k: mult, share: 1, shells: true, key: styleKey, delay: 0, R: Rfx });
-    carveJobs.push({ members: [...members], radii: [...radii], kind, mi: 0, x0: -Infinity, touched: [] });
+    const touched = [];
+    for (const m of members) {
+      if (getBlock(m.x, m.y, m.z) === kind.blockId) clearCell(m.x, m.y, m.z, touched);
+    }
+    const B = dimBound();
+    const xRanges = members.map((m, i) => ({
+      i,
+      x0: Math.max(-B, Math.ceil(m.x - radii[i])),
+      x1: Math.min(B, Math.floor(m.x + radii[i])),
+    })).sort((a, b) => a.x0 - b.x0);
+    let buildXMax = -B;
+    for (const e of xRanges) if (e.x1 > buildXMax) buildXMax = e.x1;
+    const job = {
+      members: [...members], radii: [...radii], kind, columnGrid,
+      columns: [], columnsReady: false,
+      xRanges, xStart: 0, activeMembers: [],
+      buildX: xRanges[0].x0 - 1, buildXMax,
+      zIntervals: [], zIntervalIndex: 0, buildZ: null, buildZEnd: -1, ci: 0,
+      chunkLast: new Map(), dirty: new Set(), ready: new Set(),
+      touched, carveDone: false,
+    };
+    carveJobs.push(job);
+    deferredCarve = true;
+    if (touched.length) {
+      notePortalFramesOnly(touched);
+      queueBlastRefresh(touched);
+    }
     poolLight(ax, ay, az, Rfx, styleKey);
     syncGlowAfterBlast();
     return [];
   } finally {
-    for (const m of members) pooling.delete(m.x + "," + m.y + "," + m.z);
+    if (!deferredCarve) {
+      for (const m of members) pooling.delete(m.key);
+    }
   }
 }
 
@@ -1556,10 +1723,9 @@ function carveSphere(cx, cy, cz, kind, touched, pool = false, Reff = kind.radius
     carvePoolColumn(x, { x: cx, y: cy, z: cz }, R, kind, touched, pool, open);
   }
 }
-// One x-column of a pooled carve (shared by the sync sphere above and the
-// sliced carve jobs): column-top clamp first, sphere test per cell. The
-// normal blast uses the open ball (strict test) so its small crater reads
-// round instead of square; mega pools keep the closed ball.
+// One x-column of a sphere carve: column-top clamp first, sphere test per cell.
+// Normal blasts use the open ball (strict test); mega-pool union carving uses
+// the closed ball.
 function carvePoolColumn(x, m, R, kind, touched, pool = true, open = false) {
   const R2 = R * R;
   for (let z = Math.max(-dimBound(), Math.ceil(m.z - R)); z <= Math.min(dimBound(), Math.floor(m.z + R)); z++) {
@@ -1577,6 +1743,40 @@ function carvePoolColumn(x, m, R, kind, touched, pool = true, open = false) {
     }
   }
 }
+function carveMegaUnionColumn(x, z, grid, members, radii, kind, touched) {
+  const top = topAt(dim, x, z);
+  if (!dimInfinite() && top < 1) return;
+  const intervals = [];
+  gridNear2D(grid, x, z, MEGA_POOL_RADIUS_MAX, (i) => {
+    const m = members[i], R = radii[i];
+    const dx = x - m.x, dz = z - m.z;
+    const horizontal2 = dx * dx + dz * dz;
+    const R2 = R * R;
+    if (horizontal2 > R2) return;
+    const yRadius = Math.sqrt(Math.max(0, R2 - horizontal2));
+    const yLo = dimInfinite() ? Math.max(-dimBound(), Math.ceil(m.y - yRadius)) : Math.max(1, Math.ceil(m.y - yRadius));
+    const yHi = Math.min(top, dimInfinite() ? Math.min(dimBound(), Math.floor(m.y + yRadius)) : Math.floor(m.y + yRadius));
+    if (yLo <= yHi) intervals.push([yLo, yHi]);
+  });
+  if (!intervals.length) return;
+  intervals.sort((a, b) => a[0] - b[0]);
+  let y0 = intervals[0][0], y1 = intervals[0][1];
+  const carve = (lo, hi) => {
+    for (let y = lo; y <= hi; y++) carvePoolCellContents(x, y, z, kind, touched, true);
+  };
+  for (let i = 1; i < intervals.length; i++) {
+    const [lo, hi] = intervals[i];
+    if (lo <= y1 + 1) {
+      if (hi > y1) y1 = hi;
+    } else {
+      carve(y0, y1);
+      y0 = lo;
+      y1 = hi;
+    }
+  }
+  carve(y0, y1);
+}
+
 function carvePoolCell(x, y, z, cx, cy, cz, R2, kind, touched, pool, open = false) {
   const dx = x - cx, dy = y - cy, dz = z - cz;
   const d2 = dx * dx + dy * dy + dz * dz;
@@ -1587,6 +1787,9 @@ function carvePoolCell(x, y, z, cx, cy, cz, R2, kind, touched, pool, open = fals
     // reads round at the same reach and depth.
     return;
   }
+  carvePoolCellContents(x, y, z, kind, touched, pool);
+}
+function carvePoolCellContents(x, y, z, kind, touched, pool) {
   const bid = getBlock(x, y, z);
   if (bid === AIR) return;
   // Liquids survive blasts unless the kind clears them; otherwise
