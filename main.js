@@ -2,6 +2,7 @@
 // No saves, no network — Play builds a fresh random world in the browser.
 import * as THREE from "three";
 import { generateOverworldAsync, getSeed } from "./src/world/overworld.js";
+import { generateTntDimensionAsync } from "./src/world/tntdim.js";
 import {
   pos, vel, keys, setYaw, setPitch,
   spawnPlayer, updatePlayer, tickKnockback,
@@ -256,6 +257,11 @@ let buildToken = 0;
 let bandDpr = false;
 // Moon-band hotbar (slots flip at the Moon's lower end); reset per world.
 let moonBand = false;
+// Boot dimension: the overworld by default; ?startdim=tnt boots straight
+// into a fresh TNT sky instead (dev shortcut) and skips the overworld
+// build. Unknown values fall back to the overworld.
+const _startDim = new URLSearchParams(location.search).get("startdim");
+const BOOT_DIM = _startDim === "tnt" || _startDim === "over" ? _startDim : "over";
 
 // The level loads behind the translucent menu in slices: voxels generate a
 // dozen rows per frame, then the spawn neighborhood builds (radius 2: the
@@ -284,7 +290,8 @@ async function buildWorld() {
   envAir.far = LOAD_FOG_FAR;
   await new Promise((r) => requestAnimationFrame(r));
   try {
-    const ok = await generateOverworldAsync(Math.floor(Math.random() * 100000), aborted);
+    const gen = BOOT_DIM === "tnt" ? generateTntDimensionAsync : generateOverworldAsync;
+    const ok = await gen(Math.floor(Math.random() * 100000), aborted);
     if (!ok || aborted()) return;
     spawnPlayer();
     // No glowstone rescan: worldgen places none and the live index starts
@@ -293,7 +300,7 @@ async function buildWorld() {
     rebuildAll(pos.x, pos.z, 2);
     if (aborted()) return;
     clearPortalFills();
-    resetFrameSet(villageFrames);
+    resetFrameSet(BOOT_DIM === "tnt" ? [] : villageFrames);
     scanWorldPortals();
     moonBand = false;
     resetItems();
@@ -305,7 +312,7 @@ async function buildWorld() {
     if (token === buildToken) building = false;
   }
   if (aborted() || !worldReady) return;
-  fillMoonUnder(getSeed());
+  if (BOOT_DIM !== "tnt") fillMoonUnder(getSeed());
   warmupFx(token);
 }
 
