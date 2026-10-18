@@ -53,7 +53,6 @@ export const TNT_GEN_MS = 5;
 // peripheral misses never starve arrival space).
 export const TNT_SHAFT_PER_TICK = 3;
 export const TNT_SKY_GRAPPLE_MAX = 800;
-export const TNT_NET_Y = -4096; // ultimate safety net, far past any dive
 
 const NORMAL_JITTER = 6;
 const MEGA_JITTER = 4;
@@ -368,7 +367,7 @@ function scanCloudTop(rec) {
 // super-cell is mega-free and neighbours usually clear it), but on unlucky
 // seeds a nearby mega holes it — so hunt expanding cell offsets for the
 // first non-hole cloud with a standable top instead of assuming. The
-// hardcoded point stays the final fallback (reseat paths reuse it too).
+// hardcoded point stays the final fallback.
 export function findTntStreamSpawn(refresh) {
   for (let r = 0; r <= 2; r++) {
     for (let dx = -r; dx <= r; dx++) {
@@ -386,22 +385,6 @@ export function findTntStreamSpawn(refresh) {
     }
   }
   return { x: 24, y: 72, z: 24, yaw: 0 };
-}
-
-// Safety-net reseat: nearest resident cloud top, else the spawn cloud.
-export function reseatTnt(px, py, pz) {
-  let best = null, bestD = Infinity;
-  for (const r of resident.values()) {
-    if (r.hole) continue;
-    const d = Math.hypot(r.cx - px, r.cy - py, r.cz - pz);
-    if (d < bestD) { bestD = d; best = r; }
-  }
-  if (best) {
-    const s = scanCloudTop(best);
-    if (s) return s;
-    return { x: Math.round(best.cx), y: Math.floor(best.top) + 1, z: Math.round(best.cz) };
-  }
-  return findTntStreamSpawn(null);
 }
 
 // Sky-grapple target: a point along the aim ray at distance D in

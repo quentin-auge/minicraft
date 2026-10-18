@@ -12,7 +12,7 @@
 // Convention: if a behavior belongs to a dimension it ships as a spec field
 // or env key — never as a `dim ===` fork elsewhere. New-dimension checklist:
 // env (sky/fog/sun/space), moon?, ultra mode, hotbar, spawn, persistence,
-// respawnY + reseat, bedrock, region `dim` tags, precip `active`s, gravity zones.
+// respawnY floor (null = none), bedrock, region `dim` tags, precip `active`s, gravity zones.
 import {
   generateOverworld, generateOverworldAsync,
 } from "./overworld.js";
@@ -20,7 +20,7 @@ import { findSpawn } from "./spawn.js";
 import {
   generateTntDimension, findTntSpawn, TNT_ENV,
 } from "./tntdim.js";
-import { bootTntStream, findTntStreamSpawn, reseatTnt } from "./tntstream.js";
+import { bootTntStream, findTntStreamSpawn } from "./tntstream.js";
 import { TNT, MEGA_TNT, ULTRA_TNT } from "../core/blocks.js";
 import { BASE_ITEMS } from "../ui/hotbar.js";
 import { registerInfiniteDim } from "../core/store.js";
@@ -51,9 +51,8 @@ export const DIMENSIONS = [
     key: "tnt",
     persistence: "regenerate",
     hasBedrockFloor: false,
-    // Infinite sky: falling never ends until the far safety net, and the
-    // reseat lands on the nearest streamed cloud (see main.js).
-    respawnY: -4096,
+    // Infinite sky, no floor (respawnY: null): the fall never ends.
+    respawnY: null,
     env: TNT_ENV,
     infinite: true,
     // No moon, no space fade (TNT_ENV.space), no bands: ultras wipe an
@@ -68,12 +67,6 @@ export const DIMENSIONS = [
     // Legacy cube spawn (headless + reference); the streamed world boots
     // through findTntStreamSpawn above.
     findSpawnLegacy: () => findTntSpawn(),
-    // Below-floor recovery: reseat on the nearest streamed cloud instead of
-    // teleporting home to spawn.
-    reseat: (x, y, z) => {
-      const s = reseatTnt(x, y, z);
-      return { x: s.x + 0.5, y: s.y + 1.01, z: s.z + 0.5 };
-    },
     // TNT tiers only — but all three: a return portal's frame needs at least
     // one mega and one ultra, so dropping ultra would strand visitors.
     hotbar: [TNT, MEGA_TNT, ULTRA_TNT],

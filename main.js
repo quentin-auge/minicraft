@@ -700,17 +700,14 @@ function loop(now) {
       if (flyOn) updateFly(dt);
       else updatePlayer(dt);
     }
-    // Per-dimension floor: the infinite sky falls until the far net, then
-    // reseats on the nearest streamed cloud (spawn would teleport home).
-    const floorY = dimSpec(dim).respawnY ?? -20;
-    if (pos.y < floorY) {
+    // Per-dimension floor, bounded dims only (overworld: below -20 means out
+    // of the world, so respawn). respawnY: null (TNT sky) means no floor: the
+    // fall never ends.
+    const floorY = dimSpec(dim).respawnY;
+    if (floorY != null && pos.y < floorY) {
       vel.set(0, 0, 0);
       severHook();
-      const reseat = dimSpec(dim).reseat;
-      if (reseat) {
-        const s = reseat(pos.x, pos.y, pos.z);
-        pos.set(s.x, s.y, s.z);
-      } else spawnPlayer();
+      spawnPlayer();
     }
     // While a band carves, blast refresh splits: portal frames track only
     // (fills heal from the dirty flag), chunk keys queue for the budgeted
