@@ -30,6 +30,7 @@ import {
 import {
   placeCloudAt, cloudRadius, blastIsolationNeed, pairMargin, CLOUD_R_MAX, TNT_ENV,
 } from "./tntdim.js";
+import { dimSpec } from "./dimensions.js";
 import { clearTNTBox } from "../fx/tnt.js";
 
 export const TNT_CELL = 48;
@@ -281,7 +282,7 @@ const OFFSETS = (() => {
 // Touched chunks batch into one refresh per tick. `vy` (signed vertical
 // velocity) drives the fall shaft below.
 export function tickTntStream(px, py, pz, dt, speed, vy, refresh, pin) {
-  if (dim !== "tnt") return;
+  if (!dimSpec(dim)?.infinite) return;
   const pcx = Math.floor(px / TNT_CELL), pcy = Math.floor(py / TNT_CELL), pcz = Math.floor(pz / TNT_CELL);
   const now = performance.now();
   const t0 = now;

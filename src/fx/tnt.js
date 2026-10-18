@@ -18,6 +18,7 @@
 // never strand floating remnants.
 import { AIR, TNT, MEGA_TNT, ULTRA_TNT, FLOWER, GLOWSTONE, LOG, LEAVES, isLiquid, isTntLike } from "../core/blocks.js";
 import { WORLD_RADIUS, topAt, dimInfinite, dimBound, dim, getBlock, setBlock } from "../core/store.js";
+import { dimUltra } from "../world/dimensions.js";
 import { CLOUD_MAX_Y } from "../world/clouds.js";
 import { rebuildChunk, isChunkBuilt, chunkKeysForColumn, refreshBlocks } from "../render/mesher.js";
 import { notePortalFramesOnly, clearPortalFills, scanWorldPortals } from "../world/portals.js";
@@ -508,15 +509,14 @@ export function ultraBandRange(band) {
 
 // Tree canopies rooted in the ground band can overhang above it: flood up
 // from LOG cells at the band ceiling through LOG/LEAVES (capped), so band 1
-// takes the whole tree, not a floating canopy.
+// takes the whole tree, not a floating canopy. Bands mode only (the
+// overworld ground band); windowed dims have no LOG trees to overhang.
 function ultraOverhangCells(cx, cz) {
   const out = [];
   const seen = new Set();
   const stack = [];
-  // Infinite dims have no world edge to sweep: seed the flood from a box
-  // around the ignition instead (same capped flood below).
   const B = dimBound();
-  const R = dimInfinite() ? 256 : WORLD_RADIUS;
+  const R = WORLD_RADIUS;
   for (let gx = Math.max(-B, Math.ceil(cx - R)); gx <= Math.min(B, Math.floor(cx + R)); gx++)
     for (let gz = Math.max(-B, Math.ceil(cz - R)); gz <= Math.min(B, Math.floor(cz + R)); gz++)
       if (getBlock(gx, ULTRA_BAND1_HI, gz) === LOG) stack.push([gx, ULTRA_BAND1_HI, gz]);
@@ -671,10 +671,10 @@ function carveBandCell(job, kind, gx, gy, gz, touched) {
   if (gy === 0 && !dimInfinite()) return; // bedrock (bounded dims only)
   const victimKind = isTntLike(bid) ? kindOfBlock(bid) : null;
   if (victimKind) {
-    // Other-band ultras survive for their own blast; everything else in the
-    // band (normals, megas, same-band ultras) is consumed silently — the
-    // whole band goes anyway, so nothing cascades.
-    if (victimKind.band && ultraBandOf(gy) !== job.band) return;
+    // Cross-band ultras survive for their own blast in bands mode; in
+    // window mode the whole window goes anyway, so everything inside dies
+    // silently and nothing cascades.
+    if (victimKind.band && job.bands && ultraBandOf(gy) !== job.band) return;
     const k = gx + "," + gy + "," + gz;
     const t = lit.get(k);
     if (t) {
@@ -734,24 +734,34 @@ function drainBandJobs(dt) {
 }
 
 // One band wipe: same-band lit fuses and queued blasts die with the band
-// (cross-band lit ultras keep burning for their own band), then the columns
-// carve across frames. Shake fires once at full reach; main.js sustains it
-// while the camera sits inside the front via bandFront().
+// (cross-band lit ultras keep burning for their own band in bands mode; in
+// window mode everything inside the window dies, since the whole window
+// goes anyway), then the columns carve across frames. Shake fires once at
+// full reach; main.js sustains it while the camera sits inside the front
+// via bandFront().
 function explodeBand(cx, cy, cz, kind, refresh) {
   removeSprite(cx + "," + cy + "," + cz, kind);
-  const band = ultraBandOf(cy);
-  const inf = dimInfinite();
-  const [yLo, yHi] = inf ? [Math.floor(cy - 90), Math.floor(cy + 90)] : ultraBandRange(band);
+  const u = dimUltra(dim);
+  const R = u.bands ? ULTRA_FULL_R : (u.windowR ?? 256);
+  const halfH = u.windowHalfH ?? 90;
+  const band = u.bands ? ultraBandOf(cy) : 0;
+  const [yLo, yHi] = u.bands ? ultraBandRange(band) : [Math.floor(cy - halfH), Math.floor(cy + halfH)];
+  // Fuse/chain kill set: altitude-band membership in bands mode, blast-
+  // cylinder membership in window mode.
+  const inBlast = (x, y, z) => {
+    if (u.bands) return ultraBandOf(y) === band;
+    const dx = x - cx, dz = z - cz;
+    return dx * dx + dz * dz <= R * R && y >= yLo && y <= yHi;
+  };
   for (const [k, t] of lit) {
-    if (ultraBandOf(t.y) !== band) continue;
+    if (!inBlast(t.x, t.y, t.z)) continue;
     lit.delete(k);
     removeSprite(k, kindOf(t.kind));
   }
   for (const [k, c] of pendingChain) {
-    if (ultraBandOf(c.y) !== band) continue;
+    if (!inBlast(c.x, c.y, c.z)) continue;
     pendingChain.delete(k);
   }
-  const R = inf ? 256 : ULTRA_FULL_R;
   const R2 = R * R;
   const cols = [];
   const B = dimBound();
@@ -765,9 +775,9 @@ function explodeBand(cx, cy, cz, kind, refresh) {
   }
   cols.sort((a, b) => a[0] - b[0]);
   bandJobs.push({
-    cx, cy, cz, band, yLo, yHi, kind: kind.key,
+    cx, cy, cz, band, bands: u.bands, yLo, yHi, kind: kind.key,
     cols, ci: 0,
-    cells: band === 1 && !inf ? ultraOverhangCells(cx, cz) : null, celli: 0,
+    cells: u.bands && band === 1 ? ultraOverhangCells(cx, cz) : null, celli: 0,
     front2: 0, dirty: new Map(), fxAcc: 1, carveDone: false,
   });
   // A clearing kind leaves air behind instead of restoring the displaced

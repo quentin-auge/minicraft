@@ -46,8 +46,11 @@ export const TNT_NORMAL_CANDIDATES = 6000;
 
 // Pale dusty-rose sky the red TNT always reads dark against, at every
 // distance; blue mega pops, the cream band partially washes (accepted).
+// No space fade: black sky and stars are overworld-private, so the TNT sky
+// stays rose at every altitude.
 export const TNT_ENV = {
   sky: 0xcaa08f,
+  space: false,
   fogNear: 20,
   fogFar: 150,
   sun: 0xfff5e0,

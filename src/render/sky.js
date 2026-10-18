@@ -49,11 +49,13 @@ export function initSky(scene) {
 
 // Stars self-initialize on the first tick if boot skipped them.
 // baseSky/baseSun/baseHemi override the day preset per dimension (TNT red);
-// null keeps the overworld defaults. Black-above-the-clouds still applies.
+// null keeps the overworld defaults. The black-above-the-clouds fade with
+// its stars is an overworld property: dimensions with an explicit env opt
+// out unless they set space (TNT red sky never goes black, no stars there).
 const _base = new THREE.Color();
 export function tickSky(scene, camera, sun, hemi, envAir, env = null) {
   const y = camera.position.y;
-  const s = skyFactor(y);
+  const s = env == null || env.space === true ? skyFactor(y) : 0;
   if (env?.sky !== undefined) _base.setHex(env.sky);
   else _base.copy(DAY_SKY);
   scene.background.copy(_base).lerp(SPACE_SKY, s);

@@ -2,7 +2,7 @@
 // No saves, no network — Play builds a fresh random world in the browser.
 import * as THREE from "three";
 import { generateOverworldAsync, getSeed } from "./src/world/overworld.js";
-import { tickTntStream, reseatTnt, TNT_CELL, TNT_SKY_GRAPPLE_MAX } from "./src/world/tntstream.js";
+import { tickTntStream, TNT_CELL, TNT_SKY_GRAPPLE_MAX } from "./src/world/tntstream.js";
 
 // Hook-anchor pin for streaming eviction: the latched cloud never evicts
 // mid-pull, so a sky-grapple landing survives the trip over.
@@ -47,7 +47,7 @@ import {
 } from "./src/world/portals.js";
 import { villageFrames } from "./src/world/village.js";
 import { CHUNK, renderDist, dim, setDimension, setBlock, getBlock, isSolid, worlds } from "./src/core/store.js";
-import { dimEnv, dimSpec, stashOverExit, takeOverExit } from "./src/world/dimensions.js";
+import { dimEnv, dimSpec, dimHasMoon, stashOverExit, takeOverExit } from "./src/world/dimensions.js";
 import { disposeAll } from "./src/render/mesher.js";
 import { PLAYER_HW, PLAYER_H, EYE } from "./src/player/physics.js";
 
@@ -444,15 +444,15 @@ async function fillMoonUnder(seed) {
   try {
     const R = MOON_R, STEP = 16;
     for (let x0 = -R; x0 <= R; x0 += STEP) {
-      if (dim !== "over" || getSeed() !== seed || building || !worldReady || moonReady(seed)) return;
+      if (!dimHasMoon(dim) || getSeed() !== seed || building || !worldReady || moonReady(seed)) return;
       generateMoonUnderRows(seed, setBlock, x0, x0 + STEP);
       await new Promise((r) => requestAnimationFrame(r));
     }
-    if (dim !== "over" || getSeed() !== seed || building || !worldReady || moonReady(seed)) return;
+    if (!dimHasMoon(dim) || getSeed() !== seed || building || !worldReady || moonReady(seed)) return;
     markMoonBuilt(seed);
     const centers = moonChunkCenters();
     for (let i = 0; i < centers.length; i += 2) {
-      if (dim !== "over" || getSeed() !== seed || building || !worldReady) return;
+      if (!dimHasMoon(dim) || getSeed() !== seed || building || !worldReady) return;
       refreshBlocks(centers.slice(i, i + 2));
       await new Promise((r) => requestAnimationFrame(r));
     }
@@ -665,8 +665,9 @@ function loop(now) {
     tickWaterFog(scene, camera, dt, envAir, medium);
     setEyeMedium(medium);
     // Moon-band hotbar: 8 below the Moon's lower end the water slot becomes
-    // moon water and the flower slot becomes glowstone; both restore on descent.
-    const moonNow = pos.y >= MOON_MIN_Y - 8;
+    // moon water and the flower slot becomes glowstone; both restore on
+    // descent. Moon dimensions only.
+    const moonNow = dimHasMoon(dim) && pos.y >= MOON_MIN_Y - 8;
     if (moonNow !== moonBand) {
       moonBand = moonNow;
       if (moonNow) {
@@ -684,10 +685,10 @@ function loop(now) {
     // Underside safety net: below the moon band the shell must exist now, so
     // descending onto (or under) a fresh moon never meets unbuilt rock.
     // Synchronous and rare (the background fill wins by ~30 s of descent).
-    // Overworld only: in other dimensions this would stamp moon voxels into
+    // Moon dimensions only: elsewhere this would stamp moon voxels into
     // the wrong map (the TNT cube sits entirely below the band, so an
     // unguarded check fires every frame there).
-    if (dim === "over" && !moonReady(getSeed()) && camera.position.y < MOON_MIN_Y - 8) {
+    if (dimHasMoon(dim) && !moonReady(getSeed()) && camera.position.y < MOON_MIN_Y - 8) {
       generateMoon(getSeed(), setBlock);
       refreshBlocks(moonChunkCenters());
     }
@@ -705,9 +706,10 @@ function loop(now) {
     if (pos.y < floorY) {
       vel.set(0, 0, 0);
       severHook();
-      if (dim === "tnt") {
-        const s = reseatTnt(pos.x, pos.y, pos.z);
-        pos.set(s.x + 0.5, s.y + 1.01, s.z + 0.5);
+      const reseat = dimSpec(dim).reseat;
+      if (reseat) {
+        const s = reseat(pos.x, pos.y, pos.z);
+        pos.set(s.x, s.y, s.z);
       } else spawnPlayer();
     }
     // While a band carves, blast refresh splits: portal frames track only

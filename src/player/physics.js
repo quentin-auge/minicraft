@@ -4,7 +4,7 @@
 import * as THREE from "three";
 import { isLiquid } from "../core/blocks.js";
 import { getBlock, isSolid, colLiqTop, colTopIdx, dim } from "../core/store.js";
-import { dimSpec } from "../world/dimensions.js";
+import { dimSpec, dimHasMoon } from "../world/dimensions.js";
 import { MOON_MIN_Y } from "../world/moon.js";
 
 export const PLAYER_HW = 0.3;
@@ -271,7 +271,7 @@ export function updatePlayer(dt) {
   // Low gravity near the Moon and above (master rule): one factor per
   // frame, shared by every acceleration and energy calc below so arcs
   // stay consistent.
-  const G = dim === "over" && pos.y >= MOON_MIN_Y ? GRAVITY * 0.5 : GRAVITY;
+  const G = dimHasMoon(dim) && pos.y >= MOON_MIN_Y ? GRAVITY * 0.5 : GRAVITY;
   _fwd.set(-Math.sin(yaw), 0, -Math.cos(yaw));
   _right.set(Math.cos(yaw), 0, -Math.sin(yaw));
   _move.set(0, 0, 0);
