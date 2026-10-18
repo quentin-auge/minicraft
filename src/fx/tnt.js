@@ -24,7 +24,7 @@ import { rebuildChunk, isChunkBuilt, chunkKeysForColumn, refreshBlocks } from ".
 import { notePortalFramesOnly, clearPortalFills, scanWorldPortals } from "../world/portals.js";
 import { GRAVITY, pos, vel, setOnGround, addPlayerKnockback, KNOCK_DECAY } from "../player/physics.js";
 import { flyOn } from "../player/fly.js";
-import { spawnBurst, spawnFlash, sharedFlashGeo, initBandShell, updateBandShell, hideBandShell, spawnDense, denseCount, noteDenseSpawn, resetDenseFx, flushDense } from "./particles.js";
+import { spawnBurst, spawnBurstBatch, spawnFlash, spawnFlashBatch, sharedFlashGeo, initBandShell, updateBandShell, hideBandShell, spawnDense, denseCount, noteDenseSpawn, resetDenseFx, flushDense } from "./particles.js";
 import { clearGlowstoneAt } from "../world/glowstone.js";
 import { clearFlowerAt } from "../world/flowers.js";
 import { noteBlockLightEdit } from "../render/blocklights.js";
@@ -540,15 +540,16 @@ function ultraOverhangCells(cx, cz) {
 // Sliced band carve: columns sorted radially from the ignition so the wipe
 // reads as an expanding front; drained under a fixed per-tick column budget
 // (deterministic, pause-safe). Carving only mutates voxels and records dirty
-// chunk keys — remeshing happens separately in drainBandRemesh under its own
+// chunk keys — remeshing happens separately in drainBlastRemesh under its own
 // millisecond budget, gated on the carve frontier, so no chunk rebuilds
 // twice and no tick pays an unbounded rebuild avalanche.
 const BAND_COLS_PER_TICK = 2048;
 const REMESH_BUDGET_MS = 6;
 const bandJobs = []; // { cx..cz, band, yLo, yHi, kind, cols, ci, cells, celli, front2, dirty, fxAcc, carveDone }
-// Non-band blasts detonating mid-wipe: their chunks queue here instead of
-// rebuilding synchronously, so they share the remesh budget.
-const bandPending = new Set(); // chunk keys
+// Batched blasts (normal TNT chains and non-band blasts detonating mid-wipe)
+// queue their chunks here instead of rebuilding synchronously, so every
+// mass detonation shares one budgeted remesh drain.
+const blastRefreshPending = new Set(); // chunk keys
 export function bandActive() {
   return bandJobs.length > 0;
 }
@@ -558,12 +559,12 @@ export function bandFront() {
   if (!j) return null;
   return { x: j.cx + 0.5, y: j.cy + 0.5, z: j.cz + 0.5, r: Math.sqrt(j.front2) };
 }
-// Chunks touched by non-band blasts while a band carves: queue for the
-// budgeted remesh drain instead of rebuilding inline.
-export function accumulateBandRefresh(coords) {
+// Chunks touched by a batched blast: queue for the budgeted remesh drain
+// instead of rebuilding inline (the chain and mid-band paths both use this).
+export function queueBlastRefresh(coords) {
   if (!coords) return;
   for (const [x, , z] of coords) {
-    for (const ck of chunkKeysForColumn(x, z)) bandPending.add(ck);
+    for (const ck of chunkKeysForColumn(x, z)) blastRefreshPending.add(ck);
   }
 }
 // Dirty-chunk frontier: columns carve in radial order, so a chunk whose last
@@ -584,8 +585,8 @@ function cellsDone(job) {
 // nearest-first. Unbuilt chunks drop out — streaming builds them with the
 // voxels already in place. Finishes the job (end-of-job purge, shell hide)
 // once the carve and the dirty set both drain.
-export function drainBandRemesh(px, pz) {
-  if (!bandPending.size && !bandJobs.length) return;
+export function drainBlastRemesh(px, pz) {
+  if (!blastRefreshPending.size && !bandJobs.length) return;
   const deadline = performance.now() + REMESH_BUDGET_MS;
   const dist2 = (ck) => {
     const u = ck.indexOf("_");
@@ -602,13 +603,13 @@ export function drainBandRemesh(px, pz) {
     }
     return cks.slice(i); // leftovers stay dirty
   };
-  if (bandPending.size) {
+  if (blastRefreshPending.size) {
     const rest = [];
-    for (const ck of bandPending) {
+    for (const ck of blastRefreshPending) {
       if (isChunkBuilt(ck)) rest.push(ck);
     }
-    bandPending.clear();
-    for (const ck of rebuildWithin(rest)) bandPending.add(ck);
+    blastRefreshPending.clear();
+    for (const ck of rebuildWithin(rest)) blastRefreshPending.add(ck);
   }
   const job = bandJobs[0];
   if (!job) return;
@@ -942,7 +943,7 @@ export function resetTNTMemory() {
   pooling.clear();
   wakeMegas = null;
   bandJobs.length = 0;
-  bandPending.clear();
+  blastRefreshPending.clear();
   hideBandShell();
   resetDenseFx();
   fxJobs.length = 0;
@@ -990,7 +991,7 @@ function drainFxJobs() {
 // Sliced pooled carve: members carve in x-column slices under a per-tick
 // budget (same shape as the band-wipe drain). FX/knockback/shake/overlay
 // fire instantly; the crater lands within ~0.25 s. Completion reuses the
-// budgeted remesh drain (bandPending) instead of synchronous rebuilds.
+// budgeted remesh drain (blastRefreshPending) instead of synchronous rebuilds.
 const carveJobs = []; // { members, radii, kind, mi, x0, touched }
 const CARVE_COLS_PER_TICK = 1536;
 export function megaCarveActive() { return carveJobs.length > 0; }
@@ -1051,10 +1052,10 @@ function finishCarveJob(job) {
   purgeBlastLiquids(touched);
   syncGlowAfterBlast();
   // Cheap frame tracking only; chunk rebuilds drain under the 6 ms budget
-  // in drainBandRemesh and portal fills heal from the dirty-flag scanner.
+  // in drainBlastRemesh and portal fills heal from the dirty-flag scanner.
   if (touched.length) {
     notePortalFramesOnly(touched);
-    accumulateBandRefresh(touched);
+    queueBlastRefresh(touched);
   }
 }
 // A lit mega or ultra within 0.6 s of detonation: main.js dips DPR early so
@@ -1204,14 +1205,29 @@ export function tickTNT(dt, refresh) {
   tickBlastLights(dt);
 }
 
-// Delayed chained blasts: each queued TNT detonates with its own full
-// explosion (flash + burst + sphere), cascading as blasts uncover more TNT.
+// Hardcore chains: a dense mass can have thousands of blocks due in one
+// tick, so the cascade is processed in bounded batches. Carving stays
+// per-block (each keeps its own radius-3 crater and 50 ms neighbour delay),
+// but the whole batch presents once: one shared flash + one shared particle
+// cloud, one liquid purge, one portal pass, and one budgeted remesh drain
+// (queueBlastRefresh) instead of a synchronous rebuild avalanche per block.
+const CHAIN_BLASTS_PER_TICK = 256;
+
+// Delayed chained blasts: each queued TNT detonates with its own crater,
+// cascading as blasts uncover more TNT. Same-tick blasts batch their
+// presentation; band victims detonate on their own path immediately.
 export function tickChain(now, refresh) {
   if (!pendingChain.size) return;
   const due = [];
   for (const [k, c] of pendingChain) {
-    if (c.due <= now) due.push(k);
+    if (c.due <= now) {
+      due.push(k);
+      if (due.length >= CHAIN_BLASTS_PER_TICK) break;
+    }
   }
+  if (!due.length) return;
+  const touched = [];
+  const centers = [];
   for (const k of due) {
     const c = pendingChain.get(k);
     pendingChain.delete(k);
@@ -1219,8 +1235,33 @@ export function tickChain(now, refresh) {
     const kind = kindOf(c.kind);
     lit.delete(k);
     removeSprite(k, kind);
-    explode(c.x, c.y, c.z, kind, refresh);
+    if (kind.band) {
+      explode(c.x, c.y, c.z, kind, refresh);
+      continue;
+    }
+    carveNormalBlast(c.x, c.y, c.z, kind, touched);
+    centers.push([c.x + 0.5, c.y + 0.5, c.z + 0.5]);
   }
+  if (!centers.length) return;
+  spawnBlastFxBatch(centers, kindOf("normal"));
+  purgeBlastLiquids(touched);
+  syncGlowAfterBlast();
+  // A lone chained blast keeps the snappy synchronous remesh; a batch goes
+  // through the shared budgeted drain so no tick pays a rebuild avalanche.
+  if (centers.length === 1) {
+    if (refresh) refresh(touched);
+  } else {
+    notePortalFramesOnly(touched);
+    queueBlastRefresh(touched);
+  }
+}
+
+// One shared flash + one shared particle cloud for every normal blast in a
+// batch, so a mass chain stays O(1) draw calls (particles are hard-capped in
+// the backend).
+function spawnBlastFxBatch(centers, kind) {
+  spawnFlashBatch({ centers, life: 0.28, size: 1, growth: 4.2 });
+  spawnBurstBatch({ centers, count: kind.burst });
 }
 
 function spawnBlastFx(x, y, z, kind) {
@@ -1232,20 +1273,10 @@ function spawnBlastFx(x, y, z, kind) {
   spawnBurst({ x: x + 0.5, y: y + 0.5, z: z + 0.5, count: kind.burst });
 }
 
-function explode(cx, cy, cz, kind, refresh) {
-  if (kind.band) {
-    return explodeBand(cx, cy, cz, kind, refresh);
-  }
-  if (kind.pool) {
-    const pooled = explodePool(cx, cy, cz, kind);
-    purgeBlastLiquids(pooled);
-    syncGlowAfterBlast();
-    if (refresh) refresh(pooled);
-    return pooled;
-  }
-  const touched = [];
-  removeSprite(cx + "," + cy + "," + cz, kind);
-  spawnBlastFx(cx, cy, cz, kind);
+// Carve one normal blast: clears the crater and queues neighbour TNT,
+// handling displaced liquid and waking uncovered megas. Presentation
+// (FX/purge/remesh) is the caller's, so chains can batch it.
+function carveNormalBlast(cx, cy, cz, kind, touched) {
   const dk = cx + "," + cy + "," + cz;
   const fill = displaced.get(dk) ?? null;
   displaced.delete(dk);
@@ -1281,6 +1312,23 @@ function explode(cx, cy, cz, kind, refresh) {
     setBlock(cx, cy, cz, fill);
     if (!touched.some(([x, y, z]) => x === cx && y === cy && z === cz)) touched.push([cx, cy, cz]);
   }
+}
+
+function explode(cx, cy, cz, kind, refresh) {
+  if (kind.band) {
+    return explodeBand(cx, cy, cz, kind, refresh);
+  }
+  if (kind.pool) {
+    const pooled = explodePool(cx, cy, cz, kind);
+    purgeBlastLiquids(pooled);
+    syncGlowAfterBlast();
+    if (refresh) refresh(pooled);
+    return pooled;
+  }
+  const touched = [];
+  removeSprite(cx + "," + cy + "," + cz, kind);
+  spawnBlastFx(cx, cy, cz, kind);
+  carveNormalBlast(cx, cy, cz, kind, touched);
   purgeBlastLiquids(touched);
   syncGlowAfterBlast();
   if (refresh) refresh(touched);
@@ -1484,7 +1532,7 @@ function explodePool(cx, cy, cz, kind) {
       syncGlowAfterBlast();
       purgeBlastLiquids(touched);
       notePortalFramesOnly(touched);
-      accumulateBandRefresh(touched);
+      queueBlastRefresh(touched);
       return [];
     }
     // Big-pool path: one light up front, one simultaneous union fireball,

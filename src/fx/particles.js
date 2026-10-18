@@ -72,6 +72,51 @@ export function spawnBurst(o) {
   bursts.push({ pts, vel, life, max: life, gravity });
 }
 
+// Batched burst: one Points cloud shared by many simultaneous blast centers
+// (TNT chains), so a mass detonation stays one draw call and one integration
+// loop instead of one cloud per block. `centers` is [[x,y,z], ...]; each
+// center gets `count` particles, the whole cloud hard-capped so a sustained
+// cascade's live particle count stays bounded.
+const BURST_BATCH_MAX = 8000;
+export function spawnBurstBatch(o) {
+  if (!sceneRef) return;
+  const {
+    centers, count = 64, life = 0.8, size = 0.18, gravity = 22, additive = true,
+    color = [1, 0.6, 0.15], variance = [0, 0.4, 0.2],
+    speedMin = 4, speedMax = 12, up = 3, foreground = false,
+  } = o;
+  const n = Math.min(centers.length * count, BURST_BATCH_MAX);
+  if (n <= 0) return;
+  const positions = new Float32Array(n * 3);
+  const colors = new Float32Array(n * 3);
+  const vel = new Float32Array(n * 3);
+  for (let i = 0; i < n; i++) {
+    const c = centers[i % centers.length];
+    positions[i * 3] = c[0]; positions[i * 3 + 1] = c[1]; positions[i * 3 + 2] = c[2];
+    const th = Math.random() * Math.PI * 2;
+    const ph = Math.acos(2 * Math.random() - 1);
+    const s = speedMin + Math.random() * (speedMax - speedMin);
+    vel[i * 3] = s * Math.sin(ph) * Math.cos(th);
+    vel[i * 3 + 1] = s * Math.cos(ph) + up;
+    vel[i * 3 + 2] = s * Math.sin(ph) * Math.sin(th);
+    for (let j = 0; j < 3; j++)
+      colors[i * 3 + j] = Math.min(1, Math.max(0, color[j] + Math.random() * variance[j]));
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+  geo.setAttribute("color", new THREE.BufferAttribute(colors, 3));
+  const mat = new THREE.PointsMaterial({
+    size, vertexColors: true, transparent: true, depthWrite: false,
+    depthTest: !foreground,
+    blending: additive ? THREE.AdditiveBlending : THREE.NormalBlending,
+  });
+  const pts = new THREE.Points(geo, mat);
+  pts.frustumCulled = false;
+  if (foreground) pts.renderOrder = 998;
+  sceneRef.add(pts);
+  bursts.push({ pts, vel, life, max: life, gravity });
+}
+
 // Persistent band-wipe shell (master's ultraShell recipe): one Points cloud
 // with fixed per-particle directions, repositioned in place from the current
 // front radius — a single draw call, zero per-frame allocation, however big
@@ -551,6 +596,32 @@ export function spawnFlash(o) {
   flashes.push({ mesh, life, max: life, size, growth });
 }
 
+// Batched flash: one InstancedMesh with an instance per blast center. All
+// instances share one material and age together, so a mass detonation costs
+// one draw call instead of one Mesh each. Grows in place, fades as a unit.
+export function spawnFlashBatch(o) {
+  if (!sceneRef) return;
+  const { centers, color = 0xffdd77, life = 0.28, size = 1, growth = 4.2 } = o;
+  if (!centers.length) return;
+  const mesh = new THREE.InstancedMesh(
+    sharedFlashGeo(),
+    new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.95, depthWrite: false }),
+    centers.length
+  );
+  mesh.frustumCulled = false;
+  const dummy = new THREE.Object3D();
+  for (let i = 0; i < centers.length; i++) {
+    const c = centers[i];
+    dummy.position.set(c[0], c[1], c[2]);
+    dummy.scale.setScalar(0.001);
+    dummy.updateMatrix();
+    mesh.setMatrixAt(i, dummy.matrix);
+  }
+  mesh.instanceMatrix.needsUpdate = true;
+  sceneRef.add(mesh);
+  flashes.push({ mesh, life, max: life, size, growth, instanced: true, centers, dummy });
+}
+
 export function tickFx(dt) {
   for (let i = bursts.length - 1; i >= 0; i--) {
     const b = bursts[i];
@@ -577,13 +648,26 @@ export function tickFx(dt) {
     f.life -= dt;
     if (f.life <= 0) {
       sceneRef.remove(f.mesh);
-      f.mesh.geometry.dispose();
+      // The instanced batch borrows the shared flash geometry; only meshes
+      // owning their own geometry dispose it.
+      if (!f.instanced) f.mesh.geometry.dispose();
       f.mesh.material.dispose();
       flashes.splice(i, 1);
       continue;
     }
     const t = 1 - f.life / f.max;
-    if (f.fireball) {
+    if (f.instanced) {
+      const s = f.size * (0.4 + t * f.growth);
+      for (let j = 0; j < f.centers.length; j++) {
+        const c = f.centers[j];
+        f.dummy.position.set(c[0], c[1], c[2]);
+        f.dummy.scale.setScalar(s);
+        f.dummy.updateMatrix();
+        f.mesh.setMatrixAt(j, f.dummy.matrix);
+      }
+      f.mesh.instanceMatrix.needsUpdate = true;
+      f.mesh.material.opacity = 0.95 * (f.life / f.max);
+    } else if (f.fireball) {
       const age = f.max - f.life;
       const r = age < f.tGrow
         ? Math.min(f.maxRadius, f.speed * age)

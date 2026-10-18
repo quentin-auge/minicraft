@@ -24,7 +24,7 @@ import { flyOn, setFly, updateFly } from "./src/player/fly.js";
 import { updateTarget, breakTarget, placeAtSelection, breakBlockAt, pickBlock, tryPlace, currentBlock, flushChainBatch, purgeFloatingLiquidsAround } from "./src/player/edit.js";
 import { fireHookTarget, fireSkyHook, grapplePick, cancelHook, severHook, updateHook, hookActive, hookAnchor, tickHookFx } from "./src/player/hook.js";
 import { initRope } from "./src/player/rope.js";
-import { tickTNT, initTNTFx, resetTNTMemory, onExplode, onLiquidPurge, shakeSpecFor, bandFront, bandActive, drainBandRemesh, accumulateBandRefresh, megaImminent, megaCarveActive, megaFxActive, MEGA_BLAST_T, MEGA_BLAST_TIME_SCALE } from "./src/fx/tnt.js";
+import { tickTNT, initTNTFx, resetTNTMemory, onExplode, onLiquidPurge, shakeSpecFor, bandFront, bandActive, drainBlastRemesh, queueBlastRefresh, megaImminent, megaCarveActive, megaFxActive, MEGA_BLAST_T, MEGA_BLAST_TIME_SCALE } from "./src/fx/tnt.js";
 import { initFx, tickFx, tickDenseFx, denseFxActive, prewarmDenseFx, spawnDense, flushDense, noteDenseSpawn } from "./src/fx/particles.js";
 import { initPrecip, tickSnow } from "./src/fx/precip.js";
 import { MOON_MIN_Y, MOON_R, generateMoon, generateMoonUnderRows, markMoonBuilt, moonReady, moonChunkCenters } from "./src/world/moon.js";
@@ -736,13 +736,13 @@ function loop(now) {
     tickTNT(dt, (touched) => {
       if (bandActive()) {
         notePortalFramesOnly(touched);
-        accumulateBandRefresh(touched);
+        queueBlastRefresh(touched);
       } else {
         notePortalEdits(touched);
         refreshBlocks(touched);
       }
     });
-    drainBandRemesh(pos.x, pos.z);
+    drainBlastRemesh(pos.x, pos.z);
     // GPU relief while a wipe, dense mega, or sliced carve runs (master's
     // quality-tier dip): full resolution restores the frame the queues
     // empty. fxDip latches early (imminent fuse) or in onExplode so the
