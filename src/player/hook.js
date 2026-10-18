@@ -131,7 +131,7 @@ export function fireHookTarget(pick, origin, dir, kindKey = "grapple") {
 function fireBlock(t, spec) {
   if (!isSolidId(t.id)) return false;
   const face = t.face ?? [0, 1, 0];
-  const a = { kind: "block", spec, bx: t.x, by: t.y, bz: t.z, fx: face[0], fy: face[1], fz: face[2] };
+  const a = { kind: "block", spec, bx: t.x, by: t.y, bz: t.z, fx: face[0], fy: face[1], fz: face[2], alive: blockAlive };
   hookRetarget(a);
   const sx = pos.x, sy = pos.y + spec.eyeDy, sz = pos.z;
   if (Math.hypot(a.tx - sx, a.ty - sy, a.tz - sz) < 0.3) return false;
@@ -147,8 +147,8 @@ function fireBlock(t, spec) {
 // the body inside the fill and the normal touch-travel fires (mid-pull, too,
 // if the body crosses the slab first). The frame ring ghosts, so the ride
 // slides through it into the slab instead of stalling on it; the window is
-// static while live, so re-resolution is a no-op (anchor and landing stay
-// as fired).
+// static while live, and a broken frame mid-flight/pull severs the hook
+// through the liveness check below.
 function firePortal(t, spec) {
   if (!portalWindowLive(t.win)) return false;
   const a = {
@@ -158,6 +158,7 @@ function firePortal(t, spec) {
     ax: t.px, ay: t.py, az: t.pz,
     topLand: true, retarget: retargetPortal,
     ghost: (bx, by, bz, h) => portalGhostCell(h.win, bx, by, bz),
+    alive: (h) => portalWindowLive(h.win),
   };
   hookRetarget(a);
   const sx = pos.x, sy = pos.y + spec.eyeDy, sz = pos.z;
@@ -176,11 +177,18 @@ function retargetPortal(h) {
   // undefined cells into NaN anchor/landing.
 }
 
+// Liveness: the ride only survives while its anchor exists. A mined,
+// blasted, or evicted anchor severs the hook (retract, no fling) instead of
+// pulling the player to empty air.
+function blockAlive(h) { return isSolid(h.bx, h.by, h.bz); }
+
 // Target-level dispatch, no kind switches: a target may override its kind
-// spec's re-resolution/ghosting (portal fills do — static anchor,
-// frame-ring ghost); blocks fall through to the grapple spec.
+// spec's re-resolution/ghosting/liveness (portal fills do — static anchor,
+// frame-ring ghost, window liveness); blocks fall through to the grapple
+// spec, with anchor-cell solidity as their liveness.
 function hookRetarget(h) { (h.retarget ?? h.spec.retarget)(h); }
 function hookGhost(bx, by, bz, h) { return (h.ghost ?? h.spec.ghost)(bx, by, bz, h); }
+function hookAlive(h) { return (h.alive ?? (() => true))(h); }
 
 const TARGET_FILTERS = { block: fireBlock, portal: firePortal };
 
@@ -342,6 +350,7 @@ export function cancelHook(fling = true) {
 export function updateHook(dt) {
   if (!hook) return false;
   if (hook.arrived) {
+    if (!hookAlive(hook)) { cancelHook(false); return false; } // anchor mined under a settled hook: let go
     if (hook.hang) { vel.set(0, 0, 0); hook.pulling = false; return true; }
     hook.pulling = false;
     return false;
@@ -349,6 +358,7 @@ export function updateHook(dt) {
   const spec = hook.spec;
   if (hook.flying) {
     hookRetarget(hook); // track column edits (mob kinds: mob.pos) mid-flight
+    if (!hookAlive(hook)) { cancelHook(false); return false; } // anchor gone: retract
     const step = spec.throwSpeed * spec.boost * dt;
     hook.fly += step / hook.dist;
     if (hook.fly >= 1) {
@@ -377,6 +387,8 @@ export function updateHook(dt) {
 function pullSelfToAnchor(dt) {
   const spec = hook.spec;
   hookRetarget(hook);
+  if (!hookAlive(hook)) { cancelHook(false); return false; } // anchor gone: retract
+  line.hx = hook.ax; line.hy = hook.ay; line.hz = hook.az;
   const dx = hook.tx - pos.x, dy = hook.ty - pos.y, dz = hook.tz - pos.z;
   const dist = Math.hypot(dx, dy, dz);
   const step = spec.pullSpeed * dt;
