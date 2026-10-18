@@ -1,8 +1,8 @@
-// Local-loop Nether/End portals: player-built frames only, no dimensions.
-// Two frame families (End: PORTAL blocks, Nether: OBSIDIAN), each valid flat
-// (horizontal) and upright (vertical). Touching a window's fill plays the
-// travel spiral, then drops the player beside the same window, always
-// facing the window just crossed.
+// Local-loop Nether/End/TNT portals: player-built frames only, no dimensions.
+// Three frame families (End: PORTAL blocks, Nether: OBSIDIAN, TNT: a mix of
+// TNT/MEGA/ULTRA blocks), each valid flat (horizontal) and upright (vertical).
+// Touching a window's fill plays the travel spiral, then drops the player
+// beside the same window, always facing the window just crossed.
 //
 // Extension shape: PORTAL_TYPES is the registry; the engine below never
 // switches on family names, it dispatches through the spec's props —
@@ -10,7 +10,8 @@
 // frame block, sizes, fill, travel action) register a spec and nothing else
 // changes.
 import * as THREE from "three";
-import { AIR, PORTAL, OBSIDIAN, isLiquid } from "../core/blocks.js";
+import { AIR, PORTAL, OBSIDIAN, TNT, MEGA_TNT, ULTRA_TNT, isLiquid } from "../core/blocks.js";
+import { materialsFor } from "../core/textures.js";
 import { WORLD_RADIUS, key, keyXYZ, getBlock, isSolid } from "../core/store.js";
 import {
   pos, vel, yaw, keys, setYaw, setPitch,
@@ -26,23 +27,38 @@ export const PORTAL_TYPES = [
     bbox: endBBox,
     inside: insideEndInterior,
     travel: (w, dir) => endTravel(w, dir),
-    art: { host: "portalArt", cols: 5, rows: 5, corners: "skip", fill: "#5a2da6", stroke: "#7b2ff7" },
+    art: { host: "portalArt", cols: 5, rows: 5, stroke: "#7b2ff7", cells: buildSolidFrame(5, 5, PORTAL, true) },
   },
   {
     key: "nether", frame: OBSIDIAN, fillColor: 0x9b30ff,
     *anchorsFrom(px, py, pz) { yield* netherVerticalAnchors(px, py, pz); yield* netherFlatAnchors(px, py, pz); },
     evaluate(w) { return evalNetherWin(w); },
-    cells: netherFillCells,
-    bbox: netherBBox,
-    inside: insideNetherInterior,
+    cells: rectFillCells,
+    bbox: rectBBox,
+    inside: insideRectInterior,
     travel: (w, dir) => netherTravel(w, dir),
-    art: { host: "netherArt", cols: 5, rows: 4, corners: "solid", fill: "#0a0a0a", stroke: "#8b90a0" },
+    art: { host: "netherArt", cols: 5, rows: 4, stroke: "#8b90a0", cells: buildSolidFrame(5, 4, OBSIDIAN, false) },
+  },
+  {
+    // TNT frame: a 4×4 square whose corners are mandatory and whose ring
+    // mixes tiers — at least one mega and one ultra among the TNT blocks.
+    key: "tnt", frame: [TNT, MEGA_TNT, ULTRA_TNT], fillColor: 0xd11a1a,
+    *anchorsFrom(px, py, pz) { yield* tntVerticalAnchors(px, py, pz); yield* tntFlatAnchors(px, py, pz); },
+    evaluate(w) { return evalTntWin(w); },
+    cells: rectFillCells,
+    bbox: rectBBox,
+    inside: insideRectInterior,
+    travel: (w, dir) => tntTravel(w, dir),
+    art: { host: "tntArt", cols: 4, rows: 4, width: 128, stroke: "#3a0d0d", cells: buildTntFrame() },
   },
 ];
 
 const specByKey = new Map(PORTAL_TYPES.map((s) => [s.key, s]));
 const specOf = (win) => specByKey.get(win.type);
-const frameIds = new Set(PORTAL_TYPES.map((s) => s.frame));
+// A spec's frame may be one id or a set (the TNT family spans its three tiers);
+// frameSet indexes every frame block so scans only visit real candidates.
+const frameIds = new Set();
+for (const s of PORTAL_TYPES) for (const id of Array.isArray(s.frame) ? s.frame : [s.frame]) frameIds.add(id);
 const isFrameBlock = (id) => frameIds.has(id);
 
 // Index of every frame block, so scans only visit real candidates.
@@ -198,6 +214,46 @@ function evalNetherWin(w) {
   return evalNetherFlat(w.minX, w.minZ, w.minY, ww, dd);
 }
 
+// TNT frame: 4×4 ring of TNT blocks, corners required, interior uniform
+// AIR/one liquid, and at least one mega plus one ultra on the ring.
+function tntRingCell(id, tally) {
+  if (id === MEGA_TNT) tally.mega++;
+  else if (id === ULTRA_TNT) tally.ultra++;
+  else if (id !== TNT) return false;
+  return true;
+}
+
+function evalTntVert(minX, minY, minZ, face) {
+  const mix = { id: null }, tally = { mega: 0, ultra: 0 };
+  for (let y = minY; y < minY + 4; y++)
+    for (let u = 0; u < 4; u++) {
+      const isEdge = u === 0 || u === 3 || y === minY || y === minY + 3;
+      const x = face === "x" ? minX : minX + u;
+      const z = face === "x" ? minZ + u : minZ;
+      const id = getBlock(x, y, z);
+      if (isEdge) { if (!tntRingCell(id, tally)) return null; }
+      else if (!innerCell(id, mix)) return null;
+    }
+  return tally.mega >= 1 && tally.ultra >= 1;
+}
+
+function evalTntFlat(minX, minZ, by) {
+  const mix = { id: null }, tally = { mega: 0, ultra: 0 };
+  for (let x = minX; x < minX + 4; x++)
+    for (let z = minZ; z < minZ + 4; z++) {
+      const isEdge = x === minX || x === minX + 3 || z === minZ || z === minZ + 3;
+      const id = getBlock(x, by, z);
+      if (isEdge) { if (!tntRingCell(id, tally)) return null; }
+      else if (!innerCell(id, mix)) return null;
+    }
+  return tally.mega >= 1 && tally.ultra >= 1;
+}
+
+function evalTntWin(w) {
+  if (w.orient === "v") return evalTntVert(w.minX, w.minY, w.minZ, w.face === "x" ? "x" : "z");
+  return evalTntFlat(w.minX, w.minZ, w.minY);
+}
+
 function forEachFrameBlockNear(bx, by, bz, R, fn) {
   for (const pk of frameSet) {
     const [px, py, pz] = keyXYZ(pk);
@@ -235,6 +291,40 @@ function* endFlatAnchors(px, py, pz) {
   for (let wx = px - 4; wx <= px; wx++) {
     yield { orient: "h", minX: wx, minY: py, minZ: pz };
     yield { orient: "h", minX: wx, minY: py, minZ: pz - 4 };
+  }
+}
+
+// Square 4×4 anchors (upright faces z/x + flat), tagged `dims` so the shared
+// rectangular-frame geometry helpers size the 2×2 interior.
+function* tntVerticalAnchors(px, py, pz) {
+  const w = 4, h = 4, dims = "4x4";
+  for (let wy = py - h + 1; wy <= py; wy++) {
+    yield { orient: "v", face: "z", dims, minX: px, minY: wy, minZ: pz };
+    yield { orient: "v", face: "z", dims, minX: px - (w - 1), minY: wy, minZ: pz };
+  }
+  for (let wx = px - w + 1; wx <= px; wx++) {
+    yield { orient: "v", face: "z", dims, minX: wx, minY: py, minZ: pz };
+    yield { orient: "v", face: "z", dims, minX: wx, minY: py - (h - 1), minZ: pz };
+  }
+  for (let wz = pz - w + 1; wz <= pz; wz++) {
+    yield { orient: "v", face: "x", dims, minX: px, minY: py, minZ: wz };
+    yield { orient: "v", face: "x", dims, minX: px, minY: py - (h - 1), minZ: wz };
+  }
+  for (let wy = py - h + 1; wy <= py; wy++) {
+    yield { orient: "v", face: "x", dims, minX: px, minY: wy, minZ: pz };
+    yield { orient: "v", face: "x", dims, minX: px, minY: wy, minZ: pz - (w - 1) };
+  }
+}
+
+function* tntFlatAnchors(px, py, pz) {
+  const w = 4, dims = "4x4";
+  for (let wz = pz - w + 1; wz <= pz; wz++) {
+    yield { orient: "h", dims, minX: px, minY: py, minZ: wz };
+    yield { orient: "h", dims, minX: px - (w - 1), minY: py, minZ: wz };
+  }
+  for (let wx = px - w + 1; wx <= px; wx++) {
+    yield { orient: "h", dims, minX: wx, minY: py, minZ: pz };
+    yield { orient: "h", dims, minX: wx, minY: py, minZ: pz - (w - 1) };
   }
 }
 
@@ -402,7 +492,7 @@ function endFillCells(win) {
   return cells;
 }
 
-function netherFillCells(win) {
+function rectFillCells(win) {
   const cells = [];
   const push = (x, y, z) => cells.push([x, y, z]);
   if (win.orient === "v") {
@@ -422,7 +512,7 @@ function netherFillCells(win) {
         for (let x = win.minX + 1; x <= win.minX + 3; x++) push(x, y, win.minZ);
     }
   } else {
-    const xw = win.dims === "4x5" ? 2 : 3;
+    const xw = win.dims === "4x4" ? 2 : win.dims === "4x5" ? 2 : 3;
     const xt = win.dims === "4x5" ? 3 : 2;
     for (let x = win.minX + 1; x <= win.minX + xw; x++)
       for (let z = win.minZ + 1; z <= win.minZ + xt; z++) push(x, win.minY, z);
@@ -564,7 +654,7 @@ function insideEndInterior(win, bx, by, bz) {
   return bx >= win.minX + 1 && bx <= win.minX + 3 && bz >= win.minZ + 1 && bz <= win.minZ + 3;
 }
 
-function insideNetherInterior(win, bx, by, bz) {
+function insideRectInterior(win, bx, by, bz) {
   if (win.orient === "v") {
     if (win.face === "x") {
       if (win.dims === "4x5") return bx === win.minX && by >= win.minY + 1 && by <= win.minY + 3 && bz >= win.minZ + 1 && bz <= win.minZ + 2;
@@ -576,6 +666,7 @@ function insideNetherInterior(win, bx, by, bz) {
     return bx >= win.minX + 1 && bx <= win.minX + 3 && by >= win.minY + 1 && by <= win.minY + 2 && bz === win.minZ;
   }
   if (win.dims === "4x5") return bx >= win.minX + 1 && bx <= win.minX + 2 && bz >= win.minZ + 1 && bz <= win.minZ + 3;
+  if (win.dims === "4x4") return bx >= win.minX + 1 && bx <= win.minX + 2 && bz >= win.minZ + 1 && bz <= win.minZ + 2;
   return bx >= win.minX + 1 && bx <= win.minX + 3 && bz >= win.minZ + 1 && bz <= win.minZ + 2;
 }
 
@@ -586,14 +677,14 @@ function endBBox(w) {
   return { minX: w.minX, maxX: w.minX + 4, minZ: w.minZ, maxZ: w.minZ, baseY: w.minY, topY };
 }
 
-function netherBBox(w) {
+function rectBBox(w) {
   if (w.orient === "v") {
     const ww = w.dims === "4x5" || w.dims === "4x4" ? 4 : 5;
     const hh = w.dims === "4x5" ? 5 : 4;
     if (w.face === "x") return { minX: w.minX, maxX: w.minX, minZ: w.minZ, maxZ: w.minZ + ww - 1, baseY: w.minY, topY: w.minY + hh - 1 };
     return { minX: w.minX, maxX: w.minX + ww - 1, minZ: w.minZ, maxZ: w.minZ, baseY: w.minY, topY: w.minY + hh - 1 };
   }
-  const ww = w.dims === "4x5" ? 4 : 5, dd = w.dims === "4x5" ? 5 : 4;
+  const ww = w.dims === "4x5" || w.dims === "4x4" ? 4 : 5, dd = w.dims === "4x5" ? 5 : 4;
   return { minX: w.minX, maxX: w.minX + ww - 1, minZ: w.minZ, maxZ: w.minZ + dd - 1, baseY: w.minY, topY: w.minY };
 }
 
@@ -688,7 +779,10 @@ function frameTopSpot(win, wins) {
 }
 
 function winCenter(win) {
-  if (win.orient === "h") return { x: win.minX + 2, z: win.minZ + 2 };
+  if (win.orient === "h") {
+    if (win.dims === "4x4") return { x: win.minX + 1.5, z: win.minZ + 1.5 };
+    return { x: win.minX + 2, z: win.minZ + 2 };
+  }
   if (win.face === "x") return { x: win.minX, z: win.minZ + (win.dims === "4x5" || win.dims === "4x4" ? 1.5 : 2) };
   return { x: win.minX + (win.dims === "4x5" || win.dims === "4x4" ? 1.5 : 2), z: win.minZ };
 }
@@ -806,13 +900,21 @@ function moveDir() {
   return { x: dx, z: dz };
 }
 
-function endTravel(win, dir) {
-  // Loop back beside the same window, facing it.
+// Loop back beside the same window, facing it (shared by End and TNT).
+function loopBackTravel(win, dir) {
   const c = winCenter(win);
   const wins = collectReturnWins(Math.floor(c.x), win.minY, Math.floor(c.z));
   const spot = findReturnSpot(win, dir, wins) || frameTopSpot(win, wins)
     || resolveSpawn(c.x + 0.5, win.minY, c.z + 0.5);
-  return { spot, yaw: facePortalFrom(win, spot.x, spot.z), toast: null };
+  return { spot, yaw: facePortalFrom(win, spot.x, spot.z) };
+}
+
+function endTravel(win, dir) {
+  return { ...loopBackTravel(win, dir), toast: null };
+}
+
+function tntTravel(win, dir) {
+  return { ...loopBackTravel(win, dir), toast: null };
 }
 
 function netherTravel(win, dir) {
@@ -903,28 +1005,87 @@ function buildPortalSpiral() {
   }
 }
 
+// Single-tier help art: a cols×rows ring of one block id (`skipCorners`
+// leaves the corners empty, like the End diagram). Runs once at boot.
+function buildSolidFrame(cols, rows, id, skipCorners) {
+  const cells = Array.from({ length: rows }, () => Array(cols).fill(null));
+  for (let r = 0; r < rows; r++)
+    for (let c = 0; c < cols; c++) {
+      const isEdge = r === 0 || r === rows - 1 || c === 0 || c === cols - 1;
+      const isCorner = (r === 0 || r === rows - 1) && (c === 0 || c === cols - 1);
+      if (isEdge && !(skipCorners && isCorner)) cells[r][c] = id;
+    }
+  return cells;
+}
+
+// TNT help art: the 12-cell 4×4 ring draws 4 of each tier, shuffled with a
+// rejection loop that forbids adjacent repeats (including the wrap-around),
+// so reds/blues/blacks stay spread out. Runs once at boot.
+function buildTntFrame() {
+  const ring = [
+    [0, 0], [0, 1], [0, 2], [0, 3],
+    [1, 3], [2, 3], [3, 3],
+    [3, 2], [3, 1], [3, 0],
+    [2, 0], [1, 0],
+  ];
+  const pool = [TNT, TNT, TNT, TNT, MEGA_TNT, MEGA_TNT, MEGA_TNT, MEGA_TNT, ULTRA_TNT, ULTRA_TNT, ULTRA_TNT, ULTRA_TNT];
+  const hasAdjacent = (a) => {
+    for (let i = 0; i < a.length; i++) if (a[i] === a[(i + 1) % a.length]) return true;
+    return false;
+  };
+  let order = pool;
+  for (let tries = 0; tries < 200; tries++) {
+    order = pool.slice();
+    for (let i = order.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      const t = order[i]; order[i] = order[j]; order[j] = t;
+    }
+    if (!hasAdjacent(order)) break;
+  }
+  const cells = Array.from({ length: 4 }, () => Array(4).fill(null));
+  ring.forEach(([r, c], i) => { cells[r][c] = order[i]; });
+  return cells;
+}
+
+// Block icon data URLs for mixed-frame help art (same source as hotbar icons).
+const artIconCache = new Map();
+function artBlockIcon(id) {
+  if (!artIconCache.has(id)) artIconCache.set(id, materialsFor(id)[0].map.image.toDataURL());
+  return artIconCache.get(id);
+}
+
 function paintFrameArt(hostId, art) {
   const host = document.getElementById(hostId);
   if (!host || host.children.length) return;
-  const { cols, rows, corners, fill, stroke } = art;
+  const { cols, rows, width, stroke, cells } = art;
   const cell = 19, size = 15, off = 6;
   const w = off * 2 + (cols - 1) * cell + size;
   const h = off * 2 + (rows - 1) * cell + size;
+  // One shared px-per-unit scale (150px over the 103-unit 5-wide viewBox),
+  // so cubes render identically in every diagram; overrides stay explicit.
+  const px = width || Math.round(150 * w / 103);
   const svg = document.createElementNS(SVGNS, "svg");
   svg.setAttribute("viewBox", `0 0 ${w} ${h}`);
-  svg.setAttribute("width", "150");
-  svg.setAttribute("height", String(Math.round(150 * h / w)));
+  svg.setAttribute("width", String(px));
+  svg.setAttribute("height", String(Math.round(px * h / w)));
   for (let r = 0; r < rows; r++)
     for (let c = 0; c < cols; c++) {
-      const isCorner = (r === 0 && c === 0) || (r === 0 && c === cols - 1) || (r === rows - 1 && c === 0) || (r === rows - 1 && c === cols - 1);
-      const isEdge = r === 0 || r === rows - 1 || c === 0 || c === cols - 1;
-      if (!isEdge || (corners === "skip" && isCorner)) continue;
-      const rect = document.createElementNS(SVGNS, "rect");
-      rect.setAttribute("x", off + c * cell); rect.setAttribute("y", off + r * cell);
-      rect.setAttribute("width", size); rect.setAttribute("height", size); rect.setAttribute("rx", 3);
-      rect.setAttribute("fill", fill);
-      rect.setAttribute("stroke", stroke); rect.setAttribute("stroke-width", "1.5");
-      svg.appendChild(rect);
+      const x = off + c * cell, y = off + r * cell;
+      const id = cells[r] && cells[r][c];
+      if (id == null) continue;
+      const img = document.createElementNS(SVGNS, "image");
+      img.setAttribute("x", x + 1); img.setAttribute("y", y + 1);
+      img.setAttribute("width", size - 2); img.setAttribute("height", size - 2);
+      img.setAttribute("preserveAspectRatio", "xMidYMid slice");
+      img.setAttribute("href", artBlockIcon(id));
+      img.setAttribute("style", "image-rendering: pixelated");
+      svg.appendChild(img);
+      const border = document.createElementNS(SVGNS, "rect");
+      border.setAttribute("x", x); border.setAttribute("y", y);
+      border.setAttribute("width", size); border.setAttribute("height", size); border.setAttribute("rx", 3);
+      border.setAttribute("fill", "none");
+      border.setAttribute("stroke", stroke); border.setAttribute("stroke-width", "1.5");
+      svg.appendChild(border);
     }
   host.appendChild(svg);
 }

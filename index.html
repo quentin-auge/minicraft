@@ -70,8 +70,8 @@
     #help .portal-diagram { display: flex; gap: 20px; align-items: center; margin-top: 4px; }
     #help .portal-diagram h3 { margin: 0 0 6px; }
     #help .portal-diagram svg { flex: 0 0 auto; border-radius: 8px; box-shadow: 0 0 18px rgba(155,48,247,0.55); }
+    #help #tntArt svg { box-shadow: 0 0 18px rgba(209,26,26,0.55); }
     #help .portal-diagram p { margin: 0; }
-    #help .note { margin-top: 12px; font-size: 13px; color: #cdd6e2; }
     #help .closebtn {
       margin-top: 14px; display: block; width: 100%; font: inherit; font-size: 15px; font-weight: 600;
       color: #fff; background: #3a8; border: 2px solid #4c9; border-radius: 8px; padding: 10px; cursor: pointer;
@@ -192,15 +192,18 @@
       </table>
       <div class="portal-diagram">
         <div>
-          <h3>Portal to the End</h3>
+          <h3>End Portal</h3>
           <div id="portalArt"></div>
         </div>
         <div>
-          <h3>Portal to the Nether</h3>
+          <h3>Nether Portal</h3>
           <div id="netherArt"></div>
         </div>
+        <div>
+          <h3>TNT Portal</h3>
+          <div id="tntArt"></div>
+        </div>
       </div>
-      <div class="note">End frame: 5x5 PORTAL blocks, flat or upright either way. Nether frame: 5x4, 4x5 or 4x4 OBSIDIAN, flat or upright. Frames may cross each other. Step into the fill to travel.</div>
       <button class="closebtn" id="btnHelpClose">Close</button>
     </div>
   </div>
