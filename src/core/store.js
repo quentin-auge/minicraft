@@ -36,14 +36,19 @@ function makeColTops() {
   return new Int32Array(KEY_MZ * KEY_MZ);
 }
 
-export const worlds = { over: new Map(), nether: new Map(), end: new Map() };
-export const colTops = { over: makeColTops(), nether: makeColTops(), end: makeColTops() };
+// First-class dimensions: every dimension key owns one entry in each map.
+// Keep nether/end entries (empty until their generators register) so future
+// dimensions add a key here and a spec in world/dimensions.js, never a fork.
+export const DIMENSION_KEYS = ["over", "tnt", "nether", "end"];
+const fromKeys = (make) => Object.fromEntries(DIMENSION_KEYS.map((k) => [k, make()]));
+export const worlds = fromKeys(() => new Map());
+export const colTops = fromKeys(() => makeColTops());
 // Bare column tops: same index, but moon rock and moon water never raise
 // it. The Moon disc sets every column top to ~946, which would neuter the
 // enclosure fast path below (every ground flood would exhaust its budget
 // under the disc); the bare tops restore O(column-height) escapes for
 // below-band queries. Spawn and streaming keep using colTops.
-export const colTopsBare = { over: makeColTops(), nether: makeColTops(), end: makeColTops() };
+export const colTopsBare = fromKeys(() => makeColTops());
 // Sparse column occupancy: colTopIdx -> Set of occupied y. Meshing iterates
 // blocks instead of scanning 0..top, so tall builds cost by blocks, not
 // height. colLiqTop (colTopIdx -> highest liquid y) answers swim queries in
@@ -53,8 +58,8 @@ export const colTopsBare = { over: makeColTops(), nether: makeColTops(), end: ma
 function makeColOcc() {
   return new Map();
 }
-export const colOcc = { over: makeColOcc(), nether: makeColOcc(), end: makeColOcc() };
-export const colLiqTop = { over: new Map(), nether: new Map(), end: new Map() };
+export const colOcc = fromKeys(() => makeColOcc());
+export const colLiqTop = fromKeys(() => new Map());
 
 export let dim = "over";
 export let world = worlds.over;

@@ -34,10 +34,12 @@ function makeMaps() {
 }
 
 // Color per block, kept per dimension (block keys don't include the dim).
-const glowVariants = { over: makeMaps(), nether: makeMaps(), end: makeMaps() };
+import { DIMENSION_KEYS } from "../core/store.js";
+const fromKeys = (make) => Object.fromEntries(DIMENSION_KEYS.map((k) => [k, make()]));
+const glowVariants = fromKeys(() => makeMaps());
 // Live GLOWSTONE block index per dimension, so clustering and light buckets
 // iterate just the stones instead of scanning the whole world map.
-const glowstoneSets = { over: new Set(), nether: new Set(), end: new Set() };
+const glowstoneSets = fromKeys(() => new Set());
 
 // A placed glowstone inherits the color of the nearest glowstone within
 // CLUSTER_DIST (so builds cluster by color); otherwise it rolls a fresh one.
@@ -78,7 +80,7 @@ export function clearGlowstoneAt(x, y, z) {
 
 // New worlds never inherit another world's colors or indexes.
 export function resetGlowstoneMemory() {
-  for (const name of ["over", "nether", "end"]) {
+  for (const name of DIMENSION_KEYS) {
     glowstoneSets[name].clear();
     glowVariants[name].clear();
   }

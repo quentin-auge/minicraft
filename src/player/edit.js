@@ -4,7 +4,8 @@
 // detonates it immediately.
 import * as THREE from "three";
 import { AIR, BLOCK_INFO, FLOWER, GLOWSTONE, isLiquid, isTntLike } from "../core/blocks.js";
-import { WORLD_RADIUS, getBlock, setBlock } from "../core/store.js";
+import { WORLD_RADIUS, dim, getBlock, setBlock } from "../core/store.js";
+import { dimHasBedrock } from "../world/dimensions.js";
 import { PLAYER_HW, PLAYER_H, pos } from "./physics.js";
 import { igniteTNT, isLitTNT, detonateNow, noteTntPlaced, kindOfBlock, trackMegaPlaced } from "../fx/tnt.js";
 import { noteGlowstonePlace, clearGlowstoneAt } from "../world/glowstone.js";
@@ -131,7 +132,9 @@ export function purgeFloatingLiquidsAround(coords) {
 }
 
 export function breakBlockAt(x, y, z) {
-  if (y === 0) return [];
+  // Bedrock floor exists only in dimensions that declare it (overworld);
+  // the TNT cube has no floor — nothing to protect at y = 0.
+  if (y === 0 && dimHasBedrock(dim)) return [];
   const bid = getBlock(x, y, z);
   if (bid === AIR) return [];
   if (isLiquid(bid)) return [];

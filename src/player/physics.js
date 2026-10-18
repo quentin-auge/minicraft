@@ -4,7 +4,7 @@
 import * as THREE from "three";
 import { isLiquid } from "../core/blocks.js";
 import { getBlock, isSolid, colLiqTop, colTopIdx, dim } from "../core/store.js";
-import { findSpawn } from "../world/spawn.js";
+import { dimSpec } from "../world/dimensions.js";
 import { MOON_MIN_Y } from "../world/moon.js";
 
 export const PLAYER_HW = 0.3;
@@ -98,11 +98,12 @@ export function tickKnockback(dt) {
   if (knockVel.lengthSq() < 0.25) knockVel.set(0, 0, 0);
 }
 
-// Spawn selection lives in `src/world/spawn.js` (pure voxel search over
-// finished world data); here the pick is applied to the player body. Pitch
-// resets so respawns and regens never inherit the old look angle.
+// Spawn selection lives in the active dimension's spec (`DIMENSIONS`:
+// pure voxel search over finished world data); here the pick is applied to
+// the player body. Pitch resets so respawns and regens never inherit the
+// old look angle.
 export function spawnPlayer() {
-  const s = findSpawn(EYE);
+  const s = dimSpec(dim).findSpawn();
   pos.set(s.x + 0.5, s.y + 1.01, s.z + 0.5);
   setYaw(s.yaw);
   setPitch(0);

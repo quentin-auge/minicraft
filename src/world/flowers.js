@@ -20,8 +20,10 @@ function makeMaps() {
 }
 
 // Variant + angle per flower block, kept per dimension.
-const flowerVariants = { over: makeMaps(), nether: makeMaps(), end: makeMaps() };
-const flowerAngles = { over: makeMaps(), nether: makeMaps(), end: makeMaps() };
+import { DIMENSION_KEYS } from "../core/store.js";
+const fromKeys = (make) => Object.fromEntries(DIMENSION_KEYS.map((k) => [k, make()]));
+const flowerVariants = fromKeys(() => makeMaps());
+const flowerAngles = fromKeys(() => makeMaps());
 
 function rollVariant() {
   let r = Math.random() * WEIGHT_SUM;
@@ -58,7 +60,7 @@ export function clearFlowerAt(x, y, z) {
 
 // New worlds never inherit another world's looks.
 export function resetFlowerMemory() {
-  for (const name of ["over", "nether", "end"]) {
+  for (const name of DIMENSION_KEYS) {
     flowerVariants[name].clear();
     flowerAngles[name].clear();
   }

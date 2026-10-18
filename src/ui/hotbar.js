@@ -9,7 +9,7 @@ import {
 } from "../core/blocks.js";
 import { materialsFor } from "../core/textures.js";
 
-const BASE_ITEMS = [
+export const BASE_ITEMS = [
   GRASS, DIRT, STONE, SAND, LOG, PLANKS, GLASS, LEAVES,
   WATER, FLOWER, TNT, MEGA_TNT, ULTRA_TNT, PORTAL, OBSIDIAN,
 ];
@@ -35,8 +35,8 @@ export function getItems() {
   return items.slice();
 }
 
-export function resetItems() {
-  items = BASE_ITEMS.slice();
+export function resetItems(to = BASE_ITEMS) {
+  items = to.slice();
   clampSelection();
   buildHotbar();
 }

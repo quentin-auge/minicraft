@@ -12,7 +12,7 @@
 import * as THREE from "three";
 import { AIR, PORTAL, OBSIDIAN, TNT, MEGA_TNT, ULTRA_TNT, isLiquid } from "../core/blocks.js";
 import { materialsFor } from "../core/textures.js";
-import { WORLD_RADIUS, key, keyXYZ, getBlock, isSolid } from "../core/store.js";
+import { WORLD_RADIUS, DIMENSION_KEYS, dim, key, keyXYZ, getBlock, isSolid } from "../core/store.js";
 import {
   pos, vel, yaw, keys, setYaw, setPitch,
   PLAYER_HW, PLAYER_H,
@@ -61,14 +61,16 @@ const frameIds = new Set();
 for (const s of PORTAL_TYPES) for (const id of Array.isArray(s.frame) ? s.frame : [s.frame]) frameIds.add(id);
 const isFrameBlock = (id) => frameIds.has(id);
 
-// Index of every frame block, so scans only visit real candidates.
-const frameSet = new Set();
+// Index of every frame block, kept per dimension (block keys don't include
+// the dim, and coordinates collide across dimensions).
+const frameSets = Object.fromEntries(DIMENSION_KEYS.map((k) => [k, new Set()]));
 export let portalDirty = true;
 
 function trackFrame(x, y, z, id) {
   const k = key(x, y, z);
-  if (isFrameBlock(id)) frameSet.add(k);
-  else frameSet.delete(k);
+  const set = frameSets[dim];
+  if (isFrameBlock(id)) set.add(k);
+  else set.delete(k);
 }
 
 export function notePortalEdit(x, y, z) {
@@ -102,10 +104,11 @@ export function notePortalEdits(coords) {
 }
 
 // Worldgen-placed frames, keyed by the generator (live edits track
-// themselves via trackFrame, so a clear plus this list is exact).
+// themselves via trackFrame, so a clear plus this list is exact). Scoped to
+// the active dimension; dimension switches clear fills and rescan.
 export function resetFrameSet(keys) {
-  frameSet.clear();
-  for (const k of keys) frameSet.add(k);
+  frameSets[dim].clear();
+  for (const k of keys) frameSets[dim].add(k);
   portalDirty = true;
   // A fresh world never inherits a pending teleport from the last one.
   pendingTravel = null;
@@ -255,7 +258,7 @@ function evalTntWin(w) {
 }
 
 function forEachFrameBlockNear(bx, by, bz, R, fn) {
-  for (const pk of frameSet) {
+  for (const pk of frameSets[dim]) {
     const [px, py, pz] = keyXYZ(pk);
     if (Math.abs(px - bx) > R || Math.abs(py - by) > R || Math.abs(pz - bz) > R) continue;
     fn(px, py, pz);
@@ -406,7 +409,7 @@ function gatherNear(bx, by, bz, R) {
 function gatherAll() {
   const out = [];
   const seen = new Set();
-  for (const pk of frameSet) {
+  for (const pk of frameSets[dim]) {
     const [x, y, z] = keyXYZ(pk);
     gatherFrom(x, y, z, seen, out);
   }
@@ -836,7 +839,7 @@ const PORTAL_FADE_OUT = 600;
 let spiralGen = 0;
 let toastT = 0;
 
-function showToast(msg) {
+export function toast(msg) {
   const el = document.getElementById("toast");
   if (!el) return;
   el.textContent = msg;
@@ -865,25 +868,40 @@ function hidePortalSpiral() {
 // Pause contract: the spiral wait is a sim-time pending, decremented in
 // tickPortals — never a wall-clock setTimeout — so pausing mid-spiral
 // freezes it and the travel completes after unpausing.
-let pendingTravel = null; // { spot, yawV, msg, t }
-function travelTo(spot, yawV, msg) {
+let pendingTravel = null; // { spot?, yawV?, msg?, dim?, t }
+function travelTo(plan) {
   if (portalBusy) return;
   portalBusy = true;
   portalCd = 1.5;
   showPortalSpiral();
-  pendingTravel = { spot, yawV, msg, t: (PORTAL_FADE_IN + 80) / 1000 };
+  pendingTravel = { ...plan, t: (PORTAL_FADE_IN + 80) / 1000 };
 }
 
 function completeTravel() {
-  const { spot, yawV, msg } = pendingTravel;
+  const plan = pendingTravel;
   pendingTravel = null;
-  if (onTravelHook) onTravelHook();
-  pos.set(spot.x, spot.y, spot.z);
+  // Cross-dimension plans carry dim: the main.js hook switches worlds and
+  // resolves the arrival, then positions the player itself. Busy + spiral
+  // stay held until main.js calls completeDimTravel() after the rebuild.
+  if (plan.dim && plan.dim !== dim) {
+    if (onTravelHook) onTravelHook(plan);
+    if (plan.msg) toast(plan.msg);
+    return;
+  }
+  if (onTravelHook) onTravelHook(plan);
+  pos.set(plan.spot.x, plan.spot.y, plan.spot.z);
   vel.set(0, 0, 0);
-  setYaw(yawV);
+  setYaw(plan.yawV ?? plan.yaw);
   setPitch(0);
   Object.keys(keys).forEach((k) => { keys[k] = false; });
-  if (msg) showToast(msg);
+  if (plan.msg || plan.toast) toast(plan.msg ?? plan.toast);
+  portalBusy = false;
+  hidePortalSpiral();
+}
+
+// Called by main.js once a cross-dimension switch finishes (or aborts):
+// releases the travel lock and drops the spiral overlay.
+export function completeDimTravel() {
   portalBusy = false;
   hidePortalSpiral();
 }
@@ -910,18 +928,25 @@ function loopBackTravel(win, dir) {
 }
 
 function endTravel(win, dir) {
-  return { ...loopBackTravel(win, dir), toast: null };
+  const l = loopBackTravel(win, dir);
+  return { spot: l.spot, yaw: l.yaw, yawV: l.yaw, toast: null, msg: null };
 }
 
 function tntTravel(win, dir) {
-  return { ...loopBackTravel(win, dir), toast: null };
+  // Cross-dimension portal: over -> tnt, tnt -> over. Arrival resolves after
+  // the switch (destination solidity differs), so this carries only the
+  // destination — completeTravel hands it to the dimension hook in main.js.
+  void dir;
+  const dest = dim === "tnt" ? "over" : "tnt";
+  return { dim: dest, toast: dest === "tnt" ? "You entered the TNT dimension" : "You returned to the Overworld" };
 }
 
 function netherTravel(win, dir) {
   // Loop back beside the same window, facing it.
   const near = nearPortalSpawn(win, dir);
   const spot = resolveSpawn(near.x, near.y, near.z);
-  return { spot, yaw: facePortalFrom(win, spot.x, spot.z), toast: "You entered The Nether" };
+  const yaw = facePortalFrom(win, spot.x, spot.z);
+  return { spot, yaw, yawV: yaw, toast: "You entered The Nether" };
 }
 
 function checkPortal() {
@@ -930,8 +955,12 @@ function checkPortal() {
   // a window's plane always touches its own slab first.
   for (const f of portalFills.values()) {
     if (!touchesPortalFill(f)) continue;
-    const plan = specOf(f.win).travel(f.win, moveDir());
-    travelTo(plan.spot, plan.yaw, plan.toast);
+    const raw = specOf(f.win).travel(f.win, moveDir());
+    const plan = {
+      spot: raw.spot, yaw: raw.yaw, yawV: raw.yawV ?? raw.yaw,
+      msg: raw.msg ?? raw.toast ?? null, dim: raw.dim ?? null,
+    };
+    travelTo(plan);
     return;
   }
 }

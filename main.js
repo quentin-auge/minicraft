@@ -31,11 +31,13 @@ import { initSky, tickSky } from "./src/render/sky.js";
 import {
   initPortals, buildPortalDom, setPortalTravelHook, tickPortals,
   resetFrameSet, scanWorldPortals, clearPortalFills, notePortalEdits,
-  notePortalFramesOnly, tickPortalFillFades,
+  notePortalFramesOnly, tickPortalFillFades, completeDimTravel,
 } from "./src/world/portals.js";
 import { villageFrames } from "./src/world/village.js";
-import { CHUNK, RENDER_DIST, setBlock, getBlock } from "./src/core/store.js";
-import { EYE } from "./src/player/physics.js";
+import { CHUNK, RENDER_DIST, dim, setDimension, setBlock, getBlock, isSolid, worlds } from "./src/core/store.js";
+import { dimEnv, dimSpec, stashOverExit, takeOverExit } from "./src/world/dimensions.js";
+import { disposeAll } from "./src/render/mesher.js";
+import { PLAYER_HW, PLAYER_H, EYE } from "./src/player/physics.js";
 
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x87ceeb);
@@ -82,7 +84,10 @@ initBlockLights(scene);
 initRope(scene);
 initPortals(scene);
 buildPortalDom();
-setPortalTravelHook(() => severHook());
+setPortalTravelHook((plan) => {
+  if (plan && plan.dim) void goToDimension(plan.dim);
+  else severHook();
+});
 
 const highlight = new THREE.LineSegments(
   new THREE.EdgesGeometry(new THREE.BoxGeometry(1.002, 1.002, 1.002)),
@@ -303,7 +308,7 @@ async function buildWorld() {
     resetFrameSet(BOOT_DIM === "tnt" ? [] : villageFrames);
     scanWorldPortals();
     moonBand = false;
-    resetItems();
+    resetItems(dimSpec(dim).hotbar);
     select(0);
     updateCamera();
     resetTNTMemory();
@@ -314,6 +319,78 @@ async function buildWorld() {
   if (aborted() || !worldReady) return;
   if (BOOT_DIM !== "tnt") fillMoonUnder(getSeed());
   warmupFx(token);
+}
+
+// Cross-dimension travel (TNT portals): over <-> tnt. TNT regenerates on
+// every entry (fresh seed, frame index cleared); overworld retains voxels
+// and restores the stashed exit footing when still standable, else spawns.
+// Meshes, fills, lights, and fuses reset around the switch; fly mode
+// persists (all portals), movement keys zero. Runs behind the travel
+// spiral: portals.js holds busy until completeDimTravel() below.
+async function goToDimension(dest) {
+  if (dest === dim || building) { if (dest === dim) completeDimTravel(); return; }
+  const token = ++buildToken;
+  const aborted = () => token !== buildToken;
+  building = true;
+  try {
+    if (dim === 'over') stashOverExit(pos);
+    severHook();
+    resetTNTMemory();
+    clearPortalFills();
+    renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+    if (dest === 'tnt') {
+      const spec = dimSpec('tnt');
+      setDimension('tnt');
+      resetFrameSet([]);
+      const ok = await spec.generateAsync(Math.floor(Math.random() * 100000), aborted);
+      if (!ok || aborted()) return;
+      disposeAll();
+      spawnPlayer();
+    } else {
+      setDimension('over');
+      disposeAll();
+      const e = takeOverExit();
+      let placed = false;
+      if (e) {
+        const fx = Math.floor(e.x), fy = Math.floor(e.y), fz = Math.floor(e.z);
+        if (isSolid(fx, fy - 1, fz)) {
+          let clear = true;
+          for (let bx = Math.floor(e.x - PLAYER_HW + 0.02); bx <= Math.floor(e.x + PLAYER_HW - 0.02) && clear; bx++)
+            for (let by = Math.floor(e.y + 0.02); by <= Math.floor(e.y + PLAYER_H - 0.02) && clear; by++)
+              for (let bz = Math.floor(e.z - PLAYER_HW + 0.02); bz <= Math.floor(e.z + PLAYER_HW - 0.02) && clear; bz++)
+                if (isSolid(bx, by, bz)) clear = false;
+          if (clear) {
+            pos.set(e.x, e.y, e.z);
+            vel.set(0, 0, 0);
+            setYaw(0);
+            setPitch(0);
+            placed = true;
+          }
+        }
+      }
+      if (!placed) spawnPlayer();
+    }
+    rebuildBlockLightIndexes();
+    rebuildAll(pos.x, pos.z, 2);
+    if (aborted()) return;
+    scanWorldPortals();
+    moonBand = false;
+    // Per-dimension bar: the TNT cube holds TNT tiers only. Selection follows
+    // by id, so a held TNT survives the trip; anything else clamps.
+    resetItems(dimSpec(dim).hotbar);
+    updateCamera();
+    Object.keys(keys).forEach((k) => { keys[k] = false; });
+  } finally {
+    if (token === buildToken) {
+      building = false;
+      updateCamera();
+      completeDimTravel();
+    }
+  }
+  // Resume an interrupted moon fill when coming home: travelling out mid-fill
+  // aborts the slices above, leaving the overworld moon half-built. The size
+  // guard skips worlds whose overworld was never generated (temporary boot).
+  if (!aborted() && dest === "over" && worlds.over.size > 0 && !moonReady(getSeed())) fillMoonUnder(getSeed());
 }
 
 // Post-unlock shader warmup: pools enter the scene and compile while the
@@ -355,15 +432,15 @@ async function fillMoonUnder(seed) {
   try {
     const R = MOON_R, STEP = 16;
     for (let x0 = -R; x0 <= R; x0 += STEP) {
-      if (getSeed() !== seed || building || !worldReady || moonReady(seed)) return;
+      if (dim !== "over" || getSeed() !== seed || building || !worldReady || moonReady(seed)) return;
       generateMoonUnderRows(seed, setBlock, x0, x0 + STEP);
       await new Promise((r) => requestAnimationFrame(r));
     }
-    if (getSeed() !== seed || building || !worldReady || moonReady(seed)) return;
+    if (dim !== "over" || getSeed() !== seed || building || !worldReady || moonReady(seed)) return;
     markMoonBuilt(seed);
     const centers = moonChunkCenters();
     for (let i = 0; i < centers.length; i += 2) {
-      if (getSeed() !== seed || building || !worldReady) return;
+      if (dim !== "over" || getSeed() !== seed || building || !worldReady) return;
       refreshBlocks(centers.slice(i, i + 2));
       await new Promise((r) => requestAnimationFrame(r));
     }
@@ -382,15 +459,19 @@ async function fillMoonUnder(seed) {
 // shrinks further with speed so fast flight never outruns the loader
 // into clear view.
 function updateStreamingFog() {
+  // Per-dimension steady state: TNT overrides fog via its DIMENSIONS env.
+  const denv = dimEnv(dim);
+  const baseFar = denv?.fogFar ?? readyFog.far;
+  const baseNear = denv?.fogNear ?? readyFog.near;
   const dh = Math.max(0, camera.position.y - FOG_GROUND_REF);
   const unloadHoriz = (RENDER_DIST + UNLOAD_MARGIN) * CHUNK;
   const limitFar = Math.sqrt(unloadHoriz * unloadHoriz + dh * dh) - FOG_MARGIN;
   const missing = nearestMissingDist(camera.position.x, camera.position.y, camera.position.z);
   // The reveal curve caps the target too: one lerped writer from the first
   // frame, no handoff, so the fog can never snap or recede.
-  const revealFar = LOAD_FOG_FAR + (readyFog.far - LOAD_FOG_FAR) * revealEase();
-  const targetFar = Math.max(Math.min(readyFog.far, limitFar, missing - FOG_MARGIN, revealFar), LOAD_FOG_FAR);
-  const ratio = readyFog.near / readyFog.far;
+  const revealFar = LOAD_FOG_FAR + (baseFar - LOAD_FOG_FAR) * revealEase();
+  const targetFar = Math.max(Math.min(baseFar, limitFar, missing - FOG_MARGIN, revealFar), LOAD_FOG_FAR);
+  const ratio = baseNear / baseFar;
   const targetNear = Math.max(
     Math.min(targetFar * ratio * (1 - 0.2 * Math.min(1, vel.length() / 30)), targetFar - 1),
     LOAD_FOG_NEAR
@@ -554,7 +635,7 @@ function loop(now) {
     // veil gate rides along: water-side white shows only for divers, the
     // tinted veil only for open-air eyes, flipping together with the murk.
     updateStreamingFog();
-    tickSky(scene, camera, sun, hemi, envAir);
+    tickSky(scene, camera, sun, hemi, envAir, dimEnv(dim));
     applyRegions(camera.position, scene.background, setRegionFade);
     // One eye-medium lookup per frame, shared by the murk and the veil gate
     // (it used to run twice, with a bounded air flood each time in pockets).
@@ -581,7 +662,10 @@ function loop(now) {
     // Underside safety net: below the moon band the shell must exist now, so
     // descending onto (or under) a fresh moon never meets unbuilt rock.
     // Synchronous and rare (the background fill wins by ~30 s of descent).
-    if (!moonReady(getSeed()) && camera.position.y < MOON_MIN_Y - 8) {
+    // Overworld only: in other dimensions this would stamp moon voxels into
+    // the wrong map (the TNT cube sits entirely below the band, so an
+    // unguarded check fires every frame there).
+    if (dim === "over" && !moonReady(getSeed()) && camera.position.y < MOON_MIN_Y - 8) {
       generateMoon(getSeed(), setBlock);
       refreshBlocks(moonChunkCenters());
     }
