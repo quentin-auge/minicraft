@@ -2,7 +2,7 @@
 import * as THREE from "three";
 import {
   GRASS, DIRT, STONE, SAND, LOG, LEAVES, WATER, PLANKS, GLASS,
-  TNT, MEGA_TNT, ULTRA_TNT, FLOWER, PORTAL, OBSIDIAN, CLOUD, MOON, MOON_WATER,
+  TNT, MEGA_TNT, ULTRA_TNT, FLOWER, PORTAL, ENDSTONE, OBSIDIAN, CLOUD, MOON, MOON_WATER,
   GLOWSTONE,
 } from "./blocks.js";
 import { GLOW_VARIANTS, GLOW_ICON_VARIANT } from "../world/glowstone.js";
@@ -243,6 +243,13 @@ export const TEX = {
     ctx.fillStyle = "#d9a6ff";
     ctx.fillRect(7, 4, 2, 8);
   }),
+  endstone: canvasTex((ctx) => {
+    const base = [154, 154, 162];
+    ctx.fillStyle = "#9a9aa2"; ctx.fillRect(0, 0, 16, 16);
+    pxNoise(ctx, base, 14);
+    ctx.fillStyle = "rgba(0,0,0,0.16)";
+    for (let i = 0; i < 6; i++) ctx.fillRect(Math.random() * 14, Math.random() * 14, 2 + Math.random() * 3, 2 + Math.random() * 2);
+  }),
 };
 
 export function material(map, opts = {}) {
@@ -395,6 +402,7 @@ export function materialsFor(id) {
     case ULTRA_TNT:
       return [material(TEX.ultra_side), material(TEX.ultra_side), material(TEX.ultra_top), material(TEX.ultra_top), material(TEX.ultra_side), material(TEX.ultra_side)];
     case PORTAL: return faceTex(TEX.portal);
+    case ENDSTONE: return faceTex(TEX.endstone);
     case CLOUD: return faceTex(TEX.cloud);
     case MOON: return moonMats();
     case MOON_WATER: return basicFace(TEX.moonwater_outside, { fog: false });

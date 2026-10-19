@@ -28,7 +28,7 @@ import { tickTNT, initTNTFx, resetTNTMemory, onExplode, onLiquidPurge, shakeSpec
 import { initFx, tickFx, tickDenseFx, denseFxActive, prewarmDenseFx, spawnDense, flushDense, noteDenseSpawn } from "./src/fx/particles.js";
 import { initPrecip, tickSnow } from "./src/fx/precip.js";
 import { MOON_MIN_Y, MOON_R, generateMoon, generateMoonUnderRows, markMoonBuilt, moonReady, moonChunkCenters } from "./src/world/moon.js";
-import { WATER, FLOWER, GLOWSTONE, MOON_WATER, BLOCK_INFO } from "./src/core/blocks.js";
+import { WATER, FLOWER, GLOWSTONE, MOON_WATER, TNT, BLOCK_INFO } from "./src/core/blocks.js";
 import { resetGlowstoneMemory } from "./src/world/glowstone.js";
 import { resetFlowerMemory } from "./src/world/flowers.js";
 import { initBlockLights, tickBlockLights, rebuildBlockLightIndexes, resetBlockLightMemory } from "./src/render/blocklights.js";
@@ -56,6 +56,9 @@ import { CHUNK, renderDist, dim, setDimension, setBlock, getBlock, isSolid, outO
 import { dimEnv, dimSpec, dimHasMoon, stashOverExit, takeOverExit } from "./src/world/dimensions.js";
 import { disposeAll } from "./src/render/mesher.js";
 import { PLAYER_HW, PLAYER_H, EYE } from "./src/player/physics.js";
+import { initHomingTnt, fireHomingTnt, tickHomingTnt, clearHomingTnt } from "./src/mobs/homing.js";
+import { enterEndMobs, clearEndMobs, tickEndMobs, dragonHealth, setDragonVictoryHook } from "./src/mobs/end.js";
+import { endPortalFrameKeys, resetEndDimension, setEndCleared } from "./src/world/end.js";
 
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x87ceeb);
@@ -98,6 +101,7 @@ initFx(scene);
 initSky(scene);
 initPrecip(scene);
 initTNTFx(scene);
+initHomingTnt(scene);
 initBlockLights(scene);
 initRope(scene);
 initPortals(scene);
@@ -106,6 +110,7 @@ setPortalTravelHook((plan) => {
   if (plan && plan.dim) void goToDimension(plan.dim);
   else severHook();
 });
+setDragonVictoryHook(() => scanWorldPortals());
 
 const highlight = new THREE.LineSegments(
   new THREE.EdgesGeometry(new THREE.BoxGeometry(1.002, 1.002, 1.002)),
@@ -115,6 +120,14 @@ highlight.visible = false;
 highlight.renderOrder = 999;
 scene.add(highlight);
 const _hookDir = new THREE.Vector3();
+const bossBarEl = document.getElementById("bossbar");
+const bossFillEl = document.getElementById("bossfill");
+function updateBossBar() {
+  const health = dim === "end" ? dragonHealth() : 0;
+  if (health <= 0) { bossBarEl.style.display = "none"; return; }
+  bossFillEl.style.width = `${Math.round(health * 100)}%`;
+  bossBarEl.style.display = "block";
+}
 
 // Mega-blast camera shake (master: trauma capped at 1.5, decays 1.4/s,
 // rotational + positional jitter scaled by trauma^1.5). Three zones per
@@ -280,11 +293,10 @@ let buildToken = 0;
 let bandDpr = false;
 // Moon-band hotbar (slots flip at the Moon's lower end); reset per world.
 let moonBand = false;
-// Boot dimension: the overworld by default; ?startdim=tnt boots straight
-// into a fresh TNT sky instead (dev shortcut) and skips the overworld
-// build. Unknown values fall back to the overworld.
+// Boot dimension: the overworld by default; ?startdim=<dimension key> builds
+// that registered dimension directly. Unknown values fall back to overworld.
 const _startDim = new URLSearchParams(location.search).get("startdim");
-const BOOT_DIM = _startDim === "tnt" || _startDim === "over" ? _startDim : "over";
+const BOOT_DIM = dimSpec(_startDim) ? _startDim : "over";
 
 // The level loads behind the translucent menu in slices: voxels generate a
 // dozen rows per frame, then the spawn neighborhood builds (radius 2: the
@@ -301,6 +313,9 @@ async function buildWorld() {
   worldReady = false;
   revealT = 0;
   severHook();
+  clearHomingTnt();
+  clearEndMobs();
+  if (BOOT_DIM !== "end") resetEndDimension();
   resetTNTMemory();
   bandDpr = false;
   renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
@@ -313,8 +328,15 @@ async function buildWorld() {
   envAir.far = LOAD_FOG_FAR;
   await new Promise((r) => requestAnimationFrame(r));
   try {
+    const seed = Math.floor(Math.random() * 100000);
+    // Direct End boot still prepares the Overworld destination so its return
+    // portal has a real world to return to.
+    if (BOOT_DIM === "end") {
+      const overReady = await dimSpec("over").generateAsync(seed, aborted);
+      if (!overReady || aborted()) return;
+    }
     const gen = dimSpec(BOOT_DIM).generateAsync;
-    const ok = await gen(Math.floor(Math.random() * 100000), aborted);
+    const ok = await gen(seed, aborted);
     if (!ok || aborted()) return;
     spawnPlayer();
     // No glowstone rescan: worldgen places none and the live index starts
@@ -323,19 +345,26 @@ async function buildWorld() {
     rebuildAll(pos.x, pos.z, 2);
     if (aborted()) return;
     clearPortalFills();
-    resetFrameSet(BOOT_DIM === "tnt" ? [] : villageFrames);
+    if (BOOT_DIM === "end") {
+      setDimension("over");
+      resetFrameSet(villageFrames);
+      setDimension("end");
+      resetFrameSet(endPortalFrameKeys());
+    } else resetFrameSet(BOOT_DIM === "tnt" ? [] : villageFrames);
     scanWorldPortals();
+    if (dim === "end") enterEndMobs(scene);
     moonBand = false;
     resetItems(dimSpec(dim).hotbar);
     select(0);
     updateCamera();
     resetTNTMemory();
     worldReady = true;
+    updateBossBar();
   } finally {
     if (token === buildToken) building = false;
   }
   if (aborted() || !worldReady) return;
-  if (BOOT_DIM !== "tnt") fillMoonUnder(getSeed());
+  if (dimHasMoon(dim)) fillMoonUnder(getSeed());
   warmupFx(token);
 }
 
@@ -353,6 +382,8 @@ async function goToDimension(dest) {
   try {
     if (dim === 'over') stashOverExit(pos);
     severHook();
+    clearHomingTnt();
+    clearEndMobs();
     resetTNTMemory();
     clearPortalFills();
     renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
@@ -364,6 +395,18 @@ async function goToDimension(dest) {
       if (!ok || aborted()) return;
       disposeAll();
       spawnPlayer();
+    } else if (dest === "end") {
+      const spec = dimSpec("end");
+      setDimension("end");
+      if (!worlds.end.size) {
+        const ok = await spec.generateAsync(Math.floor(Math.random() * 100000), aborted);
+        if (!ok || aborted()) return;
+      }
+      disposeAll();
+      resetFrameSet(endPortalFrameKeys());
+      setEndCleared(false);
+      spawnPlayer();
+      enterEndMobs(scene);
     } else {
       setDimension('over');
       disposeAll();
@@ -396,6 +439,7 @@ async function goToDimension(dest) {
     // Per-dimension bar: the TNT cube holds TNT tiers only. Selection follows
     // by id, so a held TNT survives the trip; anything else clamps.
     resetItems(dimSpec(dim).hotbar);
+    updateBossBar();
     updateCamera();
     Object.keys(keys).forEach((k) => { keys[k] = false; });
   } finally {
@@ -543,9 +587,10 @@ document.addEventListener("mousemove", (e) => {
 document.addEventListener("mousedown", (e) => {
   if (!isLocked() || isHelpOpen() || !started) return;
   if (e.button === 0) {
+    const id = selectedId();
+    if (id === TNT && fireHomingTnt(camera)) return;
     chainPressLeft(chain, selectedId());
     chainSavePaintRay(chain, camera);
-    const id = selectedId();
     const face = currentBlock ? currentBlock.face : null;
     const base = currentBlock ? [currentBlock.x, currentBlock.y, currentBlock.z] : null;
     const changed = placeAtSelection(id);
@@ -742,6 +787,8 @@ function loop(now) {
         refreshBlocks(touched);
       }
     });
+    tickHomingTnt(dt, dim);
+    if (dim === "end") tickEndMobs(dt, camera);
     drainBlastRemesh(pos.x, pos.z);
     // GPU relief while a wipe, dense mega, or sliced carve runs (master's
     // quality-tier dip): full resolution restores the frame the queues
@@ -864,6 +911,7 @@ function loop(now) {
   } else {
     highlight.visible = false;
   }
+  updateBossBar();
   if (!isLocked()) chainResetOnUnlock(chain);
   maybeStream(pos.x, pos.z, camera.position.y, scene.fog.near, scene.fog.far);
   if (worldReady) tickTntStream(pos.x, pos.y, pos.z, dt, vel.length(), vel.y, queueRefreshBlocks, hookPin());

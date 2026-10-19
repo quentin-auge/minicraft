@@ -1,8 +1,11 @@
-// Local-loop Nether/End/TNT portals: player-built frames only, no dimensions.
-// Three frame families (End: PORTAL blocks, Nether: OBSIDIAN, TNT: a mix of
-// TNT/MEGA/ULTRA blocks), each valid flat (horizontal) and upright (vertical).
-// Touching a window's fill plays the travel spiral, then drops the player
-// beside the same window, always facing the window just crossed.
+// Registry-driven portals. End frames cross between Overworld and End (the
+// End return fill lights only once the dragon-cleared gate opens), Nether
+// frames loop locally, and TNT frames
+// cross between Overworld and TNT. Families share frame validation, fills,
+// travel spiral, grapple interaction, and per-dimension frame indexing. A
+// dimension's exits gate (DIMENSIONS exitsGate) closes every portal in it:
+// validated windows stay overlap-testable in portalWindows and any touch
+// answers the gate message instead of traveling.
 //
 // Extension shape: PORTAL_TYPES is the registry; the engine below never
 // switches on family names, it dispatches through the spec's props —
@@ -13,6 +16,7 @@ import * as THREE from "three";
 import { AIR, PORTAL, OBSIDIAN, TNT, MEGA_TNT, ULTRA_TNT, isLiquid } from "../core/blocks.js";
 import { materialsFor } from "../core/textures.js";
 import { DIMENSION_KEYS, dim, dimBound, key, keyXYZ, getBlock, isSolid } from "../core/store.js";
+import { dimSpec } from "./dimensions.js";
 import {
   pos, vel, yaw, keys, setYaw, setPitch,
   PLAYER_HW, PLAYER_H,
@@ -432,7 +436,12 @@ function winNear(win, cx, cy, cz, R) {
 }
 
 function syncFills(accepted, cx, cy, cz, R) {
-  const keys = new Set(accepted.map((c) => c.key));
+  // A closed exits gate is the one active gate: every family in the
+  // dimension goes fillless (touched windows answer the gate instead).
+  const gated = !!exitGateMsg();
+  const active = gated ? []
+    : accepted.filter((c) => specOf(c.win).active?.(c.win) !== false);
+  const keys = new Set(active.map((c) => c.key));
   for (const [k, f] of portalFills) {
     if (!winNear(f.win, cx, cy, cz, R)) continue;
     if (!keys.has(k)) {
@@ -441,9 +450,19 @@ function syncFills(accepted, cx, cy, cz, R) {
       purgeFillFade(k);
     }
   }
-  for (const c of accepted) {
+  for (const c of active) {
     if (!winNear(c.win, cx, cy, cz, R)) continue;
     ensurePortalFill(c.win);
+  }
+  // Every validated window stays overlap-testable here: the active
+  // dimension's exits gate answers a touch on any of them.
+  const wkeys = new Set(accepted.map((c) => c.key));
+  for (const [k, win] of portalWindows) {
+    if (winNear(win, cx, cy, cz, R) && !wkeys.has(k)) portalWindows.delete(k);
+  }
+  for (const c of accepted) {
+    if (!winNear(c.win, cx, cy, cz, R)) continue;
+    portalWindows.set(c.key, c.win);
   }
 }
 
@@ -466,6 +485,9 @@ function fillMat(spec) {
 }
 
 const portalFills = new Map(); // key -> { win, nether, group }
+// Every validated window, fill-backed or not: while the active dimension's
+// exits gate is closed, body overlap answers the gate instead of traveling.
+const portalWindows = new Map(); // key -> win
 let sceneRef = null;
 
 export function initPortals(scene) {
@@ -673,9 +695,11 @@ export function tickPortalFillFades(dt, px, eyeY, pz, fogFar) {
 }
 
 export function clearPortalFills() {
-  if (!sceneRef) { portalFills.clear(); return; }
+  if (!sceneRef) { portalFills.clear(); portalWindows.clear(); gateInside = false; return; }
   for (const f of portalFills.values()) sceneRef.remove(f.group);
   portalFills.clear();
+  portalWindows.clear();
+  gateInside = false;
   for (const f of fillFades) f.clone.dispose();
   fillFades.length = 0;
 }
@@ -999,6 +1023,8 @@ function loopBackTravel(win, dir) {
 }
 
 function endTravel(win, dir) {
+  if (dim === "over") return { dim: "end", toast: "You entered The End" };
+  if (dim === "end") return { dim: "over", toast: "You returned to the Overworld" };
   const l = loopBackTravel(win, dir);
   return { spot: l.spot, yaw: l.yaw, yawV: l.yaw, toast: null, msg: null };
 }
@@ -1020,11 +1046,36 @@ function netherTravel(win, dir) {
   return { spot, yaw, yawV: yaw, toast: "You entered The Nether" };
 }
 
+// A dimension's exits gate (End: sealed while the dragon lives) closes every
+// portal in it: no family may ferry the player out. Gated windows fire no
+// fill and no travel, so touching one is a silent no-op otherwise — ask the
+// gate instead, once per entry (re-arms after leaving the interior). Runs
+// outside the travel cooldown: the message answers a different act than
+// arrival protection does.
+function exitGateMsg() {
+  return dimSpec(dim)?.exitsGate?.() ? dimSpec(dim).exitsGateMsg : null;
+}
+
+let gateInside = false;
+function checkGatedWindows() {
+  const msg = exitGateMsg();
+  if (!msg) { gateInside = false; return; }
+  let touched = false;
+  for (const win of portalWindows.values()) {
+    if (touchesPortalFill({ win })) { touched = true; break; }
+  }
+  if (touched && !gateInside) toast(msg);
+  gateInside = touched;
+}
+
 function checkPortal() {
   if (portalCd > 0 || portalBusy) return;
+  // Gated dimension: windows never travel, whatever family they belong to.
+  if (exitGateMsg()) return;
   // First touched fill wins: crossing fills share cells, but entering along
   // a window's plane always touches its own slab first.
   for (const f of portalFills.values()) {
+    if (specOf(f.win).active?.(f.win) === false) continue;
     if (!touchesPortalFill(f)) continue;
     const raw = specOf(f.win).travel(f.win, moveDir());
     const plan = {
@@ -1047,6 +1098,7 @@ export function tickPortals(dt, canTravel) {
   }
   if (sceneRef) updatePortalVisual(dt);
   checkPortal();
+  checkGatedWindows();
 }
 
 // --- Help diagrams + travel spiral art (master visuals) ---

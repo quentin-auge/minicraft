@@ -27,7 +27,16 @@ export function spawnBurst(o) {
     // Foreground: skip depth testing and draw above everything (below the
     // block highlight), for bursts that must read through terrain.
     foreground = false,
+    // Optional normalized launch axis. spread is the cone half-angle in radians.
+    direction = null, spread = 0.35,
   } = o;
+  let axis = null, right = null, upAxis = null, cosSpread = Math.cos(spread);
+  if (direction) {
+    axis = new THREE.Vector3(...direction).normalize();
+    const reference = Math.abs(axis.y) < 0.9 ? new THREE.Vector3(0, 1, 0) : new THREE.Vector3(1, 0, 0);
+    right = new THREE.Vector3().crossVectors(reference, axis).normalize();
+    upAxis = new THREE.Vector3().crossVectors(axis, right).normalize();
+  }
   const positions = new Float32Array(count * 3);
   const colors = new Float32Array(count * 3);
   const vel = new Float32Array(count * 3);
@@ -42,12 +51,25 @@ export function spawnBurst(o) {
       pz += rr * Math.sin(ph) * Math.sin(th);
     }
     positions[i * 3] = px; positions[i * 3 + 1] = py; positions[i * 3 + 2] = pz;
-    const th = Math.random() * Math.PI * 2;
-    const ph = Math.acos(2 * Math.random() - 1);
-    const s = speedMin + Math.random() * (speedMax - speedMin);
-    vel[i * 3] = s * Math.sin(ph) * Math.cos(th);
-    vel[i * 3 + 1] = s * Math.cos(ph) + up;
-    vel[i * 3 + 2] = s * Math.sin(ph) * Math.sin(th);
+    if (axis) {
+      const s = speedMin + Math.random() * (speedMax - speedMin);
+      const th = Math.random() * Math.PI * 2;
+      const cosPh = 1 - Math.random() * (1 - cosSpread);
+      const sinPh = Math.sqrt(1 - cosPh * cosPh);
+      const sideX = right.x * Math.cos(th) + upAxis.x * Math.sin(th);
+      const sideY = right.y * Math.cos(th) + upAxis.y * Math.sin(th);
+      const sideZ = right.z * Math.cos(th) + upAxis.z * Math.sin(th);
+      vel[i * 3] = (axis.x * cosPh + sideX * sinPh) * s;
+      vel[i * 3 + 1] = (axis.y * cosPh + sideY * sinPh) * s + up;
+      vel[i * 3 + 2] = (axis.z * cosPh + sideZ * sinPh) * s;
+    } else {
+      const th = Math.random() * Math.PI * 2;
+      const ph = Math.acos(2 * Math.random() - 1);
+      const s = speedMin + Math.random() * (speedMax - speedMin);
+      vel[i * 3] = s * Math.sin(ph) * Math.cos(th);
+      vel[i * 3 + 1] = s * Math.cos(ph) + up;
+      vel[i * 3 + 2] = s * Math.sin(ph) * Math.sin(th);
+    }
     if (palette) {
       const pc = palette[(Math.random() * palette.length) | 0];
       for (let j = 0; j < 3; j++)

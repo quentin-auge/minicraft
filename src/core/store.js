@@ -59,8 +59,7 @@ export function bareTopAt(name, x, z) {
 }
 
 // First-class dimensions: every dimension key owns one entry in each map.
-// Keep nether/end entries (empty until their generators register) so future
-// dimensions add a key here and a spec in world/dimensions.js, never a fork.
+// New dimensions add a key here and a spec in world/dimensions.js, never a fork.
 export const DIMENSION_KEYS = ["over", "tnt", "nether", "end"];
 const fromKeys = (make) => Object.fromEntries(DIMENSION_KEYS.map((k) => [k, make()]));
 export const worlds = fromKeys(() => new Map());
@@ -82,6 +81,7 @@ function makeColOcc() {
 }
 export const colOcc = fromKeys(() => makeColOcc());
 export const colLiqTop = fromKeys(() => new Map());
+const protectedCells = fromKeys(() => new Set());
 
 export let dim = "over";
 export let world = worlds.over;
@@ -97,7 +97,16 @@ export function resetWorld(name) {
   colTopsBare[name].clear();
   colOcc[name].clear();
   colLiqTop[name].clear();
+  protectedCells[name].clear();
   if (dim === name) world = worlds[name];
+}
+
+export function protectCell(x, y, z, name = dim) {
+  protectedCells[name].add(key(x, y, z));
+}
+
+export function isCellProtected(x, y, z, name = dim) {
+  return protectedCells[name].has(key(x, y, z));
 }
 
 // Infinite dimensions (TNT sky first): no XZ walls, no floor — voxels roam
@@ -133,6 +142,7 @@ export function getBlockIn(name, x, y, z) {
 // plus the occupancy and liquid-top indexes (see above).
 export function setBlock(x, y, z, id) {
   const k = key(x, y, z);
+  if (id === AIR && protectedCells[dim].has(k)) return false;
   const ci = colTopIdx(x, z);
   const tops = colTops[dim];
   const bare = colTopsBare[dim];
@@ -148,9 +158,9 @@ export function setBlock(x, y, z, id) {
       const lt = colLiqTop[dim];
       if (y > (lt.get(ci) ?? -1)) lt.set(ci, y);
     }
-    return;
+    return true;
   }
-  if (!world.has(k)) return;
+  if (!world.has(k)) return false;
   world.delete(k);
   const set = occ.get(ci);
   if (set) {
@@ -187,6 +197,7 @@ export function setBlock(x, y, z, id) {
     if (m < 0) lt.delete(ci);
     else lt.set(ci, m);
   }
+  return true;
 }
 
 // Bulk column fill: identical voxels and indexes to the equivalent setBlock

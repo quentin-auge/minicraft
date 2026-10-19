@@ -17,7 +17,7 @@
 // to air through an injected callback (set via onLiquidPurge), so blasts
 // never strand floating remnants.
 import { AIR, TNT, MEGA_TNT, ULTRA_TNT, FLOWER, GLOWSTONE, LOG, LEAVES, isLiquid, isTntLike } from "../core/blocks.js";
-import { WORLD_RADIUS, topAt, dimInfinite, dimBound, dim, getBlock, setBlock } from "../core/store.js";
+import { WORLD_RADIUS, topAt, dimInfinite, dimBound, dim, getBlock, setBlock, isCellProtected } from "../core/store.js";
 import { dimUltra } from "../world/dimensions.js";
 import { CLOUD_MAX_Y } from "../world/clouds.js";
 import { rebuildChunk, isChunkBuilt, chunkKeysForColumn, refreshBlocks } from "../render/mesher.js";
@@ -1508,6 +1508,7 @@ function syncGlowAfterBlast() {
   noteBlockLightEdit();
 }
 function clearCell(x, y, z, touched) {
+  if (isCellProtected(x, y, z)) return false;
   const id = getBlock(x, y, z);
   if (id === GLOWSTONE) {
     clearGlowstoneAt(x, y, z);
@@ -1518,6 +1519,7 @@ function clearCell(x, y, z, touched) {
   if (kindOfBlock(id).pool) untrackMega(x, y, z);
   setBlock(x, y, z, AIR);
   touched.push([x, y, z]);
+  return true;
 }
 
 // Spatial hash for mega clustering: cells sized to the max link radius, so a

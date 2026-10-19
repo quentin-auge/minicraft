@@ -111,6 +111,23 @@
       background: rgba(0,0,0,0.5); padding: 12px 22px; border-radius: 10px;
       opacity: 0; transition: opacity .4s; pointer-events: none; text-align: center;
     }
+    #bossbar {
+      position: fixed; top: 52px; left: 50%; transform: translateX(-50%);
+      width: 340px; max-width: 60vw; text-align: center; display: none; pointer-events: none;
+      font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    }
+    #bossbar .boss-label {
+      color: #fff; font-size: 12px; font-weight: 800; letter-spacing: 3px;
+      text-shadow: 1px 1px 2px #000; margin-bottom: 4px;
+    }
+    #bossbar .boss-track {
+      height: 18px; background: rgba(0,0,0,0.55); border: 2px solid rgba(255,255,255,0.6);
+      border-radius: 3px; overflow: hidden; box-shadow: 0 0 14px rgba(160,50,255,0.5);
+    }
+    #bossbar .boss-fill {
+      height: 100%; width: 100%; background: linear-gradient(#e077ff, #6f16b8);
+      transition: width .2s ease;
+    }
     /* Mega-ignition overlays (fullscreen; opacity driven from the sim loop
        on sim-time so pausing freezes the glare mid-fade) */
     #blastFlash {
@@ -168,6 +185,7 @@
   <div id="crosshair"></div>
   <div id="hotbar"></div>
   <div id="toast"></div>
+  <div id="bossbar"><div class="boss-label">ENDER DRAGON</div><div class="boss-track"><div id="bossfill" class="boss-fill"></div></div></div>
   <div id="blastFlash"></div>
   <div id="fireVeil"></div>
   <div id="portalSpiral">
@@ -185,7 +203,7 @@
         <tr><td>F</td><td>Fly</td></tr>
         <tr><td>Middle Click / G</td><td>Grapple hook</td></tr>
         <tr><td>Wheel / K / L</td><td>Select block</td></tr>
-        <tr><td>Left Click</td><td>Place block (hold + move: paint, hold still: stairs)</td></tr>
+        <tr><td>Left Click</td><td>Place block (hold + move: paint, hold still: stairs); aim TNT at a flying mob to fire a homing TNT</td></tr>
         <tr><td>Right Click</td><td>Remove block (hold + move: dig, hold still: tunnel)</td></tr>
         <tr><td>H</td><td>Help</td></tr>
         <tr><td>=</td><td>Debug</td></tr>

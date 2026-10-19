@@ -2,15 +2,17 @@
 // framework fork. Framework code (store maps, portals, main loop, spawn)
 // dispatches through these specs: generator, env preset, spawn, persistence
 // + respawn policy, bedrock-floor flag. New dimensions register a spec and
-// nothing else changes — Nether/End later arrive as entries here.
+// their world generator; the shared travel/boot pipeline dispatches by key.
 // Persistence is itself per-dimension data: "retain" reuses voxels across
-// entries (overworld, future Nether); "regenerate" rebuilds on every entry
-// (TNT — each visit is a fresh throwaway cube).
+// entries (overworld, End); "regenerate" rebuilds on every entry (TNT — each
+// visit is a fresh throwaway cube).
 // Per-dimension properties live here in two channels: gameplay props are
 // spec fields read through dim* accessors (moon, ultra, skyGrapple, ...);
 // render props ride the env preset (dimEnv: sky, fog, sun, space, ...).
 // Convention: if a behavior belongs to a dimension it ships as a spec field
-// or env key — never as a `dim ===` fork elsewhere. New-dimension checklist:
+// or env key — never as a `dim ===` fork elsewhere. Each spec key is also its
+// `?startdim=<key>` boot key. Ask the user for that key when adding a dimension.
+// New-dimension checklist:
 // env (sky/fog/sun/space), moon?, ultra mode, hotbar, spawn, persistence,
 // respawnY floor (null = none), bedrock, region `dim` tags, precip `active`s, gravity zones.
 import {
@@ -21,9 +23,10 @@ import {
   generateTntDimension, findTntSpawn, TNT_ENV,
 } from "./tntdim.js";
 import { bootTntStream, findTntStreamSpawn } from "./tntstream.js";
-import { TNT, MEGA_TNT, ULTRA_TNT } from "../core/blocks.js";
+import { TNT, MEGA_TNT, ULTRA_TNT, WATER, MOON_WATER, FLOWER, GLOWSTONE } from "../core/blocks.js";
 import { BASE_ITEMS } from "../ui/hotbar.js";
 import { registerInfiniteDim } from "../core/store.js";
+import { generateEndDimension, findEndSpawn, isEndCleared } from "./end.js";
 
 // The TNT sky is the first infinite dimension: voxels stream around the
 // player with no walls (see tntstream.js), so the store lifts its bounds.
@@ -70,6 +73,32 @@ export const DIMENSIONS = [
     // TNT tiers only — but all three: a return portal's frame needs at least
     // one mega and one ultra, so dropping ultra would strand visitors.
     hotbar: [TNT, MEGA_TNT, ULTRA_TNT],
+  },
+  {
+    key: "end",
+    persistence: "retain",
+    hasBedrockFloor: false,
+    respawnY: -20,
+    // No portal may ferry the player out of the End while the dragon lives;
+    // every window touch answers this message instead of traveling.
+    exitsGate: () => !isEndCleared(),
+    exitsGateMsg: "The exit is sealed — defeat the Ender Dragon!",
+    env: {
+      sky: 0x000000, fogNear: 30, fogFar: 150,
+      sun: 0xfff5e0, sunI: 0.35, hemiSky: 0xbfd4ff, hemiI: 0.45,
+      space: false,
+    },
+    moon: false,
+    ultra: { bands: false, windowR: 256, windowHalfH: 90 },
+    skyGrapple: false,
+    generate: () => generateEndDimension(),
+    generateAsync: async (_seed, aborted) => {
+      if (aborted && aborted()) return false;
+      generateEndDimension();
+      return !(aborted && aborted());
+    },
+    findSpawn: findEndSpawn,
+    hotbar: BASE_ITEMS.map((id) => id === WATER ? MOON_WATER : id === FLOWER ? GLOWSTONE : id),
   },
 ];
 
