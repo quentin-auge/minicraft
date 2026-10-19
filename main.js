@@ -44,6 +44,7 @@ import {
   initPortals, buildPortalDom, setPortalTravelHook, tickPortals,
   resetFrameSet, scanWorldPortals, clearPortalFills, notePortalEdits,
   notePortalFramesOnly, tickPortalFillFades, completeDimTravel,
+  resolveTravelArrival, resetTravelLinks,
 } from "./src/world/portals.js";
 import { villageFrames } from "./src/world/village.js";
 import {
@@ -52,10 +53,10 @@ import {
   chainSaveDigRay, chainAnchorPush, chainNotePressPlace, chainHoldActive, tickChain,
 } from "./src/player/chain.js";
 const chain = createChainState();
-import { CHUNK, renderDist, dim, setDimension, setBlock, getBlock, isSolid, outOfWorld, worlds } from "./src/core/store.js";
-import { dimEnv, dimSpec, dimHasMoon, stashOverExit, takeOverExit } from "./src/world/dimensions.js";
+import { CHUNK, renderDist, dim, setDimension, setBlock, getBlock, outOfWorld, worlds } from "./src/core/store.js";
+import { dimEnv, dimSpec, dimHasMoon } from "./src/world/dimensions.js";
 import { disposeAll } from "./src/render/mesher.js";
-import { PLAYER_HW, PLAYER_H, EYE } from "./src/player/physics.js";
+import { EYE } from "./src/player/physics.js";
 import { initHomingTnt, fireHomingTnt, tickHomingTnt, clearHomingTnt } from "./src/mobs/homing.js";
 import { enterEndMobs, clearEndMobs, tickEndMobs, dragonHealth, setDragonVictoryHook } from "./src/mobs/end.js";
 import { endPortalFrameKeys, resetEndDimension, setEndCleared } from "./src/world/end.js";
@@ -315,6 +316,7 @@ async function buildWorld() {
   severHook();
   clearHomingTnt();
   clearEndMobs();
+  resetTravelLinks();
   if (BOOT_DIM !== "end") resetEndDimension();
   resetTNTMemory();
   bandDpr = false;
@@ -368,19 +370,28 @@ async function buildWorld() {
   warmupFx(token);
 }
 
-// Cross-dimension travel (TNT portals): over <-> tnt. TNT regenerates on
-// every entry (fresh seed, frame index cleared); overworld retains voxels
-// and restores the stashed exit footing when still standable, else spawns.
-// Meshes, fills, lights, and fuses reset around the switch; fly mode
-// persists (all portals), movement keys zero. Runs behind the travel
-// spiral: portals.js holds busy until completeDimTravel() below.
+// Cross-dimension travel: each portal family heads to its destination from
+// any dimension, and returns to the Overworld when used inside that
+// destination. End and TNT regenerate on every entry (fresh seed, frame
+// index rebuilt); the Overworld retains voxels. Arrival uses the portal
+// last left in the destination when it still validates (Overworld faces it,
+// End faces away), else the dimension spawn. Meshes, fills, lights, and
+// fuses reset around the switch; fly mode persists (all portals), movement
+// keys zero. Runs behind the travel spiral: portals.js holds busy until
+// completeDimTravel() below.
+function placeArrival(arr) {
+  pos.set(arr.spot.x, arr.spot.y, arr.spot.z);
+  vel.set(0, 0, 0);
+  setYaw(arr.yaw);
+  setPitch(0);
+}
+
 async function goToDimension(dest) {
   if (dest === dim || building) { if (dest === dim) completeDimTravel(); return; }
   const token = ++buildToken;
   const aborted = () => token !== buildToken;
   building = true;
   try {
-    if (dim === 'over') stashOverExit(pos);
     severHook();
     clearHomingTnt();
     clearEndMobs();
@@ -398,38 +409,26 @@ async function goToDimension(dest) {
     } else if (dest === "end") {
       const spec = dimSpec("end");
       setDimension("end");
-      if (!worlds.end.size) {
-        const ok = await spec.generateAsync(Math.floor(Math.random() * 100000), aborted);
-        if (!ok || aborted()) return;
-      }
+      const ok = await spec.generateAsync(Math.floor(Math.random() * 100000), aborted);
+      if (!ok || aborted()) return;
       disposeAll();
       resetFrameSet(endPortalFrameKeys());
       setEndCleared(false);
       spawnPlayer();
+      const arrival = resolveTravelArrival("end", pos);
+      if (arrival) placeArrival(arrival);
       enterEndMobs(scene);
     } else {
       setDimension('over');
-      disposeAll();
-      const e = takeOverExit();
-      let placed = false;
-      if (e) {
-        const fx = Math.floor(e.x), fy = Math.floor(e.y), fz = Math.floor(e.z);
-        if (isSolid(fx, fy - 1, fz)) {
-          let clear = true;
-          for (let bx = Math.floor(e.x - PLAYER_HW + 0.02); bx <= Math.floor(e.x + PLAYER_HW - 0.02) && clear; bx++)
-            for (let by = Math.floor(e.y + 0.02); by <= Math.floor(e.y + PLAYER_H - 0.02) && clear; by++)
-              for (let bz = Math.floor(e.z - PLAYER_HW + 0.02); bz <= Math.floor(e.z + PLAYER_HW - 0.02) && clear; bz++)
-                if (isSolid(bx, by, bz)) clear = false;
-          if (clear) {
-            pos.set(e.x, e.y, e.z);
-            vel.set(0, 0, 0);
-            setYaw(0);
-            setPitch(0);
-            placed = true;
-          }
-        }
+      if (!worlds.over.size) {
+        const ok = await dimSpec('over').generateAsync(Math.floor(Math.random() * 100000), aborted);
+        if (!ok || aborted()) return;
+        resetFrameSet(villageFrames);
       }
-      if (!placed) spawnPlayer();
+      disposeAll();
+      const arrival = resolveTravelArrival("over");
+      if (arrival) placeArrival(arrival);
+      else spawnPlayer();
     }
     rebuildBlockLightIndexes();
     rebuildAll(pos.x, pos.z, 2);

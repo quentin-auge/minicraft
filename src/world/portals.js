@@ -1,17 +1,24 @@
-// Registry-driven portals. End frames cross between Overworld and End (the
-// End return fill lights only once the dragon-cleared gate opens), Nether
-// frames loop locally, and TNT frames
-// cross between Overworld and TNT. Families share frame validation, fills,
-// travel spiral, grapple interaction, and per-dimension frame indexing. A
+// Registry-driven portals. Each family declares a destination dimension:
+// End and TNT frames cross to it from anywhere, and return to the Overworld
+// when already in it (the End return fill lights only once the
+// dragon-cleared gate opens). The Nether is a temporary local loop until
+// its dimension ships. Families share frame validation, fills, travel
+// spiral, grapple interaction, and per-dimension frame indexing. A
 // dimension's exits gate (DIMENSIONS exitsGate) closes every portal in it:
 // validated windows stay overlap-testable in portalWindows and any touch
 // answers the gate message instead of traveling.
 //
+// Cross-dimension travel remembers the portal left in the source dimension
+// (travelLinks, one per dimension). Arriving back in a dimension uses that
+// portal when it still validates, with master's safe-spot search and the
+// destination's arrival facing (Overworld faces the portal, End faces away);
+// otherwise the destination spawn is used.
+//
 // Extension shape: PORTAL_TYPES is the registry; the engine below never
 // switches on family names, it dispatches through the spec's props —
-// anchorsFrom/evaluate/cells/bbox/inside/travel/art. New families (new
-// frame block, sizes, fill, travel action) register a spec and nothing else
-// changes.
+// destination/anchorsFrom/evaluate/cells/bbox/inside/travel/art. New families
+// (new frame block, sizes, fill, destination, travel action) register a spec
+// and nothing else changes.
 import * as THREE from "three";
 import { AIR, PORTAL, OBSIDIAN, TNT, MEGA_TNT, ULTRA_TNT, isLiquid } from "../core/blocks.js";
 import { materialsFor } from "../core/textures.js";
@@ -24,35 +31,39 @@ import {
 
 export const PORTAL_TYPES = [
   {
-    key: "end", frame: PORTAL, fillColor: 0x000000,
+    key: "end", destination: "end", enterMsg: "You entered The End",
+    frame: PORTAL, fillColor: 0x000000,
     *anchorsFrom(px, py, pz) { yield* endVerticalAnchors(px, py, pz); yield* endFlatAnchors(px, py, pz); },
     evaluate(w) { return evalEndWin(w); },
     cells: endFillCells,
     bbox: endBBox,
     inside: insideEndInterior,
-    travel: (w, dir) => endTravel(w, dir),
+    travel: destinationTravel,
     art: { host: "portalArt", cols: 5, rows: 5, stroke: "#7b2ff7", cells: buildSolidFrame(5, 5, PORTAL, true) },
   },
   {
-    key: "nether", frame: OBSIDIAN, fillColor: 0x9b30ff,
+    key: "nether", destination: "nether", enterMsg: "You entered The Nether",
+    frame: OBSIDIAN, fillColor: 0x9b30ff,
     *anchorsFrom(px, py, pz) { yield* netherVerticalAnchors(px, py, pz); yield* netherFlatAnchors(px, py, pz); },
     evaluate(w) { return evalNetherWin(w); },
     cells: rectFillCells,
     bbox: rectBBox,
     inside: insideRectInterior,
-    travel: (w, dir) => netherTravel(w, dir),
+    // Nether dimension not shipped yet: loop locally in front of the window.
+    travel: netherTravel,
     art: { host: "netherArt", cols: 5, rows: 4, stroke: "#8b90a0", cells: buildSolidFrame(5, 4, OBSIDIAN, false) },
   },
   {
     // TNT frame: a 4×4 square whose corners are mandatory and whose ring
     // mixes tiers — at least one mega and one ultra among the TNT blocks.
-    key: "tnt", frame: [TNT, MEGA_TNT, ULTRA_TNT], fillColor: 0xd11a1a,
+    key: "tnt", destination: "tnt", enterMsg: "You entered the TNT dimension",
+    frame: [TNT, MEGA_TNT, ULTRA_TNT], fillColor: 0xd11a1a,
     *anchorsFrom(px, py, pz) { yield* tntVerticalAnchors(px, py, pz); yield* tntFlatAnchors(px, py, pz); },
     evaluate(w) { return evalTntWin(w); },
     cells: rectFillCells,
     bbox: rectBBox,
     inside: insideRectInterior,
-    travel: (w, dir) => tntTravel(w, dir),
+    travel: destinationTravel,
     art: { host: "tntArt", cols: 4, rows: 4, width: 128, stroke: "#3a0d0d", cells: buildTntFrame() },
   },
 ];
@@ -822,8 +833,9 @@ function findReturnSpot(win, dir, wins) {
   const px = c.x + 0.5, pz = c.z + 0.5;
   const n = dir ? Math.hypot(dir.x, dir.z) : 0;
   const dx = n ? dir.x / n : 0, dz = n ? dir.z / n : 0;
-  // Prefer landing ~3 blocks out; fall back farther, then closer.
-  for (const r of [3, 4, 5, 2, 1]) {
+  // Start two rings farther out than master's nearest spot so returns never
+  // land right beside the frame; fall back outward only when those fail.
+  for (let r = 3; r <= 5; r++) {
     for (const dy of [0, 1, -1, 2, -2]) {
       const feetY = box.baseY + dy;
       if (feetY < 1) continue;
@@ -896,13 +908,61 @@ function nearPortalSpawn(win, dir) {
   return findReturnSpot(win, dir, wins) || frameTopSpot(win, wins) || { x: c.x + 0.5, y: win.minY, z: c.z + 0.5 };
 }
 
+// --- Cross-dimension arrival links ---
+//
+// Leaving a dimension through a portal records that window under the source
+// dimension. A later arrival in that dimension resolves the same window when
+// it still validates, so A -> B -> A returns to the exact portal left in A,
+// whatever portal carried the player back. Reset only for a fresh world (not
+// on dimension switches).
+const travelLinks = new Map(); // source dimension -> { win, dir }
+
+export function resetTravelLinks() {
+  travelLinks.clear();
+}
+
+function nearestReturnWin(sx, sy, sz) {
+  const cx = Math.floor(sx), cy = Math.floor(sy), cz = Math.floor(sz);
+  let best = null, bestD = Infinity;
+  for (const win of collectReturnWins(cx, cy, cz)) {
+    const box = portalFrameBBox(win);
+    const dx = cx < box.minX ? box.minX - cx : cx > box.maxX ? cx - box.maxX : 0;
+    const dz = cz < box.minZ ? box.minZ - cz : cz > box.maxZ ? cz - box.maxZ : 0;
+    const dy = cy < box.baseY ? box.baseY - cy : cy > box.topY ? cy - box.topY : 0;
+    const d = Math.max(dx, dz, dy);
+    if (d < bestD) { bestD = d; best = win; }
+  }
+  return best;
+}
+
+// Placement for an arrival in the now-active dimension. The recorded link is
+// the portal left in that dimension; if it no longer validates (destroyed or
+// regenerated) the anchor finds the nearest live window (End return frame),
+// else the caller falls back to the dimension spawn.
+export function resolveTravelArrival(dest, anchor = null) {
+  const arrival = dimSpec(dest)?.arrival;
+  if (!arrival || arrival.mode !== "portal") return null;
+  const link = travelLinks.get(dest);
+  let win = link?.win ?? null;
+  if (win && specOf(win)?.evaluate(win) !== true) win = null;
+  const linked = !!win;
+  if (!win && anchor) win = nearestReturnWin(anchor.x, anchor.y, anchor.z);
+  if (!win) return null;
+  const c = winCenter(win);
+  const wins = collectReturnWins(Math.floor(c.x), win.minY, Math.floor(c.z));
+  const spot = findReturnSpot(win, linked ? (link?.dir ?? null) : null, wins) || frameTopSpot(win, wins)
+    || resolveSpawn(c.x + 0.5, win.minY, c.z + 0.5);
+  const face = facePortalFrom(win, spot.x, spot.z);
+  return { spot, yaw: arrival.facing === "away" ? face + Math.PI : face };
+}
+
 // Safe landing near (sx, sy, sz): body clearance, solid ground, never inside
 // a portal interior (no arriving embedded, no instant re-trigger).
 function resolveSpawn(sx, sy, sz) {
   const cx = Math.floor(sx), cz = Math.floor(sz), cy = Math.floor(sy);
   const wins = collectReturnWins(cx, cy, cz);
-  // Prefer landing ~3 blocks out; fall back farther, then closer.
-  for (const r of [3, 4, 2, 1, 0]) {
+  // Try the exact cell first, then the master rings outward.
+  for (let r = 0; r <= 3; r++) {
     for (const dy of [0, 1, -1, 2, -2, -3, 3]) {
       const feetY = cy + dy;
       if (feetY < 1) continue;
@@ -1013,37 +1073,22 @@ function moveDir() {
   return { x: dx, z: dz };
 }
 
-// Loop back beside the same window, facing it (shared by End and TNT).
-function loopBackTravel(win, dir) {
-  const c = winCenter(win);
-  const wins = collectReturnWins(Math.floor(c.x), win.minY, Math.floor(c.z));
-  const spot = findReturnSpot(win, dir, wins) || frameTopSpot(win, wins)
-    || resolveSpawn(c.x + 0.5, win.minY, c.z + 0.5);
-  return { spot, yaw: facePortalFrom(win, spot.x, spot.z) };
-}
-
-function endTravel(win, dir) {
-  if (dim === "over") return { dim: "end", toast: "You entered The End" };
-  if (dim === "end") return { dim: "over", toast: "You returned to the Overworld" };
-  const l = loopBackTravel(win, dir);
-  return { spot: l.spot, yaw: l.yaw, yawV: l.yaw, toast: null, msg: null };
-}
-
-function tntTravel(win, dir) {
-  // Cross-dimension portal: over -> tnt, tnt -> over. Arrival resolves after
-  // the switch (destination solidity differs), so this carries only the
-  // destination — completeTravel hands it to the dimension hook in main.js.
-  void dir;
-  const dest = dim === "tnt" ? "over" : "tnt";
-  return { dim: dest, toast: dest === "tnt" ? "You entered the TNT dimension" : "You returned to the Overworld" };
+// Cross-dimension destination: own dimension returns to the Overworld, any
+// other dimension heads to the family's target. Arrival resolves after the
+// switch (destination solidity differs), so this carries only the
+// destination — completeTravel hands it to the dimension hook in main.js.
+function destinationTravel(win) {
+  const spec = specOf(win);
+  const dest = dim === spec.destination ? "over" : spec.destination;
+  return { dim: dest, toast: dest === "over" ? "You returned to the Overworld" : spec.enterMsg };
 }
 
 function netherTravel(win, dir) {
-  // Loop back beside the same window, facing it.
+  // Temporary local loop: keep the dimension, return facing the same window.
   const near = nearPortalSpawn(win, dir);
   const spot = resolveSpawn(near.x, near.y, near.z);
   const yaw = facePortalFrom(win, spot.x, spot.z);
-  return { spot, yaw, yawV: yaw, toast: "You entered The Nether" };
+  return { spot, yaw, yawV: yaw, toast: "The Nether is not available yet" };
 }
 
 // A dimension's exits gate (End: sealed while the dragon lives) closes every
@@ -1077,7 +1122,12 @@ function checkPortal() {
   for (const f of portalFills.values()) {
     if (specOf(f.win).active?.(f.win) === false) continue;
     if (!touchesPortalFill(f)) continue;
-    const raw = specOf(f.win).travel(f.win, moveDir());
+    const dir = moveDir();
+    const raw = specOf(f.win).travel(f.win, dir);
+    // Cross-dimension exits remember this window for the trip back.
+    if (raw.dim && raw.dim !== dim) {
+      travelLinks.set(dim, { win: { ...f.win }, dir: { x: dir.x, z: dir.z } });
+    }
     const plan = {
       spot: raw.spot, yaw: raw.yaw, yawV: raw.yawV ?? raw.yaw,
       msg: raw.msg ?? raw.toast ?? null, dim: raw.dim ?? null,

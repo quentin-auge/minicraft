@@ -4,8 +4,10 @@
 // + respawn policy, bedrock-floor flag. New dimensions register a spec and
 // their world generator; the shared travel/boot pipeline dispatches by key.
 // Persistence is itself per-dimension data: "retain" reuses voxels across
-// entries (overworld, End); "regenerate" rebuilds on every entry (TNT — each
-// visit is a fresh throwaway cube).
+// entries; "regenerate" rebuilds on every entry (TNT and End are fresh worlds).
+// `arrival` is the portal-return policy: "portal" resolves the window last
+// left in this dimension (facing it in the Overworld, facing away in the End),
+// "spawn" always uses findSpawn (the TNT sky has no fixed portal).
 // Per-dimension properties live here in two channels: gameplay props are
 // spec fields read through dim* accessors (moon, ultra, skyGrapple, ...);
 // render props ride the env preset (dimEnv: sky, fog, sun, space, ...).
@@ -13,8 +15,9 @@
 // or env key — never as a `dim ===` fork elsewhere. Each spec key is also its
 // `?startdim=<key>` boot key. Ask the user for that key when adding a dimension.
 // New-dimension checklist:
-// env (sky/fog/sun/space), moon?, ultra mode, hotbar, spawn, persistence,
-// respawnY floor (null = none), bedrock, region `dim` tags, precip `active`s, gravity zones.
+// env (sky/fog/sun/space), moon?, ultra mode, hotbar, spawn, arrival,
+// persistence, respawnY floor (null = none), bedrock, region `dim` tags,
+// precip `active`s, gravity zones.
 import {
   generateOverworld, generateOverworldAsync,
 } from "./overworld.js";
@@ -36,6 +39,7 @@ export const DIMENSIONS = [
   {
     key: "over",
     persistence: "retain",
+    arrival: { mode: "portal", facing: "face" },
     hasBedrockFloor: true,
     respawnY: -20,
     env: null, // overworld keeps the compiled-in day sky/fog (null = default)
@@ -53,6 +57,7 @@ export const DIMENSIONS = [
   {
     key: "tnt",
     persistence: "regenerate",
+    arrival: { mode: "spawn" },
     hasBedrockFloor: false,
     // Infinite sky, no floor (respawnY: null): the fall never ends.
     respawnY: null,
@@ -76,7 +81,8 @@ export const DIMENSIONS = [
   },
   {
     key: "end",
-    persistence: "retain",
+    persistence: "regenerate",
+    arrival: { mode: "portal", facing: "away" },
     hasBedrockFloor: false,
     respawnY: -20,
     // No portal may ferry the player out of the End while the dragon lives;
@@ -126,16 +132,4 @@ export function dimHasMoon(key) {
 const DEFAULT_ULTRA = { bands: false, windowR: 256, windowHalfH: 90 };
 export function dimUltra(key) {
   return { ...DEFAULT_ULTRA, ...byKey.get(key)?.ultra };
-}
-
-// Overworld exit memory: leaving over stashes the live footing; returning
-// restores it when the caller finds it still standable, else falls back to
-// the dim spawn. TNT never restores (fresh clouds every entry), so no memory
-// is kept for it.
-let overExit = null;
-export function stashOverExit(p) {
-  overExit = { x: p.x, y: p.y, z: p.z };
-}
-export function takeOverExit() {
-  return overExit;
 }
