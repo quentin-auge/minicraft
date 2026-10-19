@@ -194,6 +194,11 @@ export function sharedFlashGeo() {
   if (!flashGeo) flashGeo = new THREE.SphereGeometry(1, 20, 14);
   return flashGeo;
 }
+let batchFireballGeo = null;
+function sharedBatchFireballGeo() {
+  if (!batchFireballGeo) batchFireballGeo = new THREE.SphereGeometry(1, 12, 8);
+  return batchFireballGeo;
+}
 
 // Dense GPU particle pools: preallocated once, zero per-blast allocation,
 // zero per-frame CPU integration. Each particle stores base position,
@@ -308,6 +313,24 @@ export function denseCount(R, density, min, max) {
 }
 // shapes: ball (uniform volume), shell (surface), column, ring (flat),
 // rain (disc above, falling), inward (surface rushing to center).
+function allocateDenseLobes(lobes, count) {
+  if (!lobes?.length) return null;
+  let totalWeight = 0;
+  for (const lobe of lobes) totalWeight += lobe.r * lobe.r * lobe.r;
+  if (!(totalWeight > 0)) return null;
+  const allocation = [];
+  let assigned = 0;
+  let carry = 0;
+  for (let i = 0; i < lobes.length; i++) {
+    const exact = count * lobes[i].r ** 3 / totalWeight + carry;
+    const whole = Math.floor(exact);
+    allocation.push({ index: i, count: whole });
+    assigned += whole;
+    carry = exact - whole;
+  }
+  if (assigned < count) allocation[allocation.length - 1].count += count - assigned;
+  return allocation;
+}
 export function spawnDense(o) {
   if (!sceneRef) return 0;
   ensureDenseInScene();
@@ -315,7 +338,7 @@ export function spawnDense(o) {
     x, y, z, R, role = "fire", count = 4000, life = 1.5,
     palette = null, color = [1, 0.6, 0.15], variance = [0, 0.4, 0.2],
     speedMin = 2, speedMax = 10, up = 4, gravity = 22, size = 26,
-    shape = "ball", delay = 0, birthJitter = 0.15, defer = false, vSpread = 1,
+    shape = "ball", delay = 0, birthJitter = 0.15, defer = false, vSpread = 1, lobes = null,
     // Occluded pools (depth-tested, hidden behind terrain) are the default:
     // blast layers disappear behind rock. Around-the-lens furnace bursts
     // pass occlude:false to keep burning whatever is nearby.
@@ -328,73 +351,84 @@ export function spawnDense(o) {
   const colA = pool.pts.geometry.attributes.aCol.array;
   const prmA = pool.pts.geometry.attributes.aPrm.array;
   const t0 = pool.time + delay;
-  let start = pool.cursor;
-  for (let k = 0; k < n; k++) {
-    const i = (start + k) % pool.n;
-    let px = x, py = y, pz = z, vx, vy, vz;
-    if (shape === "shell" || shape === "inward") {
-      const si = (Math.random() * SAMPLE_N) | 0;
-      const dx = UNIT[si * 3], dy = UNIT[si * 3 + 1], dz = UNIT[si * 3 + 2];
-      const rr = R * (0.92 + Math.random() * 0.08);
-      px += rr * dx;
-      py += rr * dy;
-      pz += rr * dz;
-      const s = speedMin + Math.random() * (speedMax - speedMin);
-      const inv = shape === "inward" ? -1 : 1;
-      vx = inv * s * dx;
-      vy = inv * s * dy + up;
-      vz = inv * s * dz;
-    } else if (shape === "column") {
-      const a = Math.random() * Math.PI * 2;
-      const ca = Math.cos(a), sa = Math.sin(a);
-      const rr = R * 0.42 * RADD[(Math.random() * SAMPLE_N) | 0];
-      const h = (Math.random() - 0.3) * R * 1.6;
-      px += ca * rr; py += h; pz += sa * rr;
-      const sw = 6 + Math.random() * 10;
-      vx = -sa * sw + (Math.random() - 0.5) * 3;
-      vy = 14 + Math.random() * 22;
-      vz = ca * sw + (Math.random() - 0.5) * 3;
-    } else if (shape === "ring") {
-      const a = Math.random() * Math.PI * 2;
-      const ca = Math.cos(a), sa = Math.sin(a);
-      const rr = R * (0.85 + Math.random() * 0.3);
-      px += ca * rr; py += (Math.random() - 0.5) * 3 * vSpread; pz += sa * rr;
-      const s = speedMin + Math.random() * (speedMax - speedMin);
-      vx = ca * s; vy = up * (Math.random() - 0.3) * vSpread; vz = sa * s;
-    } else if (shape === "rain") {
-      const a = Math.random() * Math.PI * 2;
-      const ca = Math.cos(a), sa = Math.sin(a);
-      const rr = R * RADD[(Math.random() * SAMPLE_N) | 0];
-      px += ca * rr; py += R * (0.4 + Math.random() * 0.9); pz += sa * rr;
-      vx = (Math.random() - 0.5) * 3;
-      vy = -(4 + Math.random() * 10);
-      vz = (Math.random() - 0.5) * 3;
-    } else { // ball: uniform volume fill, outward drift (table lookups)
-      const pi = (Math.random() * SAMPLE_N) | 0;
-      const rr = R * RADB[pi];
-      px += rr * UNIT[pi * 3];
-      py += rr * UNIT[pi * 3 + 1] * 0.9;
-      pz += rr * UNIT[pi * 3 + 2];
-      const vi = (Math.random() * SAMPLE_N) | 0;
-      const s = speedMin + Math.random() * (speedMax - speedMin);
-      vx = s * UNIT[vi * 3];
-      vy = s * UNIT[vi * 3 + 1] + up;
-      vz = s * UNIT[vi * 3 + 2];
+  const start = pool.cursor;
+  const allocation = allocateDenseLobes(lobes, n);
+  let written = 0;
+  const seed = (lobe, countForLobe) => {
+    const ox = lobe?.x ?? x, oy = lobe?.y ?? y, oz = lobe?.z ?? z;
+    const sampleR = lobe?.r ?? R;
+    for (let k = 0; k < countForLobe; k++, written++) {
+      const i = (start + written) % pool.n;
+      let px = ox, py = oy, pz = oz, vx, vy, vz;
+      if (shape === "shell" || shape === "inward") {
+        const si = (Math.random() * SAMPLE_N) | 0;
+        const dx = UNIT[si * 3], dy = UNIT[si * 3 + 1], dz = UNIT[si * 3 + 2];
+        const rr = sampleR * (0.92 + Math.random() * 0.08);
+        px += rr * dx;
+        py += rr * dy;
+        pz += rr * dz;
+        const s = speedMin + Math.random() * (speedMax - speedMin);
+        const inv = shape === "inward" ? -1 : 1;
+        vx = inv * s * dx;
+        vy = inv * s * dy + up;
+        vz = inv * s * dz;
+      } else if (shape === "column") {
+        const a = Math.random() * Math.PI * 2;
+        const ca = Math.cos(a), sa = Math.sin(a);
+        const rr = sampleR * 0.42 * RADD[(Math.random() * SAMPLE_N) | 0];
+        const h = (Math.random() - 0.3) * sampleR * 1.6;
+        px += ca * rr; py += h; pz += sa * rr;
+        const sw = 6 + Math.random() * 10;
+        vx = -sa * sw + (Math.random() - 0.5) * 3;
+        vy = 14 + Math.random() * 22;
+        vz = ca * sw + (Math.random() - 0.5) * 3;
+      } else if (shape === "ring") {
+        const a = Math.random() * Math.PI * 2;
+        const ca = Math.cos(a), sa = Math.sin(a);
+        const rr = sampleR * (0.85 + Math.random() * 0.3);
+        px += ca * rr; py += (Math.random() - 0.5) * 3 * vSpread; pz += sa * rr;
+        const s = speedMin + Math.random() * (speedMax - speedMin);
+        vx = ca * s; vy = up * (Math.random() - 0.3) * vSpread; vz = sa * s;
+      } else if (shape === "rain") {
+        const a = Math.random() * Math.PI * 2;
+        const ca = Math.cos(a), sa = Math.sin(a);
+        const rr = sampleR * RADD[(Math.random() * SAMPLE_N) | 0];
+        px += ca * rr; py += sampleR * (0.4 + Math.random() * 0.9); pz += sa * rr;
+        vx = (Math.random() - 0.5) * 3;
+        vy = -(4 + Math.random() * 10);
+        vz = (Math.random() - 0.5) * 3;
+      } else { // ball: uniform volume fill, outward drift (table lookups)
+        const pi = (Math.random() * SAMPLE_N) | 0;
+        const rr = sampleR * RADB[pi];
+        px += rr * UNIT[pi * 3];
+        py += rr * UNIT[pi * 3 + 1] * 0.9;
+        pz += rr * UNIT[pi * 3 + 2];
+        const vi = (Math.random() * SAMPLE_N) | 0;
+        const s = speedMin + Math.random() * (speedMax - speedMin);
+        vx = s * UNIT[vi * 3];
+        vy = s * UNIT[vi * 3 + 1] + up;
+        vz = s * UNIT[vi * 3 + 2];
+      }
+      posA[i * 3] = px; posA[i * 3 + 1] = py; posA[i * 3 + 2] = pz;
+      velA[i * 3] = vx; velA[i * 3 + 1] = vy; velA[i * 3 + 2] = vz;
+      if (palette) {
+        const pc = palette[(Math.random() * palette.length) | 0];
+        for (let j = 0; j < 3; j++)
+          colA[i * 3 + j] = Math.min(1, Math.max(0, pc[j] + (Math.random() - 0.5) * 0.08));
+      } else {
+        for (let j = 0; j < 3; j++)
+          colA[i * 3 + j] = Math.min(1, Math.max(0, color[j] + Math.random() * variance[j]));
+      }
+      prmA[i * 4] = t0 + Math.random() * birthJitter;
+      prmA[i * 4 + 1] = life * (0.7 + Math.random() * 0.6);
+      prmA[i * 4 + 2] = gravity;
+      prmA[i * 4 + 3] = size * (0.7 + Math.random() * 0.6);
     }
-    posA[i * 3] = px; posA[i * 3 + 1] = py; posA[i * 3 + 2] = pz;
-    velA[i * 3] = vx; velA[i * 3 + 1] = vy; velA[i * 3 + 2] = vz;
-    if (palette) {
-      const pc = palette[(Math.random() * palette.length) | 0];
-      for (let j = 0; j < 3; j++)
-        colA[i * 3 + j] = Math.min(1, Math.max(0, pc[j] + (Math.random() - 0.5) * 0.08));
-    } else {
-      for (let j = 0; j < 3; j++)
-        colA[i * 3 + j] = Math.min(1, Math.max(0, color[j] + Math.random() * variance[j]));
-    }
-    prmA[i * 4] = t0 + Math.random() * birthJitter;
-    prmA[i * 4 + 1] = life * (0.7 + Math.random() * 0.6);
-    prmA[i * 4 + 2] = gravity;
-    prmA[i * 4 + 3] = size * (0.7 + Math.random() * 0.6);
+  };
+  if (allocation) {
+    for (const part of allocation) if (part.count) seed(lobes[part.index], part.count);
+  } else {
+    seed(null, n);
   }
   pool.cursor = (start + n) % pool.n;
   // Dirty-range tracking: batched uploads flush once per pooled blast
@@ -596,6 +630,46 @@ export function spawnFlash(o) {
   flashes.push({ mesh, life, max: life, size, growth });
 }
 
+// Per-crater expanding shells share one low-poly sphere draw call and one
+// progress uniform, regardless of how many linked megas the pool contains.
+export function spawnFireballBatch(o) {
+  if (!sceneRef || !o.lobes?.length) return;
+  const { lobes, scale = 1, color = 0xff7a1a, growTime = 0.9, doubleside = false, fogOff = false } = o;
+  const material = new THREE.MeshBasicMaterial({
+    color, transparent: true, opacity: 0.95, depthWrite: false,
+    blending: THREE.AdditiveBlending,
+    side: doubleside ? THREE.DoubleSide : THREE.FrontSide,
+    fog: !fogOff,
+  });
+  const progress = { value: 0 };
+  material.onBeforeCompile = (shader) => {
+    shader.uniforms.uFireballProgress = progress;
+    shader.vertexShader = shader.vertexShader.replace(
+      "#include <common>",
+      "#include <common>\nuniform float uFireballProgress;",
+    );
+    shader.vertexShader = shader.vertexShader.replace(
+      "#include <begin_vertex>",
+      "#include <begin_vertex>\ntransformed *= uFireballProgress;",
+    );
+  };
+  material.customProgramCacheKey = () => "pooled-fireball-progress-v1";
+  const mesh = new THREE.InstancedMesh(sharedBatchFireballGeo(), material, lobes.length);
+  mesh.frustumCulled = false;
+  const dummy = new THREE.Object3D();
+  for (let i = 0; i < lobes.length; i++) {
+    const lobe = lobes[i];
+    dummy.position.set(lobe.x, lobe.y, lobe.z);
+    dummy.scale.setScalar(lobe.r * scale);
+    dummy.updateMatrix();
+    mesh.setMatrixAt(i, dummy.matrix);
+  }
+  mesh.instanceMatrix.needsUpdate = true;
+  sceneRef.add(mesh);
+  const grow = Math.max(0.001, growTime);
+  flashes.push({ mesh, life: grow + 0.001, max: grow + 0.001, growTime: grow, progress, fireballBatch: true, instanced: true });
+}
+
 // Batched flash: one InstancedMesh with an instance per blast center. All
 // instances share one material and age together, so a mass detonation costs
 // one draw call instead of one Mesh each. Grows in place, fades as a unit.
@@ -656,7 +730,12 @@ export function tickFx(dt) {
       continue;
     }
     const t = 1 - f.life / f.max;
-    if (f.instanced) {
+    if (f.fireballBatch) {
+      const age = f.max - f.life;
+      f.progress.value = Math.min(1, age / f.growTime);
+      const retract = f.max - f.growTime;
+      f.mesh.material.opacity = age < f.growTime ? 0.95 : 0.95 * Math.max(0, f.life / retract);
+    } else if (f.instanced) {
       const s = f.size * (0.4 + t * f.growth);
       for (let j = 0; j < f.centers.length; j++) {
         const c = f.centers[j];

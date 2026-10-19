@@ -24,7 +24,7 @@ import { rebuildChunk, isChunkBuilt, chunkKeysForColumn, refreshBlocks } from ".
 import { notePortalFramesOnly, clearPortalFills, scanWorldPortals } from "../world/portals.js";
 import { GRAVITY, pos, vel, setOnGround, addPlayerKnockback, KNOCK_DECAY } from "../player/physics.js";
 import { flyOn } from "../player/fly.js";
-import { spawnBurst, spawnBurstBatch, spawnFlash, spawnFlashBatch, sharedFlashGeo, initBandShell, updateBandShell, hideBandShell, spawnDense, denseCount, noteDenseSpawn, resetDenseFx, flushDense } from "./particles.js";
+import { spawnBurst, spawnBurstBatch, spawnFlash, spawnFlashBatch, spawnFireballBatch, sharedFlashGeo, initBandShell, updateBandShell, hideBandShell, spawnDense, denseCount, noteDenseSpawn, resetDenseFx, flushDense } from "./particles.js";
 import { clearGlowstoneAt } from "../world/glowstone.js";
 import { clearFlowerAt } from "../world/flowers.js";
 import { noteBlockLightEdit } from "../render/blocklights.js";
@@ -372,7 +372,7 @@ function phaseLayer(h, o, role, per, min, max, rest = {}) {
   return spawnDense({
     x: h.cx, y: h.cy, z: h.cz, R, role,
     count: D(R, per, min, max),
-    defer: true, ...props, life: blastSeconds(scaledLife), delay: blastSeconds(start),
+    lobes: h.lobes, defer: true, ...props, life: blastSeconds(scaledLife), delay: blastSeconds(start),
   });
 }
 // Shell scope for one phase. Mega burns with "full" shells; ultra passes
@@ -385,7 +385,18 @@ function shellScope(h, mode) {
     shell: (c1, c2, t1, e1, t2, e2) => { if (on) shell2(h.cx, h.cy, h.cz, h.R, c1, c2, t1, e1, t2, e2); },
     flash: (o) => {
       if (!on) return;
-      spawnFlash({ ...o, retractSpeed: 1e9 });
+      if (h.lobes?.length && o.maxRadius != null) {
+        spawnFireballBatch({
+          lobes: h.lobes,
+          scale: o.maxRadius / h.R,
+          color: o.color,
+          growTime: o.maxRadius / o.speed,
+          doubleside: o.doubleside,
+          fogOff: o.fogOff,
+        });
+      } else {
+        spawnFlash({ ...o, retractSpeed: 1e9 });
+      }
     },
   };
 }
@@ -444,10 +455,9 @@ function spawnMegaBlastFx(x, y, z, kind, mult = 1, fx = null) {
   fxBaseDelay = fx?.delay ?? 0;
   const boost = (1 + 0.15 * (m - 1)) * share;
   const lives = megaBaseLives(key);
-  const h = { cx, cy, cz, R, boost, lives, shells, shellMode: fx?.shellMode ?? null, baseDelay: fxBaseDelay, maxEnd: 0, m, lifeScale: fx?.lifeScale ?? 1 };
-  // One union fireball per pooled blast (single fx job at the centroid),
-  // so shells never multiply. Pops vanish instead
-  // of retracting (see shell2) — no shrinking sphere anywhere.
+  const h = { cx, cy, cz, R, boost, lives, shells, lobes: fx?.lobes ?? null, shellMode: fx?.shellMode ?? null, baseDelay: fxBaseDelay, maxEnd: 0, m, lifeScale: fx?.lifeScale ?? 1 };
+  // A pooled blast keeps one batched fireball shell per member crater. The
+  // instanced batch shares its geometry, material, and animation uniform.
   MEGA_PHASES[key]?.(h);
   // No per-member uploads or lights here: the pooled blast flushes once and
   // owns a single light (see explodePool), so mass detonations stay flat.
@@ -1009,11 +1019,11 @@ export function resetTNTMemory() {
   fxBaseDelay = 0;
 }
 
-// Mass-blast pipeline: one FX job per pooled blast (single union fireball
-// at the centroid), carve in column slices, so looots of megas read as one
-// simultaneous explosion instead of N fireballs or one frozen frame.
+// Mass-blast pipeline: one FX job per pooled blast (batched member fireballs
+// plus a fixed-budget particle recipe), carve in column slices, so looots of
+// megas read as one simultaneous explosion without per-member draw calls.
 // Solo/small blasts keep the instant carve path.
-const fxJobs = []; // { x,y,z,kind,k,share,shells,shellMode,key,delay,R,due,lifeScale }
+const fxJobs = []; // { x,y,z,kind,k,share,shells,shellMode,key,delay,R,lobes,due,lifeScale }
 const FX_SEED_PER_TICK = 30000;
 function fxJobCost(j) {
   const R = j.R ?? megaPoolRadius(j.kind, j.k);
@@ -1039,7 +1049,7 @@ function drainFxJobs() {
     fxJobs.splice(i, 1);
     budget -= cost;
     flushed = true;
-    spawnMegaBlastFx(j.x, j.y, j.z, j.kind, j.k, { share: j.share, shells: j.shells, shellMode: j.shellMode, key: j.key, delay: j.delay, R: j.R, lifeScale: j.lifeScale });
+    spawnMegaBlastFx(j.x, j.y, j.z, j.kind, j.k, { share: j.share, shells: j.shells, shellMode: j.shellMode, key: j.key, delay: j.delay, R: j.R, lobes: j.lobes, lifeScale: j.lifeScale });
   }
   if (flushed) {
     flushDense();
@@ -1662,7 +1672,7 @@ function queuePoolBoundaryChains(inRegion) {
 }
 
 // One simultaneous blast for the whole cluster: every member carves its
-// own crater and throws its own fireball, widened by neighbours within
+// own crater and contributes a fireball lobe, widened by neighbours within
 // R/2 (7.5) through the 15 / 22.5 / 33.75 / capped-40 curve. One knockback
 // and one shake at the centroid, reaching the widest member crater.
 function explodePool(cx, cy, cz, kind) {
@@ -1683,8 +1693,8 @@ function explodePool(cx, cy, cz, kind) {
     ax /= mult;
     ay /= mult;
     az /= mult;
-    // Single union fireball: smallest sphere around the centroid covering
-    // every member crater, capped so spread-out pools never fill the sky.
+    // Pool-wide range for gameplay overlays and shake, capped so spread-out
+    // pools never fill the sky. Rendered fireballs keep each member's crater.
     let Rfx = 0;
     for (let i = 0; i < members.length; i++) {
       const m = members[i];
@@ -1732,10 +1742,11 @@ function explodePool(cx, cy, cz, kind) {
     let totalCols = 0;
     for (let i = 0; i < members.length; i++) totalCols += (2 * Math.ceil(radii[i]) + 1) ** 2;
     const styleKey = MEGA_STYLE_KEY;
+    const lobes = members.map((m, i) => ({ x: m.x + 0.5, y: m.y + 0.5, z: m.z + 0.5, r: radii[i] }));
     // Knockback stays on R (max member crater): launch physics unchanged,
     // whatever the visual union looks like.
     applyMegaKnockback(ax, ay, az, kind, R);
-    // Shake, overlays, furnace and LoS follow the single visible fireball.
+    // Gameplay overlays and shake retain one pool-wide centroid/range.
     if (onBlast) onBlast(ax, ay, az, Rfx, kind.key);
     if (totalCols <= 2600) {
       const touched = [];
@@ -1755,11 +1766,11 @@ function explodePool(cx, cy, cz, kind) {
           if (!seen.has(dk)) { seen.add(dk); touched.push([m.x, m.y, m.z]); }
         }
       }
-      // Instant carve for the small path; the single union fireball queues
+      // Instant carve for the small path; the batched fireballs queue
       // and drains end-of-tick (same frame). Remesh goes through the budgeted
       // drain (1–2 frames, hidden under the fireball) instead of freezing on
       // synchronous rebuilds.
-      fxJobs.push({ x: ax, y: ay, z: az, kind, k: mult, share: 1, shells: true, key: styleKey, delay: 0, R: Rfx });
+      fxJobs.push({ x: ax, y: ay, z: az, kind, k: mult, share: 1, shells: true, key: styleKey, delay: 0, R: Rfx, lobes });
       poolLight(ax, ay, az, Rfx, styleKey);
       syncGlowAfterBlast();
       purgeBlastLiquids(touched);
@@ -1767,10 +1778,10 @@ function explodePool(cx, cy, cz, kind) {
       queueBlastRefresh(touched);
       return [];
     }
-    // Big-pool path: one light up front, one simultaneous union fireball,
+    // Big-pool path: one light up front, one simultaneous batched fireball set,
     // carve drains in slices. The member blocks are removed immediately;
     // overlapping crater volume is then visited once through the union.
-    fxJobs.push({ x: ax, y: ay, z: az, kind, k: mult, share: 1, shells: true, key: styleKey, delay: 0, R: Rfx });
+    fxJobs.push({ x: ax, y: ay, z: az, kind, k: mult, share: 1, shells: true, key: styleKey, delay: 0, R: Rfx, lobes });
     const touched = [];
     for (const m of members) {
       if (getBlock(m.x, m.y, m.z) === kind.blockId) clearCell(m.x, m.y, m.z, touched);
