@@ -41,13 +41,14 @@ MiniCraft — a Minecraft-style game that runs in the browser.
 
 - Workspaces live in `../minicraft_wts/<name>` (one dir = one branch of the same name); each server uses its own random port from `/tmp/minicraft-<name>.port`.
 - Natural language routing: "spawn/create a new workspace ..." → follow `.opencode/commands/wt-add.md` with that name/commit (forks the current branch by default); "rebase onto parent / finish this workspace ..." → follow `.opencode/commands/wt-done.md` (rebases onto the parent branch recorded at creation, merges into it, deletes the workspace); "delete/remove workspace ..." → follow `.opencode/commands/wt-delete.md`.
-- In worktrees, commit normally after each task (`git add -u`, single-line message, capital first letter).
+- In worktrees, commit normally after each task (`git add -u`, plus `git add <file>` for each file created during the task; never blanket `git add -A` / `git add .`, single-line message, capital first letter).
 
 ## Workflow Notes
 
 - Commit messages must be single-line (no body, no multi-line text), starting with a capital letter describing the user-facing change.
 - Commit changes after completing a task
-- If the change is a quickfix of last commit in current session, amend it; ask the user if it is okay, unless the user already specified it
+- Stage with `git add -u`, then `git add <file>` for every new file you created during the task; never `git add -A` / `git add .` (they sweep unwanted untracked files, e.g. TODO.md).
+- If the change is an obvious quickfix/iteration of the last commit in the current session, amend with `git commit --amend`; ask the user if it is okay, unless the user already specified it.
 - Keep ARCHITECTURE.md up to date as the rewrite grows
 - After changing JS, syntax-check it (`node --check`, on a `.mjs` copy when the file uses ESM `import`) and verify in the browser before committing.
 - Do not run instrumentation (puppeteer), verification scripts, or tests unless explicitly requested by the user.
