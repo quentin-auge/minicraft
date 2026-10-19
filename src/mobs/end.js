@@ -5,6 +5,7 @@ import { registerHomingTarget } from "./homing.js";
 import { pickBlock } from "../player/edit.js";
 import { spawnBurst } from "../fx/particles.js";
 import { END_PLATFORM_RADIUS, END_PLATFORM_TOP, END_RETURN_Z, setEndCleared } from "../world/end.js";
+import { noteDragonKill } from "../world/tntunlock.js";
 
 const mobs = new Set();
 const HUES = [0x6e2a92, 0x1a5eb8, 0x188844, 0xd8a818, 0xc82828];
@@ -314,7 +315,8 @@ function tickDragon(mob, dt, camera) {
       mob.homingUnregister?.();
       sceneRef.remove(root);
       setEndCleared(true);
-      onDragonVictory?.();
+      const unlocked = noteDragonKill();
+      onDragonVictory?.(unlocked);
       return;
     }
     mob.pos.copy(root.position);

@@ -28,8 +28,9 @@ import {
 import { bootTntStream, findTntStreamSpawn } from "./tntstream.js";
 import { TNT, MEGA_TNT, ULTRA_TNT, WATER, MOON_WATER, FLOWER, GLOWSTONE } from "../core/blocks.js";
 import { BASE_ITEMS } from "../ui/hotbar.js";
-import { registerInfiniteDim } from "../core/store.js";
+import { dim, registerInfiniteDim } from "../core/store.js";
 import { generateEndDimension, findEndSpawn, isEndCleared } from "./end.js";
+import { isLockedTntTier, isTntTierUnlocked } from "./tntunlock.js";
 
 // The TNT sky is the first infinite dimension: voxels stream around the
 // player with no walls (see tntstream.js), so the store lifts its bounds.
@@ -76,7 +77,9 @@ export const DIMENSIONS = [
     // through findTntStreamSpawn above.
     findSpawnLegacy: () => findTntSpawn(),
     // TNT tiers only — but all three: a return portal's frame needs at least
-    // one mega and one ultra, so dropping ultra would strand visitors.
+    // one mega and one ultra, so dropping ultra would strand visitors. This
+    // dimension also keeps every tier usable before the dragon-kill unlocks.
+    tntTiersUnlocked: true,
     hotbar: [TNT, MEGA_TNT, ULTRA_TNT],
   },
   {
@@ -117,6 +120,21 @@ export function dimHasBedrock(key) {
 }
 export function dimEnv(key) {
   return byKey.get(key)?.env ?? null;
+}
+
+// TNT-dimension exemption: its bar and placement rules ignore the dragon-kill
+// locks (the sky is where the tiers live before the unlocks).
+export function dimTntTiersUnlocked(name = dim) {
+  return !!byKey.get(name)?.tntTiersUnlocked;
+}
+
+// Dimension bar with locked TNT tiers removed unless this dimension keeps
+// them available or their unlock threshold (or the URL bypass) is met.
+export function dimHotbar(name = dim) {
+  const spec = byKey.get(name);
+  const list = spec?.hotbar ?? BASE_ITEMS;
+  if (spec?.tntTiersUnlocked) return list.slice();
+  return list.filter((id) => !isLockedTntTier(id) || isTntTierUnlocked(id));
 }
 
 // Moon body present (generation is generator-owned; this gates the low-grav

@@ -52,6 +52,15 @@
       box-shadow: 0 0 10px 2px rgba(255,255,255,0.9), inset 0 0 8px rgba(255,255,255,0.5);
       transform: translateY(-4px);
     }
+    #hotbar .slot.unlock-pop {
+      animation: slotPop 1.2s ease-out;
+      border-color: #ffd75e;
+    }
+    @keyframes slotPop {
+      0% { transform: scale(0.3); box-shadow: 0 0 24px 8px rgba(255,215,94,0.95); }
+      55% { transform: scale(1.25); box-shadow: 0 0 16px 5px rgba(255,215,94,0.8); }
+      100% { transform: scale(1); }
+    }
     #help {
       position: fixed; inset: 0; z-index: 30; display: none;
       align-items: center; justify-content: center;

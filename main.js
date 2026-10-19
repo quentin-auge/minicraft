@@ -54,12 +54,13 @@ import {
 } from "./src/player/chain.js";
 const chain = createChainState();
 import { CHUNK, renderDist, dim, setDimension, setBlock, getBlock, outOfWorld, worlds } from "./src/core/store.js";
-import { dimEnv, dimSpec, dimHasMoon } from "./src/world/dimensions.js";
+import { dimEnv, dimSpec, dimHasMoon, dimHotbar } from "./src/world/dimensions.js";
 import { disposeAll } from "./src/render/mesher.js";
 import { EYE } from "./src/player/physics.js";
 import { initHomingTnt, fireHomingTnt, tickHomingTnt, clearHomingTnt } from "./src/mobs/homing.js";
 import { enterEndMobs, clearEndMobs, tickEndMobs, dragonHealth, setDragonVictoryHook } from "./src/mobs/end.js";
 import { endPortalFrameKeys, resetEndDimension, setEndCleared } from "./src/world/end.js";
+import { resetTntUnlocks } from "./src/world/tntunlock.js";
 
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x87ceeb);
@@ -111,7 +112,11 @@ setPortalTravelHook((plan) => {
   if (plan && plan.dim) void goToDimension(plan.dim);
   else severHook();
 });
-setDragonVictoryHook(() => scanWorldPortals());
+setDragonVictoryHook((unlocked) => {
+  scanWorldPortals();
+  // Rebuild the bar in place and pop only the tier this kill unlocked.
+  resetItems(dimHotbar(dim), unlocked);
+});
 
 const highlight = new THREE.LineSegments(
   new THREE.EdgesGeometry(new THREE.BoxGeometry(1.002, 1.002, 1.002)),
@@ -317,6 +322,7 @@ async function buildWorld() {
   clearHomingTnt();
   clearEndMobs();
   resetTravelLinks();
+  resetTntUnlocks();
   if (BOOT_DIM !== "end") resetEndDimension();
   resetTNTMemory();
   bandDpr = false;
@@ -356,7 +362,7 @@ async function buildWorld() {
     scanWorldPortals();
     if (dim === "end") enterEndMobs(scene);
     moonBand = false;
-    resetItems(dimSpec(dim).hotbar);
+    resetItems(dimHotbar(dim));
     select(0);
     updateCamera();
     resetTNTMemory();
@@ -437,7 +443,7 @@ async function goToDimension(dest) {
     moonBand = false;
     // Per-dimension bar: the TNT cube holds TNT tiers only. Selection follows
     // by id, so a held TNT survives the trip; anything else clamps.
-    resetItems(dimSpec(dim).hotbar);
+    resetItems(dimHotbar(dim));
     updateBossBar();
     updateCamera();
     Object.keys(keys).forEach((k) => { keys[k] = false; });

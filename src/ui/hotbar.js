@@ -35,10 +35,12 @@ export function getItems() {
   return items.slice();
 }
 
-export function resetItems(to = BASE_ITEMS) {
+// `popId` is the single item that just unlocked (master's unlock pop);
+// every other list change rebuilds silently.
+export function resetItems(to = BASE_ITEMS, popId = null) {
   items = to.slice();
   clampSelection();
-  buildHotbar();
+  buildHotbar(popId);
 }
 
 // Insert id at `at` (default: append); no-op when already listed.
@@ -71,12 +73,19 @@ export function selectedId() {
   return items[selected];
 }
 
-export function buildHotbar() {
+export function buildHotbar(popId = null) {
   const bar = el();
   bar.innerHTML = "";
   items.forEach((id, i) => {
     const slot = document.createElement("div");
-    slot.className = "slot" + (i === selected ? " selected" : "");
+    slot.className = "slot" +
+      (i === selected ? " selected" : "") +
+      (id === popId ? " unlock-pop" : "");
+    if (id === popId) {
+      const dropPop = () => slot.classList.remove("unlock-pop");
+      slot.addEventListener("animationend", dropPop, { once: true });
+      setTimeout(dropPop, 1500);
+    }
     const img = document.createElement("img");
     img.src = iconSrc(id);
     img.alt = String(id);

@@ -6,7 +6,8 @@ import * as THREE from "three";
 import { AIR, BLOCK_INFO, FLOWER, GLOWSTONE, TNT, isLiquid, isTntLike } from "../core/blocks.js";
 import { dim, dimInfinite, getBlock, setBlock, outOfWorld, isCellProtected } from "../core/store.js";
 import { pinTntCellAt } from "../world/tntstream.js";
-import { dimHasBedrock } from "../world/dimensions.js";
+import { dimHasBedrock, dimTntTiersUnlocked } from "../world/dimensions.js";
+import { isTntTierUnlocked } from "../world/tntunlock.js";
 import { PLAYER_HW, PLAYER_H, pos } from "./physics.js";
 import { igniteTNT, isLitTNT, detonateNow, noteTntPlaced, kindOfBlock, trackMegaPlaced, trackRegularTntPlaced } from "../fx/tnt.js";
 import { noteGlowstonePlace, noteGlowstonePlaceShared, glowVariantAt, clearGlowstoneAt } from "../world/glowstone.js";
@@ -179,6 +180,9 @@ export function breakBlockAt(x, y, z, opts) {
 export function tryPlace(id, px, py, pz, opts) {
   const batched = !!opts?.batch;
   if (!BLOCK_INFO[id] || !BLOCK_INFO[id].placeable) return null;
+  // Mega/ultra stay locked outside the TNT dimension until their dragon-kill
+  // unlocks (or ?unlock_tnt=1); the chain path funnels through here too.
+  if (isTntLike(id) && !dimTntTiersUnlocked(dim) && !isTntTierUnlocked(id)) return null;
   // Bounded dims keep the y = 0 floor unplaceable; the infinite sky builds
   // anywhere in the key range.
   if (py < 0 && !dimInfinite()) return null;
