@@ -689,16 +689,42 @@ function finishBandJob(job) {
   // 12-block scanner range, so no destroyed window anywhere keeps its fill.
   scanWorldPortals();
 }
+const BAND_CHAIN_RADIUS = TNT_DEFAULTS.radius;
+function queueBandBoundaryChains(job, x, y, z) {
+  if (!job.bands || ultraBandOf(y) !== job.band) return;
+  const r2 = BAND_CHAIN_RADIUS * BAND_CHAIN_RADIUS;
+  const ranges = [];
+  if (y - job.yLo < BAND_CHAIN_RADIUS) ranges.push([job.yLo - BAND_CHAIN_RADIUS, job.yLo - 1]);
+  if (job.yHi !== null && job.yHi - y < BAND_CHAIN_RADIUS) {
+    ranges.push([job.yHi + 1, job.yHi + BAND_CHAIN_RADIUS]);
+  }
+  for (const [y0, y1] of ranges) {
+    for (let ny = y0; ny <= y1; ny++) {
+      if (ny < 1) continue;
+      const dy2 = (ny - y) * (ny - y);
+      const xzR = Math.floor(Math.sqrt(r2 - dy2));
+      for (let dx = -xzR; dx <= xzR; dx++) {
+        const zR = Math.floor(Math.sqrt(r2 - dy2 - dx * dx));
+        for (let dz = -zR; dz <= zR; dz++) {
+          const id = getBlock(x + dx, ny, z + dz);
+          if (isTntLike(id)) queueChained(x + dx, ny, z + dz, kindOfBlock(id));
+        }
+      }
+    }
+  }
+}
 function carveBandCell(job, kind, gx, gy, gz, touched) {
   const bid = getBlock(gx, gy, gz);
   if (bid === AIR) return;
   if (gy === 0 && !dimInfinite()) return; // bedrock (bounded dims only)
   const victimKind = isTntLike(bid) ? kindOfBlock(bid) : null;
   if (victimKind) {
-    // Cross-band ultras survive for their own blast in bands mode; in
-    // window mode the whole window goes anyway, so everything inside dies
-    // silently and nothing cascades.
+    // Overhang-only cells may extend into another altitude band; preserve
+    // those ultras for their own blast. In window mode the whole window goes.
     if (victimKind.band && job.bands && ultraBandOf(gy) !== job.band) return;
+    // The band wipe consumes in-band TNT, but TNT just across an altitude
+    // boundary still chains as if struck by a normal radius-3 blast.
+    queueBandBoundaryChains(job, gx, gy, gz);
     const k = gx + "," + gy + "," + gz;
     const t = lit.get(k);
     if (t) {
@@ -757,12 +783,11 @@ function drainBandJobs(dt) {
   if (job.ci >= job.cols.length && cellsDone(job)) job.carveDone = true;
 }
 
-// One band wipe: same-band lit fuses and queued blasts die with the band
-// (cross-band lit ultras keep burning for their own band in bands mode; in
-// window mode everything inside the window dies, since the whole window
-// goes anyway), then the columns carve across frames. Shake fires once at
-// full reach; main.js sustains it while the camera sits inside the front
-// via bandFront().
+// One band wipe: same-band lit fuses and queued blasts die with the band;
+// cross-band fuses survive unless an edge TNT chains into them. In window
+// mode everything inside the window dies. Columns carve across frames. Shake
+// fires once at full reach; main.js sustains it while the camera sits inside
+// the front via bandFront().
 function explodeBand(cx, cy, cz, kind, refresh) {
   removeSprite(cx + "," + cy + "," + cz, kind);
   const u = dimUltra(dim);
