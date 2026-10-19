@@ -3,12 +3,12 @@
 // its fuse (block kept, no remesh needed); a second break-click on lit TNT
 // detonates it immediately.
 import * as THREE from "three";
-import { AIR, BLOCK_INFO, FLOWER, GLOWSTONE, isLiquid, isTntLike } from "../core/blocks.js";
+import { AIR, BLOCK_INFO, FLOWER, GLOWSTONE, TNT, isLiquid, isTntLike } from "../core/blocks.js";
 import { dim, dimInfinite, getBlock, setBlock, outOfWorld } from "../core/store.js";
 import { pinTntCellAt } from "../world/tntstream.js";
 import { dimHasBedrock } from "../world/dimensions.js";
 import { PLAYER_HW, PLAYER_H, pos } from "./physics.js";
-import { igniteTNT, isLitTNT, detonateNow, noteTntPlaced, kindOfBlock, trackMegaPlaced } from "../fx/tnt.js";
+import { igniteTNT, isLitTNT, detonateNow, noteTntPlaced, kindOfBlock, trackMegaPlaced, trackRegularTntPlaced } from "../fx/tnt.js";
 import { noteGlowstonePlace, noteGlowstonePlaceShared, glowVariantAt, clearGlowstoneAt } from "../world/glowstone.js";
 import { noteFlowerPlace, clearFlowerAt } from "../world/flowers.js";
 import { noteBlockLightEdit } from "../render/blocklights.js";
@@ -185,6 +185,7 @@ export function tryPlace(id, px, py, pz, opts) {
   if (!(target === AIR || isLiquid(target))) return null;
   if (BLOCK_INFO[id].solid && intersectsPlayer(px, py, pz)) return null;
   setBlock(px, py, pz, id);
+  if (id === TNT) trackRegularTntPlaced(px, py, pz);
   // Player content pins its stream cell: edits (and portal frames built
   // from them) never evict within a visit.
   if (dimInfinite()) pinTntCellAt(px, py, pz);

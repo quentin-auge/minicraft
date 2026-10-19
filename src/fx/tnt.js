@@ -929,6 +929,15 @@ const pendingChain = new Map(); // "x,y,z" -> { x, y, z, kind, due } delayed bla
 // in that cell after its blast unless the kind clears liquids.
 // TNT placed in air leaves air behind.
 const displaced = new Map();
+const regularTntIndex = new Map(); // dimension -> Set of player-placed normal TNT keys
+export function trackRegularTntPlaced(x, y, z) {
+  let cells = regularTntIndex.get(dim);
+  if (!cells) regularTntIndex.set(dim, cells = new Set());
+  cells.add(x + "," + y + "," + z);
+}
+function untrackRegularTnt(x, y, z) {
+  regularTntIndex.get(dim)?.delete(x + "," + y + "," + z);
+}
 let sceneRef = null;
 let onBlast = null;
 let onPurge = null;
@@ -974,6 +983,7 @@ export function noteTntPlaced(x, y, z, id) {
 // New worlds never inherit another world's placements, fuses, or lights.
 export function resetTNTMemory() {
   simNow = 0;
+  if (dim === "tnt") regularTntIndex.delete(dim); // TNT dimension regenerates on entry
   pendingChain.clear();
   displaced.clear();
   megaIndex.clear();
@@ -1269,6 +1279,13 @@ export function cancelTNT(x, y, z) {
 // tickTNT already kills any fuse whose block is gone, sprites included — and
 // stale megaIndex keys revalidate through getBlock on join.
 export function clearTNTBox(x0, y0, z0, x1, y1, z1) {
+  const regulars = regularTntIndex.get(dim);
+  if (regulars) {
+    for (const k of regulars) {
+      const [x, y, z] = k.split(",").map(Number);
+      if (x >= x0 && x <= x1 && y >= y0 && y <= y1 && z >= z0 && z <= z1) regulars.delete(k);
+    }
+  }
   for (const [k, c] of pendingChain) {
     if (c.x >= x0 && c.x <= x1 && c.y >= y0 && c.y <= y1 && c.z >= z0 && c.z <= z1) {
       pendingChain.delete(k);
@@ -1481,12 +1498,14 @@ function syncGlowAfterBlast() {
   noteBlockLightEdit();
 }
 function clearCell(x, y, z, touched) {
-  if (getBlock(x, y, z) === GLOWSTONE) {
+  const id = getBlock(x, y, z);
+  if (id === GLOWSTONE) {
     clearGlowstoneAt(x, y, z);
     glowBlasted = true;
   }
-  if (getBlock(x, y, z) === FLOWER) clearFlowerAt(x, y, z);
-  if (kindOfBlock(getBlock(x, y, z)).pool) untrackMega(x, y, z);
+  if (id === FLOWER) clearFlowerAt(x, y, z);
+  if (id === TNT) untrackRegularTnt(x, y, z);
+  if (kindOfBlock(id).pool) untrackMega(x, y, z);
   setBlock(x, y, z, AIR);
   touched.push([x, y, z]);
 }
@@ -1496,6 +1515,23 @@ function clearCell(x, y, z, touched) {
 // growth/linkage scans and the "inside the pool" test local instead of
 // O(members x candidates) on a big pool.
 const MEGA_CELL = MEGA_POOL_RADIUS_MAX;
+const NORMAL_CHAIN_RADIUS = TNT_DEFAULTS.radius;
+const NORMAL_CHAIN_RADIUS2 = NORMAL_CHAIN_RADIUS * NORMAL_CHAIN_RADIUS;
+// Match the normal blast's open sphere, retaining only its six axis tips.
+const NORMAL_CHAIN_OFFSETS = [];
+for (let dx = -NORMAL_CHAIN_RADIUS; dx <= NORMAL_CHAIN_RADIUS; dx++)
+  for (let dy = -NORMAL_CHAIN_RADIUS; dy <= NORMAL_CHAIN_RADIUS; dy++)
+    for (let dz = -NORMAL_CHAIN_RADIUS; dz <= NORMAL_CHAIN_RADIUS; dz++) {
+      const d2 = dx * dx + dy * dy + dz * dz;
+      if (d2 > NORMAL_CHAIN_RADIUS2) continue;
+      if (
+        d2 >= NORMAL_CHAIN_RADIUS2 - 1 &&
+        dx * dx !== NORMAL_CHAIN_RADIUS2 &&
+        dy * dy !== NORMAL_CHAIN_RADIUS2 &&
+        dz * dz !== NORMAL_CHAIN_RADIUS2
+      ) continue;
+      NORMAL_CHAIN_OFFSETS.push([dx, dy, dz]);
+    }
 function gridInsert(grid, x, y, z, val) {
   const k = Math.floor(x / MEGA_CELL) + "," + Math.floor(y / MEGA_CELL) + "," + Math.floor(z / MEGA_CELL);
   let b = grid.get(k);
@@ -1594,6 +1630,37 @@ function collectMegaCluster(sx, sy, sz, kind) {
   return { members, sized };
 }
 
+function queuePoolBoundaryChains(inRegion) {
+  const regulars = regularTntIndex.get(dim);
+  if (!regulars?.size) return;
+  const normal = kindOf("normal");
+  const targets = new Set();
+  for (const k of regulars) {
+    const a = k.indexOf(","), b = k.indexOf(",", a + 1);
+    const x = +k.slice(0, a), y = +k.slice(a + 1, b), z = +k.slice(b + 1);
+    if (getBlock(x, y, z) !== normal.blockId) {
+      regulars.delete(k);
+      continue;
+    }
+    if (!inRegion(x, y, z)) continue;
+    for (const [dx, dy, dz] of NORMAL_CHAIN_OFFSETS) {
+      const nx = x + dx, ny = y + dy, nz = z + dz;
+      const nk = nx + "," + ny + "," + nz;
+      if (!regulars.has(nk) || inRegion(nx, ny, nz)) continue;
+      if (pendingChain.has(nk)) continue;
+      if (getBlock(nx, ny, nz) !== normal.blockId) {
+        regulars.delete(nk);
+        continue;
+      }
+      targets.add(nk);
+    }
+  }
+  for (const k of targets) {
+    const a = k.indexOf(","), b = k.indexOf(",", a + 1);
+    queueChained(+k.slice(0, a), +k.slice(a + 1, b), +k.slice(b + 1), normal);
+  }
+}
+
 // One simultaneous blast for the whole cluster: every member carves its
 // own crater and throws its own fireball, widened by neighbours within
 // R/2 (7.5) through the 15 / 22.5 / 33.75 / capped-40 curve. One knockback
@@ -1643,6 +1710,7 @@ function explodePool(cx, cy, cz, kind) {
       });
       return hit;
     };
+    queuePoolBoundaryChains(inRegion);
     // Lit fuses and queued blasts inside the region go off with the pool —
     // except ultras, which always detonate as their own band blast instead.
     for (const [k, t] of lit) {
