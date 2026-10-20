@@ -14,7 +14,7 @@
 // through the shared axis movers in small substeps with the anchor column
 // ghosted, landing the player top-or-before while the rope stays on the
 // face; the rope stays pinned until mouse-up.
-import { pos, vel, playerBody, collideBody, headInWater, setOnGround, setGhostPass, setHookPlanar, setHookWet, PLAYER_HW, PLAYER_H, EYE } from "./physics.js";
+import { pos, vel, playerBody, collideBody, headInWater, setOnGround, setGhostPass, setHookPlanar, setHookWet, noteFling, PLAYER_HW, PLAYER_H, EYE } from "./physics.js";
 import { dim, isSolid } from "../core/store.js";
 import { dimSpec } from "../world/dimensions.js";
 import { skyGrappleTarget } from "../world/tntstream.js";
@@ -326,8 +326,10 @@ export function cancelHook(fling = true) {
     const dist = Math.hypot(dx, dy, dz) || 1;
     if (fling && !headInWater()) {
       vel.set(dx / dist * spec.flingSpeed, dy / dist * spec.flingSpeed, dz / dist * spec.flingSpeed);
+      noteFling();
     } else if (headInWater()) {
       vel.set(dx / dist * spec.pullSpeed, dy / dist * spec.pullSpeed, dz / dist * spec.pullSpeed);
+      noteFling();
     }
   } else if (hook) {
     setOnGround(landingSupported(pos.x, pos.y, pos.z));

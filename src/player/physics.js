@@ -22,6 +22,11 @@ export const JUMP_BOOST_TIME = 0.15;
 export const JUMP_BUFFER = 0.2;
 export const AIR_STEER = 2.5;
 export const AIR_SPRINT = 1.35;
+// Grapple-release inertia: linear horizontal bleed (FLING_LIN) from the
+// first frame after the fling, so the trajectory is a parabola with a
+// vertical asymptote end to end. Below FLING_SNAP the fall reads vertical.
+export const FLING_LIN = 0.9;
+export const FLING_SNAP = 1.0;
 export const STEP_SPEED = 9.5;
 export const STEP_UP = 12;
 export const STEP_UP_EASE = 0.03;
@@ -59,6 +64,10 @@ let stepUpClearY = 0;
 let stepFromWater = false;
 let wasInWater = false;
 let airT = 0;
+// Time since the last grapple fling (Infinity when inactive): drives the
+// linear horizontal bleed above. Stamped by hook release via noteFling.
+let flingT = Infinity;
+export function noteFling() { flingT = 0; }
 let jumpBuffer = 0;
 let jumpOriginY = null;
 let jumpPeakY = null;
@@ -397,9 +406,20 @@ export function updatePlayer(dt) {
         const airTarget = Math.max(curSpd, Math.min(speed * AIR_SPRINT, WALK * 3));
         vel.x += (_move.x * (airTarget / speed) - vel.x) * k;
         vel.z += (_move.z * (airTarget / speed) - vel.z) * k;
+      } else if (flingT < Infinity) {
+        // No input after a grapple fling: continuous linear drag from
+        // release on — the arc steepens all the way to vertical.
+        flingT += dt;
+        const vh = Math.hypot(vel.x, vel.z);
+        if (vh < FLING_SNAP) { vel.x = 0; vel.z = 0; flingT = Infinity; }
+        else {
+          const drag = Math.exp(-FLING_LIN * dt);
+          vel.x *= drag; vel.z *= drag;
+        }
       }
     } else {
       airT = 0;
+      flingT = Infinity;
       if (_move.lengthSq() > 0) {
         vel.x += (_move.x - vel.x) * Math.min(1, dt * 12);
         vel.z += (_move.z - vel.z) * Math.min(1, dt * 12);
