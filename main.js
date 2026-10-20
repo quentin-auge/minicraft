@@ -29,8 +29,8 @@ import { initFx, tickFx, tickDenseFx, denseFxActive, prewarmDenseFx, spawnDense,
 import { initPrecip, tickSnow } from "./src/fx/precip.js";
 import { MOON_MIN_Y, MOON_R, generateMoon, generateMoonUnderRows, markMoonBuilt, moonReady, moonChunkCenters } from "./src/world/moon.js";
 import { WATER, FLOWER, GLOWSTONE, MOON_WATER, TNT, BLOCK_INFO } from "./src/core/blocks.js";
-import { resetGlowstoneMemory } from "./src/world/glowstone.js";
-import { resetFlowerMemory } from "./src/world/flowers.js";
+import { resetGlowstoneMemory, setGlowSeed } from "./src/world/glowstone.js";
+import { resetFlowerMemory, setFlowerSeed } from "./src/world/flowers.js";
 import { initBlockLights, tickBlockLights, rebuildBlockLightIndexes, resetBlockLightMemory } from "./src/render/blocklights.js";
 import { initRenderer, rebuildAll, maybeStream, refreshBlocks, queueRefreshBlocks, setEyeMedium, setRegionFade, nearestMissingDist, tickChunkFades, UNLOAD_MARGIN } from "./src/render/mesher.js";
 import { applyRegions } from "./src/render/regions.js";
@@ -58,7 +58,7 @@ import { dimEnv, dimSpec, dimHasMoon, dimHotbar } from "./src/world/dimensions.j
 import { disposeAll } from "./src/render/mesher.js";
 import { EYE } from "./src/player/physics.js";
 import { initHomingTnt, fireHomingTnt, tickHomingTnt, clearHomingTnt } from "./src/mobs/homing.js";
-import { enterEndMobs, clearEndMobs, tickEndMobs, dragonHealth, setDragonVictoryHook } from "./src/mobs/end.js";
+import { enterEndMobs, clearEndMobs, tickEndMobs, dragonHealth, setDragonVictoryHook, setMobSeed } from "./src/mobs/end.js";
 import { endPortalFrameKeys, resetEndDimension, setEndCleared } from "./src/world/end.js";
 import { resetTntUnlocks } from "./src/world/tntunlock.js";
 
@@ -303,6 +303,14 @@ let moonBand = false;
 // that registered dimension directly. Unknown values fall back to overworld.
 const _startDim = new URLSearchParams(location.search).get("startdim");
 const BOOT_DIM = dimSpec(_startDim) ? _startDim : "over";
+// Reproducible worlds: ?seed=<integer> reuses that world seed instead of
+// rolling a fresh one every boot. Without it every build rolls fresh.
+const _seedParam = new URLSearchParams(location.search).get("seed");
+const _seedNum = _seedParam !== null && _seedParam !== "" ? Math.floor(Number(_seedParam)) : NaN;
+const _seedPinned = Number.isFinite(_seedNum);
+function rollSeed() {
+  return _seedPinned ? _seedNum : Math.floor(Math.random() * 100000);
+}
 
 // The level loads behind the translucent menu in slices: voxels generate a
 // dozen rows per frame, then the spawn neighborhood builds (radius 2: the
@@ -336,7 +344,10 @@ async function buildWorld() {
   envAir.far = LOAD_FOG_FAR;
   await new Promise((r) => requestAnimationFrame(r));
   try {
-    const seed = Math.floor(Math.random() * 100000);
+    const seed = rollSeed();
+    setGlowSeed(seed);
+    setFlowerSeed(seed);
+    setMobSeed(seed);
     // Direct End boot still prepares the Overworld destination so its return
     // portal has a real world to return to.
     if (BOOT_DIM === "end") {
@@ -408,14 +419,19 @@ async function goToDimension(dest) {
       const spec = dimSpec('tnt');
       setDimension('tnt');
       resetFrameSet([]);
-      const ok = await spec.generateAsync(Math.floor(Math.random() * 100000), aborted);
+      const seed = rollSeed();
+      setGlowSeed(seed);
+      setFlowerSeed(seed);
+      const ok = await spec.generateAsync(seed, aborted);
       if (!ok || aborted()) return;
       disposeAll();
       spawnPlayer();
     } else if (dest === "end") {
       const spec = dimSpec("end");
       setDimension("end");
-      const ok = await spec.generateAsync(Math.floor(Math.random() * 100000), aborted);
+      const seed = rollSeed();
+      setMobSeed(seed);
+      const ok = await spec.generateAsync(seed, aborted);
       if (!ok || aborted()) return;
       disposeAll();
       resetFrameSet(endPortalFrameKeys());
@@ -427,7 +443,10 @@ async function goToDimension(dest) {
     } else {
       setDimension('over');
       if (!worlds.over.size) {
-        const ok = await dimSpec('over').generateAsync(Math.floor(Math.random() * 100000), aborted);
+        const seed = rollSeed();
+        setGlowSeed(seed);
+        setFlowerSeed(seed);
+        const ok = await dimSpec('over').generateAsync(seed, aborted);
         if (!ok || aborted()) return;
         resetFrameSet(villageFrames);
       }

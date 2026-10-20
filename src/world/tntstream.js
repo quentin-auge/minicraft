@@ -393,7 +393,8 @@ export function findTntStreamSpawn(refresh) {
 // deterministic neighbour, registered resident so later cells see it).
 // Returns a block-pick descriptor or null (grapple fizzles, as before).
 export function skyGrappleTarget(eye, dir, minD, maxD, refresh) {
-  const D = minD + Math.random() * Math.max(0, maxD - minD);
+  const pick = hash2(Math.round(eye.x * 7 + dir.x * 131), Math.round(eye.z * 7 + dir.z * 131) + Math.round(eye.y), streamSeed + 9301);
+  const D = minD + pick * Math.max(0, maxD - minD);
   const px = eye.x + dir.x * D, py = eye.y + dir.y * D, pz = eye.z + dir.z * D;
   const ccx = Math.floor(px / TNT_CELL), ccy = Math.floor(py / TNT_CELL), ccz = Math.floor(pz / TNT_CELL);
   // Snap: nearest raw center (normal or mega) within 60 of the ray point.

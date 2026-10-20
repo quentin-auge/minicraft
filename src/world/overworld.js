@@ -13,7 +13,8 @@ import {
 } from "../core/store.js";
 import { village, computeLayout, intersectsVillage, placeVillage } from "./village.js";
 import { tryGrowTree } from "./trees.js";
-import { noteFlowerPlace, resetFlowerMemory } from "./flowers.js";
+import { noteFlowerPlace, resetFlowerMemory, setFlowerSeed } from "./flowers.js";
+import { setGlowSeed } from "./glowstone.js";
 import { generateClouds } from "./clouds.js";
 import { generateMoonSurface, resetMoon } from "./moon.js";
 
@@ -135,6 +136,8 @@ function isVillage(x, z) {
 
 function setupOverworld(newSeed) {
   seed = newSeed;
+  setFlowerSeed(seed);
+  setGlowSeed(seed);
   setDimension("over");
   resetWorld("over");
   resetFlowerMemory();

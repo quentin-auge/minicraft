@@ -6,6 +6,17 @@ import { pickBlock } from "../player/edit.js";
 import { spawnBurst } from "../fx/particles.js";
 import { END_PLATFORM_RADIUS, END_PLATFORM_TOP, END_RETURN_Z, setEndCleared } from "../world/end.js";
 import { noteDragonKill } from "../world/tntunlock.js";
+import { hash2 } from "../core/noise.js";
+
+// World seed for deterministic mob draws (spawn spots, phases, timers).
+// Set per End entry; per-frame death-shake jitter stays cosmetic Math.random.
+let mobSeed = 1;
+let mobSpawnCount = 0;
+export function setMobSeed(s) {
+  mobSeed = s | 0;
+  mobSpawnCount = 0;
+}
+const mobHash = (a, b, salt) => hash2(a | 0, b | 0, mobSeed + salt);
 
 const mobs = new Set();
 const HUES = [0x6e2a92, 0x1a5eb8, 0x188844, 0xd8a818, 0xc82828];
@@ -15,7 +26,7 @@ const DRAGON_MIN_Y = END_PLATFORM_TOP + 7;
 const DRAGON_MAX_Y = END_PLATFORM_TOP + 22;
 const DRAGON_HP = 8;
 const DRAGON_SPEED_MULT = 1.2;
-const randomDragonSpitInterval = () => 2 + Math.random() * 4;
+const randomDragonSpitInterval = () => 2 + mobHash(mobSpawnCount++, 7, 9401) * 4;
 let sceneRef = null;
 let dragonRef = null;
 let endermanBodyMat = null;
@@ -182,7 +193,7 @@ function makeDragon() {
   const mob = {
     ...model, type: "dragon", dim: "end", pos: model.root.position,
     hw: 1.5, h: 3, alive: true, health: DRAGON_HP, maxHealth: DRAGON_HP,
-    hitCount: 0, t: Math.random() * 10, dying: 0,
+    hitCount: 0, t: mobHash(mobSpawnCount++, 11, 9402) * 10, dying: 0,
     spitTimer: randomDragonSpitInterval(), spitting: 0, breathEmit: 0,
     homingUnregister: null,
   };
@@ -227,8 +238,8 @@ function makeEnderman(index) {
   const model = makeEndermanModel();
   let x = 0, z = 0;
   for (let attempt = 0; attempt < 40; attempt++) {
-    const angle = Math.PI * 2 * (index / 10) + (Math.random() - 0.5) * 1.2;
-    const radius = 7 + Math.random() * (END_PLATFORM_RADIUS - 11);
+    const angle = Math.PI * 2 * (index / 10) + (mobHash(index, attempt, 9403) - 0.5) * 1.2;
+    const radius = 7 + mobHash(attempt, index, 9404) * (END_PLATFORM_RADIUS - 11);
     x = Math.round(Math.cos(angle) * radius);
     z = Math.round(Math.sin(angle) * radius);
     if (Math.abs(x) <= 3 && Math.abs(z - END_RETURN_Z) <= 3) continue;
@@ -238,11 +249,11 @@ function makeEnderman(index) {
   }
   const mob = {
     ...model, type: "enderman", dim: "end", pos: model.root.position,
-    hw: 0.31, h: 2.7, alive: true, t: Math.random() * 6,
+    hw: 0.31, h: 2.7, alive: true, t: mobHash(index, 13, 9405) * 6,
     lookTime: 0, angryTime: 0, redTime: 0,
   };
   model.root.position.set(x, END_PLATFORM_TOP + 1, z);
-  model.root.rotation.y = Math.random() * Math.PI * 2;
+  model.root.rotation.y = mobHash(index, 17, 9406) * Math.PI * 2;
   sceneRef.add(model.root);
   return mob;
 }
@@ -413,8 +424,8 @@ function teleportEnderman(mob, camera) {
   spawnBurst({ x: from.x, y: from.y + 1.2, z: from.z, count: 24, color: [0.55, 0.12, 0.9], speedMin: 1, speedMax: 5, life: 0.45, size: 0.12, gravity: 0 });
   let pick = null;
   for (let i = 0; i < 32; i++) {
-    const a = Math.random() * Math.PI * 2;
-    const r = 5 + Math.random() * 13;
+    const a = mobHash(i, mobSpawnCount, 9407) * Math.PI * 2;
+    const r = 5 + mobHash(mobSpawnCount, i, 9408) * 13;
     const x = Math.max(-END_PLATFORM_RADIUS + 1, Math.min(END_PLATFORM_RADIUS - 1, Math.round(from.x + Math.cos(a) * r)));
     const z = Math.max(-END_PLATFORM_RADIUS + 1, Math.min(END_PLATFORM_RADIUS - 1, Math.round(from.z + Math.sin(a) * r)));
     if (Math.abs(x) <= 3 && Math.abs(z - END_RETURN_Z) <= 3) continue;

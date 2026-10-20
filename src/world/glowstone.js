@@ -10,6 +10,7 @@
 // harness can use it; texture derivation lives in `core/textures.js`.
 import { GLOWSTONE } from "../core/blocks.js";
 import { key, keyXYZ, dim } from "../core/store.js";
+import { hash2 } from "../core/noise.js";
 
 export const CLUSTER_DIST = 10;
 // Hotbar icon / fallback texture variant (yellow, like master).
@@ -41,8 +42,15 @@ const glowVariants = fromKeys(() => makeMaps());
 // iterate just the stones instead of scanning the whole world map.
 const glowstoneSets = fromKeys(() => new Set());
 
+// World seed for the unclustered fallback draw (set per world).
+let glowSeed = 1;
+export function setGlowSeed(s) {
+  glowSeed = s | 0;
+}
+
 // A placed glowstone inherits the color of the nearest glowstone within
-// CLUSTER_DIST (so builds cluster by color); otherwise it rolls a fresh one.
+// CLUSTER_DIST (so builds cluster by color); otherwise it rolls a fresh one
+// deterministically from its coordinates and the world seed.
 export function glowVariantNear(x, y, z) {
   const set = glowstoneSets[dim];
   const gv = glowVariants[dim];
@@ -57,7 +65,7 @@ export function glowVariantNear(x, y, z) {
       if (v !== undefined) { best = v; bestD = d2; }
     }
   }
-  return best >= 0 ? best : Math.floor(Math.random() * GLOW_VARIANT_COUNT);
+  return best >= 0 ? best : Math.floor(hash2(x * 31 + y, z * 17 + y, glowSeed + 9201) * GLOW_VARIANT_COUNT);
 }
 
 export function glowVariantAt(x, y, z) {
