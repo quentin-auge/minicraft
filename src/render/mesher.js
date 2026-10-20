@@ -2,7 +2,7 @@
 // only for exposed blocks. Rebuilds stay local via refreshBlocks().
 import * as THREE from "three";
 import { AIR, BLOCK_INFO, FLOWER, GLASS, GLOWSTONE, isLiquid } from "../core/blocks.js";
-import { WORLD_RADIUS, CHUNK, renderDist, getBlock, topAt, colTopIdx, colOcc, dim, dimInfinite, chunkOf, isEnclosedAir } from "../core/store.js";
+import { WORLD_RADIUS, CHUNK, renderDist, getBlock, topAt, colTopIdx, colOcc, dim, dimInfinite, chunkOf, isEnclosedAir, ensureChunkSource } from "../core/store.js";
 import { materialsFor, liquidSurfaceMat, glowstoneMats } from "../core/textures.js";
 import { FLOWER_GEOS, FLOWER_MAT } from "./flowers.js";
 import { flowerVariantAt, flowerAngleAt } from "../world/flowers.js";
@@ -373,6 +373,7 @@ function disposeChunk(ck) {
 
 export function rebuildChunk(cx, cz, fade = false) {
   const ck = cx + "_" + cz;
+  ensureChunkSource(cx, cz);
   topMaxCache.delete(ck);
   disposeChunk(ck);
   const B = clipBound();

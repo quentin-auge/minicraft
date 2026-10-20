@@ -15,8 +15,9 @@
 // or env key — never as a `dim ===` fork elsewhere. Each spec key is also its
 // `?startdim=<key>` boot key. Ask the user for that key when adding a dimension.
 // New-dimension checklist:
-// env (sky/fog/sun/space), moon?, ultra mode, hotbar, spawn, arrival,
-// persistence, respawnY floor (null = none), bedrock, region `dim` tags,
+// env (sky/fog/sun/space/dome), moon?, ultra mode, hotbar, spawn, arrival,
+// frameKeys (worldgen frame index), persistence, ambient, fullView,
+// renderDist, respawnY floor (null = none), bedrock, region `dim` tags,
 // precip `active`s, gravity zones.
 import {
   generateOverworld, generateOverworldAsync,
@@ -26,15 +27,23 @@ import {
   generateTntDimension, findTntSpawn, TNT_ENV,
 } from "./tntdim.js";
 import { bootTntStream, findTntStreamSpawn } from "./tntstream.js";
-import { TNT, MEGA_TNT, ULTRA_TNT, WATER, MOON_WATER, FLOWER, GLOWSTONE } from "../core/blocks.js";
+import { TNT, MEGA_TNT, ULTRA_TNT, WATER, MOON_WATER, FLOWER, LAVA, GLOWSTONE } from "../core/blocks.js";
 import { BASE_ITEMS } from "../ui/hotbar.js";
-import { dim, registerInfiniteDim } from "../core/store.js";
-import { generateEndDimension, findEndSpawn, isEndCleared } from "./end.js";
+import { dim, registerInfiniteDim, registerRenderDist } from "../core/store.js";
+import { generateEndDimension, findEndSpawn, isEndCleared, endPortalFrameKeys } from "./end.js";
+import {
+  generateNetherDimension, prepareNetherDimensionAsync, findNetherSpawn,
+  netherPortalFrameKeys,
+} from "./nether.js";
+import { villageFrames } from "./village.js";
 import { isLockedTntTier, isTntTierUnlocked } from "./tntunlock.js";
 
 // The TNT sky is the first infinite dimension: voxels stream around the
 // player with no walls (see tntstream.js), so the store lifts its bounds.
 registerInfiniteDim("tnt");
+// Open lava sea with the two volcanoes readable from spawn: the Nether keeps
+// its own meshing horizon (14 chunks) instead of the bounded default of 8.
+registerRenderDist("nether", 14);
 
 export const DIMENSIONS = [
   {
@@ -53,6 +62,7 @@ export const DIMENSIONS = [
     generate: (seed) => generateOverworld(seed),
     generateAsync: (seed, abort) => generateOverworldAsync(seed, abort),
     findSpawn: () => findSpawn(1.62),
+    frameKeys: () => villageFrames,
     hotbar: BASE_ITEMS,
   },
   {
@@ -80,6 +90,7 @@ export const DIMENSIONS = [
     // one mega and one ultra, so dropping ultra would strand visitors. This
     // dimension also keeps every tier usable before the dragon-kill unlocks.
     tntTiersUnlocked: true,
+    frameKeys: () => [],
     hotbar: [TNT, MEGA_TNT, ULTRA_TNT],
   },
   {
@@ -107,7 +118,37 @@ export const DIMENSIONS = [
       return !(aborted && aborted());
     },
     findSpawn: findEndSpawn,
+    frameKeys: endPortalFrameKeys,
     hotbar: BASE_ITEMS.map((id) => id === WATER ? MOON_WATER : id === FLOWER ? GLOWSTONE : id),
+  },
+  {
+    key: "nether",
+    // The Nether retains its voxels between portal trips; a New World
+    // starts a fresh one (main.js resetNetherDimension during boot).
+    persistence: "retain",
+    arrival: { mode: "portal", facing: "face" },
+    hasBedrockFloor: false,
+    respawnY: -20,
+    // Dark, effectively fogless sky: fogNear/far sit past the world radius,
+    // and fullView drops the streaming cap so the distant volcanoes stay
+    // readable instead of being clipped by the unload horizon.
+    env: {
+      sky: 0x1c1c21, fogNear: 380, fogFar: 760,
+      sun: 0xe8e8ea, sunI: 0.6, hemiSky: 0x85858c, hemiI: 0.55,
+      space: false, dome: "nether",
+    },
+    fullView: true,
+    moon: false,
+    ultra: { bands: false, windowR: 256, windowHalfH: 90 },
+    skyGrapple: false,
+    ambient: "nether",
+    generate: (seed) => generateNetherDimension(seed),
+    // Boot only materializes the spawn/return chunks; the mesher streams the
+    // rest of the Nether through the chunk source as the player looks around.
+    generateAsync: (seed, aborted) => prepareNetherDimensionAsync(seed, aborted),
+    findSpawn: findNetherSpawn,
+    frameKeys: netherPortalFrameKeys,
+    hotbar: BASE_ITEMS.map((id) => id === WATER ? LAVA : id === FLOWER ? GLOWSTONE : id),
   },
 ];
 

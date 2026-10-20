@@ -49,8 +49,7 @@ export const PORTAL_TYPES = [
     cells: rectFillCells,
     bbox: rectBBox,
     inside: insideRectInterior,
-    // Nether dimension not shipped yet: loop locally in front of the window.
-    travel: netherTravel,
+    travel: destinationTravel,
     art: { host: "netherArt", cols: 5, rows: 4, stroke: "#8b90a0", cells: buildSolidFrame(5, 4, OBSIDIAN, false) },
   },
   {
@@ -1081,14 +1080,6 @@ function destinationTravel(win) {
   const spec = specOf(win);
   const dest = dim === spec.destination ? "over" : spec.destination;
   return { dim: dest, toast: dest === "over" ? "You returned to the Overworld" : spec.enterMsg };
-}
-
-function netherTravel(win, dir) {
-  // Temporary local loop: keep the dimension, return facing the same window.
-  const near = nearPortalSpawn(win, dir);
-  const spot = resolveSpawn(near.x, near.y, near.z);
-  const yaw = facePortalFrom(win, spot.x, spot.z);
-  return { spot, yaw, yawV: yaw, toast: "The Nether is not available yet" };
 }
 
 // A dimension's exits gate (End: sealed while the dragon lives) closes every

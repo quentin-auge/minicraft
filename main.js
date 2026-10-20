@@ -40,6 +40,8 @@ import { initHelp, openHelp, closeHelp, isHelpOpen } from "./src/ui/help.js";
 import { toggleDebug, tickDebug } from "./src/ui/debug.js";
 import { tickWaterFog, eyeMediumId } from "./src/render/waterfog.js";
 import { initSky, tickSky } from "./src/render/sky.js";
+import { initAmbient, tickAmbient, exitAmbient } from "./src/fx/ambient.js";
+import { resetNetherDimension, takeNetherGlowDirty } from "./src/world/nether.js";
 import {
   initPortals, buildPortalDom, setPortalTravelHook, tickPortals,
   resetFrameSet, scanWorldPortals, clearPortalFills, notePortalEdits,
@@ -105,6 +107,7 @@ initPrecip(scene);
 initTNTFx(scene);
 initHomingTnt(scene);
 initBlockLights(scene);
+initAmbient(scene);
 initRope(scene);
 initPortals(scene);
 buildPortalDom();
@@ -332,6 +335,7 @@ async function buildWorld() {
   resetTravelLinks();
   resetTntUnlocks();
   if (BOOT_DIM !== "end") resetEndDimension();
+  if (BOOT_DIM !== "nether") resetNetherDimension();
   resetTNTMemory();
   bandDpr = false;
   renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
@@ -348,6 +352,7 @@ async function buildWorld() {
     setGlowSeed(seed);
     setFlowerSeed(seed);
     setMobSeed(seed);
+    exitAmbient();
     // Direct End boot still prepares the Overworld destination so its return
     // portal has a real world to return to.
     if (BOOT_DIM === "end") {
@@ -366,10 +371,10 @@ async function buildWorld() {
     clearPortalFills();
     if (BOOT_DIM === "end") {
       setDimension("over");
-      resetFrameSet(villageFrames);
+      resetFrameSet(dimSpec("over").frameKeys?.() ?? []);
       setDimension("end");
-      resetFrameSet(endPortalFrameKeys());
-    } else resetFrameSet(BOOT_DIM === "tnt" ? [] : villageFrames);
+    }
+    resetFrameSet(dimSpec(BOOT_DIM).frameKeys?.() ?? []);
     scanWorldPortals();
     if (dim === "end") enterEndMobs(scene);
     moonBand = false;
@@ -379,6 +384,10 @@ async function buildWorld() {
     resetTNTMemory();
     worldReady = true;
     updateBossBar();
+    // Nether boots start revealed: the dark sky (fog 380/760) makes the
+    // closed-in reveal pointless, and prepareNetherDimensionAsync only
+    // materializes the spawn chunks while the mesher streams the rest.
+    if (dimSpec(BOOT_DIM)?.fullView) revealT = 1;
   } finally {
     if (token === buildToken) building = false;
   }
@@ -440,6 +449,22 @@ async function goToDimension(dest) {
       const arrival = resolveTravelArrival("end", pos);
       if (arrival) placeArrival(arrival);
       enterEndMobs(scene);
+    } else if (dest === "nether") {
+      const spec = dimSpec("nether");
+      setDimension("nether");
+      if (!worlds.nether.size) {
+        const seed = rollSeed();
+        setGlowSeed(seed);
+        setFlowerSeed(seed);
+        setMobSeed(seed);
+        const ok = await spec.generateAsync(seed, aborted);
+        if (!ok || aborted()) return;
+        resetFrameSet(spec.frameKeys?.() ?? []);
+      }
+      disposeAll();
+      const arrival = resolveTravelArrival("nether", pos);
+      if (arrival) placeArrival(arrival);
+      else spawnPlayer();
     } else {
       setDimension('over');
       if (!worlds.over.size) {
@@ -448,7 +473,7 @@ async function goToDimension(dest) {
         setFlowerSeed(seed);
         const ok = await dimSpec('over').generateAsync(seed, aborted);
         if (!ok || aborted()) return;
-        resetFrameSet(villageFrames);
+        resetFrameSet(dimSpec('over').frameKeys?.() ?? []);
       }
       disposeAll();
       const arrival = resolveTravelArrival("over");
@@ -545,7 +570,8 @@ async function fillMoonUnder(seed) {
 // shrinks further with speed so fast flight never outruns the loader
 // into clear view.
 function updateStreamingFog() {
-  // Per-dimension steady state: TNT overrides fog via its DIMENSIONS env.
+  // Per-dimension steady state: TNT and the Nether override fog via their
+  // DIMENSIONS env.
   const denv = dimEnv(dim);
   const baseFar = denv?.fogFar ?? readyFog.far;
   const baseNear = denv?.fogNear ?? readyFog.near;
@@ -554,9 +580,13 @@ function updateStreamingFog() {
   const limitFar = Math.sqrt(unloadHoriz * unloadHoriz + dh * dh) - FOG_MARGIN;
   const missing = nearestMissingDist(camera.position.x, camera.position.y, camera.position.z);
   // The reveal curve caps the target too: one lerped writer from the first
-  // frame, no handoff, so the fog can never snap or recede.
-  const revealFar = LOAD_FOG_FAR + (baseFar - LOAD_FOG_FAR) * revealEase();
-  const targetFar = Math.max(Math.min(baseFar, limitFar, missing - FOG_MARGIN, revealFar), LOAD_FOG_FAR);
+  // frame, no handoff, so the fog can never snap or recede. fullView dims
+  // (Nether) skip the unload-horizon cap so distant volcanoes never clip.
+  const revealFar = dimSpec(dim)?.fullView ? baseFar : LOAD_FOG_FAR + (baseFar - LOAD_FOG_FAR) * revealEase();
+  const farCaps = dimSpec(dim)?.fullView
+    ? [baseFar, missing - FOG_MARGIN, revealFar]
+    : [baseFar, limitFar, missing - FOG_MARGIN, revealFar];
+  const targetFar = Math.max(Math.min(...farCaps), LOAD_FOG_FAR);
   const ratio = baseNear / baseFar;
   const targetNear = Math.max(
     Math.min(targetFar * ratio * (1 - 0.2 * Math.min(1, vel.length() / 30)), targetFar - 1),
@@ -747,7 +777,9 @@ function loop(now) {
     // veil gate rides along: water-side white shows only for divers, the
     // tinted veil only for open-air eyes, flipping together with the murk.
     updateStreamingFog();
-    tickSky(scene, camera, sun, hemi, envAir, dimEnv(dim));
+    tickSky(scene, camera, sun, hemi, envAir, dimEnv(dim), simActive ? dt : 0);
+    tickAmbient(simActive ? dt : 0, simTime, camera, dimSpec(dim)?.ambient);
+    if (takeNetherGlowDirty()) rebuildBlockLightIndexes();
     applyRegions(camera.position, scene.background, setRegionFade);
     // One eye-medium lookup per frame, shared by the murk and the veil gate
     // (it used to run twice, with a bounded air flood each time in pockets).

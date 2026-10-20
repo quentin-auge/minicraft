@@ -15,6 +15,87 @@ const STAR_COUNT = 520;
 
 let stars = null;
 
+// Sky-dome registry: a dimension opts in through its env preset
+// (`dome: "<key>"`), and the dome is built lazily once, then follows the
+// camera so its horizon never moves. New domes register a factory/tick pair;
+// the sky tick never names a dimension.
+export const SKY_DOMES = {
+  nether: {
+    create() {
+      const dome = new THREE.Mesh(
+        new THREE.SphereGeometry(620, 32, 24),
+        new THREE.MeshBasicMaterial({
+          map: canvasDomeTexture(),
+          side: THREE.BackSide,
+          fog: false,
+          depthWrite: false,
+        })
+      );
+      const sun = new THREE.Mesh(
+        new THREE.CircleGeometry(55, 28),
+        new THREE.MeshBasicMaterial({
+          color: 0xff8a2e, fog: false, depthWrite: false,
+          transparent: true, opacity: 0.95,
+        })
+      );
+      sun.position.set(0, 170, 500);
+      dome.add(sun);
+      dome.visible = false;
+      return dome;
+    },
+    tick(dome, camera, dt) {
+      dome.position.copy(camera.position);
+      dome.rotation.y += dt * 0.01;
+    },
+  },
+};
+
+function canvasDomeTexture() {
+  const c = document.createElement("canvas");
+  c.width = c.height = 512;
+  const ctx = c.getContext("2d");
+  const g = ctx.createLinearGradient(0, 0, 0, 512);
+  g.addColorStop(0.0, "#0a1230");
+  g.addColorStop(0.38, "#1a1c5c");
+  g.addColorStop(0.58, "#3a2a92");
+  g.addColorStop(0.72, "#5a3a80");
+  g.addColorStop(0.84, "#b04a4a");
+  g.addColorStop(0.92, "#ff7a3a");
+  g.addColorStop(1.0, "#101a38");
+  ctx.fillStyle = g; ctx.fillRect(0, 0, 512, 512);
+  for (let i = 0; i < 110; i++) {
+    ctx.fillStyle = `rgba(255,255,255,${0.35 + Math.random() * 0.6})`;
+    ctx.fillRect(Math.random() * 512, Math.random() * 130, 1.5, 1.5);
+  }
+  const t = new THREE.CanvasTexture(c);
+  t.magFilter = THREE.LinearFilter;
+  t.minFilter = THREE.LinearMipmapLinearFilter;
+  t.colorSpace = THREE.SRGBColorSpace;
+  return t;
+}
+
+const domeCache = new Map();
+let activeDome = null;
+function tickDome(scene, camera, key, dt) {
+  if (activeDome && activeDome.key !== key) {
+    activeDome.mesh.visible = false;
+    activeDome = null;
+  }
+  if (!key) return;
+  const spec = SKY_DOMES[key];
+  if (!spec) return;
+  let mesh = domeCache.get(key);
+  if (!mesh) {
+    mesh = spec.create();
+    mesh.visible = false;
+    domeCache.set(key, mesh);
+    scene.add(mesh);
+  }
+  mesh.visible = true;
+  spec.tick(mesh, camera, dt);
+  activeDome = { key, mesh };
+}
+
 const smooth = (t) => {
   t = Math.max(0, Math.min(1, t));
   return t * t * (3 - 2 * t);
@@ -53,7 +134,7 @@ export function initSky(scene) {
 // its stars is an overworld property: dimensions with an explicit env opt
 // out unless they set space (TNT red sky never goes black, no stars there).
 const _base = new THREE.Color();
-export function tickSky(scene, camera, sun, hemi, envAir, env = null) {
+export function tickSky(scene, camera, sun, hemi, envAir, env = null, dt = 0) {
   const y = camera.position.y;
   const s = env == null || env.space === true ? skyFactor(y) : 0;
   if (env?.sky !== undefined) _base.setHex(env.sky);
@@ -70,4 +151,5 @@ export function tickSky(scene, camera, sun, hemi, envAir, env = null) {
   stars.material.opacity = s;
   stars.position.copy(camera.position);
   stars.visible = s > 0.01;
+  tickDome(scene, camera, env?.dome ?? null, dt);
 }

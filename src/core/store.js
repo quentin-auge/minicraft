@@ -14,8 +14,26 @@ export const RENDER_DIST = 8;
 // a dive always has geometry to show. Bounded dims keep 8; the fog guard
 // derives its unload distance from renderDist(), never the constant.
 export const TNT_RENDER_DIST = 12;
+// Per-dimension mesh-horizon overrides (Nether 14: open lava sea with two
+// volcanoes readable from spawn); bounded dims without an entry keep 8.
+const renderDists = new Map();
+export function registerRenderDist(name, dist) {
+  renderDists.set(name, dist);
+}
 export function renderDist(name = dim) {
-  return dimInfinite(name) ? TNT_RENDER_DIST : RENDER_DIST;
+  return renderDists.get(name) ?? (dimInfinite(name) ? TNT_RENDER_DIST : RENDER_DIST);
+}
+
+// Lazy chunk sources: dimensions whose world is materialized chunk-by-chunk
+// register a generator here. The mesher asks for a column's chunk before
+// reading it, so generation and rendering share one streaming path.
+const chunkSources = new Map();
+export function registerChunkSource(name, fn) {
+  chunkSources.set(name, fn);
+}
+export function ensureChunkSource(cx, cz, name = dim) {
+  const fn = chunkSources.get(name);
+  return fn ? fn(cx, cz) : false;
 }
 
 // Coordinate packing covers ±65535 on every axis (2^16 offset into 17-bit

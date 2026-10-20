@@ -3,7 +3,7 @@ import * as THREE from "three";
 import {
   GRASS, DIRT, STONE, SAND, LOG, LEAVES, WATER, PLANKS, GLASS,
   TNT, MEGA_TNT, ULTRA_TNT, FLOWER, PORTAL, ENDSTONE, OBSIDIAN, CLOUD, MOON, MOON_WATER,
-  GLOWSTONE,
+  GLOWSTONE, LAVA, NETHERRACK, SOULSAND,
 } from "./blocks.js";
 import { GLOW_VARIANTS, GLOW_ICON_VARIANT } from "../world/glowstone.js";
 
@@ -243,6 +243,22 @@ export const TEX = {
     ctx.fillStyle = "#d9a6ff";
     ctx.fillRect(7, 4, 2, 8);
   }),
+  netherrack: canvasTex((ctx) => {
+    ctx.fillStyle = "#33343a"; ctx.fillRect(0, 0, 16, 16);
+    pxNoise(ctx, [48, 49, 55], 26);
+    ctx.fillStyle = "rgba(0,0,0,0.28)";
+    for (let i = 0; i < 8; i++) ctx.fillRect(Math.random() * 14, Math.random() * 14, 2 + Math.random() * 2, 2 + Math.random() * 2);
+    ctx.fillStyle = "rgba(120,120,130,0.3)";
+    for (let i = 0; i < 6; i++) ctx.fillRect(Math.random() * 15, Math.random() * 15, 1, 1);
+  }),
+  soulsand: canvasTex((ctx) => {
+    ctx.fillStyle = "#56575e"; ctx.fillRect(0, 0, 16, 16);
+    pxNoise(ctx, [82, 83, 92], 18);
+    ctx.fillStyle = "rgba(0,0,0,0.28)";
+    for (let i = 0; i < 10; i++) ctx.fillRect(Math.random() * 15, Math.random() * 15, 1, 1);
+    ctx.fillStyle = "rgba(30,30,36,0.5)";
+    for (let i = 0; i < 4; i++) ctx.fillRect(Math.random() * 14, Math.random() * 14, 3, 1);
+  }),
   endstone: canvasTex((ctx) => {
     const base = [154, 154, 162];
     ctx.fillStyle = "#9a9aa2"; ctx.fillRect(0, 0, 16, 16);
@@ -277,6 +293,13 @@ const LIQUID_DEFAULTS = {
 export const LIQUID_SURFACE = [
   { liquid: WATER, key: "water" },
   { liquid: MOON_WATER, key: "moonwater", outside: { color: "#7a7e82" } },
+  {
+    liquid: LAVA, key: "lava",
+    // Blue fire: fully opaque so the sea reads as a glowing surface, and
+    // fog-free so it stays vivid past the dark haze.
+    outside: { color: "#1d1d5e", opacity: 1, topOpacity: 1, grain: 26, fog: false },
+    pocket: { color: "#10104a", opacity: 0.9, outOpacity: 0.9, outTint: 0.95, grain: 12, fog: false },
+  },
 ];
 const liquidSpecById = new Map(LIQUID_SURFACE.map((s) => [s.liquid, s]));
 // One table maps every visual role to its look: which side renders, which
@@ -312,6 +335,18 @@ for (const entry of LIQUID_SURFACE) {
     mixRgb(hexToRgb(pocketSpec.color), outBase, pocketSpec.outTint ?? 0.65),
     pocketSpec.grain);
 }
+// Blue lava keeps its speckled fire texture instead of flat grain.
+TEX.lava_outside = canvasTex((ctx) => {
+  ctx.fillStyle = "#1d1d5e"; ctx.fillRect(0, 0, 16, 16);
+  pxNoise(ctx, [29, 29, 94], 26);
+  ctx.fillStyle = "#3b3bd4";
+  for (let i = 0; i < 12; i++) ctx.fillRect(Math.random() * 16, Math.random() * 16, 1, 1);
+  ctx.fillStyle = "#57e0ff";
+  for (let i = 0; i < 6; i++) ctx.fillRect(Math.random() * 15, Math.random() * 15, 1, 2);
+  ctx.fillStyle = "#ffffff";
+  for (let i = 0; i < 5; i++) ctx.fillRect(Math.random() * 15, Math.random() * 15, 1, 1);
+});
+TEX.lava = TEX.lava_outside;
 TEX.water = TEX.water_outside;
 
 // One unlit canvas per glowstone variant, derived from the registry above;
@@ -408,6 +443,9 @@ export function materialsFor(id) {
     case MOON_WATER: return basicFace(TEX.moonwater_outside, { fog: false });
     case GLOWSTONE: return glowstoneMats(GLOW_ICON_VARIANT);
     case OBSIDIAN: return faceTex(TEX.obsidian);
+    case LAVA: return basicFace(TEX.lava, { fog: false });
+    case NETHERRACK: return faceTex(TEX.netherrack);
+    case SOULSAND: return faceTex(TEX.soulsand);
     default: return faceTex(TEX.dirt);
   }
 }
