@@ -990,10 +990,20 @@ export function noteTntPlaced(x, y, z, id) {
   displaced.set(x + "," + y + "," + z, id);
 }
 
+// Player-placed normal TNT index, dropped per dimension (regenerate
+// dimensions purge theirs on every entry; retain dimensions keep theirs).
+export function clearRegularTntDim(name = dim) {
+  regularTntIndex.delete(name);
+}
+
 // New worlds never inherit another world's placements, fuses, or lights.
+// Lit fuses never cross dimensions (their keys carry no dimension), so every
+// travel snuffs them with their sprites instead of ticking foreign voxels.
 export function resetTNTMemory() {
   simNow = 0;
-  if (dim === "tnt") regularTntIndex.delete(dim); // TNT dimension regenerates on entry
+  if (dim === "tnt") clearRegularTntDim(dim); // TNT dimension regenerates on entry
+  for (const [k, t] of lit) removeSprite(k, kindOf(t.kind));
+  lit.clear();
   pendingChain.clear();
   displaced.clear();
   megaIndex.clear();

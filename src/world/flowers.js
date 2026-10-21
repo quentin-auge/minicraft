@@ -66,10 +66,14 @@ export function clearFlowerAt(x, y, z) {
   flowerAngles[dim].delete(k);
 }
 
-// New worlds never inherit another world's looks.
+// New worlds never inherit another world's looks. Regenerate dimensions
+// (End, TNT) drop only their own entry on every entry (see clearFlowerDim):
+// retain dimensions keep theirs across trips.
+export function clearFlowerDim(name = dim) {
+  flowerVariants[name]?.clear();
+  flowerAngles[name]?.clear();
+}
+
 export function resetFlowerMemory() {
-  for (const name of DIMENSION_KEYS) {
-    flowerVariants[name].clear();
-    flowerAngles[name].clear();
-  }
+  for (const name of DIMENSION_KEYS) clearFlowerDim(name);
 }

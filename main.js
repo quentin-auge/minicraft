@@ -24,13 +24,13 @@ import { flyOn, setFly, updateFly } from "./src/player/fly.js";
 import { updateTarget, breakTarget, placeAtSelection, breakBlockAt, pickBlock, tryPlace, currentBlock, flushChainBatch, purgeFloatingLiquidsAround } from "./src/player/edit.js";
 import { fireHookTarget, fireSkyHook, grapplePick, cancelHook, severHook, updateHook, hookActive, hookAnchor, tickHookFx } from "./src/player/hook.js";
 import { initRope } from "./src/player/rope.js";
-import { tickTNT, initTNTFx, resetTNTMemory, onExplode, onLiquidPurge, shakeSpecFor, bandFront, bandActive, drainBlastRemesh, queueBlastRefresh, megaImminent, megaCarveActive, megaFxActive, MEGA_BLAST_T, MEGA_BLAST_TIME_SCALE } from "./src/fx/tnt.js";
+import { tickTNT, initTNTFx, resetTNTMemory, clearRegularTntDim, onExplode, onLiquidPurge, shakeSpecFor, bandFront, bandActive, drainBlastRemesh, queueBlastRefresh, megaImminent, megaCarveActive, megaFxActive, MEGA_BLAST_T, MEGA_BLAST_TIME_SCALE } from "./src/fx/tnt.js";
 import { initFx, tickFx, tickDenseFx, denseFxActive, prewarmDenseFx, spawnDense, flushDense, noteDenseSpawn } from "./src/fx/particles.js";
 import { initPrecip, tickSnow } from "./src/fx/precip.js";
 import { MOON_MIN_Y, MOON_R, generateMoon, generateMoonUnderRows, markMoonBuilt, moonReady, moonChunkCenters } from "./src/world/moon.js";
 import { WATER, FLOWER, GLOWSTONE, MOON_WATER, TNT, BLOCK_INFO } from "./src/core/blocks.js";
-import { resetGlowstoneMemory, setGlowSeed } from "./src/world/glowstone.js";
-import { resetFlowerMemory, setFlowerSeed } from "./src/world/flowers.js";
+import { resetGlowstoneMemory, clearGlowstoneDim, setGlowSeed } from "./src/world/glowstone.js";
+import { resetFlowerMemory, clearFlowerDim, setFlowerSeed } from "./src/world/flowers.js";
 import { initBlockLights, tickBlockLights, rebuildBlockLightIndexes, resetBlockLightMemory } from "./src/render/blocklights.js";
 import { initRenderer, rebuildAll, maybeStream, streamChunks, drainChunkQueue, beginDispose, disposeSome, refreshBlocks, queueRefreshBlocks, setEyeMedium, setRegionFade, nearestMissingDist, tickChunkFades, UNLOAD_MARGIN } from "./src/render/mesher.js";
 import { applyRegions } from "./src/render/regions.js";
@@ -482,6 +482,17 @@ async function runTravel(dest, msg) {
     clearPortalFills();
     renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
     setDimension(dest);
+    // Regenerate dimensions rebuild voxels on every entry: drop their own
+    // side memories (glowstone variants/index, flower looks, placed-TNT
+    // index) so nothing stale leaks into the fresh world — no ghost lights,
+    // no inherited colors, no phantom chain links. Driven by the persistence
+    // spec, so future regenerate dimensions inherit it. Retain dimensions
+    // keep theirs across trips.
+    if (dimSpec(dest)?.persistence === "regenerate") {
+      clearGlowstoneDim(dest);
+      clearFlowerDim(dest);
+      clearRegularTntDim(dest);
+    }
     if (dest === 'tnt') {
       const spec = dimSpec('tnt');
       resetFrameSet([]);

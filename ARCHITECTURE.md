@@ -65,16 +65,16 @@ stored, how it flows, and how each system works. Read this before changing code.
 - Player state is module-level: `pos`/`vel` vectors, `yaw`/`pitch`, `onGround`,
   step-up/step-down flags, jump buffer/rebound trackers, shared `keys` map. `flyOn` is dimension-independent and survives every portal traversal (all portals sever only the hook and zero velocity).
 - TNT state: player-placed normal TNT coordinates are indexed per dimension
-  for mega-crater edge queries; lit fuses live in a `lit` map (`"x,y,z"` → fuse),
+  for mega-crater edge queries (purged per dimension on regenerate-dimension entry, kept across trips in retain dimensions); lit fuses live in a `lit` map (`"x,y,z"` → fuse),
   chained blasts wait in a `pendingChain` map (`"x,y,z"` → due time); liquid displaced by placed TNT
   waits in a `displaced` map (`"x,y,z"` → liquid id, restored in that cell
   after its blast unless the kind clears liquids, cleared on world build); placed mega blocks are indexed in
   `megaIndex` for instant pool clustering (added on place, removed as blasts
-   consume them, cleared on world build and on every dimension switch (fuses do not cross dimensions); the blast refresh callback and the
-   post-blast floating-liquid purge (`onLiquidPurge`) are injected by the caller.
+  consume them, cleared on world build and on every dimension switch (fuses do not cross dimensions — `lit` and its sprites are snuffed on every travel, so no fuse ticks foreign voxels); the blast refresh callback and the
+  post-blast floating-liquid purge (`onLiquidPurge`) are injected by the caller.
 - TNT tier progression lives in `tntunlock.js`: one cumulative dragon-kill counter for the world (reset by New World; the End's own per-entry boss reset never touches it), thresholds `MEGA_TNT` 2 / `ULTRA_TNT` 3, plus a boot-time `?unlock_tnt=1` bypass. The bar and placement read it; the TNT dimension ignores it.
-- Glowstone color lives in per-dimension variant maps (`"x,y,z"` key → variant index, default green) plus a live block index per dimension (clustering reads the stones, light buckets read the index — no world scans); placed stones inherit the nearest variant within 10 blocks, cleared on break/blast/world build.
-- Flower looks live in per-dimension maps (`key(x,y,z)` → variant index + Y angle): every placement (worldgen scatter, player place) draws a fresh weighted-random variant and angle via `noteFlowerPlace`; the mesher only reads them back, so rebuilds never reshuffle a look; cleared on break/blast/world build.
+- Glowstone color lives in per-dimension variant maps (`"x,y,z"` key → variant index, default green) plus a live block index per dimension (clustering reads the stones, light buckets read the index — no world scans); placed stones inherit the nearest variant within 10 blocks, cleared on break/blast/world build and per dimension on regenerate-dimension entry (retain dimensions keep theirs across trips — no ghost lights in fresh worlds).
+- Flower looks live in per-dimension maps (`key(x,y,z)` → variant index + Y angle): every placement (worldgen scatter, player place) draws a fresh weighted-random variant and angle via `noteFlowerPlace`; the mesher only reads them back, so rebuilds never reshuffle a look; cleared on break/blast/world build and per dimension on regenerate-dimension entry.
 - Render state: `chunkMeshes` (`"cx_cz"` → per-id InstancedMesh), a build queue,
   shared materials cache. Scene, camera, and renderer are owned by `main.js`.
 

@@ -95,12 +95,16 @@ export function clearGlowstoneAt(x, y, z) {
   glowVariants[dim].delete(k);
 }
 
-// New worlds never inherit another world's colors or indexes.
+// New worlds never inherit another world's colors or indexes. Regenerate
+// dimensions (End, TNT) drop only their own entry on every entry (see
+// clearGlowstoneDim): retain dimensions keep theirs across trips.
+export function clearGlowstoneDim(name = dim) {
+  glowstoneSets[name]?.clear();
+  glowVariants[name]?.clear();
+}
+
 export function resetGlowstoneMemory() {
-  for (const name of DIMENSION_KEYS) {
-    glowstoneSets[name].clear();
-    glowVariants[name].clear();
-  }
+  for (const name of DIMENSION_KEYS) clearGlowstoneDim(name);
 }
 
 // Emitter-framework access: live positions + per-block color keys.
