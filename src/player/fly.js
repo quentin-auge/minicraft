@@ -1,6 +1,8 @@
 // Fly mode, ported from master freeCam (KeyF): pitch-aware thrust at FLY
 // speed (3x with sprint), per-axis slide collision through the shared axis
-// movers, no gravity, stepping, or swimming.
+// movers with a 1-block instant step-up onto live portal sills (bottom
+// frames of windows with an active fill — plain ledges still stall),
+// no gravity or swimming.
 import * as THREE from "three";
 import { keys, yaw, pitch, playerBody, knockVel, collideBody } from "./physics.js";
 
@@ -30,5 +32,5 @@ export function updateFly(dt) {
   playerBody.vel.set(_move.x, _move.y, _move.z);
   // Blast knockback rides on top of the thrust and decays away in physics.
   playerBody.vel.add(knockVel);
-  collideBody(dt, playerBody, false);
+  collideBody(dt, playerBody, false, true);
 }

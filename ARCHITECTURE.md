@@ -244,7 +244,10 @@ persistence.
   jumping toward water while holding jump rebounds ballistically to the jump's
   start height. No jump streak speed boost.
 - Fly (`KeyF`): pitch-aware thrust through the shared axis movers
-  (`collideBody` with stepping off), no gravity or swimming.
+  (`collideBody` with ground bookkeeping off plus a 1-block instant fly-step
+  gated per blocking cell by the fly-step allowlist — `main.js` wires it to
+  live portal sills only, so plain ledges still stall flight), no gravity
+  or swimming.
 - Hook framework (`hook.js`): pick → filter → fly → pull → arrive/release →
   retract. `fireHookTarget` dispatches through the spec — no kind-name
   switches: the filter table resolves target kinds to anchors, and the

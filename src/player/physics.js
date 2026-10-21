@@ -53,6 +53,11 @@ export function setOnGround(v) { onGround = v; }
 // support scans keep using isSolid; only the axis movers consult this.
 let ghostPass = null;
 export function setGhostPass(fn) { ghostPass = fn; }
+// Fly-step allowlist: fly mode lifts onto the blocking cell only when this
+// answers true for it (wired by main.js to live portal sills, so plain
+// ledges never step). Unset denies every step.
+let flyStepAllow = null;
+export function setFlyStepAllow(fn) { flyStepAllow = fn; }
 function solidForMove(bx, by, bz) {
   return isSolid(bx, by, bz) && !(ghostPass && ghostPass(bx, by, bz));
 }
@@ -170,7 +175,26 @@ function tryStep(bx, by, bz) {
   return true;
 }
 
-function moveAxisX(dx, body = playerBody, step = true) {
+// Fly 1-block step-up: unlike walk's multi-frame glide (tryStep + stepUp
+// state, driven by updatePlayer), fly overwrites vel every frame, so the
+// lift is instant. Only blockers at most 1 above the feet qualify, the full
+// body span must be free at the lifted height (no popping through ceilings
+// or wide walls), the blocking cell must pass the fly-step allowlist (live
+// portal sills), and the advanced horizontal position is kept.
+function tryFlyStep(body, bx, by, bz) {
+  if (!flyStepAllow || !flyStepAllow(bx, by, bz)) return false;
+  const lift = by + 1 - body.pos.y;
+  if (lift <= 0 || lift > 1.001) return false;
+  const targetY = by + 1 + 0.001;
+  for (let bx = Math.floor(body.pos.x - PLAYER_HW); bx <= Math.floor(body.pos.x + PLAYER_HW); bx++)
+    for (let bz = Math.floor(body.pos.z - PLAYER_HW); bz <= Math.floor(body.pos.z + PLAYER_HW); bz++)
+      for (let y = Math.floor(targetY); y <= Math.floor(targetY + PLAYER_H); y++)
+        if (solidForMove(bx, y, bz)) return false;
+  body.pos.y = targetY;
+  return true;
+}
+
+function moveAxisX(dx, body = playerBody, step = true, flyStep = false) {
   body.pos.x += dx;
   if (dx === 0) return;
   const dir = dx > 0 ? 1 : -1;
@@ -181,18 +205,20 @@ function moveAxisX(dx, body = playerBody, step = true) {
       if (!solidForMove(cellX, by, bz)) continue;
       if (dir > 0 && edge > cellX) {
         if (step) { if (!tryStep(cellX, by, bz)) body.vel.x = 0; }
+        else if (flyStep) { if (!tryFlyStep(body, cellX, by, bz)) { body.vel.x = 0; } else return; }
         else body.vel.x = 0;
         body.pos.x = cellX - PLAYER_HW - 0.001; return;
       }
       if (dir < 0 && edge < cellX + 0.999) {
         if (step) { if (!tryStep(cellX, by, bz)) body.vel.x = 0; }
+        else if (flyStep) { if (!tryFlyStep(body, cellX, by, bz)) { body.vel.x = 0; } else return; }
         else body.vel.x = 0;
         body.pos.x = cellX + 1 + PLAYER_HW + 0.001; return;
       }
     }
 }
 
-function moveAxisZ(dz, body = playerBody, step = true) {
+function moveAxisZ(dz, body = playerBody, step = true, flyStep = false) {
   body.pos.z += dz;
   if (dz === 0) return;
   const dir = dz > 0 ? 1 : -1;
@@ -203,11 +229,13 @@ function moveAxisZ(dz, body = playerBody, step = true) {
       if (!solidForMove(bx, by, cellZ)) continue;
       if (dir > 0 && edge > cellZ) {
         if (step) { if (!tryStep(bx, by, cellZ)) body.vel.z = 0; }
+        else if (flyStep) { if (!tryFlyStep(body, bx, by, cellZ)) { body.vel.z = 0; } else return; }
         else body.vel.z = 0;
         body.pos.z = cellZ - PLAYER_HW - 0.001; return;
       }
       if (dir < 0 && edge < cellZ + 0.999) {
         if (step) { if (!tryStep(bx, by, cellZ)) body.vel.z = 0; }
+        else if (flyStep) { if (!tryFlyStep(body, bx, by, cellZ)) { body.vel.z = 0; } else return; }
         else body.vel.z = 0;
         body.pos.z = cellZ + 1 + PLAYER_HW + 0.001; return;
       }
@@ -261,11 +289,13 @@ function collide(dt) {
 
 // Shared mover: every movement mode integrates through the same axis
 // collision. step=false disables auto-step and ground bookkeeping (fly,
-// hooks); the body is always the player's { pos, vel }.
-export function collideBody(dt, body, step) {
+// hooks); flyStep=true re-enables a 1-block instant lift on horizontal
+// impact, gated per blocking cell by the fly-step allowlist, without the
+// walk ground bookkeeping. The body is always the player's { pos, vel }.
+export function collideBody(dt, body, step, flyStep = false) {
   moveAxisY(body.vel.y * dt, body, step);
-  moveAxisX(body.vel.x * dt, body, step);
-  moveAxisZ(body.vel.z * dt, body, step);
+  moveAxisX(body.vel.x * dt, body, step, flyStep);
+  moveAxisZ(body.vel.z * dt, body, step, flyStep);
 }
 
 const _fwd = new THREE.Vector3();

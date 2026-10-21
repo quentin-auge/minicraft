@@ -46,7 +46,7 @@ import {
   initPortals, buildPortalDom, setPortalTravelHook, tickPortals,
   resetFrameSet, scanWorldPortals, clearPortalFills, notePortalEdits,
   notePortalFramesOnly, tickPortalFillFades, completeDimTravel,
-  resolveTravelArrival, resetTravelLinks,
+  resolveTravelArrival, resetTravelLinks, isLivePortalSill,
 } from "./src/world/portals.js";
 import { villageFrames } from "./src/world/village.js";
 import {
@@ -58,7 +58,7 @@ const chain = createChainState();
 import { CHUNK, renderDist, dim, setDimension, setBlock, getBlock, outOfWorld, worlds } from "./src/core/store.js";
 import { dimEnv, dimSpec, dimHasMoon, dimHotbar } from "./src/world/dimensions.js";
 import { disposeAll } from "./src/render/mesher.js";
-import { EYE } from "./src/player/physics.js";
+import { EYE, setFlyStepAllow } from "./src/player/physics.js";
 import { initHomingTnt, fireHomingTnt, tickHomingTnt, clearHomingTnt } from "./src/mobs/homing.js";
 import { enterEndMobs, clearEndMobs, tickEndMobs, dragonHealth, setDragonVictoryHook, setMobSeed } from "./src/mobs/end.js";
 import { endPortalFrameKeys, resetEndDimension, setEndCleared } from "./src/world/end.js";
@@ -111,6 +111,8 @@ initAmbient(scene);
 initRope(scene);
 initPortals(scene);
 buildPortalDom();
+// Fly steps up only onto bottom frames of portals with a live fill.
+setFlyStepAllow((bx, by, bz) => isLivePortalSill(bx, by, bz));
 setPortalTravelHook((plan) => {
   if (!plan?.dim) { completeDimTravel(); return; }
   void goToDimension(plan.dim);

@@ -650,6 +650,23 @@ export function portalGhostCell(win, bx, by, bz) {
   return true;
 }
 
+// Fly-step gate: true when the cell is the bottom row of a vertical window
+// with a live fill (a gated dimension keeps no fills, so its sills never
+// qualify). Vertical windows only — flat frames keep strict collision.
+export function isLivePortalSill(bx, by, bz) {
+  for (const f of portalFills.values()) {
+    const win = f.win;
+    if (win.orient !== "v") continue;
+    if (by !== win.minY) continue;
+    const box = portalFrameBBox(win);
+    if (win.face === "x") {
+      if (bx !== box.minX || bz < box.minZ || bz > box.maxZ) continue;
+    } else if (bz !== box.minZ || bx < box.minX || bx > box.maxX) continue;
+    if (isFrameCell(win, bx, by, bz)) return true;
+  }
+  return false;
+}
+
 function fillKey(win) {
   return `${win.type}:${win.orient}:${win.face || "z"}:${win.minX},${win.minY},${win.minZ}${win.dims || ""}${win.h || ""}`;
 }
