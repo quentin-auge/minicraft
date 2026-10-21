@@ -20,7 +20,7 @@
 //
 // Extension shape: PORTAL_TYPES is the registry; the engine below never
 // switches on family names, it dispatches through the spec's props —
-// destination/anchorsFrom/evaluate/cells/bbox/inside/travel/art. New families
+// destination/anchorsFrom/evaluate/cells/bbox/inside/travel/art/color. New families
 // (new frame block, sizes, fill, destination, travel action) register a spec
 // and nothing else changes.
 import * as THREE from "three";
@@ -36,7 +36,7 @@ import {
 export const PORTAL_TYPES = [
   {
     key: "end", destination: "end", enterMsg: "You entered The End",
-    frame: PORTAL, fillColor: 0x000000,
+    frame: PORTAL, fillColor: 0x000000, tunnel: "#6d28d9",
     *anchorsFrom(px, py, pz) { yield* endVerticalAnchors(px, py, pz); yield* endFlatAnchors(px, py, pz); },
     evaluate(w) { return evalEndWin(w); },
     cells: endFillCells,
@@ -47,7 +47,7 @@ export const PORTAL_TYPES = [
   },
   {
     key: "nether", destination: "nether", enterMsg: "You entered The Nether",
-    frame: OBSIDIAN, fillColor: 0x9b30ff,
+    frame: OBSIDIAN, fillColor: 0x9b30ff, tunnel: "#1e40af",
     *anchorsFrom(px, py, pz) { yield* netherVerticalAnchors(px, py, pz); yield* netherFlatAnchors(px, py, pz); },
     evaluate(w) { return evalNetherWin(w); },
     cells: rectFillCells,
@@ -60,7 +60,7 @@ export const PORTAL_TYPES = [
     // TNT frame: a 4×4 square whose corners are mandatory and whose ring
     // mixes tiers — at least one mega and one ultra among the TNT blocks.
     key: "tnt", destination: "tnt", enterMsg: "You entered the TNT dimension",
-    frame: [TNT, MEGA_TNT, ULTRA_TNT], fillColor: 0xd11a1a,
+    frame: [TNT, MEGA_TNT, ULTRA_TNT], fillColor: 0xd11a1a, tunnel: "#991b1b",
     *anchorsFrom(px, py, pz) { yield* tntVerticalAnchors(px, py, pz); yield* tntFlatAnchors(px, py, pz); },
     evaluate(w) { return evalTntWin(w); },
     cells: rectFillCells,
@@ -128,8 +128,7 @@ export function resetFrameSet(keys) {
   frameSets[dim].clear();
   for (const k of keys) frameSets[dim].add(k);
   portalDirty = true;
-  // A fresh world never inherits a pending teleport from the last one.
-  pendingTravel = null;
+  // A fresh world releases any in-flight travel lock with it.
   portalBusy = false;
   portalCd = 0;
 }
@@ -1197,43 +1196,100 @@ export function toast(msg) {
   toastT = setTimeout(() => { el.style.opacity = "0"; }, 2200);
 }
 
+// Spiral acceleration: the two swirls carry data-spin="degPerSec dir" and a
+// rAF loop turns them with a ramp multiplier (x0.5 -> x6 over the 1.5 s ride),
+// so the spiral visibly accelerates into the jump from the first frame:
+// steady x0.5 at entry, ramping to the x6 cap by ride end.
+// Transform-only writes on two nodes: no layout, no paint. Angles persist
+// on dataset across travels.
+const SPIN_DELAY = 0;
+const SPIN_BASE = 0.5;
+let tunnelRAF = 0, tunnelT0 = 0, tunnelLast = 0;
+let tunnelSpinners = [];
+function collectTunnelSpinners() {
+  tunnelSpinners = [];
+  const root = document.getElementById("portalSpiral");
+  if (!root) return;
+  root.querySelectorAll("#portalSpiralFront, #portalSpiralBack").forEach((n) => {
+    const parts = (n.getAttribute("data-spin") || "").split(" ");
+    tunnelSpinners.push({
+      el: n,
+      base: Number(parts[0]) || 0,
+      dir: Number(parts[1]) || 1,
+      angle: parseFloat(n.dataset.ang || "0"),
+    });
+  });
+}
+function tunnelTick(now) {
+  tunnelRAF = 0;
+  const t = (now - tunnelT0) / 1000;
+  const dt = Math.min(0.05, Math.max(0, (now - tunnelLast) / 1000));
+  tunnelLast = now;
+  const te = Math.max(0, t - SPIN_DELAY);
+  const m = Math.min(6, SPIN_BASE + ((6 - SPIN_BASE) / (TRAVEL_MIN_MS / 1000 - SPIN_DELAY)) * te);
+  for (const s of tunnelSpinners) {
+    s.angle = (s.angle + s.base * s.dir * m * dt) % 360;
+    s.el.dataset.ang = s.angle.toFixed(2);
+    s.el.style.transform = "rotate(" + s.angle.toFixed(2) + "deg)";
+  }
+  tunnelRAF = requestAnimationFrame(tunnelTick);
+}
+function startTunnelSpin() {
+  stopTunnelSpin();
+  collectTunnelSpinners();
+  if (!tunnelSpinners.length) return;
+  tunnelT0 = performance.now();
+  tunnelLast = tunnelT0;
+  tunnelRAF = requestAnimationFrame(tunnelTick);
+}
+function stopTunnelSpin() {
+  if (tunnelRAF) cancelAnimationFrame(tunnelRAF);
+  tunnelRAF = 0;
+}
+
 function showPortalSpiral() {
   const el = document.getElementById("portalSpiral");
   if (!el) return;
   spiralGen++;
+  el.classList.remove("jump");
   el.style.display = "flex";
   void el.offsetWidth;
   el.classList.add("show");
+  startTunnelSpin();
 }
 
+// Lift sequencing: a fixed jump burst (spiral stretches out + flash) plays at
+// full opacity first, then the regular fade-out runs. Generation-guarded
+// throughout, so a rapid re-travel never hides the new spiral.
+const TUNNEL_JUMP_MS = 300;
 function hidePortalSpiral() {
   const el = document.getElementById("portalSpiral");
   if (!el) return;
   const g = spiralGen;
-  el.classList.remove("show");
-  setTimeout(() => { if (spiralGen === g) el.style.display = "none"; }, PORTAL_FADE_OUT + 80);
+  el.classList.add("jump");
+  setTimeout(() => { if (spiralGen === g) el.classList.remove("show"); }, TUNNEL_JUMP_MS);
+  setTimeout(() => { if (spiralGen === g) { el.style.display = "none"; el.classList.remove("jump"); stopTunnelSpin(); } }, TUNNEL_JUMP_MS + PORTAL_FADE_OUT + 80);
 }
 
-// Pause contract: the spiral wait is a sim-time pending, decremented in
-// tickPortals — never a wall-clock setTimeout — so pausing mid-spiral
-// freezes it and the travel completes after unpausing.
-let pendingTravel = null; // { dim, msg?, t }
+// Travel handoff: the spiral shows at once and the main.js hook starts the
+// transition load immediately, so destination voxels generate behind the
+// fade-in instead of after it. Busy + spiral stay held until main.js calls
+// completeDimTravel() once the arrival is ready to render. The transition
+// pipeline enforces the minimum spiral time itself and runs on loader clock
+// (rAF slices, like boot) — never a sim-time pending — so pausing mid-spiral
+// never stalls the load behind it.
+// Minimum spiral display, in ms: 1.5 s here, then the ~1 s lift sequence
+// (jump burst + fade-out), so the full animation lasts a constant 2.5 s. The
+// pipeline waits for it when the load finishes early (retained dimensions).
+export const TRAVEL_MIN_MS = 1500;
 function travelTo(plan) {
   if (portalBusy) return;
   portalBusy = true;
   portalCd = 1.5;
+  const el = document.getElementById("portalSpiral");
+  if (el) el.style.setProperty("--tunnel", tunnelForDest(plan.dim));
   showPortalSpiral();
-  pendingTravel = { ...plan, t: (PORTAL_FADE_IN + 80) / 1000 };
-}
-
-function completeTravel() {
-  const plan = pendingTravel;
-  pendingTravel = null;
-  // Cross-dimension plans carry dim: the main.js hook switches worlds and
-  // resolves the arrival, then positions the player itself. Busy + spiral
-  // stay held until main.js calls completeDimTravel() after the rebuild.
   if (onTravelHook) onTravelHook(plan);
-  if (plan.msg) toast(plan.msg);
 }
 
 // Called by main.js once a cross-dimension switch finishes (or aborts):
@@ -1258,11 +1314,20 @@ function moveDir() {
 // Cross-dimension destination: own dimension returns to the Overworld, any
 // other dimension heads to the family's target. Arrival resolves after the
 // switch (destination solidity differs), so this carries only the destination
-// and its toast — completeTravel hands it to the dimension hook in main.js.
+// and its toast — travelTo hands it to the dimension hook in main.js.
 function destinationTravel(win) {
   const spec = specOf(win);
   const dest = dim === spec.destination ? "over" : spec.destination;
   return { dim: dest, msg: dest === "over" ? "You returned to the Overworld" : spec.enterMsg };
+}
+
+// Spiral color theme, by destination: overworld green, Nether dark blue,
+// End violet, TNT dark red. Families declare their own color on the spec;
+// the Overworld has no family (it is the return), so its green lives here.
+const OVER_TUNNEL = "#15803d";
+function tunnelForDest(dest) {
+  if (dest === "over") return OVER_TUNNEL;
+  return PORTAL_TYPES.find((s) => s.destination === dest)?.tunnel ?? "#6d28d9";
 }
 
 // A dimension's exits gate (End: sealed while the dragon lives) closes every
@@ -1307,73 +1372,65 @@ function checkPortal() {
 }
 
 export function tickPortals(dt, canTravel) {
-  // Fully frozen while paused: cooldown, fill scans, and the pending travel
-  // all wait for the sim to run again.
+  // Fully frozen while paused: cooldown and fill scans wait for the sim to
+  // run again. Travel itself is loader-driven (see travelTo): once the hook
+  // fires, the transition pipeline owns the timing behind the spiral.
   if (!canTravel) return;
   if (portalCd > 0) portalCd -= dt;
-  if (pendingTravel) {
-    pendingTravel.t -= dt;
-    if (pendingTravel.t <= 0) completeTravel();
-  }
   if (sceneRef) updatePortalVisual(dt);
   checkPortal();
   checkGatedWindows();
 }
 
-// --- Help diagrams + travel spiral art (master visuals) ---
+// --- Help diagrams + travel spiral art ---
 
 const SVGNS = "http://www.w3.org/2000/svg";
 
-function buildSpiralArms(svg, arms, turns, rOut, rIn, angHalf, gradId) {
-  if (!svg) return;
+// Travel spiral art, built once at boot: filled ribbon arms on two swirls
+// (front 6 arms, back 4 counter-rotating) in the destination spiral color —
+// fills come from CSS (see index.html), this builds geometry only. The rAF
+// loop turns both swirls with an accelerating ramp.
+function buildSpiralArms(svg, arms, turns, rOut, angHalf, depth) {
+  if (!svg || svg.querySelectorAll("path").length) return;
+  // Cone projection: each arm winds around a cone pointing away from the
+  // viewer, so the spiral reads as a funnel you fly into. t = 0 is the wide
+  // near rim (screen edge), t = 1 the narrow far end (vanishing point). The
+  // world ring radius shrinks linearly while depth grows, and the screen
+  // radius is ring / depth — ribbons taper naturally toward the center.
   const steps = 64;
+  const cone = (t) => {
+    const ring = rOut * (1 - 0.75 * t);
+    const z = 1 + depth * t;
+    return ring / z;
+  };
   for (let a = 0; a < arms; a++) {
     const base = (a / arms) * Math.PI * 2;
     let d = "";
     for (let i = 0; i <= steps; i++) {
       const t = i / steps;
-      const r = rIn + (rOut - rIn) * t;
+      const r = cone(t);
       const th = base + t * turns * Math.PI * 2;
       d += (i === 0 ? "M " : " L ") + (r * Math.cos(th)).toFixed(2) + " " + (r * Math.sin(th)).toFixed(2);
     }
     for (let i = steps; i >= 0; i--) {
       const t = i / steps;
-      const r = rIn + (rOut - rIn) * t;
+      const r = cone(t);
       const th = base + t * turns * Math.PI * 2 + angHalf;
       d += " L " + (r * Math.cos(th)).toFixed(2) + " " + (r * Math.sin(th)).toFixed(2);
     }
     d += " Z";
     const path = document.createElementNS(SVGNS, "path");
     path.setAttribute("d", d);
-    path.setAttribute("fill", gradId ? "url(#" + gradId + ")" : "#9b30ff");
     path.setAttribute("opacity", "0.92");
     svg.appendChild(path);
   }
 }
 
 function buildPortalSpiral() {
-  const front = document.getElementById("portalSpiralFront");
-  const back = document.getElementById("portalSpiralBack");
-  if (front && !front.children.length) {
-    const defs = document.createElementNS(SVGNS, "defs");
-    const grad = document.createElementNS(SVGNS, "radialGradient");
-    grad.setAttribute("id", "spiralGrad");
-    grad.setAttribute("gradientUnits", "userSpaceOnUse");
-    grad.setAttribute("cx", "0"); grad.setAttribute("cy", "0"); grad.setAttribute("r", "100");
-    for (const [off, col] of [["0%", "#eab4ff"], ["55%", "#9b30ff"], ["100%", "#2b0a4d"]]) {
-      const s = document.createElementNS(SVGNS, "stop");
-      s.setAttribute("offset", off); s.setAttribute("stop-color", col);
-      grad.appendChild(s);
-    }
-    defs.appendChild(grad);
-    front.appendChild(defs);
-  }
-  if (front && front.querySelectorAll("path").length === 0) {
-    buildSpiralArms(front, 6, 1.5, 98, 6, 16 * Math.PI / 180, "spiralGrad");
-  }
-  if (back && back.querySelectorAll("path").length === 0) {
-    buildSpiralArms(back, 4, 2.2, 82, 4, 24 * Math.PI / 180, null);
-  }
+  // Front cone is deep, back cone shallower: the parallax between both
+  // layers sells the 3D funnel.
+  buildSpiralArms(document.getElementById("portalSpiralFront"), 6, 1.5, 98, 16 * Math.PI / 180, 20);
+  buildSpiralArms(document.getElementById("portalSpiralBack"), 4, 2.2, 82, 24 * Math.PI / 180, 5);
 }
 
 // Single-tier help art: a cols×rows ring of one block id (`skipCorners`

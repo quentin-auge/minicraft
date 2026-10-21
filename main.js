@@ -32,7 +32,7 @@ import { WATER, FLOWER, GLOWSTONE, MOON_WATER, TNT, BLOCK_INFO } from "./src/cor
 import { resetGlowstoneMemory, setGlowSeed } from "./src/world/glowstone.js";
 import { resetFlowerMemory, setFlowerSeed } from "./src/world/flowers.js";
 import { initBlockLights, tickBlockLights, rebuildBlockLightIndexes, resetBlockLightMemory } from "./src/render/blocklights.js";
-import { initRenderer, rebuildAll, maybeStream, refreshBlocks, queueRefreshBlocks, setEyeMedium, setRegionFade, nearestMissingDist, tickChunkFades, UNLOAD_MARGIN } from "./src/render/mesher.js";
+import { initRenderer, rebuildAll, maybeStream, streamChunks, drainChunkQueue, beginDispose, disposeSome, refreshBlocks, queueRefreshBlocks, setEyeMedium, setRegionFade, nearestMissingDist, tickChunkFades, UNLOAD_MARGIN } from "./src/render/mesher.js";
 import { applyRegions } from "./src/render/regions.js";
 import { resetItems, select, selected, selectedId, initHotbarInput, setItem, getItems } from "./src/ui/hotbar.js";
 import { initMenu, enterGame, started, isLocked } from "./src/ui/menu.js";
@@ -46,7 +46,8 @@ import {
   initPortals, buildPortalDom, setPortalTravelHook, tickPortals,
   resetFrameSet, scanWorldPortals, clearPortalFills, notePortalEdits,
   notePortalFramesOnly, tickPortalFillFades, completeDimTravel,
-  resolveTravelArrival, resetTravelLinks, isLivePortalSill,
+  resolveTravelArrival, resetTravelLinks, isLivePortalSill, toast,
+  TRAVEL_MIN_MS,
 } from "./src/world/portals.js";
 import { villageFrames } from "./src/world/village.js";
 import {
@@ -57,7 +58,6 @@ import {
 const chain = createChainState();
 import { CHUNK, renderDist, dim, setDimension, setBlock, getBlock, outOfWorld, worlds } from "./src/core/store.js";
 import { dimEnv, dimSpec, dimHasMoon, dimHotbar } from "./src/world/dimensions.js";
-import { disposeAll } from "./src/render/mesher.js";
 import { EYE, setFlyStepAllow } from "./src/player/physics.js";
 import { initHomingTnt, fireHomingTnt, tickHomingTnt, clearHomingTnt } from "./src/mobs/homing.js";
 import { enterEndMobs, clearEndMobs, tickEndMobs, dragonHealth, setDragonVictoryHook, setMobSeed } from "./src/mobs/end.js";
@@ -115,7 +115,7 @@ buildPortalDom();
 setFlyStepAllow((bx, by, bz) => isLivePortalSill(bx, by, bz));
 setPortalTravelHook((plan) => {
   if (!plan?.dim) { completeDimTravel(); return; }
-  void goToDimension(plan.dim);
+  void runTravel(plan.dim, plan.msg ?? null);
 });
 setDragonVictoryHook((unlocked) => {
   scanWorldPortals();
@@ -403,16 +403,25 @@ async function buildWorld() {
   warmupFx(token);
 }
 
-// Cross-dimension travel: each portal family heads to its destination from
-// any dimension, and returns to the Overworld when used inside that
-// destination. End and TNT regenerate on every entry (fresh seed, frame
-// index rebuilt); the Overworld retains voxels. Arrival uses the portal
-// last left in the destination when it still validates (Overworld faces it,
-// everywhere else arrives back to it), else the dimension spawn. Meshes,
-// fills, lights, and fuses reset around the switch; fly mode persists (all
-// portals), movement
-// keys zero. Runs behind the travel spiral: portals.js holds busy until
-// completeDimTravel() below.
+// Cross-dimension travel behind the spiral: the destination loads in two
+// phases while the overlay covers the screen, and the spiral lifts only once
+// the arrival neighborhood is meshed — ready to go, no arrival hitch, no
+// visible streaming. End and TNT regenerate on every entry (fresh seed,
+// frame index rebuilt); the Overworld and the Nether retain voxels. Arrival
+// uses the portal last left in the destination when it still validates
+// (Overworld faces it, everywhere else arrives back to it), else the
+// dimension spawn. Meshes, fills, lights, and fuses reset around the switch;
+// fly mode persists (all portals), movement keys zero.
+//
+// Phase 1 (voxels, no mesher calls — the scene still shows the old world):
+// switch the voxel store, generate only when needed, resolve the arrival on
+// finished voxels and move the player there. Phase 2 (meshes, budgeted):
+// dispose, queue the full ring, drain it in ~10 ms slices until the arrival
+// neighborhood is built, refresh every portal fill (behind the spiral, so
+// its cost never shows), then compile shaders — all before the reveal. Far
+// chunks keep streaming under the fast reveal afterwards, hidden by the fog
+// guard like steady state. Loader work throughout (rAF slices, no sim), with
+// its own token: pausing never stalls it.
 function placeArrival(arr) {
   pos.set(arr.spot.x, arr.spot.y, arr.spot.z);
   vel.set(0, 0, 0);
@@ -420,11 +429,51 @@ function placeArrival(arr) {
   setPitch(0);
 }
 
-async function goToDimension(dest) {
-  if (building) return;
-  const token = ++buildToken;
-  const aborted = () => token !== buildToken;
+let travelToken = 0;
+// Dimensions whose program set already linked this session (GL programs
+// persist in the context): repeat trips skip the travel-time compile walk.
+const compiledDims = new Set();
+// Transition gate: while set, the loop skips chunk/voxel streaming and the
+// canvas render — the overlay covers a frozen frame while runTravel drives
+// the mesher itself below (streaming around the stale position inside the
+// new dimension's bounds would generate chunks nobody arrives at).
+let travelActive = false;
+// Full-ring drain budget: phase 2 builds the whole queued ring in slices,
+// nearest-first, so capping it still leaves the nearest geometry complete.
+// Slices stay short on purpose: first-visit Nether chunks can each cost well
+// past the budget, and only yielding between chunks keeps the spiral alive.
+const TRAVEL_DRAIN_MS = 12;
+const TRAVEL_DRAIN_FRAMES = 120;
+
+async function runTravel(dest, msg) {
+  const token = ++travelToken;
+  const alive = () => token === travelToken;
+  const raf = () => new Promise((r) => requestAnimationFrame(r));
   building = true;
+  travelActive = true;
+  // Departure behind the spiral: snap the fog closed (invisible: the canvas
+  // stops rendering below and the overlay fades in over the frozen frame).
+  scene.fog.near = LOAD_FOG_NEAR;
+  scene.fog.far = LOAD_FOG_FAR;
+  envAir.near = LOAD_FOG_NEAR;
+  envAir.far = LOAD_FOG_FAR;
+  revealT = 0;
+  const t0 = performance.now();
+  // Let the spiral paint before any heavy work: its fade starts now, so the
+  // overlay reads immediate even though the load behind it takes seconds.
+  await raf();
+  await raf();
+  if (!alive()) return;
+  // Teardown in slices under the fade-in: one monolithic dispose of a full
+  // ring reads as a freeze of its own, so the chunks go ~80 per frame while
+  // the overlay covers the frozen frame. Nothing reads the scene until phase
+  // 2 re-queues it (renders skipped, sim frozen, queue cleared last).
+  beginDispose();
+  while (disposeSome(80)) {
+    if (!alive()) return;
+    await raf();
+  }
+  if (!alive()) return;
   try {
     severHook();
     clearHomingTnt();
@@ -432,86 +481,127 @@ async function goToDimension(dest) {
     resetTNTMemory();
     clearPortalFills();
     renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+    setDimension(dest);
     if (dest === 'tnt') {
       const spec = dimSpec('tnt');
-      setDimension('tnt');
       resetFrameSet([]);
       const seed = rollSeed();
       setGlowSeed(seed);
       setFlowerSeed(seed);
-      const ok = await spec.generateAsync(seed, aborted);
-      if (!ok || aborted()) return;
-      disposeAll();
+      const ok = await spec.generateAsync(seed, () => !alive());
+      if (!ok || !alive()) return;
       spawnPlayer();
     } else if (dest === "end") {
       const spec = dimSpec("end");
-      setDimension("end");
       const seed = rollSeed();
       setMobSeed(seed);
-      const ok = await spec.generateAsync(seed, aborted);
-      if (!ok || aborted()) return;
-      disposeAll();
+      const ok = await spec.generateAsync(seed, () => !alive());
+      if (!ok || !alive()) return;
       resetFrameSet(endPortalFrameKeys());
       setEndCleared(false);
       spawnPlayer();
       const arrival = resolveTravelArrival("end", pos);
       if (arrival) placeArrival(arrival);
-      enterEndMobs(scene);
     } else if (dest === "nether") {
       const spec = dimSpec("nether");
-      setDimension("nether");
       if (!worlds.nether.size) {
         const seed = rollSeed();
         setGlowSeed(seed);
         setFlowerSeed(seed);
         setMobSeed(seed);
-        const ok = await spec.generateAsync(seed, aborted);
-        if (!ok || aborted()) return;
+        const ok = await spec.generateAsync(seed, () => !alive());
+        if (!ok || !alive()) return;
         resetFrameSet(spec.frameKeys?.() ?? []);
       }
-      disposeAll();
       // Spawn first so an unlinked arrival anchors on destination
       // coordinates (like the End branch); a found arrival overrides it.
       spawnPlayer();
       const arrival = resolveTravelArrival("nether", pos);
       if (arrival) placeArrival(arrival);
     } else {
-      setDimension('over');
       if (!worlds.over.size) {
         const seed = rollSeed();
         setGlowSeed(seed);
         setFlowerSeed(seed);
-        const ok = await dimSpec('over').generateAsync(seed, aborted);
-        if (!ok || aborted()) return;
+        const ok = await dimSpec('over').generateAsync(seed, () => !alive());
+        if (!ok || !alive()) return;
         resetFrameSet(dimSpec('over').frameKeys?.() ?? []);
       }
-      disposeAll();
       const arrival = resolveTravelArrival("over");
       if (arrival) placeArrival(arrival);
       else spawnPlayer();
     }
     rebuildBlockLightIndexes();
-    rebuildAll(pos.x, pos.z, 2);
-    if (aborted()) return;
+    updateCamera();
+    // Voxels and arrival done: meshes from here on (the scene was already
+    // disposed under the fade-in). Queue the full ring, then drain it in
+    // slices until nothing is missing; the cap keeps the worst case bounded.
+    streamChunks(pos.x, pos.z);
+    for (let i = 0; i < TRAVEL_DRAIN_FRAMES; i++) {
+      if (!alive()) return;
+      if (nearestMissingDist(pos.x, camera.position.y, pos.z) === Infinity) break;
+      const tD = performance.now();
+      drainChunkQueue(false, TRAVEL_DRAIN_MS);
+      await raf();
+      // A heavy slice (first-visit volcano chunks) breathes an extra frame
+      // instead of stacking another long block right behind it.
+      if (performance.now() - tD > TRAVEL_DRAIN_MS * 2) await raf();
+    }
+    if (!alive()) return;
+    // Every fill relights behind the spiral, so its cost never shows.
     scanWorldPortals();
     moonBand = false;
     // Per-dimension bar: the TNT cube holds TNT tiers only. Selection follows
     // by id, so a held TNT survives the trip; anything else clamps.
     resetItems(dimHotbar(dim));
+    if (dest === "end") enterEndMobs(scene);
     updateBossBar();
     updateCamera();
+    // Compile behind the spiral, once per dimension per session: programs
+    // persist in the GL context, so repeat trips skip the traversal walk
+    // entirely. (compileAsync links synchronously first, then polls — the
+    // first link of a dimension's set is a real block, hence once-only.)
+    if (!compiledDims.has(dest)) {
+      if (alive()) await renderer.compileAsync(scene, camera);
+      if (!alive()) return;
+      compiledDims.add(dest);
+    }
     Object.keys(keys).forEach((k) => { keys[k] = false; });
+    // Minimum spiral display: wait it out when retained dimensions load fast.
+    while (performance.now() - t0 < TRAVEL_MIN_MS) {
+      if (!alive()) return;
+      await raf();
+    }
+    if (!alive()) return;
+    // Arrival is fully loaded: open the fog straight to its final range, so
+    // no reveal ever plays. If the frame cap hit first (deep Nether), the
+    // missing-chunk guard still hides unbuilt distance without holes.
+    revealT = 1;
+    {
+      const denv = dimEnv(dim);
+      const far = denv?.fogFar ?? readyFog.far;
+      const near = denv?.fogNear ?? readyFog.near;
+      scene.fog.near = Math.max(Math.min(near, far - 1), LOAD_FOG_NEAR);
+      scene.fog.far = Math.max(far, LOAD_FOG_FAR);
+      envAir.near = scene.fog.near;
+      envAir.far = scene.fog.far;
+    }
+    if (msg) toast(msg);
   } finally {
-    if (token === buildToken) {
+    if (alive()) {
       building = false;
+      travelActive = false;
       updateCamera();
+      // Arrival punch: the FOV stretches through the spiral fade-out, then
+      // eases back on sim-time via the existing kick decay.
+      fovKickV = 6;
       completeDimTravel();
     }
   }
   // Resume an interrupted moon fill when coming home: travelling out mid-fill
   // aborts the slices above, leaving the overworld moon half-built. The size
   // guard skips worlds whose overworld was never generated (temporary boot).
-  if (!aborted() && dest === "over" && worlds.over.size > 0 && !moonReady(getSeed())) fillMoonUnder(getSeed());
+  if (travelToken === token && dest === "over" && worlds.over.size > 0 && !moonReady(getSeed())) fillMoonUnder(getSeed());
 }
 
 // Post-unlock shader warmup: pools enter the scene and compile while the
@@ -523,6 +613,7 @@ async function warmupFx(token) {
   if (token !== buildToken || !worldReady) return;
   prewarmDenseFx();
   renderer.compile(scene, camera);
+  compiledDims.add(dim);
   resetTNTMemory();
 }
 
@@ -979,11 +1070,16 @@ function loop(now) {
   }
   updateBossBar();
   if (!isLocked()) chainResetOnUnlock(chain);
-  maybeStream(pos.x, pos.z, camera.position.y, scene.fog.near, scene.fog.far);
-  if (worldReady) tickTntStream(pos.x, pos.y, pos.z, dt, vel.length(), vel.y, queueRefreshBlocks, hookPin());
+  // Suspended while a travel transition owns the loader: streaming around
+  // the stale position inside the new dimension's bounds would generate and
+  // queue chunks nobody arrives at, and the canvas stays frozen behind the
+  // opaque overlay. runTravel drives the mesher itself until the arrival is
+  // meshed.
+  if (!travelActive) maybeStream(pos.x, pos.z, camera.position.y, scene.fog.near, scene.fog.far);
+  if (worldReady && !travelActive) tickTntStream(pos.x, pos.y, pos.z, dt, vel.length(), vel.y, queueRefreshBlocks, hookPin());
   tickChunkFades(dt, pos.x, camera.position.y, pos.z, scene.fog.far);
   tickPortalFillFades(dt, pos.x, camera.position.y, pos.z, scene.fog.far);
-  renderer.render(scene, camera);
+  if (!travelActive) renderer.render(scene, camera);
 }
 
 updateCamera();

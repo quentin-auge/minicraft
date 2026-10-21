@@ -321,12 +321,21 @@ function isExposed(x, y, z) {
 }
 
 export function disposeAll() {
-  for (const meshes of chunkMeshes.values()) {
-    for (const m of meshes.values()) { sceneRef.remove(m); m.dispose(); }
-  }
-  chunkMeshes.clear();
-  for (const r of chunkRest.values()) sceneRef.remove(r.group);
-  chunkRest.clear();
+  beginDispose();
+  while (disposeSome(Infinity)) { /* drain inline: same end state, one block */ }
+}
+
+// Sliced teardown for transitions: a full ring disposed at once reads as its
+// own freeze, so the traveler snapshots once and disposes ~80 chunks per
+// frame behind the overlay. The build queue clears only with the last slice:
+// streamChunks prunes on chunkMeshes.has, so keys for half-torn chunks must
+// never drain in between. disposeAll() above keeps its all-at-once behavior
+// for existing callers; end state is identical either way.
+let disposeKeys = null;
+export function beginDispose() {
+  disposeKeys = [...new Set([...chunkMeshes.keys(), ...chunkRest.keys()])];
+  // Fast non-mesh state clears up front: nothing reads mid-teardown (sim
+  // frozen, streaming gated), and every cache below repopulates on build.
   cullVersion++;
   gatedVeils.clear();
   topMaxCache.clear();
@@ -338,10 +347,30 @@ export function disposeAll() {
     }
   }
   regionMatCache.clear();
-  chunkQueue.length = 0;
-  // Fading meshes are all disposed above: drop the entries with them.
   for (const f of fading) for (const c of f.clones) c.m.dispose();
   fading.length = 0;
+}
+// Disposes up to `count` snapshotted chunks; returns true while work remains.
+export function disposeSome(count) {
+  if (!disposeKeys) return false;
+  let n = 0;
+  while (disposeKeys.length && n < count) {
+    const ck = disposeKeys.pop();
+    n++;
+    const meshes = chunkMeshes.get(ck);
+    if (meshes) {
+      for (const m of meshes.values()) { sceneRef.remove(m); m.dispose(); }
+      chunkMeshes.delete(ck);
+    }
+    const rest = chunkRest.get(ck);
+    if (rest) { sceneRef.remove(rest.group); chunkRest.delete(ck); }
+  }
+  if (!disposeKeys.length) {
+    disposeKeys = null;
+    chunkQueue.length = 0;
+    return false;
+  }
+  return true;
 }
 
 function disposeChunk(ck) {

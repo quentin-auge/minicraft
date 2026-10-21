@@ -155,37 +155,54 @@
       opacity: 0; pointer-events: none;
       display: none;
     }
-    /* Portal travel spiral (fullscreen overlay; opacity + rotate run on the
-       compositor, so the spiral keeps spinning through the teleport) */
+    /* Portal travel spiral (fullscreen overlay; transform + opacity run on the
+       compositor, so the spiral keeps spinning through the load) */
     #portalSpiral {
       position: fixed; inset: 0; z-index: 50;
-      background: #050208;
+      background: color-mix(in srgb, var(--tunnel) 22%, #050208);
       opacity: 0; pointer-events: none; overflow: hidden;
       transition: opacity 0.6s ease;
       display: none;
+      --tunnel: #6d28d9;
     }
     #portalSpiral.show {
       opacity: 1;
       transition: opacity 0.45s ease;
     }
+    /* Flex-centered swirl wrappers: the proven centering technique (absolute
+       + inset + margin auto on bare SVGs is unreliable across engines). */
     #portalSpiral .swirl-wrap {
       position: absolute; inset: 0;
       display: flex; align-items: center; justify-content: center;
     }
     #portalSpiral .swirl-wrap svg {
-      width: 150vmax; height: 150vmax; flex: 0 0 auto;
-      animation: spiralSpin 2.4s linear infinite;
+      width: 170vmax; height: 170vmax; flex: 0 0 auto;
       will-change: transform;
     }
     #portalSpiral .swirl-wrap.back svg {
-      width: 120vmax; height: 120vmax;
-      animation-duration: 4.4s; animation-direction: reverse; opacity: 0.5;
+      width: 140vmax; height: 140vmax;
+      opacity: 0.5;
+    }
+    /* Spiral fills follow the destination spiral color (set from JS). */
+    #portalSpiralFront path { fill: var(--tunnel); }
+    #portalSpiralBack path { fill: var(--tunnel); }
+    /* Acceleration-driven swirls: no CSS animation here (it would override
+       the loop's inline transforms); the rAF loop turns the data-spin svgs. */
+    #portalSpiral [data-spin] {
+      transform-origin: center;
+      will-change: transform;
+    }
+    #portalFlash {
+      position: absolute; inset: 0; background: #fff; opacity: 0;
     }
     #portalSpiral::after {
       content: ""; position: absolute; inset: 0;
       background: radial-gradient(circle, transparent 45%, rgba(0,0,0,0.6) 100%);
     }
-    @keyframes spiralSpin { to { transform: rotate(360deg); } }
+    #portalSpiral.jump #portalSpiralFront, #portalSpiral.jump #portalSpiralBack { animation: spiralJump 0.3s ease-out forwards; }
+    #portalSpiral.jump #portalFlash { animation: flashJump 0.3s ease-out forwards; }
+    @keyframes spiralJump { to { transform: rotate(-60deg) scale(2.4); opacity: 0; } }
+    @keyframes flashJump { 0% { opacity: 0; } 30% { opacity: 0.9; } 100% { opacity: 0; } }
   </style>
 </head>
 <body>
@@ -198,8 +215,9 @@
   <div id="blastFlash"></div>
   <div id="fireVeil"></div>
   <div id="portalSpiral">
-    <div class="swirl-wrap back"><svg id="portalSpiralBack" viewBox="-100 -100 200 200"></svg></div>
-    <div class="swirl-wrap front"><svg id="portalSpiralFront" viewBox="-100 -100 200 200"></svg></div>
+    <div class="swirl-wrap back"><svg id="portalSpiralBack" viewBox="-100 -100 200 200" data-spin="82 -1"></svg></div>
+    <div class="swirl-wrap front"><svg id="portalSpiralFront" viewBox="-100 -100 200 200" data-spin="150 1"></svg></div>
+    <div id="portalFlash"></div>
   </div>
   <div id="help">
     <div class="panel">

@@ -1077,6 +1077,30 @@ function buildTunnelDescriptors() {
   }
 }
 
+// Sliced twin of buildTunnelDescriptors: identical trials in identical order
+// (see siteBridgesAsync), only the attempt sweeps yield. Returns false on
+// abort, true otherwise.
+async function buildTunnelDescriptorsAsync(isAborted) {
+  const tick = () => new Promise((r) => requestAnimationFrame(r));
+  tunnels = [];
+  ringCells = new Set();
+  const ctxs = volcanoes.map((v, vi) => ({
+    v, vi, minD: v.craterR + 1, toCentre: Math.atan2(-v.z, -v.x),
+    usedH: new Set(), usedCells: new Set(), usedAir: new Set(),
+    dirs: [], list: [], groundCount: 0,
+  }));
+  for (const ctx of ctxs) {
+    if (!await siteBridgesAsync(ctx, tick, isAborted)) return false;
+  }
+  for (const ctx of ctxs) { tunnels.push(...ctx.list); ctx.list.length = 0; }
+  for (const ctx of ctxs) {
+    if (!await siteFansAsync(ctx, tick, isAborted)) return false;
+    tunnels.push(...ctx.list);
+    ctx.list.length = 0;
+  }
+  return !(isAborted && isAborted());
+}
+
 function volcanoHelpers(ctx) {
     const { v, vi, minD, usedH, usedCells, usedAir, dirs, list } = ctx;
     const angDiff = (a, b) => {
@@ -1300,6 +1324,90 @@ function siteBridges(ctx) {
   }
 }
 
+// Sliced twin of siteBridges: the trial bodies below are verbatim copies —
+// same draws, same order, same acceptances (failures mutate nothing: a failed
+// shelf is rolled back, vetoes only record on success). Only the sweep loops
+// yield (every 200 attempts) and check the abort. Returns false on abort.
+async function siteBridgesAsync(ctx, tick, isAborted) {
+  const { v, vi, minD, toCentre, dirs, list } = ctx;
+  const { angDiff, acceptBridge } = volcanoHelpers(ctx);
+  const kOf = () => FAN_TUNNELS + GROUND_BRIDGES + ctx.groundCount;
+  const tryDir = (dir, salt, att, sep, carve = false) => {
+    for (const d of dirs) if (angDiff(d, dir) < sep) return false;
+    const k = kOf();
+    const tipD = Math.round(v.radius + TIP_OVERHANG_MIN + draw(salt + 11, att) * (TIP_OVERHANG_MAX - TIP_OVERHANG_MIN));
+    const r = makeHeading(dir);
+    let tMin = Infinity, tMax = -Infinity;
+    for (let off = -4; off <= 3; off++) {
+      const [wx, wz] = planeCell(v, r, tipD, off);
+      if (!inWorld(wx, wz)) return false;
+      const top = topAt(wx, wz);
+      if (top < tMin) tMin = top;
+      if (top > tMax) tMax = top;
+    }
+    if (tMax <= NETHER_FIRE_LEVEL) {
+      // Open water: grow a shelf under the tip.
+      const plat = NETHER_FIRE_LEVEL + 2 + Math.floor(draw(salt + 13, att) * 2);
+      const sr = 6 + Math.floor(draw(salt + 17, att) * 6);
+      const cx = Math.round(v.x + Math.cos(dir) * (tipD + 1));
+      const cz = Math.round(v.z + Math.sin(dir) * (tipD + 1));
+      const s = tryAddIslet(cx, cz, sr, plat - 1, list);
+      if (!s) return false;
+      const t = finishTunnel(v, vi, dir, r, k, minD, plat, tipD);
+      if (!t || !acceptBridge(t, s, carve)) { dropIslet(s); return false; }
+      return true;
+    }
+    // Natural landing: flat island relief doubles as the floor.
+    if (tMax - tMin > 2 || tMax > NETHER_FIRE_LEVEL + 10) return false;
+    const t = finishTunnel(v, vi, dir, r, k, minD, tMax + 1, tipD);
+    return t ? acceptBridge(t, null, carve) : false;
+  };
+  let slice = 0;
+  for (let slot = 0; slot < GROUND_BRIDGES && ctx.groundCount < GROUND_BRIDGES; slot++) {
+    const sector = (slot - (GROUND_BRIDGES - 1) / 2) * (2 / GROUND_BRIDGES);
+    const salt = vi * 701 + 3 + slot * 50;
+    for (let att = 0; att < 200 && ctx.groundCount < GROUND_BRIDGES; att++) {
+      const dir = toCentre + (sector + (draw(salt, att) - 0.5) * (2 / GROUND_BRIDGES)) * MOUTH_ARC;
+      if (tryDir(dir, salt, att, MOUTH_SEP)) break;
+      if (++slice % 200 === 0) {
+        if (isAborted && isAborted()) return false;
+        await tick();
+      }
+    }
+  }
+  // Full-arc sweeps until three bridges stand: strict re-site only, never
+  // clamped — separation anneals (half, then none) so crowded seas still
+  // fill all three slots through the exact vetoes alone.
+  for (let att = 0; att < 2000 && ctx.groundCount < GROUND_BRIDGES; att++) {
+    const dir = toCentre + (draw(vi * 701 + 999, att) * 2 - 1) * MOUTH_ARC;
+    tryDir(dir, vi * 701 + 999, att, MOUTH_SEP / 2);
+    if (++slice % 200 === 0) {
+      if (isAborted && isAborted()) return false;
+      await tick();
+    }
+  }
+  for (let att = 0; att < 2000 && ctx.groundCount < GROUND_BRIDGES; att++) {
+    const dir = toCentre + (draw(vi * 701 + 977, att) * 2 - 1) * MOUTH_ARC;
+    tryDir(dir, vi * 701 + 977, att, 0);
+    if (++slice % 200 === 0) {
+      if (isAborted && isAborted()) return false;
+      await tick();
+    }
+  }
+  // Last resort: carve a corridor through island rock (lava, pad, bands,
+  // frames and other tubes stay vetoed exactly as before) so no volcano
+  // ever stands fewer than three bridges.
+  for (let att = 0; att < 2000 && ctx.groundCount < GROUND_BRIDGES; att++) {
+    const dir = toCentre + (draw(vi * 701 + 955, att) * 2 - 1) * MOUTH_ARC;
+    tryDir(dir, vi * 701 + 955, att, 0, true);
+    if (++slice % 200 === 0) {
+      if (isAborted && isAborted()) return false;
+      await tick();
+    }
+  }
+  return true;
+}
+
 function siteFans(ctx) {
   const { vi, toCentre } = ctx;
   const { tryMouth } = volcanoHelpers(ctx);
@@ -1329,6 +1437,49 @@ function siteFans(ctx) {
     const h = heights[hi % heights.length];
     if (tryMouth(dir, h)) { hi++; fanCount++; }
   }
+}
+
+// Sliced twin of siteFans: same trials in the same order (failures mutate
+// nothing: reservations record on success only), yielding every 200 attempts.
+// Returns false on abort, true otherwise.
+async function siteFansAsync(ctx, tick, isAborted) {
+  const { vi, toCentre } = ctx;
+  const { tryMouth } = volcanoHelpers(ctx);
+  const shuffle = (arr, salt) => {
+    for (let i = arr.length - 1; i > 0; i--) {
+      const j = Math.floor(draw(vi * 131 + salt, i) * (i + 1));
+      [arr[i], arr[j]] = [arr[j], arr[i]];
+    }
+    return arr;
+  };
+  const heights = shuffle([...Array(FAN_TUNNELS + 2).keys()].slice(2), 77);
+  // Stratified fan: one mouth per arc tenth, round-robin over shuffled
+  // heights — uniform spread without the full-arc rejection budget.
+  const order = shuffle([...Array(FAN_TUNNELS).keys()], 913);
+  let hi = 0, fanCount = 0, slice = 0;
+  for (const sector of order) {
+    for (let att = 0; att < 60 && fanCount < FAN_TUNNELS; att++) {
+      const dir = toCentre + ((sector + draw(vi * 101 + 11, sector * 60 + att)) / FAN_TUNNELS * 2 - 1) * MOUTH_ARC;
+      const h = heights[hi % heights.length];
+      if (tryMouth(dir, h)) { hi++; fanCount++; break; }
+      if (++slice % 200 === 0) {
+        if (isAborted && isAborted()) return false;
+        await tick();
+      }
+    }
+    if (fanCount >= FAN_TUNNELS) break;
+  }
+  // Full-arc top-up: strict re-site only, so short sectors still fill to ten.
+  for (let att = 0; att < 1500 && fanCount < FAN_TUNNELS; att++) {
+    const dir = toCentre + (draw(vi * 101 + 977, att) * 2 - 1) * MOUTH_ARC;
+    const h = heights[hi % heights.length];
+    if (tryMouth(dir, h)) { hi++; fanCount++; }
+    if (++slice % 200 === 0) {
+      if (isAborted && isAborted()) return false;
+      await tick();
+    }
+  }
+  return true;
 }
 
 // The new mouth must not touch accepted works: no lava in its walkway, no
@@ -1415,7 +1566,7 @@ function buildReturnPlatform() {
   }
 }
 
-function setupNether(newSeed) {
+function resetNetherState(newSeed) {
   setDimension("nether");
   resetWorld("nether");
   netherSeed = newSeed;
@@ -1434,18 +1585,49 @@ function setupNether(newSeed) {
   riverT.fill(-1);
   riverScore.fill(Infinity);
   cascadeMask.fill(0);
-  generateNetherRivers();
-  buildRiverCarve();
-  generateVolcanoes();
-  for (const v of volcanoes) buildCourses(v);
-  buildCascadeMask();
-  buildReturnPlatform();
-  buildTunnelDescriptors();
-  // Materialize the return pad immediately: direct boot spawns on it before
-  // the mesher requests a single chunk, so the floor must not depend on chunk
-  // generation order. Per-chunk applies below remain idempotent.
-  applyReturnPlatform(-5, 5, -5, 5);
+}
+
+// Setup as one entry per pass, shared by the sync reference and the sliced
+// paths so every entry builds identical voxels. Sliced callers yield between
+// stages (first-visit travel would otherwise freeze the spiral mid-spin on
+// this single block); the tunnel-siting entry additionally slices within its
+// attempt sweeps via the async twin below (the draw RNG is pure-hash, so
+// interspersed yields cannot change a single trial outcome).
+function netherSetupStages() {
+  return [
+    { key: "rivers", run: generateNetherRivers },
+    { key: "carve", run: buildRiverCarve },
+    { key: "volcanoes", run: generateVolcanoes },
+    { key: "courses", run: () => { for (const v of volcanoes) buildCourses(v); } },
+    { key: "cascade", run: buildCascadeMask },
+    { key: "platform", run: buildReturnPlatform },
+    { key: "tunnels", run: buildTunnelDescriptors, runAsync: (abort) => buildTunnelDescriptorsAsync(abort) },
+    // Materialize the return pad immediately: direct boot spawns on it before
+    // the mesher requests a single chunk, so the floor must not depend on chunk
+    // generation order. Per-chunk applies below remain idempotent.
+    { key: "pad", run: () => applyReturnPlatform(-5, 5, -5, 5) },
+  ];
+}
+
+function setupNether(newSeed) {
+  resetNetherState(newSeed);
+  for (const stage of netherSetupStages()) stage.run();
   netherReady = true;
+}
+
+// Staged async driver for the sliced paths (prepare + full async twin):
+// same stages, same order as setupNether, yielding between them.
+async function runSetupStagesAsync(isAborted) {
+  const raf = () => new Promise((r) => requestAnimationFrame(r));
+  for (const stage of netherSetupStages()) {
+    if (isAborted && isAborted()) return false;
+    if (stage.runAsync) {
+      if (!await stage.runAsync(isAborted)) return false;
+    } else stage.run();
+    await raf();
+  }
+  netherReady = true;
+  return true;
 }
 
 const sameChunk = (wx, wz, x0, x1, z0, z1) =>
@@ -1824,7 +2006,8 @@ export function generateNetherDimension(newSeed) {
 // Full sliced twin, kept for the headless harness: same voxels as the sync
 // reference, generated in the same chunk order.
 export async function generateNetherDimensionAsync(newSeed, isAborted) {
-  setupNether(newSeed);
+  resetNetherState(newSeed);
+  if (!await runSetupStagesAsync(isAborted)) return false;
   let done = 0;
   for (let cz = -CHUNK_RADIUS; cz <= CHUNK_RADIUS; cz++) {
     for (let cx = -CHUNK_RADIUS; cx <= CHUNK_RADIUS; cx++) {
@@ -1840,12 +2023,23 @@ export async function generateNetherDimensionAsync(newSeed, isAborted) {
 }
 
 // Boot path: derive the descriptors and materialize only the chunks around
-// the return platform. The rest streams in through the chunk source.
+// the return platform. The rest streams in through the chunk source. Setup
+// stages yield between passes (same voxels as the sync reference, same
+// order), so a first visit never holds one long block behind the spiral.
 export async function prepareNetherDimensionAsync(newSeed, isAborted) {
-  setupNether(newSeed);
+  resetNetherState(newSeed);
+  if (!await runSetupStagesAsync(isAborted)) return false;
   if (isAborted && isAborted()) return false;
+  const raf = () => new Promise((r) => requestAnimationFrame(r));
+  let n = 0;
   for (let cz = -1; cz <= 1; cz++) {
-    for (let cx = -1; cx <= 1; cx++) ensureNetherChunk(cx, cz);
+    for (let cx = -1; cx <= 1; cx++) {
+      ensureNetherChunk(cx, cz);
+      if (++n % 3 === 0) {
+        if (isAborted && isAborted()) return false;
+        await raf();
+      }
+    }
   }
   return true;
 }

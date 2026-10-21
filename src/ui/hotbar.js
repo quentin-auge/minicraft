@@ -20,9 +20,17 @@ let selectedItem = items[0];
 export let selected = 0;
 const el = () => document.getElementById("hotbar");
 
+// Slot icons memoized per block id: textures are static for the session, so
+// travel re-bars (and every other rebuild) skip the per-slot re-encode.
+const iconCache = new Map();
 function iconSrc(id) {
-  const map = materialsFor(id)[0].map;
-  return map.image.toDataURL();
+  let src = iconCache.get(id);
+  if (!src) {
+    const map = materialsFor(id)[0].map;
+    src = map.image.toDataURL();
+    iconCache.set(id, src);
+  }
+  return src;
 }
 
 function clampSelection() {
