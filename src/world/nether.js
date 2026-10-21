@@ -1397,7 +1397,7 @@ function boreBlocked(t, rest) {
 
 function buildReturnPlatform() {
   const base = NETHER_RETURN_BASE_Y;
-  returnPad = { base, x0: -5, x1: 5, z0: -4, z1: 4 };
+  returnPad = { base, x0: -5, x1: 5, z0: -5, z1: 5 };
   for (let x = returnPad.x0; x <= returnPad.x1; x++) {
     for (let z = returnPad.z0; z <= returnPad.z1; z++) {
       for (let y = base - 2; y < base; y++) protectCell(x, y, z, "nether");
@@ -1444,7 +1444,7 @@ function setupNether(newSeed) {
   // Materialize the return pad immediately: direct boot spawns on it before
   // the mesher requests a single chunk, so the floor must not depend on chunk
   // generation order. Per-chunk applies below remain idempotent.
-  applyReturnPlatform(-5, 5, -4, 4);
+  applyReturnPlatform(-5, 5, -5, 5);
   netherReady = true;
 }
 
