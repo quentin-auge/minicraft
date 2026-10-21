@@ -1330,6 +1330,19 @@ function tunnelForDest(dest) {
   return PORTAL_TYPES.find((s) => s.destination === dest)?.tunnel ?? "#6d28d9";
 }
 
+// TEMPORARY debug travel (Z key cycle): an explicit destination with no
+// portal behind it. Same toast and destination spiral color as a real trip,
+// same busy/cooldown guards through travelTo — but it bypasses the exits
+// gate and records no return link, so the way back falls to the
+// nearest/spawn fallback.
+export function debugTravelTo(dest) {
+  const spec = PORTAL_TYPES.find((s) => s.destination === dest);
+  travelTo({
+    dim: dest,
+    msg: dest === "over" ? "You returned to the Overworld" : spec?.enterMsg ?? null,
+  });
+}
+
 // A dimension's exits gate (End: sealed while the dragon lives) closes every
 // portal in it: no family may ferry the player out. Gated windows fire no
 // fill and no travel, so touching one is a silent no-op otherwise — ask the

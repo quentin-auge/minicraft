@@ -47,7 +47,7 @@ import {
   resetFrameSet, scanWorldPortals, clearPortalFills, notePortalEdits,
   notePortalFramesOnly, tickPortalFillFades, completeDimTravel,
   resolveTravelArrival, resetTravelLinks, isLivePortalSill, toast,
-  TRAVEL_MIN_MS,
+  TRAVEL_MIN_MS, debugTravelTo,
 } from "./src/world/portals.js";
 import { villageFrames } from "./src/world/village.js";
 import {
@@ -803,6 +803,17 @@ document.addEventListener("keydown", (e) => {
     if (!fireHookTarget(grapplePick, camera.position, _hookDir)) {
       fireSkyHook(camera.position, _hookDir, scene.fog.far + 40, TNT_SKY_GRAPPLE_MAX, refreshBlocks);
     }
+    e.preventDefault();
+    return;
+  }
+  // TEMPORARY debug travel: Z cycles Overworld -> End -> Nether -> TNT,
+  // no portal needed. Gated like grapple (in game, locked, help closed)
+  // plus never mid-build, so a stray keypress can't disturb boot,
+  // New World, or a running transition (travelTo no-ops while busy anyway).
+  const WORLD_CYCLE = ["over", "end", "nether", "tnt"];
+  if (e.code === "KeyZ" && !e.repeat && started && !isHelpOpen() && isLocked() && !building) {
+    const at = WORLD_CYCLE.indexOf(dim);
+    debugTravelTo(WORLD_CYCLE[(at + 1) % WORLD_CYCLE.length]);
     e.preventDefault();
     return;
   }
