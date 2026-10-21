@@ -1,7 +1,7 @@
 // First-class dimensions: every dimension is a registry entry, never a
 // framework fork. Framework code (store maps, portals, main loop, spawn)
 // dispatches through these specs: generator, env preset, spawn, persistence
-// + respawn policy, bedrock-floor flag. New dimensions register a spec and
+// + respawn policy, floor level. New dimensions register a spec and
 // their world generator; the shared travel/boot pipeline dispatches by key.
 // Persistence is itself per-dimension data: "retain" reuses voxels across
 // entries; "regenerate" rebuilds on every entry (TNT and End are fresh worlds).
@@ -17,7 +17,7 @@
 // New-dimension checklist:
 // env (sky/fog/sun/space/dome), moon?, ultra mode, hotbar, spawn, arrival,
 // frameKeys (worldgen frame index), persistence, ambient, fullView,
-// renderDist, respawnY floor (null = none), bedrock, region `dim` tags,
+// renderDist, respawnY floor (null = none), floorY (0, null = floorless), region `dim` tags,
 // precip `active`s, gravity zones.
 import {
   generateOverworld, generateOverworldAsync,
@@ -50,7 +50,7 @@ export const DIMENSIONS = [
     key: "over",
     persistence: "retain",
     arrival: { mode: "portal", facing: "face" },
-    hasBedrockFloor: true,
+    floorY: 0,
     respawnY: -20,
     env: null, // overworld keeps the compiled-in day sky/fog (null = default)
     // Overworld-only properties: the moon body (generation, low-grav zone,
@@ -59,9 +59,9 @@ export const DIMENSIONS = [
     moon: true,
     ultra: { bands: true },
     skyGrapple: false,
-    generate: (seed) => generateOverworld(seed),
-    generateAsync: (seed, abort) => generateOverworldAsync(seed, abort),
-    findSpawn: () => findSpawn(1.62),
+    generate: (seed) => generateOverworld(seed, dimFloorY("over")),
+    generateAsync: (seed, abort) => generateOverworldAsync(seed, abort, dimFloorY("over")),
+    findSpawn: () => findSpawn(1.62, dimFloorY("over")),
     frameKeys: () => villageFrames,
     hotbar: BASE_ITEMS,
   },
@@ -69,7 +69,7 @@ export const DIMENSIONS = [
     key: "tnt",
     persistence: "regenerate",
     arrival: { mode: "spawn" },
-    hasBedrockFloor: false,
+    floorY: null,
     // Infinite sky, no floor (respawnY: null): the fall never ends.
     respawnY: null,
     env: TNT_ENV,
@@ -97,7 +97,7 @@ export const DIMENSIONS = [
     key: "end",
     persistence: "regenerate",
     arrival: { mode: "portal", facing: "away" },
-    hasBedrockFloor: false,
+    floorY: 0,
     respawnY: -20,
     // No portal may ferry the player out of the End while the dragon lives;
     // every window touch answers this message instead of traveling.
@@ -111,10 +111,10 @@ export const DIMENSIONS = [
     moon: false,
     ultra: { bands: false, windowR: 256, windowHalfH: 90 },
     skyGrapple: false,
-    generate: () => generateEndDimension(),
+    generate: () => generateEndDimension(dimFloorY("end")),
     generateAsync: async (_seed, aborted) => {
       if (aborted && aborted()) return false;
-      generateEndDimension();
+      generateEndDimension(dimFloorY("end"));
       return !(aborted && aborted());
     },
     findSpawn: findEndSpawn,
@@ -127,7 +127,7 @@ export const DIMENSIONS = [
     // starts a fresh one (main.js resetNetherDimension during boot).
     persistence: "retain",
     arrival: { mode: "portal", facing: "away" },
-    hasBedrockFloor: false,
+    floorY: 0,
     respawnY: -20,
     // Dark, effectively fogless sky: fogNear/far sit past the world radius,
     // and fullView drops the streaming cap so the distant volcanoes stay
@@ -142,11 +142,11 @@ export const DIMENSIONS = [
     ultra: { bands: false, windowR: 256, windowHalfH: 256 },
     skyGrapple: false,
     ambient: "nether",
-    generate: (seed) => generateNetherDimension(seed),
+    generate: (seed) => generateNetherDimension(seed, dimFloorY("nether")),
     // Boot only materializes the spawn/return chunks; the mesher streams the
     // rest of the Nether through the chunk source as the player looks around.
-    generateAsync: (seed, aborted) => prepareNetherDimensionAsync(seed, aborted),
-    findSpawn: findNetherSpawn,
+    generateAsync: (seed, aborted) => prepareNetherDimensionAsync(seed, aborted, dimFloorY("nether")),
+    findSpawn: () => findNetherSpawn(dimFloorY("nether")),
     frameKeys: netherPortalFrameKeys,
     hotbar: BASE_ITEMS.map((id) => id === WATER ? LAVA : id === FLOWER ? GLOWSTONE : id),
   },
@@ -156,8 +156,11 @@ const byKey = new Map(DIMENSIONS.map((s) => [s.key, s]));
 export function dimSpec(key) {
   return byKey.get(key);
 }
-export function dimHasBedrock(key) {
-  return byKey.get(key)?.hasBedrockFloor ?? true;
+export function dimFloorY(key) {
+  const f = byKey.get(key)?.floorY;
+  // Unknown dimensions keep a floor at 0; null = floorless (TNT sky).
+  // (?? 0 would be wrong here: null ?? 0 is 0, resurrecting a floor.)
+  return f === undefined ? 0 : f;
 }
 export function dimEnv(key) {
   return byKey.get(key)?.env ?? null;

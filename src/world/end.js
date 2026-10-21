@@ -2,6 +2,9 @@
 import { ENDSTONE, PORTAL } from "../core/blocks.js";
 import { key, protectCell, resetWorld, setBlock, setDimension } from "../core/store.js";
 
+// The whole level is its floor: a one-block platform at the dimension's
+// floorY (== dimFloorY("end")); kept as a literal because module top-level
+// code cannot read the registry (dimensions.js imports this module).
 export const END_PLATFORM_TOP = 0;
 export const END_PLATFORM_RADIUS = 36;
 export const END_RETURN_Z = 16;
@@ -30,13 +33,13 @@ export function resetEndDimension() {
   returnFrameKeys = [];
 }
 
-export function generateEndDimension() {
+export function generateEndDimension(floorY = END_PLATFORM_TOP) {
   resetEndDimension();
   const R = END_PLATFORM_RADIUS;
   for (let x = -R; x <= R; x++) {
     for (let z = -R; z <= R; z++) {
-      setBlock(x, END_PLATFORM_TOP, z, ENDSTONE);
-      protectCell(x, END_PLATFORM_TOP, z, "end");
+      setBlock(x, floorY, z, ENDSTONE);
+      protectCell(x, floorY, z, "end");
     }
   }
 

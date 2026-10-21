@@ -27,7 +27,7 @@ import * as THREE from "three";
 import { AIR, PORTAL, OBSIDIAN, TNT, MEGA_TNT, ULTRA_TNT, isLiquid } from "../core/blocks.js";
 import { materialsFor } from "../core/textures.js";
 import { DIMENSION_KEYS, dim, dimBound, key, keyXYZ, getBlock, isSolid } from "../core/store.js";
-import { dimSpec } from "./dimensions.js";
+import { dimFloorY, dimSpec } from "./dimensions.js";
 import {
   pos, yaw, keys,
   PLAYER_HW, PLAYER_H, EYE,
@@ -1041,7 +1041,8 @@ function losClear(from, to) {
 // an unobstructed view of the portal.
 function validArrivalSpot(win, spot, wins) {
   const bx = Math.floor(spot.x), by = Math.floor(spot.y), bz = Math.floor(spot.z);
-  if (by < 1) return false;
+  // Feet stay above the dimension's floor (null floor coerces to the same 1).
+  if (by < dimFloorY(dim) + 1) return false;
   if (bx < -dimBound() || bx > dimBound() || bz < -dimBound() || bz > dimBound()) return false;
   if (!isSolid(bx, by - 1, bz)) return false;
   if (!returnBodyClear(spot.x, spot.y, spot.z)) return false;

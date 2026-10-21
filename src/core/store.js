@@ -285,7 +285,8 @@ export function isEnclosedAir(x, y, z, belowCap = false) {
     for (const [nx, ny, nz] of ns) {
       // Reaching the key-range floor or the world edge reads open (the old
       // y < 0 continue only ever fired for in-bounds air at y = 0, which
-      // bedrock makes impossible — the observable behavior is unchanged).
+      // the unbreakable floor makes impossible — the observable behavior
+      // is unchanged).
       if (outOfWorld(nx, ny, nz)) return false;
       if (getBlock(nx, ny, nz) !== AIR) continue;
       const k = key(nx, ny, nz);

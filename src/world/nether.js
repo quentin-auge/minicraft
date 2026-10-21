@@ -94,6 +94,10 @@ const SIZE = 2 * S + 1;
 const CHUNK_RADIUS = Math.ceil(S / CHUNK);
 
 let netherSeed = 1;
+// Bottom of the level, threaded from the dimension spec (dimFloorY) through
+// the generation entry points: the chunk pass cannot take a parameter (fixed
+// chunk-source protocol), so it reads this. Always reset beside the seed.
+let netherFloorY = 0;
 let netherRiverPaths = [];
 let volcanoes = [];
 let tunnels = [];
@@ -139,13 +143,13 @@ export function netherPortalFrameKeys() {
   return returnFrameKeys.slice();
 }
 
-export function findNetherSpawn() {
+export function findNetherSpawn(floorY = 0) {
   // Direct boot can query the spawn before the mesher asks for its chunk.
   // Return the highest solid support at the spawn column so the player never
   // starts in empty air over the void.
   const x = Math.floor(NETHER_SPAWN.x + 0.5);
   const z = Math.floor(NETHER_SPAWN.z + 0.5);
-  for (let y = NETHER_SPAWN.y + 2; y >= 0; y--) {
+  for (let y = NETHER_SPAWN.y + 2; y >= floorY; y--) {
     if (isSolid(x, y, z)) return { ...NETHER_SPAWN, y };
   }
   return { ...NETHER_SPAWN };
@@ -1566,10 +1570,11 @@ function buildReturnPlatform() {
   }
 }
 
-function resetNetherState(newSeed) {
+function resetNetherState(newSeed, floorY = 0) {
   setDimension("nether");
   resetWorld("nether");
   netherSeed = newSeed;
+  netherFloorY = floorY;
   netherRiverPaths = [];
   volcanoes = [];
   tunnels = [];
@@ -1609,8 +1614,8 @@ function netherSetupStages() {
   ];
 }
 
-function setupNether(newSeed) {
-  resetNetherState(newSeed);
+function setupNether(newSeed, floorY = 0) {
+  resetNetherState(newSeed, floorY);
   for (const stage of netherSetupStages()) stage.run();
   netherReady = true;
 }
@@ -1645,7 +1650,7 @@ function generateNetherChunk(cx, cz) {
     for (let z = z0; z <= z1; z++) {
       const h = landHeightCached(x, z);
       const top = topAt(x, z);
-      fillColumn(x, z, 0, h, NETHERRACK);
+      fillColumn(x, z, netherFloorY, h, NETHERRACK);
       if (top > h) {
         // The shell reaches down to the lowest nearby surface; three layers
         // leave one rock behind every cascade lava cell and close the boundary.
@@ -1686,7 +1691,9 @@ function generateNetherChunk(cx, cz) {
         const dx = x - v.x, dz = z - v.z;
         const d2 = dx * dx + dz * dz;
         if (d2 > coreR * coreR) continue;
-        fillColumn(x, z, 1, rim, NETHERRACK);
+        // Cores start one cell above the floor, preserving the terrain's
+        // bottom cell exactly as the hardcoded 1 did.
+        fillColumn(x, z, netherFloorY + 1, rim, NETHERRACK);
         if (d2 <= v.craterR * v.craterR) fillColumn(x, z, v.baseY, rim, LAVA);
         else fillColumn(x, z, rim - 1, rim, LAVA);
       }
@@ -1995,8 +2002,8 @@ function ensureNetherChunk(cx, cz) {
 
 registerChunkSource("nether", ensureNetherChunk);
 
-export function generateNetherDimension(newSeed) {
-  setupNether(newSeed);
+export function generateNetherDimension(newSeed, floorY = 0) {
+  setupNether(newSeed, floorY);
   for (let cz = -CHUNK_RADIUS; cz <= CHUNK_RADIUS; cz++) {
     for (let cx = -CHUNK_RADIUS; cx <= CHUNK_RADIUS; cx++) ensureNetherChunk(cx, cz);
   }
@@ -2005,8 +2012,8 @@ export function generateNetherDimension(newSeed) {
 
 // Full sliced twin, kept for the headless harness: same voxels as the sync
 // reference, generated in the same chunk order.
-export async function generateNetherDimensionAsync(newSeed, isAborted) {
-  resetNetherState(newSeed);
+export async function generateNetherDimensionAsync(newSeed, isAborted, floorY = 0) {
+  resetNetherState(newSeed, floorY);
   if (!await runSetupStagesAsync(isAborted)) return false;
   let done = 0;
   for (let cz = -CHUNK_RADIUS; cz <= CHUNK_RADIUS; cz++) {
@@ -2026,8 +2033,8 @@ export async function generateNetherDimensionAsync(newSeed, isAborted) {
 // the return platform. The rest streams in through the chunk source. Setup
 // stages yield between passes (same voxels as the sync reference, same
 // order), so a first visit never holds one long block behind the spiral.
-export async function prepareNetherDimensionAsync(newSeed, isAborted) {
-  resetNetherState(newSeed);
+export async function prepareNetherDimensionAsync(newSeed, isAborted, floorY = 0) {
+  resetNetherState(newSeed, floorY);
   if (!await runSetupStagesAsync(isAborted)) return false;
   if (isAborted && isAborted()) return false;
   const raf = () => new Promise((r) => requestAnimationFrame(r));

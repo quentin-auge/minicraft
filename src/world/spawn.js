@@ -25,9 +25,9 @@ const PEN_MARGIN = 1;
 // with open headroom. Null for water, tree columns, roofed, or empty columns.
 // Starts below the moon band (moon rock never qualifies for footing, so
 // scanning it is pure cost once the lazy fill lands).
-function groundHeightAt(x, z) {
+function groundHeightAt(x, z, floorY) {
   const top = Math.min(topAt(dim, x, z), MOON_MIN_Y - 1);
-  for (let y = top; y >= 0; y--) {
+  for (let y = top; y >= floorY; y--) {
     const id = getBlock(x, y, z);
     if (id === CLOUD || id === MOON) continue;
     if (id === LOG || id === LEAVES) return null;
@@ -92,18 +92,18 @@ function bestFacing(ex, ey, ez) {
 // exists inside the search disc. Never in the pen, never wet. Falls back to
 // the best vista found, loudly, on pathological seeds. Eye height is a
 // parameter so this module never imports player state.
-export function findSpawn(eyeHeight) {
+export function findSpawn(eyeHeight, floorY = 0) {
   let fx = 0, fz = 0, fy = 0, ff = 0, bestScore = -1;
   for (let r = 0; r <= SPAWN_SEARCH_R; r++) {
     for (let dx = -r; dx <= r; dx++) {
       for (let dz = -r; dz <= r; dz++) {
         if (Math.max(Math.abs(dx), Math.abs(dz)) !== r) continue;
         if (inPen(dx, dz)) continue;
-        const gy = groundHeightAt(dx, dz);
+        const gy = groundHeightAt(dx, dz, floorY);
         if (gy === null) continue;
         let open = true;
         for (const [ox, oz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
-          const ng = groundHeightAt(dx + ox, dz + oz);
+          const ng = groundHeightAt(dx + ox, dz + oz, floorY);
           if (ng === null || Math.abs(ng - gy) > 2) { open = false; break; }
         }
         if (!open) continue;
@@ -115,7 +115,7 @@ export function findSpawn(eyeHeight) {
   }
   if (bestScore < 0) {
     const top = Math.min(topAt(dim, 0, 0), MOON_MIN_Y - 1);
-    for (let y = top; y >= 0; y--) {
+    for (let y = top; y >= floorY; y--) {
       if (isSolid(0, y, 0)) { fy = y; break; }
     }
     ff = bestFacing(0.5, fy + 1 + eyeHeight, 0.5)[0];

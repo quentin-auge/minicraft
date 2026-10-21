@@ -6,7 +6,7 @@ import * as THREE from "three";
 import { AIR, BLOCK_INFO, FLOWER, GLOWSTONE, TNT, isLiquid, isTntLike } from "../core/blocks.js";
 import { dim, dimInfinite, getBlock, setBlock, outOfWorld, isCellProtected } from "../core/store.js";
 import { pinTntCellAt } from "../world/tntstream.js";
-import { dimHasBedrock, dimTntTiersUnlocked } from "../world/dimensions.js";
+import { dimFloorY, dimTntTiersUnlocked } from "../world/dimensions.js";
 import { isTntTierUnlocked } from "../world/tntunlock.js";
 import { PLAYER_HW, PLAYER_H, pos } from "./physics.js";
 import { igniteTNT, isLitTNT, detonateNow, noteTntPlaced, kindOfBlock, trackMegaPlaced, trackRegularTntPlaced } from "../fx/tnt.js";
@@ -143,9 +143,8 @@ let pendingChainGlowBreak = false;
 
 export function breakBlockAt(x, y, z, opts) {
   const batched = !!opts?.batch;
-  // Bedrock floor exists only in dimensions that declare it (overworld);
-  // the TNT cube has no floor — nothing to protect at y = 0.
-  if (y === 0 && dimHasBedrock(dim)) return [];
+  // The dimension's floor level (null = floorless) is unbreakable by hand.
+  if (y === dimFloorY(dim)) return [];
   if (isCellProtected(x, y, z)) return [];
   const bid = getBlock(x, y, z);
   if (bid === AIR) return [];

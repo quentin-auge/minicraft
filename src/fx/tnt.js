@@ -10,7 +10,7 @@
 // capped at 40, 8 s fuse, simultaneous blasts, player knockback, one
 // Firestorm Wall style), and ultra (black mega look, 8 s fuse, wipes one
 // altitude band of the whole level across frames) ship as entries.
-// Bedrock (y=0) is always spared; liquids survive unless the kind sets
+// The floor level (y = 0) is always spared; liquids survive unless the kind sets
 // clearsLiquids (mega). A non-clearing TNT placed in liquid restores that
 // liquid in its cell after its blast; a clearing kind leaves air behind.
 // After every blast, liquids left with no solid 6-neighbor are purged back
@@ -726,7 +726,7 @@ function queueBandBoundaryChains(job, x, y, z) {
 function carveBandCell(job, kind, gx, gy, gz, touched) {
   const bid = getBlock(gx, gy, gz);
   if (bid === AIR) return;
-  if (gy === 0 && !dimInfinite()) return; // bedrock (bounded dims only)
+  if (gy === 0 && !dimInfinite()) return; // floor (bounded dims only)
   const victimKind = isTntLike(bid) ? kindOfBlock(bid) : null;
   if (victimKind) {
     // Overhang-only cells may extend into another altitude band; preserve
@@ -1845,7 +1845,7 @@ function carveSphere(cx, cy, cz, kind, touched, pool = false, Reff = kind.radius
 function carvePoolColumn(x, m, R, kind, touched, pool = true, open = false) {
   const R2 = R * R;
   for (let z = Math.max(-dimBound(), Math.ceil(m.z - R)); z <= Math.min(dimBound(), Math.floor(m.z + R)); z++) {
-    // Bounded dims keep the y = 0 bedrock floor uncarved; infinite dims carve
+    // Bounded dims keep the y = 0 floor uncarved; infinite dims carve
     // the full sphere (key range is the only floor, far out of reach).
     const yLo = dimInfinite() ? Math.ceil(m.y - R) : Math.max(1, Math.ceil(m.y - R));
     let yHi = Math.floor(m.y + R);

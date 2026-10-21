@@ -164,15 +164,16 @@ function setupOverworld(newSeed) {
   return { seed, forest: false, getBlock, setBlock, heightAt, riverClearance };
 }
 
-function fillTerrainColumn(treeCtx, x, z) {
+function fillTerrainColumn(treeCtx, x, z, floorY) {
   const inVillage = x >= village.minX && x <= village.maxX && z >= village.minZ && z <= village.maxZ;
   let h = heightAt(x, z);
   if (inVillage) h = village.center.y;
   // Bulk runs, not per-block writes: identical voxels, one index pass
-  // per run (stone body, dirt band, top cell, then water fill).
+  // per run (stone body, dirt band, top cell, then water fill). Columns
+  // bottom out at the dimension's floor level.
   const topId = inVillage ? STONE : (h <= WATER_LEVEL + 1 ? SAND : GRASS);
-  if (h >= 3) fillColumn(x, z, 0, h - 3, STONE);
-  if (h >= 1) fillColumn(x, z, Math.max(0, h - 2), h - 1, DIRT);
+  if (h >= 3) fillColumn(x, z, floorY, h - 3, STONE);
+  if (h >= 1) fillColumn(x, z, Math.max(floorY, h - 2), h - 1, DIRT);
   fillColumn(x, z, h, h, topId);
   if (!inVillage && h < WATER_LEVEL) fillColumn(x, z, h + 1, WATER_LEVEL, WATER);
   if (inVillage) return;
@@ -193,11 +194,11 @@ function finishOverworld() {
   resetMoon();
 }
 
-export function generateOverworld(newSeed) {
+export function generateOverworld(newSeed, floorY = 0) {
   const treeCtx = setupOverworld(newSeed);
   for (let x = -WORLD_RADIUS; x <= WORLD_RADIUS; x++) {
     for (let z = -WORLD_RADIUS; z <= WORLD_RADIUS; z++) {
-      fillTerrainColumn(treeCtx, x, z);
+      fillTerrainColumn(treeCtx, x, z, floorY);
     }
   }
   finishOverworld();
@@ -207,13 +208,13 @@ export function generateOverworld(newSeed) {
 // but yields to the event loop every few rows so the menu, Play clicks,
 // and renders interleave instead of freezing for ~1s. Aborts fast when
 // isAborted() turns true (a newer world started).
-export async function generateOverworldAsync(newSeed, isAborted) {
+export async function generateOverworldAsync(newSeed, isAborted, floorY = 0) {
   const treeCtx = setupOverworld(newSeed);
   const ROWS_PER_SLICE = 12;
   let rows = 0;
   for (let x = -WORLD_RADIUS; x <= WORLD_RADIUS; x++) {
     for (let z = -WORLD_RADIUS; z <= WORLD_RADIUS; z++) {
-      fillTerrainColumn(treeCtx, x, z);
+      fillTerrainColumn(treeCtx, x, z, floorY);
     }
     if (++rows % ROWS_PER_SLICE === 0) {
       if (isAborted && isAborted()) return false;
