@@ -85,6 +85,9 @@ function spawnEmber(s, cx, cz) {
       return;
     }
   }
+  // No lava found: kill the slot and park it out of sight, or it freezes
+  // mid-air at its last position (retried every half-tick, never hidden).
+  s.posA[s.spawnIndex * 3 + 1] = -100;
   s.life[s.spawnIndex] = 0;
 }
 
@@ -128,13 +131,17 @@ function ensureVolcano(scene) {
 
 function spawnVolcanoEmber(s, i) {
   const list = netherVolcanoes();
-  if (!list.length) { s.life[i] = 0; return; }
+  // No live crater to erupt from: park hidden instead of freezing mid-air.
+  if (!list.length) { s.posA[i * 3 + 1] = -100; s.life[i] = 0; return; }
   const v = list[(Math.random() * list.length) | 0];
   for (let tries = 0; tries < 8; tries++) {
     const ox = (Math.random() * 2 - 1) * v.craterR * 0.9;
     const oz = (Math.random() * 2 - 1) * v.craterR * 0.9;
     if (ox * ox + oz * oz > v.craterR * v.craterR) continue;
     const base = v.rim - v.craterDepth * (0.2 + Math.random() * 0.5);
+    // The crater lava is the fountain's fuel: a blasted-out crater spawns
+    // nothing, so eruptions die with the volcano instead of firing from air.
+    if (getBlock(Math.floor(v.x + ox), Math.floor(base), Math.floor(v.z + oz)) !== LAVA) continue;
     s.posA[i * 3] = v.x + ox + 0.5;
     s.posA[i * 3 + 1] = base;
     s.posA[i * 3 + 2] = v.z + oz + 0.5;
@@ -145,6 +152,8 @@ function spawnVolcanoEmber(s, i) {
     s.life[i] = 1.8 + Math.random() * 1.6;
     return;
   }
+  // Crater blasted out (no lava at any tried cell): park hidden, same as above.
+  s.posA[i * 3 + 1] = -100;
   s.life[i] = 0;
 }
 

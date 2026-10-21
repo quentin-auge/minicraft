@@ -139,7 +139,7 @@ export const DIMENSIONS = [
     },
     fullView: true,
     moon: false,
-    ultra: { bands: false, windowR: 256, windowHalfH: 90 },
+    ultra: { bands: false, windowR: 256, windowHalfH: 256 },
     skyGrapple: false,
     ambient: "nether",
     generate: (seed) => generateNetherDimension(seed),
