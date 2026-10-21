@@ -1,8 +1,7 @@
 // Registry-driven portals. Each family declares a destination dimension:
-// End and TNT frames cross to it from anywhere, and return to the Overworld
-// when already in it (the End return fill lights only once the
-// dragon-cleared gate opens). The Nether is a temporary local loop until
-// its dimension ships. Families share frame validation, fills, travel
+// End, Nether, and TNT frames cross to it from anywhere, and return to the
+// Overworld when already in it (the End return fill lights only once the
+// dragon-cleared gate opens). Families share frame validation, fills, travel
 // spiral, grapple interaction, and per-dimension frame indexing. A
 // dimension's exits gate (DIMENSIONS exitsGate) closes every portal in it:
 // validated windows stay overlap-testable in portalWindows and any touch
@@ -10,9 +9,14 @@
 //
 // Cross-dimension travel remembers the portal left in the source dimension
 // (travelLinks, one per dimension). Arriving back in a dimension uses that
-// portal when it still validates, with master's safe-spot search and the
-// destination's arrival facing (Overworld faces the portal, End faces away);
-// otherwise the destination spawn is used.
+// portal when it still validates and places the player where the portal is
+// visible: orthogonal spots 4 blocks out first (4,5,3,6,2,7,1,8, with small
+// lateral sweeps and height +0/+1/+2 not counted; the portal's own ground
+// sweeps every face and side before any other height), then the same sweep
+// snapped to each column's real support top, then standing on the frame,
+// then any visible spot within 16. Overworld arrivals face the portal,
+// every other dimension
+// arrives with its back to it; otherwise the destination spawn is used.
 //
 // Extension shape: PORTAL_TYPES is the registry; the engine below never
 // switches on family names, it dispatches through the spec's props —
@@ -25,8 +29,8 @@ import { materialsFor } from "../core/textures.js";
 import { DIMENSION_KEYS, dim, dimBound, key, keyXYZ, getBlock, isSolid } from "../core/store.js";
 import { dimSpec } from "./dimensions.js";
 import {
-  pos, vel, yaw, keys, setYaw, setPitch,
-  PLAYER_HW, PLAYER_H,
+  pos, yaw, keys,
+  PLAYER_HW, PLAYER_H, EYE,
 } from "../player/physics.js";
 
 export const PORTAL_TYPES = [
@@ -759,6 +763,11 @@ function insideEndInterior(win, bx, by, bz) {
     }
     return bx >= win.minX + 1 && bx <= win.minX + 3 && by >= win.minY + 1 && by <= top && bz === win.minZ;
   }
+  // Flat interiors are the single fill layer: a body at any other height
+  // never overlaps the slab (the travel trigger reads fill cells, not this).
+  // An unbounded column here would reject standable cells high above or deep
+  // below a neighbouring flat window.
+  if (by !== win.minY) return false;
   return bx >= win.minX + 1 && bx <= win.minX + 3 && bz >= win.minZ + 1 && bz <= win.minZ + 3;
 }
 
@@ -773,6 +782,8 @@ function insideRectInterior(win, bx, by, bz) {
     if (win.dims === "4x4") return bx >= win.minX + 1 && bx <= win.minX + 2 && by >= win.minY + 1 && by <= win.minY + 2 && bz === win.minZ;
     return bx >= win.minX + 1 && bx <= win.minX + 3 && by >= win.minY + 1 && by <= win.minY + 2 && bz === win.minZ;
   }
+  // Flat interiors are the single fill layer (see insideEndInterior).
+  if (by !== win.minY) return false;
   if (win.dims === "4x5") return bx >= win.minX + 1 && bx <= win.minX + 2 && bz >= win.minZ + 1 && bz <= win.minZ + 3;
   if (win.dims === "4x4") return bx >= win.minX + 1 && bx <= win.minX + 2 && bz >= win.minZ + 1 && bz <= win.minZ + 2;
   return bx >= win.minX + 1 && bx <= win.minX + 3 && bz >= win.minZ + 1 && bz <= win.minZ + 2;
@@ -800,7 +811,7 @@ function portalFrameBBox(w) {
   return specOf(w).bbox(w);
 }
 
-// --- Arrival spots (master return rules, local loop) ---
+// --- Arrival spots (visibility first, orthogonal preference) ---
 
 function returnBodyClear(px, py, pz) {
   for (let bx = Math.floor(px - PLAYER_HW + 0.02); bx <= Math.floor(px + PLAYER_HW - 0.02); bx++)
@@ -820,91 +831,281 @@ function inReturnPortalBody(wins, px, py, pz) {
   return false;
 }
 
-function chebDistToBox(ix, iz, box) {
-  const dx = ix < box.minX ? box.minX - ix : ix > box.maxX ? ix - box.maxX : 0;
-  const dz = iz < box.minZ ? box.minZ - iz : iz > box.maxZ ? iz - box.maxZ : 0;
-  return Math.max(dx, dz);
-}
-
-function findReturnSpot(win, dir, wins) {
-  const box = portalFrameBBox(win);
-  const c = winCenter(win);
-  const px = c.x + 0.5, pz = c.z + 0.5;
-  const n = dir ? Math.hypot(dir.x, dir.z) : 0;
-  const dx = n ? dir.x / n : 0, dz = n ? dir.z / n : 0;
-  // Start two rings farther out than master's nearest spot so returns never
-  // land right beside the frame; fall back outward only when those fail.
-  for (let r = 3; r <= 5; r++) {
-    for (const dy of [0, 1, -1, 2, -2]) {
-      const feetY = box.baseY + dy;
-      if (feetY < 1) continue;
-      const ring = [];
-      for (let ix = box.minX - r; ix <= box.maxX + r; ix++)
-        for (let iz = box.minZ - r; iz <= box.maxZ + r; iz++) {
-          if (chebDistToBox(ix, iz, box) !== r) continue;
-          if (ix < -dimBound() || ix > dimBound() || iz < -dimBound() || iz > dimBound()) continue;
-          ring.push([ix, iz]);
-        }
-      if (n) ring.sort((a, b) => ((b[0] + 0.5 - px) * dx + (b[1] + 0.5 - pz) * dz) - ((a[0] + 0.5 - px) * dx + (a[1] + 0.5 - pz) * dz));
-      for (const [ix, iz] of ring) {
-        if (!isSolid(ix, feetY - 1, iz)) continue;
-        if (!returnBodyClear(ix + 0.5, feetY, iz + 0.5)) continue;
-        if (inReturnPortalBody(wins, ix + 0.5, feetY, iz + 0.5)) continue;
-        return { x: ix + 0.5, y: feetY, z: iz + 0.5 };
-      }
-    }
+function facePortalFrom(win, px, pz, preferredDir = null) {
+  const c = portalFacePoint(win);
+  const dx = c.x - px, dz = c.z - pz;
+  if (Math.hypot(dx, dz) < 1e-3) {
+    if (preferredDir && Math.hypot(preferredDir.x, preferredDir.z) > 1e-6)
+      return Math.atan2(-preferredDir.x, -preferredDir.z);
+    return 0;
   }
-  return null;
+  return Math.atan2(-dx, -dz);
 }
 
-function frameTopSpot(win, wins) {
+// Distance ladder: the preferred 4-block ring, then alternating outward
+// (5,3 / 6,2 / 7,1 / 8). Per distance, the portal's own ground level sweeps
+// every face and side before any other height; going to the other side
+// beats climbing. Each orthogonal target also sweeps small lateral offsets
+// so a blocked centre column does not hide a free neighbour cell.
+// A second pass snaps the same sweep to each column's real support top for
+// sunk, raised or sloped portals. Frame placement (0) and the general
+// visible search follow in findArrivalSpot.
+const ARRIVAL_DISTS = [4, 5, 3, 6, 2, 7, 1, 8];
+const ARRIVAL_LATERAL = [0, -1, 1, -2, 2];
+// Height tolerance above the frame base; it never counts in the distance.
+const ARRIVAL_HEIGHTS = [0, 1, 2];
+// Support snap (second pass): the same sweep snapped to the column's real
+// standable top, for portals sunk into or raised above the local relief.
+// Nearest-to-base offsets first; the exact heights above already ran.
+const ARRIVAL_SNAP_DY = [-1, -2, 3, -3, 4];
+const ARRIVAL_SEARCH_R = 16;
+const LOS_STEP = 0.2;
+
+function isFrameCell(win, x, y, z) {
+  const f = specOf(win).frame;
+  const id = getBlock(x, y, z);
+  return Array.isArray(f) ? f.includes(id) : id === f;
+}
+
+// Horizontal outward normals. The exit direction wins the ordering when the
+// player came through a linked portal; otherwise the stable +axis-first order
+// applies.
+function arrivalAxes(win, preferredDir) {
+  const axes = win.orient === "v"
+    ? (win.face === "x"
+      ? [{ nx: 1, nz: 0 }, { nx: -1, nz: 0 }]
+      : [{ nx: 0, nz: 1 }, { nx: 0, nz: -1 }])
+    : [{ nx: 1, nz: 0 }, { nx: -1, nz: 0 }, { nx: 0, nz: 1 }, { nx: 0, nz: -1 }];
+  const dx = preferredDir?.x ?? 0, dz = preferredDir?.z ?? 0;
+  if (Math.hypot(dx, dz) < 1e-6) return axes;
+  return axes
+    .map((a) => ({ ...a, dot: a.nx * dx + a.nz * dz }))
+    .sort((a, b) => b.dot - a.dot);
+}
+
+// Orthogonal target at `dist` from the frame plane. Upright portals offset
+// from the face centre; flat portals offset from the middle of the chosen
+// side (the side plane passes through the outer frame block centre).
+function arrivalTarget(win, axis, dist) {
   const box = portalFrameBBox(win);
-  const cols = [];
+  const fill = portalFillBox(win);
+  if (win.orient === "v") return { x: fill.cx + axis.nx * dist, z: fill.cz + axis.nz * dist };
+  const sx = axis.nx > 0 ? box.maxX + 0.5 : box.minX + 0.5;
+  const sz = axis.nz > 0 ? box.maxZ + 0.5 : box.minZ + 0.5;
+  return {
+    x: axis.nx !== 0 ? sx + axis.nx * dist : fill.cx,
+    z: axis.nz !== 0 ? sz + axis.nz * dist : fill.cz,
+  };
+}
+
+function arrivalSpotAt(win, axis, dist, lat, dy) {
+  const t = arrivalTarget(win, axis, dist);
+  const x = axis.nx !== 0 ? t.x : t.x + lat;
+  const z = axis.nx !== 0 ? t.z + lat : t.z;
+  return { x: Math.floor(x) + 0.5, y: win.minY + dy, z: Math.floor(z) + 0.5 };
+}
+
+function portalFacePoint(win) {
+  const b = portalFillBox(win);
+  return { x: b.cx, y: b.cy, z: b.cz };
+}
+
+// Real frame blocks around the window (perimeter of its bbox, filtered by the
+// spec's frame ids so omitted End corners never count).
+function frameRingCells(win) {
+  const box = portalFrameBBox(win);
+  const out = [];
+  const push = (x, y, z) => { if (isFrameCell(win, x, y, z)) out.push([x, y, z]); };
   if (win.orient === "v") {
     if (win.face === "x") {
-      for (let z = box.minZ; z <= box.maxZ; z++) cols.push([box.minX, box.topY, z]);
+      for (let y = box.baseY; y <= box.topY; y++)
+        for (let z = box.minZ; z <= box.maxZ; z++) {
+          if (y !== box.baseY && y !== box.topY && z !== box.minZ && z !== box.maxZ) continue;
+          push(box.minX, y, z);
+        }
     } else {
-      for (let x = box.minX; x <= box.maxX; x++) cols.push([x, box.topY, box.minZ]);
+      for (let y = box.baseY; y <= box.topY; y++)
+        for (let x = box.minX; x <= box.maxX; x++) {
+          if (y !== box.baseY && y !== box.topY && x !== box.minX && x !== box.maxX) continue;
+          push(x, y, box.minZ);
+        }
     }
   } else {
     for (let x = box.minX; x <= box.maxX; x++)
       for (let z = box.minZ; z <= box.maxZ; z++) {
-        const edge = x === box.minX || x === box.maxX || z === box.minZ || z === box.maxZ;
-        if (edge) cols.push([x, box.topY, z]);
+        if (x !== box.minX && x !== box.maxX && z !== box.minZ && z !== box.maxZ) continue;
+        push(x, box.baseY, z);
       }
   }
-  const c = winCenter(win);
-  cols.sort((a, b) => (Math.abs(a[0] - c.x) + Math.abs(a[2] - c.z)) - (Math.abs(b[0] - c.x) + Math.abs(b[2] - c.z)));
-  for (const [fx, fy, fz] of cols) {
-    if (!isSolid(fx, fy, fz)) continue;
-    for (let feetY = fy + 1; feetY <= fy + 30; feetY++) {
-      if (!isSolid(fx, feetY - 1, fz)) continue;
-      if (!returnBodyClear(fx + 0.5, feetY, fz + 0.5)) continue;
-      if (inReturnPortalBody(wins, fx + 0.5, feetY, fz + 0.5)) continue;
-      return { x: fx + 0.5, y: feetY, z: fz + 0.5 };
+  return out;
+}
+
+// "Seeing the portal": upright windows look at their fill face centre first,
+// then at every fill cell nearest-first (a rock tooth, jamb or tree may hide
+// the centre while another part of the slab stays visible), then at the
+// nearest ring faces (a floating portal's own bottom row hides its fill
+// from a low angle; the frame face is still the portal, seen head-on);
+// flat windows look at their nearest ring cells, side face then top face
+// (a horizontal side view cannot see the fill past the frame, but the ring
+// top reads over any single-step obstacle).
+function arrivalLosTargets(win, from) {
+  if (win.orient !== "v") return flatLosTargets(win, from);
+  const center = portalFacePoint(win);
+  const cells = [];
+  for (const [x, y, z] of specOf(win).cells(win)) {
+    const px = x + 0.5, py = y + 0.5, pz = z + 0.5;
+    const dx = px - from.x, dy = py - from.y, dz = pz - from.z;
+    cells.push({ p: { x: px, y: py, z: pz }, d: dx * dx + dy * dy + dz * dz });
+  }
+  cells.sort((a, b) => a.d - b.d);
+  const out = [center];
+  for (const { p } of cells) {
+    if (Math.abs(p.x - center.x) < 1e-6 && Math.abs(p.y - center.y) < 1e-6 && Math.abs(p.z - center.z) < 1e-6)
+      continue;
+    out.push(p);
+  }
+  // Last resort: the ring itself. A floating portal's fill is genuinely
+  // hidden from a low grazing angle by its own bottom row; the frame face
+  // is still the portal, seen head-on. Fill targets always win first.
+  const ring = [];
+  for (const [x, y, z] of frameRingCells(win)) {
+    const px = x + 0.5, py = y + 0.5, pz = z + 0.5;
+    const dx = px - from.x, dy = py - from.y, dz = pz - from.z;
+    ring.push({ x, y, z, d: dx * dx + dy * dy + dz * dz });
+  }
+  ring.sort((a, b) => a.d - b.d);
+  for (const c of ring.slice(0, 4)) {
+    out.push({ x: c.x + 0.5, y: c.y + 0.5, z: c.z + 0.5 });
+    out.push({ x: c.x + 0.5, y: c.y + 1.0, z: c.z + 0.5 });
+  }
+  return out;
+}
+
+// Flat windows are seen from the side at standing eye height: the visible
+// cue is the ring's side face and, over any single-step obstacle, its top.
+// Test both on the nearest ring cells so one low wall does not blind a whole
+// direction.
+function flatLosTargets(win, from) {
+  const ring = [];
+  for (const [x, y, z] of frameRingCells(win)) {
+    const px = x + 0.5, py = y + 0.5, pz = z + 0.5;
+    const dx = px - from.x, dy = py - from.y, dz = pz - from.z;
+    ring.push({ x, y, z, d: dx * dx + dy * dy + dz * dz });
+  }
+  ring.sort((a, b) => a.d - b.d);
+  const out = [];
+  for (const c of ring.slice(0, 4)) {
+    out.push({ x: c.x + 0.5, y: c.y + 0.5, z: c.z + 0.5 });
+    out.push({ x: c.x + 0.5, y: c.y + 1.0, z: c.z + 0.5 });
+  }
+  return out;
+}
+
+function losClear(from, to) {
+  const dx = to.x - from.x, dy = to.y - from.y, dz = to.z - from.z;
+  const len = Math.hypot(dx, dy, dz);
+  if (len < 1e-4) return true;
+  const steps = Math.ceil(len / LOS_STEP);
+  let last = null;
+  for (let i = 1; i < steps; i++) {
+    const t = i / steps;
+    const x = Math.floor(from.x + dx * t);
+    const y = Math.floor(from.y + dy * t);
+    const z = Math.floor(from.z + dz * t);
+    const k = x + "," + y + "," + z;
+    if (k === last) continue;
+    last = k;
+    if (isSolid(x, y, z)) return false;
+  }
+  return true;
+}
+
+// Every arrival candidate shares the anti-collision contract: standable
+// ground, body clear of every solid block, outside any portal interior, and
+// an unobstructed view of the portal.
+function validArrivalSpot(win, spot, wins) {
+  const bx = Math.floor(spot.x), by = Math.floor(spot.y), bz = Math.floor(spot.z);
+  if (by < 1) return false;
+  if (bx < -dimBound() || bx > dimBound() || bz < -dimBound() || bz > dimBound()) return false;
+  if (!isSolid(bx, by - 1, bz)) return false;
+  if (!returnBodyClear(spot.x, spot.y, spot.z)) return false;
+  if (inReturnPortalBody(wins, spot.x, spot.y, spot.z)) return false;
+  const eye = { x: spot.x, y: spot.y + EYE, z: spot.z };
+  const targets = arrivalLosTargets(win, eye);
+  return targets.some((target) => losClear(eye, target));
+}
+
+// Step 0: stand on the closest real frame block where the body fits.
+function frameArrivalSpot(win, wins) {
+  const c = portalFacePoint(win);
+  let best = null, bestD = Infinity;
+  for (const [x, y, z] of frameRingCells(win)) {
+    const spot = { x: x + 0.5, y: y + 1, z: z + 0.5 };
+    if (!returnBodyClear(spot.x, spot.y, spot.z)) continue;
+    if (inReturnPortalBody(wins, spot.x, spot.y, spot.z)) continue;
+    const dx = spot.x - c.x, dy = spot.y - c.y, dz = spot.z - c.z;
+    const d = dx * dx + dy * dy + dz * dz;
+    if (d < bestD) { bestD = d; best = spot; }
+  }
+  return best;
+}
+
+// Step C: any standable cell within ARRIVAL_SEARCH_R of the frame bbox that
+// sees the portal, nearest first.
+function generalArrivalSpot(win, wins) {
+  const box = portalFrameBBox(win);
+  const c = portalFacePoint(win);
+  const B = dimBound();
+  let best = null, bestD = Infinity, bestD2 = Infinity;
+  const x0 = Math.max(-B, box.minX - ARRIVAL_SEARCH_R), x1 = Math.min(B, box.maxX + ARRIVAL_SEARCH_R);
+  const z0 = Math.max(-B, box.minZ - ARRIVAL_SEARCH_R), z1 = Math.min(B, box.maxZ + ARRIVAL_SEARCH_R);
+  const y0 = Math.max(1, box.baseY - ARRIVAL_SEARCH_R), y1 = box.topY + ARRIVAL_SEARCH_R;
+  for (let x = x0; x <= x1; x++) {
+    const dx = x < box.minX ? box.minX - x : x > box.maxX ? x - box.maxX : 0;
+    for (let z = z0; z <= z1; z++) {
+      const dz = z < box.minZ ? box.minZ - z : z > box.maxZ ? z - box.maxZ : 0;
+      for (let y = y0; y <= y1; y++) {
+        const dy = y < box.baseY ? box.baseY - y : y > box.topY ? y - box.topY : 0;
+        const d = Math.max(dx, dy, dz);
+        if (d > ARRIVAL_SEARCH_R || d > bestD) continue;
+        const spot = { x: x + 0.5, y, z: z + 0.5 };
+        const d2 = (spot.x - c.x) ** 2 + (spot.y - c.y) ** 2 + (spot.z - c.z) ** 2;
+        if (d === bestD && d2 >= bestD2) continue;
+        if (!validArrivalSpot(win, spot, wins)) continue;
+        best = spot; bestD = d; bestD2 = d2;
+      }
     }
   }
-  return null;
+  return best;
 }
 
-function winCenter(win) {
-  if (win.orient === "h") {
-    if (win.dims === "4x4") return { x: win.minX + 1.5, z: win.minZ + 1.5 };
-    return { x: win.minX + 2, z: win.minZ + 2 };
-  }
-  if (win.face === "x") return { x: win.minX, z: win.minZ + (win.dims === "4x5" || win.dims === "4x4" ? 1.5 : 2) };
-  return { x: win.minX + (win.dims === "4x5" || win.dims === "4x4" ? 1.5 : 2), z: win.minZ };
-}
-
-function facePortalFrom(win, px, pz) {
-  const c = winCenter(win);
-  return Math.atan2(-(c.x + 0.5 - px), -(c.z + 0.5 - pz));
-}
-
-function nearPortalSpawn(win, dir) {
-  const c = winCenter(win);
+function findArrivalSpot(win, preferredDir) {
+  const c = portalFacePoint(win);
   const wins = collectReturnWins(Math.floor(c.x), win.minY, Math.floor(c.z));
-  return findReturnSpot(win, dir, wins) || frameTopSpot(win, wins) || { x: c.x + 0.5, y: win.minY, z: c.z + 0.5 };
+  const axes = arrivalAxes(win, preferredDir);
+  // Per distance, the portal's own ground (dy 0) wins on every face and
+  // side before any other height; going to the other side beats climbing.
+  for (const dist of ARRIVAL_DISTS) {
+    for (const dy of ARRIVAL_HEIGHTS)
+      for (const axis of axes)
+        for (const lat of ARRIVAL_LATERAL) {
+          const spot = arrivalSpotAt(win, axis, dist, lat, dy);
+          if (validArrivalSpot(win, spot, wins)) return spot;
+        }
+  }
+  // Same sweep snapped to each column's real support top, so a sunk, raised
+  // or sloped portal still lands at the preferred distance. Same height
+  // ordering: nearest-to-base offsets sweep every face and side first.
+  // Frame placement (0) and the general visible search follow.
+  for (const dist of ARRIVAL_DISTS) {
+    for (const dy of ARRIVAL_SNAP_DY)
+      for (const axis of axes)
+        for (const lat of ARRIVAL_LATERAL) {
+          const spot = arrivalSpotAt(win, axis, dist, lat, dy);
+          if (validArrivalSpot(win, spot, wins)) return spot;
+        }
+  }
+  return frameArrivalSpot(win, wins) || generalArrivalSpot(win, wins);
 }
 
 // --- Cross-dimension arrival links ---
@@ -936,8 +1137,10 @@ function nearestReturnWin(sx, sy, sz) {
 
 // Placement for an arrival in the now-active dimension. The recorded link is
 // the portal left in that dimension; if it no longer validates (destroyed or
-// regenerated) the anchor finds the nearest live window (End return frame),
-// else the caller falls back to the dimension spawn.
+// regenerated) the anchor finds the nearest live window (the generated
+// return frame when spawning in fresh). The anchor must use destination
+// coordinates, never the pre-switch source position, else the caller falls
+// back to the dimension spawn.
 export function resolveTravelArrival(dest, anchor = null) {
   const arrival = dimSpec(dest)?.arrival;
   if (!arrival || arrival.mode !== "portal") return null;
@@ -947,39 +1150,14 @@ export function resolveTravelArrival(dest, anchor = null) {
   const linked = !!win;
   if (!win && anchor) win = nearestReturnWin(anchor.x, anchor.y, anchor.z);
   if (!win) return null;
-  const c = winCenter(win);
-  const wins = collectReturnWins(Math.floor(c.x), win.minY, Math.floor(c.z));
-  const spot = findReturnSpot(win, linked ? (link?.dir ?? null) : null, wins) || frameTopSpot(win, wins)
-    || resolveSpawn(c.x + 0.5, win.minY, c.z + 0.5);
-  const face = facePortalFrom(win, spot.x, spot.z);
+  const preferredDir = linked ? (link?.dir ?? null) : null;
+  const spot = findArrivalSpot(win, preferredDir);
+  if (!spot) return null;
+  const face = facePortalFrom(win, spot.x, spot.z, preferredDir);
   return { spot, yaw: arrival.facing === "away" ? face + Math.PI : face };
 }
 
-// Safe landing near (sx, sy, sz): body clearance, solid ground, never inside
-// a portal interior (no arriving embedded, no instant re-trigger).
-function resolveSpawn(sx, sy, sz) {
-  const cx = Math.floor(sx), cz = Math.floor(sz), cy = Math.floor(sy);
-  const wins = collectReturnWins(cx, cy, cz);
-  // Try the exact cell first, then the master rings outward.
-  for (let r = 0; r <= 3; r++) {
-    for (const dy of [0, 1, -1, 2, -2, -3, 3]) {
-      const feetY = cy + dy;
-      if (feetY < 1) continue;
-      for (let ix = cx - r; ix <= cx + r; ix++)
-        for (let iz = cz - r; iz <= cz + r; iz++) {
-          if (r > 0 && Math.max(Math.abs(ix - cx), Math.abs(iz - cz)) !== r) continue;
-          if (ix < -dimBound() || ix > dimBound() || iz < -dimBound() || iz > dimBound()) continue;
-          if (!isSolid(ix, feetY - 1, iz)) continue;
-          if (!returnBodyClear(ix + 0.5, feetY, iz + 0.5)) continue;
-          if (inReturnPortalBody(wins, ix + 0.5, feetY, iz + 0.5)) continue;
-          return { x: ix + 0.5, y: feetY, z: iz + 0.5 };
-        }
-    }
-  }
-  return { x: sx, y: sy, z: sz };
-}
-
-// --- Travel (local loop: same window, spiral, cooldown) ---
+// --- Travel (spiral, cooldown) ---
 
 let portalCd = 0;
 let portalBusy = false;
@@ -1022,7 +1200,7 @@ function hidePortalSpiral() {
 // Pause contract: the spiral wait is a sim-time pending, decremented in
 // tickPortals — never a wall-clock setTimeout — so pausing mid-spiral
 // freezes it and the travel completes after unpausing.
-let pendingTravel = null; // { spot?, yawV?, msg?, dim?, t }
+let pendingTravel = null; // { dim, msg?, t }
 function travelTo(plan) {
   if (portalBusy) return;
   portalBusy = true;
@@ -1037,20 +1215,8 @@ function completeTravel() {
   // Cross-dimension plans carry dim: the main.js hook switches worlds and
   // resolves the arrival, then positions the player itself. Busy + spiral
   // stay held until main.js calls completeDimTravel() after the rebuild.
-  if (plan.dim && plan.dim !== dim) {
-    if (onTravelHook) onTravelHook(plan);
-    if (plan.msg) toast(plan.msg);
-    return;
-  }
   if (onTravelHook) onTravelHook(plan);
-  pos.set(plan.spot.x, plan.spot.y, plan.spot.z);
-  vel.set(0, 0, 0);
-  setYaw(plan.yawV ?? plan.yaw);
-  setPitch(0);
-  Object.keys(keys).forEach((k) => { keys[k] = false; });
-  if (plan.msg || plan.toast) toast(plan.msg ?? plan.toast);
-  portalBusy = false;
-  hidePortalSpiral();
+  if (plan.msg) toast(plan.msg);
 }
 
 // Called by main.js once a cross-dimension switch finishes (or aborts):
@@ -1074,12 +1240,12 @@ function moveDir() {
 
 // Cross-dimension destination: own dimension returns to the Overworld, any
 // other dimension heads to the family's target. Arrival resolves after the
-// switch (destination solidity differs), so this carries only the
-// destination — completeTravel hands it to the dimension hook in main.js.
+// switch (destination solidity differs), so this carries only the destination
+// and its toast — completeTravel hands it to the dimension hook in main.js.
 function destinationTravel(win) {
   const spec = specOf(win);
   const dest = dim === spec.destination ? "over" : spec.destination;
-  return { dim: dest, toast: dest === "over" ? "You returned to the Overworld" : spec.enterMsg };
+  return { dim: dest, msg: dest === "over" ? "You returned to the Overworld" : spec.enterMsg };
 }
 
 // A dimension's exits gate (End: sealed while the dragon lives) closes every
@@ -1116,13 +1282,8 @@ function checkPortal() {
     const dir = moveDir();
     const raw = specOf(f.win).travel(f.win, dir);
     // Cross-dimension exits remember this window for the trip back.
-    if (raw.dim && raw.dim !== dim) {
-      travelLinks.set(dim, { win: { ...f.win }, dir: { x: dir.x, z: dir.z } });
-    }
-    const plan = {
-      spot: raw.spot, yaw: raw.yaw, yawV: raw.yawV ?? raw.yaw,
-      msg: raw.msg ?? raw.toast ?? null, dim: raw.dim ?? null,
-    };
+    travelLinks.set(dim, { win: { ...f.win }, dir: { x: dir.x, z: dir.z } });
+    const plan = { msg: raw.msg ?? null, dim: raw.dim };
     travelTo(plan);
     return;
   }

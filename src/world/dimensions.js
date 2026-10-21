@@ -6,8 +6,8 @@
 // Persistence is itself per-dimension data: "retain" reuses voxels across
 // entries; "regenerate" rebuilds on every entry (TNT and End are fresh worlds).
 // `arrival` is the portal-return policy: "portal" resolves the window last
-// left in this dimension (facing it in the Overworld, facing away in the End),
-// "spawn" always uses findSpawn (the TNT sky has no fixed portal).
+// left in this dimension (facing it in the Overworld, back to it everywhere
+// else), "spawn" always uses findSpawn (the TNT sky has no fixed portal).
 // Per-dimension properties live here in two channels: gameplay props are
 // spec fields read through dim* accessors (moon, ultra, skyGrapple, ...);
 // render props ride the env preset (dimEnv: sky, fog, sun, space, ...).
@@ -126,7 +126,7 @@ export const DIMENSIONS = [
     // The Nether retains its voxels between portal trips; a New World
     // starts a fresh one (main.js resetNetherDimension during boot).
     persistence: "retain",
-    arrival: { mode: "portal", facing: "face" },
+    arrival: { mode: "portal", facing: "away" },
     hasBedrockFloor: false,
     respawnY: -20,
     // Dark, effectively fogless sky: fogNear/far sit past the world radius,

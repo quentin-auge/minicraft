@@ -112,8 +112,8 @@ initRope(scene);
 initPortals(scene);
 buildPortalDom();
 setPortalTravelHook((plan) => {
-  if (plan && plan.dim) void goToDimension(plan.dim);
-  else severHook();
+  if (!plan?.dim) { completeDimTravel(); return; }
+  void goToDimension(plan.dim);
 });
 setDragonVictoryHook((unlocked) => {
   scanWorldPortals();
@@ -376,6 +376,11 @@ async function buildWorld() {
     }
     resetFrameSet(dimSpec(BOOT_DIM).frameKeys?.() ?? []);
     scanWorldPortals();
+    // Direct Nether boot starts on the portal arrival, not the raw spawn pad.
+    if (BOOT_DIM === "nether") {
+      const arrival = resolveTravelArrival("nether", pos);
+      if (arrival) placeArrival(arrival);
+    }
     if (dim === "end") enterEndMobs(scene);
     moonBand = false;
     resetItems(dimHotbar(dim));
@@ -401,8 +406,9 @@ async function buildWorld() {
 // destination. End and TNT regenerate on every entry (fresh seed, frame
 // index rebuilt); the Overworld retains voxels. Arrival uses the portal
 // last left in the destination when it still validates (Overworld faces it,
-// End faces away), else the dimension spawn. Meshes, fills, lights, and
-// fuses reset around the switch; fly mode persists (all portals), movement
+// everywhere else arrives back to it), else the dimension spawn. Meshes,
+// fills, lights, and fuses reset around the switch; fly mode persists (all
+// portals), movement
 // keys zero. Runs behind the travel spiral: portals.js holds busy until
 // completeDimTravel() below.
 function placeArrival(arr) {
@@ -413,7 +419,7 @@ function placeArrival(arr) {
 }
 
 async function goToDimension(dest) {
-  if (dest === dim || building) { if (dest === dim) completeDimTravel(); return; }
+  if (building) return;
   const token = ++buildToken;
   const aborted = () => token !== buildToken;
   building = true;
@@ -462,9 +468,11 @@ async function goToDimension(dest) {
         resetFrameSet(spec.frameKeys?.() ?? []);
       }
       disposeAll();
+      // Spawn first so an unlinked arrival anchors on destination
+      // coordinates (like the End branch); a found arrival overrides it.
+      spawnPlayer();
       const arrival = resolveTravelArrival("nether", pos);
       if (arrival) placeArrival(arrival);
-      else spawnPlayer();
     } else {
       setDimension('over');
       if (!worlds.over.size) {
