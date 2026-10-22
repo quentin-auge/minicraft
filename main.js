@@ -667,7 +667,7 @@ async function fillMoonUnder(seed) {
     const R = MOON_R, STEP = 16;
     for (let x0 = -R; x0 <= R; x0 += STEP) {
       if (!dimHasMoon(dim) || getSeed() !== seed || building || !worldReady || moonReady(seed)) return;
-      generateMoonUnderRows(seed, setBlock, x0, x0 + STEP);
+      generateMoonUnderRows(seed, setBlock, x0, x0 + STEP, getBlock);
       await new Promise((r) => requestAnimationFrame(r));
     }
     if (!dimHasMoon(dim) || getSeed() !== seed || building || !worldReady || moonReady(seed)) return;
@@ -948,7 +948,7 @@ function loop(now) {
     // the wrong map (the TNT cube sits entirely below the band, so an
     // unguarded check fires every frame there).
     if (dimHasMoon(dim) && !moonReady(getSeed()) && camera.position.y < MOON_MIN_Y - 8) {
-      generateMoon(getSeed(), setBlock);
+      generateMoon(getSeed(), setBlock, getBlock);
       refreshBlocks(moonChunkCenters());
     }
     // Knockback impulse decays every sim frame, whatever mode moves next;

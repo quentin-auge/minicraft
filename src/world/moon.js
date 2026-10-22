@@ -47,8 +47,9 @@ export function generateMoonSurface(seed, setBlock) {
 
 // Hollow underside shell in x-row slices (lazy background fill): same
 // voxels as the eager port, just deferred. Deterministic per geometry
-// (no seed hash), so repeats are identical.
-export function generateMoonUnderRows(seed, setBlock, x0, x1) {
+// (no seed hash), so repeats are identical. Never seals the lake shafts:
+// existing moon water is left in place so the wells stay open below.
+export function generateMoonUnderRows(seed, setBlock, x0, x1, getBlock = null) {
   const R = MOON_R;
   const base = MOON_SURFACE_Y;
   const R2 = R * R;
@@ -61,6 +62,7 @@ export function generateMoonUnderRows(seed, setBlock, x0, x1) {
       const dy = base - y;
       const dist2 = d2 + dy * dy;
       if (dist2 <= R2 && dist2 >= inner) {
+        if (getBlock && getBlock(x, y, z) === MOON_WATER) continue;
         setBlock(x, y, z, MOON);
       }
     }
@@ -71,11 +73,11 @@ export function markMoonBuilt(seed) {
   builtSeed = seed;
 }
 
-// Full synchronous fill (underside safety net, headless harness): surface
-// plus whole underside in one go. Idempotent per seed.
-export function generateMoon(seed, setBlock) {
+// Full synchronous fill (underside safety net, headless harness): shell
+// first so the lake shafts overwrite it, then surface. Idempotent per seed.
+export function generateMoon(seed, setBlock, getBlock = null) {
+  generateMoonUnderRows(seed, setBlock, -MOON_R, MOON_R + 1, getBlock);
   generateMoonSurface(seed, setBlock);
-  generateMoonUnderRows(seed, setBlock, -MOON_R, MOON_R + 1);
   markMoonBuilt(seed);
 }
 
