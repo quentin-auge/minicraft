@@ -17,7 +17,7 @@
 // to air through an injected callback (set via onLiquidPurge), so blasts
 // never strand floating remnants.
 import { AIR, TNT, MEGA_TNT, ULTRA_TNT, FLOWER, GLOWSTONE, LOG, LEAVES, isLiquid, isTntLike } from "../core/blocks.js";
-import { WORLD_RADIUS, topAt, dimInfinite, dimBound, dim, getBlock, setBlock, isCellProtected } from "../core/store.js";
+import { WORLD_RADIUS, topAt, dimInfinite, dimBound, dim, getBlock, setBlock, isCellProtected, colOcc, colTopIdx } from "../core/store.js";
 import { dimUltra } from "../world/dimensions.js";
 import { CLOUD_MAX_Y } from "../world/clouds.js";
 import { rebuildChunk, isChunkBuilt, chunkKeysForColumn, refreshBlocks } from "../render/mesher.js";
@@ -166,6 +166,9 @@ function clearMegaLitVisual(k) {
 
 // Pooled surrounding lights for lit megas (max 8, one per crater sphere).
 const MEGA_LIGHT_MAX = 8;
+// Lights-only cluster cap: the 8 capped spots need no 10k closure — the
+// countdown swell is cosmetic, while detonation always walks the full pool.
+const MEGA_SPOT_CLUSTER_MAX = 512;
 const megaLights = []; // { light, key }
 const megaLightBeats = new Map(); // spotKey -> { beats, was }
 // Pool clustering for countdown lights: each lit mega maps to the crater
@@ -176,6 +179,18 @@ const megaLightBeats = new Map(); // spotKey -> { beats, was }
 // frame.
 let clusterVersion = 0;
 function markClusterDirty() { clusterVersion++; }
+// Batched invalidation: pool carves untrack thousands of members; bumping
+// per cell recomputes the countdown spots every frame of the tail. Batch
+// across the detonation instead — placements still bump immediately, and the
+// tail-end resync (notePoolEdit) recomputes once on fresh indexes.
+let clusterDirtyBatch = 0;
+function beginClusterBatch() { clusterDirtyBatch++; }
+function endClusterBatch() { if (clusterDirtyBatch > 0 && --clusterDirtyBatch === 0) markClusterDirty(); }
+// Pool-flight epoch: collectMegaCluster skips pooled members, so the shared
+// cluster cache below keys on this too — any pool launch or finish
+// invalidates it, keeping multi-pool scenarios exact.
+let poolEpoch = 0;
+function markPoolChanged() { poolEpoch++; }
 // Countdown swell: how the pre-blast lights reach the full crater radius.
 // Arrival is driven by fuse time (ease-out, locking on R exactly at
 // detonation with a fixed white hold for the last 0.2 s), never by the
@@ -195,6 +210,103 @@ function arrivalProgress(fuse, total) {
 // crater sphere — including unlit stragglers, which detonate with the pool
 // — so the lit union matches the carved union exactly.
 let spotCache = { sig: null, spots: [] };
+// Shared mega-cluster cache: the countdown lights and the detonation used to
+// each run the full transitive closure. Keyed on placement version + pool
+// epoch + seed + kind + member cap, so any edit or pool flight invalidates.
+// Small multi-entry map: separate pools (and the truncated/full variants)
+// coexist without thrashing. Big closures log once (diagnostic).
+const clusterCache = new Map(); // sig -> { members, sized }
+const CLUSTER_CACHE_MAX = 8;
+// Fuse-time precompute slice: the full closure of a 10k pool costs seconds,
+// so it drains here instead of in the detonation frame (mega fuse = 8 s).
+const CLUSTER_PRECOMPUTE_MS = 8;
+const clusterJobs = []; // FIFO resumable closures, earliest fuse first
+function clusterSig(sx, sy, sz, kind, maxMembers) {
+  return clusterVersion + "|" + poolEpoch + "|" + kind.blockId + "|" + sx + "," + sy + "," + sz + "|" + maxMembers;
+}
+function cacheCluster(sig, val) {
+  clusterCache.set(sig, val);
+  if (clusterCache.size > CLUSTER_CACHE_MAX) clusterCache.delete(clusterCache.keys().next().value);
+}
+function cachedMegaCluster(sx, sy, sz, kind, maxMembers = Infinity) {
+  const sig = clusterSig(sx, sy, sz, kind, maxMembers);
+  let hit = clusterCache.get(sig);
+  if (!hit) {
+    const { members, sized } = collectMegaCluster(sx, sy, sz, kind, maxMembers);
+    hit = { members, sized };
+    cacheCluster(sig, hit);
+  }
+  return hit;
+}
+// Fuse-time precompute: only pools too big for the capped lights walk get a
+// job (small pools detonate synchronously for free). Priority: earliest fuse.
+// Budget adapts to the remaining fuse: full 8 s at the base slice, heavier
+// slices as the boom nears (masked by the blink frenzy), so the job lands
+// before detonation instead of spilling into a synchronous finish.
+function drainClusterJobs() {
+  const cands = [];
+  for (const [k, t] of lit) {
+    const tk = kindOf(t.kind);
+    if (!tk.pool || tk.band) continue;
+    const fullSig = clusterSig(t.x, t.y, t.z, tk, Infinity);
+    if (clusterCache.has(fullSig)) continue;
+    if (clusterJobs.some((j) => j.fullSig === fullSig)) continue;
+    const trunc = clusterCache.get(clusterSig(t.x, t.y, t.z, tk, MEGA_SPOT_CLUSTER_MAX));
+    if (!trunc || trunc.members.length < MEGA_SPOT_CLUSTER_MAX) continue;
+    cands.push({ key: k, t, tk, fullSig });
+  }
+  cands.sort((a, b) => a.t.fuse - b.t.fuse);
+  for (const c of cands) {
+    const job = startClusterJob(c.t.x, c.t.y, c.t.z, c.tk);
+    if (!job) continue;
+    job.fullSig = c.fullSig;
+    job.seedKey = c.key;
+    clusterJobs.push(job);
+  }
+  while (clusterJobs.length > 4) clusterJobs.pop();
+  let minFuse = Infinity;
+  for (const job of clusterJobs) {
+    const lt = lit.get(job.seedKey);
+    if (lt && lt.fuse < minFuse) minFuse = lt.fuse;
+  }
+  const budget = minFuse > 3 ? CLUSTER_PRECOMPUTE_MS : minFuse > 1 ? CLUSTER_PRECOMPUTE_MS * 2 : CLUSTER_PRECOMPUTE_MS * 6;
+  const deadline = performance.now() + budget;
+  for (let i = 0; i < clusterJobs.length && performance.now() < deadline;) {
+    const job = clusterJobs[i];
+    const lt = lit.get(job.seedKey);
+    job.checkEvery = lt && lt.fuse < 1 ? 256 : 64;
+    const r = advanceClusterJob(job, deadline);
+    if (r === null) { clusterJobs.splice(i, 1); continue; }
+    if (r === true) {
+      cacheCluster(job.fullSig, finishClusterJob(job));
+      clusterJobs.splice(i, 1);
+      continue;
+    }
+    i++;
+  }
+}
+// Detonation path: a precomputed hit costs nothing; otherwise finish the live
+// job (or walk the full closure) synchronously — worst case is today.
+function detoMegaCluster(cx, cy, cz, kind) {
+  const sig = clusterSig(cx, cy, cz, kind, Infinity);
+  const hit = clusterCache.get(sig);
+  if (hit) {
+    return hit;
+  }
+  const ji = clusterJobs.findIndex((j) => j.fullSig === sig);
+  if (ji >= 0) {
+    const job = clusterJobs.splice(ji, 1)[0];
+    if (job.ver === clusterVersion && job.epoch === poolEpoch) {
+      advanceClusterJob(job, Infinity);
+      const done = finishClusterJob(job);
+      cacheCluster(sig, done);
+      return done;
+    }
+  }
+  const fresh = collectMegaCluster(cx, cy, cz, kind);
+  cacheCluster(sig, fresh);
+  return fresh;
+}
 function computeLightSpots() {
   const spots = [];
   const seen = new Set();
@@ -213,7 +325,7 @@ function computeLightSpots() {
     }
     let cl = clusterOf.get(k);
     if (!cl) {
-      const { members, sized } = collectMegaCluster(t.x, t.y, t.z, tk);
+      const { members, sized } = cachedMegaCluster(t.x, t.y, t.z, tk, MEGA_SPOT_CLUSTER_MAX);
       if (!members.length) continue;
       // Cluster fuse = earliest lit member (stragglers have no fuse of their
       // own but detonate with the pool, flickering in sync).
@@ -560,6 +672,12 @@ function ultraOverhangCells(cx, cz) {
 // twice and no tick pays an unbounded rebuild avalanche.
 const BAND_COLS_PER_TICK = 2048;
 const REMESH_BUDGET_MS = 6;
+const REMESH_TURBO_MS = 16;
+const CARVE_TURBO_MS = 24;
+let blastRemeshTurbo = 0;
+export function boostBlastRemesh(frames = 45) {
+  blastRemeshTurbo = Math.max(blastRemeshTurbo, frames);
+}
 const bandJobs = []; // { cx..cz, band, yLo, yHi, kind, cols, ci, cells, celli, front2, dirty, fxAcc, carveDone }
 // Batched blasts (normal TNT chains and non-band blasts detonating mid-wipe)
 // queue their chunks here instead of rebuilding synchronously, so every
@@ -599,17 +717,26 @@ function cellsDone(job) {
 // mega chunks first, then other pending chunks and band-frontier chunks.
 // Unbuilt chunks drop out — streaming builds them with the voxels already in
 // place. Carve jobs finish after their frontier-ready remeshes drain.
-export function drainBlastRemesh(px, pz) {
+export function drainBlastRemesh(px, py, pz, visR) {
   if (!blastRefreshPending.size && !bandJobs.length && !carveJobs.length) return;
-  const deadline = performance.now() + REMESH_BUDGET_MS;
+  // Post-pool turbo: a big detonation just queued tall chunks; drain faster
+  // for a bounded number of frames so the crater finishes instead of tailing.
+  const turboActive = blastRemeshTurbo > 0;
+  if (turboActive) blastRemeshTurbo--;
+  // Visible work keeps turbo budgets; far-only tails drop to base so frames
+  // lighten once the fog-visible crater is done. Recomputed live: approaching
+  // far work re-arms turbo automatically.
+  const nearActive = blastRefreshPending.size > 0 || bandJobs.length > 0 || carveJobs.some((j) => j.hasNearWork);
+  const budget = turboActive && nearActive ? REMESH_TURBO_MS : REMESH_BUDGET_MS;
+  const deadline = performance.now() + budget;
   const dist2 = (ck) => {
     const u = ck.indexOf("_");
     const dx = (+ck.slice(0, u)) * 16 + 8 - px, dz = (+ck.slice(u + 1)) * 16 + 8 - pz;
     return dx * dx + dz * dz;
   };
   const rebuiltThisPass = new Set();
-  const rebuildWithin = (cks) => {
-    cks.sort((a, b) => dist2(a) - dist2(b));
+  const rebuildWithin = (cks, d2 = dist2) => {
+    cks.sort((a, b) => d2(a) - d2(b));
     let i = 0;
     for (; i < cks.length; i++) {
       if (rebuiltThisPass.has(cks[i])) continue;
@@ -623,12 +750,22 @@ export function drainBlastRemesh(px, pz) {
   const carveJob = carveJobs[0];
   if (carveJob?.ready.size) {
     const ready = [];
+    // 3D order like the carve drain: a tall column's floor rebuilds first.
+    const dist3 = (ck) => {
+      const u = ck.indexOf("_");
+      const dx = (+ck.slice(0, u)) * 16 + 8 - px, dz = (+ck.slice(u + 1)) * 16 + 8 - pz;
+      const my = carveJob.chunkMinY.get(ck);
+      const dy = (my === undefined || py === undefined) ? 0 : my + 8 - py;
+      return dx * dx + dy * dy + dz * dz;
+    };
     for (const ck of carveJob.ready) {
       carveJob.ready.delete(ck);
       blastRefreshPending.delete(ck);
+      if (carveJob.prebuilt.has(ck)) continue; // already final from the immediate jump-start
       if (isChunkBuilt(ck)) ready.push(ck);
     }
-    for (const ck of rebuildWithin(ready)) carveJob.ready.add(ck);
+    const left = rebuildWithin(ready, dist3);
+    for (const ck of left) carveJob.ready.add(ck);
   }
   if (blastRefreshPending.size) {
     const rest = [];
@@ -636,7 +773,8 @@ export function drainBlastRemesh(px, pz) {
       if (isChunkBuilt(ck)) rest.push(ck);
     }
     blastRefreshPending.clear();
-    for (const ck of rebuildWithin(rest)) blastRefreshPending.add(ck);
+    const left = rebuildWithin(rest);
+    for (const ck of left) blastRefreshPending.add(ck);
   }
   const bandJob = bandJobs[0];
   if (bandJob) {
@@ -1008,6 +1146,9 @@ export function resetTNTMemory() {
   displaced.clear();
   megaIndex.clear();
   markClusterDirty();
+  clusterCache.clear();
+  clusterJobs.length = 0;
+  clusterDirtyBatch = 0;
   for (const k of [...megaVeils.keys()]) clearMegaLitVisual(k);
   for (const L of megaLights) {
     if (sceneRef) sceneRef.remove(L.light);
@@ -1019,6 +1160,7 @@ export function resetTNTMemory() {
   }
   blastLights.length = 0;
   pooling.clear();
+  markPoolChanged();
   wakeMegas = null;
   bandJobs.length = 0;
   blastRefreshPending.clear();
@@ -1068,14 +1210,143 @@ function drainFxJobs() {
 }
 // Pooled carve jobs dedupe the union's x-z columns, then remesh completed
 // chunks as the carve frontier passes them.
-const carveJobs = []; // { members, radii, kind, columns, chunkLast, dirty, ready, touched }
+const carveJobs = []; // { members, radii, kind, buckets, chunkLeft, order, dirty, ready, touched }
 const CARVE_BUDGET_MS = 8;
 const CARVE_COLUMNS_PER_TICK = 2048;
-const CARVE_PLAN_COLUMNS_PER_TICK = 16384;
+const CARVE_PLAN_COLUMNS_PER_TICK = 2048;
 export function megaCarveActive() { return carveJobs.length > 0; }
-function drainCarveJobs() {
+// One column, carved exactly once (guarded by col.done): touches voxels,
+// tracks dirty chunks, and releases a chunk to ready once its last touching
+// column — home or edge — is carved.
+function carveOneColumn(job, col) {
+  // Union intervals resolve on first carve, not at plan time: planning stays
+  // a cheap projection while the carve budget absorbs the queries.
+  if (col.iv === undefined) col.iv = columnIntervals(job, col.x, col.z);
+  const before = job.touched.length;
+  if (col.iv) carveColumnCells(job, col.x, col.z, col.iv);
+  const keys = chunkKeysForColumn(col.x, col.z);
+  if (job.touched.length > before) {
+    for (const ck of keys) job.dirty.add(ck);
+  }
+  for (const ck of keys) {
+    const left = job.chunkLeft.get(ck) - 1;
+    if (left > 0) { job.chunkLeft.set(ck, left); continue; }
+    job.chunkLeft.delete(ck);
+    if (job.dirty.delete(ck)) job.ready.add(ck);
+  }
+}
+// Walk the occupied cells inside stored union ranges, in no particular
+// order: the occupancy index skips air without a block lookup. Every
+// downstream consumer dedupes (sets), floods (shared seen), or re-sorts by
+// distance, so no one reads the walk order.
+function carveColumnCells(job, x, z, iv) {
+  const set = colOcc[dim].get(colTopIdx(x, z));
+  if (!set || !set.size) return;
+  const { kind, touched } = job;
+  for (const y of set) {
+    for (let i = 0; i < iv.length; i++) {
+      if (y < iv[i][0]) break;
+      if (y > iv[i][1]) continue;
+      carvePoolCellContents(x, y, z, kind, touched, true);
+      break;
+    }
+  }
+}
+// Nearest-first order over the live chunk buckets. Rebuilt when the player
+// moves; falls back to the ignition-seed order with no position (tests).
+// Nearest-first order in 3D: chunk columns carry no y, so the lowest member
+// in the footprint anchors the height (a tall pool's floor sorts before its
+// top). Falls back to flat 2D with no vertical reference (tests).
+function chunkDist2(job, ck, ox, oy, oz) {
+  const u = ck.indexOf("_");
+  const dx = +ck.slice(0, u) * 16 + 8 - ox, dz = +ck.slice(u + 1) * 16 + 8 - oz;
+  const my = job.chunkMinY.get(ck);
+  const dy = (my === undefined || oy === undefined) ? 0 : my + 8 - oy;
+  return dx * dx + dy * dy + dz * dz;
+}
+function orderBuckets(job, ox, oy, oz) {
+  job.order = [...job.buckets.keys()].map((ck) => [ck, chunkDist2(job, ck, ox, oy, oz)]).sort((a, b) => a[1] - b[1]).map((e) => e[0]);
+  job.oi = 0;
+  job.lx = ox;
+  job.ly = oy;
+  job.lz = oz;
+}
+// Immediate jump-start: in the detonation frame itself, complete the nearest
+// member-home chunks outright — touching columns enumerated arithmetically
+// (no plan needed) — and remesh them, so the nearby crater is already open
+// while the budgeted pipeline warms up behind. Same voxels, same meshes: the
+// drain later re-walks air and skips prebuilt chunks.
+const IMMEDIATE_CHUNKS = 8;
+const IMMEDIATE_BUDGET_MS = 1000;
+function jumpstartImmediate(job, ox, oz) {
+  const t0 = performance.now();
+  const carveDeadline = t0 + IMMEDIATE_BUDGET_MS * 0.7;
+  const deadline = t0 + IMMEDIATE_BUDGET_MS;
+  // Nearest member-home chunks: the actual crater columns, wherever the
+  // x-sweep plan would reach them late.
+  const scored = job.members.map((m) => {
+    const dx = m.x - ox, dz = m.z - oz;
+    return dx * dx + dz * dz;
+  });
+  const order = job.members.map((_, i) => i).sort((a, b) => scored[a] - scored[b]);
+  const chunks = [];
+  const seenC = new Set();
+  for (const i of order) {
+    const m = job.members[i];
+    const ck = Math.floor(m.x / 16) + "_" + Math.floor(m.z / 16);
+    if (seenC.has(ck)) continue;
+    seenC.add(ck);
+    chunks.push(ck);
+    if (chunks.length >= IMMEDIATE_CHUNKS) break;
+  }
+  const cdist2 = (x, z) => { const dx = x - ox, dz = z - oz; return dx * dx + dz * dz; };
+  outer: for (const ck of chunks) {
+    const u = ck.indexOf("_");
+    const ccx = +ck.slice(0, u), ccz = +ck.slice(u + 1);
+    // Home + edge strips + corners: every column that can touch these chunks.
+    const cols = [];
+    for (let x = ccx * 16 - 1; x <= ccx * 16 + 16; x++) {
+      for (let z = ccz * 16 - 1; z <= ccz * 16 + 16; z++) cols.push([x, z]);
+    }
+    cols.sort((a, b) => cdist2(a[0], a[1]) - cdist2(b[0], b[1]));
+    for (const [x, z] of cols) {
+      if (performance.now() >= carveDeadline) break outer;
+      const iv = columnIntervals(job, x, z);
+      if (!iv) continue;
+      carveColumnCells(job, x, z, iv);
+    }
+  }
+  const c2 = (ck) => {
+    const u = ck.indexOf("_");
+    const dx = +ck.slice(0, u) * 16 + 8 - ox, dz = +ck.slice(u + 1) * 16 + 8 - oz;
+    return dx * dx + dz * dz;
+  };
+  for (const ck of [...chunks].sort((a, b) => c2(a) - c2(b))) {
+    if (performance.now() >= deadline) break;
+    if (!isChunkBuilt(ck)) { blastRefreshPending.delete(ck); continue; }
+    const u = ck.indexOf("_");
+    rebuildChunk(+ck.slice(0, u), +ck.slice(u + 1));
+    blastRefreshPending.delete(ck);
+    job.prebuilt.add(ck);
+  }
+}
+function drainCarveJobs(px, py, pz, visR) {
   if (!carveJobs.length) return;
-  const deadline = performance.now() + CARVE_BUDGET_MS;
+  const callT0 = performance.now();
+  // Near work (plan, or buckets inside the fog sphere) keeps turbo budgets;
+  // far-only tails drop to base so frames lighten once the visible crater is
+  // done. Live, so approaching far work re-arms turbo automatically.
+  const first = carveJobs[0];
+  let hasNear = !first.columnsReady || blastRefreshPending.size > 0;
+  if (first.columnsReady && px !== undefined && visR !== undefined) {
+    hasNear = false;
+    const vis2 = visR * visR;
+    for (const ck of first.buckets.keys()) {
+      if (chunkDist2(first, ck, px, py, pz) < vis2) { hasNear = true; break; }
+    }
+  }
+  first.hasNearWork = hasNear;
+  const deadline = callT0 + ((blastRemeshTurbo > 0 && hasNear) ? CARVE_TURBO_MS : CARVE_BUDGET_MS);
   let planned = 0, carved = 0;
   while (carveJobs.length) {
     const job = carveJobs[0];
@@ -1083,36 +1354,47 @@ function drainCarveJobs() {
     if (!job.columnsReady) {
       const p = nextMegaProjectionColumn(job);
       if (!p) {
+        // Plan complete: crater digs near-to-far from the live player when
+        // known (follows them if they flew off during the fuse), else from
+        // the ignition seed.
+        const ox = px !== undefined ? px : job.ox, oy = px !== undefined ? py : job.oy, oz = pz !== undefined ? pz : job.oz;
+        orderBuckets(job, ox, oy, oz);
         job.columnsReady = true;
         continue;
       }
       const [x, z] = p;
-      const index = job.columns.length;
-      job.columns.push([x, z]);
-      for (const ck of chunkKeysForColumn(x, z)) job.chunkLast.set(ck, index);
-      planned++;
-    } else if (job.ci < job.columns.length) {
-      const index = job.ci++;
-      const [x, z] = job.columns[index];
-      const before = job.touched.length;
-      carveMegaUnionColumn(x, z, job.columnGrid, job.members, job.radii, job.kind, job.touched);
       const keys = chunkKeysForColumn(x, z);
-      if (job.touched.length > before) {
-        for (const ck of keys) job.dirty.add(ck);
-      }
+      const col = { x, z, done: false, iv: undefined };
+      let bucket = job.buckets.get(keys[0]);
+      if (!bucket) { bucket = []; job.buckets.set(keys[0], bucket); }
+      bucket.push(col);
       for (const ck of keys) {
-        if (job.chunkLast.get(ck) !== index) continue;
-        job.chunkLast.delete(ck);
-        if (job.dirty.delete(ck)) job.ready.add(ck);
+        job.chunkLeft.set(ck, (job.chunkLeft.get(ck) || 0) + 1);
       }
-      carved++;
+      planned++;
     } else {
-      job.carveDone = true;
-      break;
+      if (px !== undefined && (px !== job.lx || py !== job.ly || pz !== job.lz)) orderBuckets(job, px, py, pz);
+      let col = null;
+      while (job.oi < job.order.length && !col) {
+        const bucket = job.buckets.get(job.order[job.oi]);
+        if (!bucket || !bucket.length) { job.oi++; continue; }
+        const cand = bucket.pop();
+        if (!bucket.length) { job.buckets.delete(job.order[job.oi]); job.oi++; }
+        if (!cand.done) col = cand;
+      }
+      if (!col) { job.carveDone = true; break; }
+      carveOneColumn(job, col);
+      col.done = true;
+      carved++;
     }
-    if ((!carving && planned >= CARVE_PLAN_COLUMNS_PER_TICK) || (carving && carved >= CARVE_COLUMNS_PER_TICK)) break;
-    if ((carving || (planned & 127) === 0) && performance.now() >= deadline) break;
+    if (!carving && planned >= CARVE_PLAN_COLUMNS_PER_TICK) break;
+    if (carving && carved >= CARVE_COLUMNS_PER_TICK) break;
+    if ((carving || (planned & 15) === 0) && performance.now() >= deadline) break;
   }
+  // Sustain turbo while near carve work remains; far-only tails drop to base
+  // budgets so frames lighten once the visible crater is done. Silent: the
+  // boost log stays reserved for real detonations.
+  if (carveJobs.length && blastRemeshTurbo === 0 && carveJobs[0].hasNearWork) blastRemeshTurbo = 30;
 }
 function finishCarveJob(job) {
   try {
@@ -1148,6 +1430,8 @@ function finishCarveJob(job) {
     if (finalChanges.length) queueBlastRefresh(finalChanges);
   } finally {
     for (const m of job.members) pooling.delete(m.key);
+    markPoolChanged();
+    endClusterBatch();
   }
 }
 function nextMegaProjectionColumn(job) {
@@ -1317,7 +1601,7 @@ export function clearTNTBox(x0, y0, z0, x1, y1, z1) {
   }
 }
 
-export function tickTNT(dt, refresh) {
+export function tickTNT(dt, refresh, px, py, pz, visR) {
   simNow += dt;
   if (lit.size) {
     const done = [];
@@ -1342,9 +1626,10 @@ export function tickTNT(dt, refresh) {
   // Countdown lights sync once per frame, after the whole lit set is ticked
   // (calling it per lit mega made the signature sort O(N^2 log N) a frame).
   syncMegaLights();
+  drainClusterJobs();
   tickChain(simNow, refresh);
   drainBandJobs(dt);
-  drainCarveJobs();
+  drainCarveJobs(px, py, pz, visR);
   drainFxJobs();
   tickBlastLights(dt);
 }
@@ -1506,7 +1791,7 @@ export function trackMegaPlaced(x, y, z) {
 }
 function untrackMega(x, y, z) {
   megaIndex.delete(x + "," + y + "," + z);
-  markClusterDirty();
+  if (!clusterDirtyBatch) markClusterDirty();
 }
 // Single choke point for blast deletions: keeps the indexes in sync.
 // Glowstone variants clear cheaply here (map deletes only); the halo tint
@@ -1564,21 +1849,6 @@ function gridNear(grid, x, y, z, radius, fn) {
         if (b) for (let i = 0; i < b.length; i++) fn(b[i]);
       }
 }
-function gridInsert2D(grid, x, z, val) {
-  const k = Math.floor(x / MEGA_CELL) + "," + Math.floor(z / MEGA_CELL);
-  let b = grid.get(k);
-  if (!b) { b = []; grid.set(k, b); }
-  b.push(val);
-}
-function gridNear2D(grid, x, z, radius, fn) {
-  const x0 = Math.floor((x - radius) / MEGA_CELL), x1 = Math.floor((x + radius) / MEGA_CELL);
-  const z0 = Math.floor((z - radius) / MEGA_CELL), z1 = Math.floor((z + radius) / MEGA_CELL);
-  for (let gx = x0; gx <= x1; gx++)
-    for (let gz = z0; gz <= z1; gz++) {
-      const b = grid.get(gx + "," + gz);
-      if (b) for (let i = 0; i < b.length; i++) fn(b[i]);
-    }
-}
 
 // Upfront neighbor search over the mega index (no voxel scans). Growth via
 // counted neighbours within the member's current R/2 (+50% compound each,
@@ -1588,61 +1858,120 @@ function gridNear2D(grid, x, z, radius, fn) {
 // parsed once (the set is stable: take only re-adds indexed keys) and scanned
 // through a spatial hash, so a big pool never re-parses the whole index every
 // growth iteration.
-function collectMegaCluster(sx, sy, sz, kind) {
-  const members = []; // { x, y, z, key, counted: Set, r }
-  const seen = new Set();
+function collectMegaCluster(sx, sy, sz, kind, maxMembers = Infinity) {
+  const job = startClusterJob(sx, sy, sz, kind);
+  if (!job) return { members: [], sized: [] };
+  job.maxMembers = maxMembers;
+  advanceClusterJob(job, Infinity);
+  return finishClusterJob(job);
+}
+
+// Resumable closure: the census parses once up front; growth/linkage advance
+// member by member in the exact sync order, so a sliced run reaches bit-for-bit
+// the same fixpoint. Staleness (edit or pool flight) aborts the job.
+function startClusterJob(sx, sy, sz, kind) {
+  const job = {
+    kind, ver: clusterVersion, epoch: poolEpoch, fullSig: null,
+    members: [], seen: new Set(),
+    gx: [], gy: [], gz: [], gkey: [], grid: new Map(),
+    phase: "grow", idx: 0, snap: null, grew: false, maxMembers: Infinity,
+  };
   const take = (x, y, z) => {
     const k = x + "," + y + "," + z;
-    if (seen.has(k) || pooling.has(k)) return false;
+    if (job.seen.has(k) || pooling.has(k)) return false;
     if (getBlock(x, y, z) !== kind.blockId) return false;
-    seen.add(k);
+    job.seen.add(k);
     megaIndex.add(k);
-    members.push({ x, y, z, key: k, counted: new Set(), r: kind.radius });
+    job.members.push({ x, y, z, key: k, counted: new Set(), r: kind.radius, sg: -1, sl: -1 });
     return true;
   };
-  if (!take(sx, sy, sz)) return { members: [], sized: [] };
+  job.take = take;
+  if (!take(sx, sy, sz)) return null;
   // Live candidates, parsed once (stale keys purged once).
-  const gx = [], gy = [], gz = [], gkey = [];
-  const grid = new Map();
   for (const key of megaIndex) {
     const a = key.indexOf(",");
     const b = key.indexOf(",", a + 1);
     const x = +key.slice(0, a), y = +key.slice(a + 1, b), z = +key.slice(b + 1);
     if (getBlock(x, y, z) !== kind.blockId) { megaIndex.delete(key); continue; }
-    const i = gx.length;
-    gx.push(x); gy.push(y); gz.push(z); gkey.push(key);
-    gridInsert(grid, x, y, z, i);
+    const i = job.gx.length;
+    job.gx.push(x); job.gy.push(y); job.gz.push(z); job.gkey.push(key);
+    gridInsert(job.grid, x, y, z, i);
   }
-  for (let grew = true; grew;) {
-    grew = false;
-    // Growth: uncounted megas within R/2 widen their member.
-    for (const m of members) {
-      const hR = m.r / 2, hR2 = hR * hR;
-      gridNear(grid, m.x, m.y, m.z, hR, (i) => {
-        const key = gkey[i];
-        if (key === m.key || m.counted.has(key)) return;
-        const dx = gx[i] - m.x, dy = gy[i] - m.y, dz = gz[i] - m.z;
-        if (dx * dx + dy * dy + dz * dz > hR2) return;
-        m.counted.add(key);
-        m.r = megaPoolRadius(kind, 1 + m.counted.size);
-        grew = true;
-      });
-    }
-    // Linkage: unjoined megas within a member's current radius join the pool.
-    const snapshot = members.slice();
-    for (const m of snapshot) {
-      const R2 = m.r * m.r;
-      gridNear(grid, m.x, m.y, m.z, m.r, (i) => {
-        const key = gkey[i];
-        if (seen.has(key)) return;
-        const dx = gx[i] - m.x, dy = gy[i] - m.y, dz = gz[i] - m.z;
-        if (dx * dx + dy * dy + dz * dz > R2) return;
-        if (take(gx[i], gy[i], gz[i])) grew = true;
-      });
+  return job;
+}
+// A rescan with an unchanged radius is provably sterile — the candidate
+// census is frozen (version/epoch-guarded) and seen/counted only grow, so
+// every in-reach candidate was already absorbed. sg/sl record the radius
+// actually scanned (pre-growth), so a grown member re-scans its wider reach.
+function growthStep(job, m) {
+  const r = m.r;
+  if (r === m.sg) return;
+  const hR = r / 2, hR2 = hR * hR;
+  const { gx, gy, gz, gkey, grid, kind } = job;
+  gridNear(grid, m.x, m.y, m.z, hR, (i) => {
+    const key = gkey[i];
+    if (key === m.key || m.counted.has(key)) return;
+    const dx = gx[i] - m.x, dy = gy[i] - m.y, dz = gz[i] - m.z;
+    if (dx * dx + dy * dy + dz * dz > hR2) return;
+    m.counted.add(key);
+    m.r = megaPoolRadius(kind, 1 + m.counted.size);
+    job.grew = true;
+  });
+  m.sg = r;
+}
+function linkageStep(job, m) {
+  const r = m.r;
+  if (r === m.sl) return;
+  const R2 = r * r;
+  const { gx, gy, gz, grid } = job;
+  gridNear(grid, m.x, m.y, m.z, r, (i) => {
+    const key = job.gkey[i];
+    if (job.seen.has(key)) return;
+    const dx = gx[i] - m.x, dy = gy[i] - m.y, dz = gz[i] - m.z;
+    if (dx * dx + dy * dy + dz * dz > R2) return;
+    if (job.take(gx[i], gy[i], gz[i])) job.grew = true;
+  });
+  m.sl = r;
+}
+// Returns true when the fixpoint is reached, false on budget-out, null when
+// a placement or pool flight invalidated the job mid-run.
+function advanceClusterJob(job, deadline) {
+  if (job.ver !== clusterVersion || job.epoch !== poolEpoch) return null;
+  const members = job.members;
+  const over = () => false;
+  const done = () => true;
+  let guard = 0;
+  // Coarse budget checks near the boom: deliberately overshoot the deadline
+  // by up to one scan batch so the tail finishes instead of spilling sync.
+  const mask = (job.checkEvery || 64) - 1;
+  for (;;) {
+    if (job.phase === "grow") {
+      while (job.idx < members.length) {
+        growthStep(job, members[job.idx++]);
+        if ((++guard & mask) === 0 && performance.now() >= deadline) return over();
+      }
+      job.snap = members.slice();
+      job.idx = 0;
+      job.phase = "link";
+    } else {
+      while (job.idx < job.snap.length) {
+        linkageStep(job, job.snap[job.idx++]);
+        if ((++guard & mask) === 0 && performance.now() >= deadline) return over();
+      }
+      if (!job.grew) return done();
+      // Lights-only cap: stop growing once enough members cover the capped
+      // spots (detonation always passes Infinity, so gameplay stays exact).
+      if (members.length >= job.maxMembers) return done();
+      job.grew = false;
+      job.phase = "grow";
+      job.idx = 0;
+      job.snap = null;
     }
   }
-  const sized = members.map((m) => ({ k: 1 + m.counted.size, r: m.r }));
-  return { members, sized };
+}
+function finishClusterJob(job) {
+  const sized = job.members.map((m) => ({ k: 1 + m.counted.size, r: m.r }));
+  return { members: job.members, sized };
 }
 
 function queuePoolBoundaryChains(inRegion) {
@@ -1681,12 +2010,14 @@ function queuePoolBoundaryChains(inRegion) {
 // R/2 (7.5) through the 15 / 22.5 / 33.75 / capped-40 curve. One knockback
 // and one shake at the centroid, reaching the widest member crater.
 function explodePool(cx, cy, cz, kind) {
-  const { members, sized: local } = collectMegaCluster(cx, cy, cz, kind);
+  const { members, sized: local } = detoMegaCluster(cx, cy, cz, kind);
   if (!members.length) return [];
+  beginClusterBatch(); // balanced by finishCarveJob (big path) or the finally below (small path)
   const mult = members.length;
   const radii = local.map((e) => e.r);
   const R = Math.max(...radii);
   for (const m of members) pooling.add(m.key);
+  markPoolChanged();
   let deferredCarve = false;
   try {
     let ax = 0, ay = 0, az = 0;
@@ -1710,10 +2041,8 @@ function explodePool(cx, cy, cz, kind) {
     // Member hash so "inside the pool" checks stay local (O(neighbours)
     // instead of O(members) per victim).
     const mgrid = new Map();
-    const columnGrid = new Map();
     for (let i = 0; i < members.length; i++) {
       gridInsert(mgrid, members[i].x, members[i].y, members[i].z, i);
-      gridInsert2D(columnGrid, members[i].x, members[i].z, i);
     }
     const inRegion = (x, y, z) => {
       let hit = false;
@@ -1799,27 +2128,51 @@ function explodePool(cx, cy, cz, kind) {
     })).sort((a, b) => a.x0 - b.x0);
     let buildXMax = -B;
     for (const e of xRanges) if (e.x1 > buildXMax) buildXMax = e.x1;
+    // Member x-index, sorted once: each column binary-searches the query
+    // window instead of scanning the whole pool or hashing a grid.
+    const n = members.length;
+    const mx = new Float64Array(n), mz = new Float64Array(n), mr = new Float64Array(n), my = new Float64Array(n);
+    for (let i = 0; i < n; i++) { const m = members[i]; mx[i] = m.x; mz[i] = m.z; mr[i] = radii[i]; my[i] = m.y; }
+    const ox = new Array(n);
+    for (let i = 0; i < n; i++) ox[i] = i;
+    ox.sort((a, b) => mx[a] - mx[b]);
+    const sx = new Float64Array(n);
+    for (let i = 0; i < n; i++) sx[i] = mx[ox[i]];
+    const flat = { mx, mz, mr, my, ox, sx };
+    // Vertical anchor per chunk column: the lowest member in its footprint,
+    // so ordering can prioritize a tall pool's floor over its top.
+    const chunkMinY = new Map();
+    for (const m of members) {
+      const ck = Math.floor(m.x / 16) + "_" + Math.floor(m.z / 16);
+      const prev = chunkMinY.get(ck);
+      if (prev === undefined || m.y < prev) chunkMinY.set(ck, m.y);
+    }
     const job = {
-      members: [...members], radii: [...radii], kind, columnGrid,
-      columns: [], columnsReady: false,
+      members: [...members], radii: [...radii], kind, flat,
+      columnsReady: false, order: [], oi: 0, lx: undefined, ly: undefined, lz: undefined,
       xRanges, xStart: 0, activeMembers: [],
       buildX: xRanges[0].x0 - 1, buildXMax,
-      zIntervals: [], zIntervalIndex: 0, buildZ: null, buildZEnd: -1, ci: 0,
-      chunkLast: new Map(), dirty: new Set(), ready: new Set(),
+      zIntervals: [], zIntervalIndex: 0, buildZ: null, buildZEnd: -1,
+      buckets: new Map(), chunkLeft: new Map(), ox: cx, oy: cy, oz: cz, prebuilt: new Set(), chunkMinY,
+      dirty: new Set(), ready: new Set(),
       touched, carveDone: false,
     };
     carveJobs.push(job);
     deferredCarve = true;
-    if (touched.length) {
-      notePortalFramesOnly(touched);
-      queueBlastRefresh(touched);
-    }
+    boostBlastRemesh();
+    // No blastRefreshPending for the member cells: the job's own chunkLeft /
+    // ready machinery covers those chunks in order instead of flooding the
+    // shared queue with thousands of duplicate keys that would cannibalize
+    // the remesh budget. Portals and liquids are still handled at finish.
     poolLight(ax, ay, az, Rfx, styleKey);
     notePoolEdit();
+    jumpstartImmediate(job, cx, cz);
     return [];
   } finally {
     if (!deferredCarve) {
       for (const m of members) pooling.delete(m.key);
+      markPoolChanged();
+      endClusterBatch();
     }
   }
 }
@@ -1852,38 +2205,87 @@ function carvePoolColumn(x, m, R, kind, touched, pool = true, open = false) {
     }
   }
 }
-function carveMegaUnionColumn(x, z, grid, members, radii, kind, touched) {
-  const top = topAt(dim, x, z);
-  if (!dimInfinite() && top < 1) return;
-  const intervals = [];
-  gridNear2D(grid, x, z, MEGA_POOL_RADIUS_MAX, (i) => {
-    const m = members[i], R = radii[i];
-    const dx = x - m.x, dz = z - m.z;
-    const horizontal2 = dx * dx + dz * dz;
-    const R2 = R * R;
-    if (horizontal2 > R2) return;
-    const yRadius = Math.sqrt(Math.max(0, R2 - horizontal2));
-    const yLo = dimInfinite() ? Math.max(-dimBound(), Math.ceil(m.y - yRadius)) : Math.max(1, Math.ceil(m.y - yRadius));
-    const yHi = Math.min(top, dimInfinite() ? Math.min(dimBound(), Math.floor(m.y + yRadius)) : Math.floor(m.y + yRadius));
-    if (yLo <= yHi) intervals.push([yLo, yHi]);
-  });
-  if (!intervals.length) return;
+// Union intervals for one projected column, shared by both query paths:
+// members whose crater reaches (x, z), merged into disjoint y ranges.
+function mergeColumnIntervals(intervals) {
+  if (!intervals.length) return null;
   intervals.sort((a, b) => a[0] - b[0]);
+  const out = [];
   let y0 = intervals[0][0], y1 = intervals[0][1];
-  const carve = (lo, hi) => {
-    for (let y = lo; y <= hi; y++) carvePoolCellContents(x, y, z, kind, touched, true);
-  };
   for (let i = 1; i < intervals.length; i++) {
     const [lo, hi] = intervals[i];
     if (lo <= y1 + 1) {
       if (hi > y1) y1 = hi;
     } else {
-      carve(y0, y1);
+      out.push([y0, y1]);
       y0 = lo;
       y1 = hi;
     }
   }
-  carve(y0, y1);
+  out.push([y0, y1]);
+  return out;
+}
+// Union intervals for one projected column: members are x-sorted once per
+// pool, each column binary-searches the [x-40, x+40] window and applies the
+// same per-member radius test as the old grid walk — identical visited set
+// (query window is the member radius cap) with no Map/string/callback cost,
+// dense and wide pools alike. Ranges accumulate in scratch buffers (no per-
+// column allocation); dense columns resolve through a difference array
+// (covered ⟺ prefix sum > 0, exactly the merged union) instead of paying
+// thousands of pair allocations plus a comparator sort, sparse columns keep
+// the classic pair list + merge.
+let spanLo = new Float64Array(1024);
+let spanHi = new Float64Array(1024);
+let spanDiff = new Int32Array(4096);
+function columnIntervals(job, x, z) {
+  const top = topAt(dim, x, z);
+  if (!dimInfinite() && top < 1) return null;
+  const { mx, mz, mr, my, ox, sx } = job.flat;
+  const x0 = x - MEGA_POOL_RADIUS_MAX, x1 = x + MEGA_POOL_RADIUS_MAX;
+  let lo = 0, hi = sx.length;
+  while (lo < hi) { const m = (lo + hi) >> 1; if (sx[m] < x0) lo = m + 1; else hi = m; }
+  const start = lo;
+  lo = start; hi = sx.length;
+  while (lo < hi) { const m = (lo + hi) >> 1; if (sx[m] <= x1) lo = m + 1; else hi = m; }
+  const cap = hi - start;
+  if (spanLo.length < cap) { spanLo = new Float64Array(cap); spanHi = new Float64Array(cap); }
+  // Pass 1: ranges into scratch, plus extent. No allocation.
+  let n = 0, gmin = Infinity, gmax = -Infinity;
+  for (let k = start; k < hi; k++) {
+    const i = ox[k];
+    const dx = x - mx[i], dz = z - mz[i];
+    const R = mr[i], R2 = R * R;
+    const h2 = dx * dx + dz * dz;
+    if (h2 > R2) continue;
+    const yRadius = Math.sqrt(Math.max(0, R2 - h2));
+    const yLo = dimInfinite() ? Math.max(-dimBound(), Math.ceil(my[i] - yRadius)) : Math.max(1, Math.ceil(my[i] - yRadius));
+    const yHi = Math.min(top, dimInfinite() ? Math.min(dimBound(), Math.floor(my[i] + yRadius)) : Math.floor(my[i] + yRadius));
+    if (yLo > yHi) continue;
+    spanLo[n] = yLo;
+    spanHi[n] = yHi;
+    n++;
+    if (yLo < gmin) gmin = yLo;
+    if (yHi > gmax) gmax = yHi;
+  }
+  if (!n) return null;
+  const span = gmax - gmin;
+  if (n * 4 > span) {
+    if (spanDiff.length < span + 2) spanDiff = new Int32Array(span + 2);
+    spanDiff.fill(0, 0, span + 2);
+    for (let i = 0; i < n; i++) { spanDiff[spanLo[i] - gmin]++; spanDiff[spanHi[i] - gmin + 1]--; }
+    const out = [];
+    let run = -1, acc = 0;
+    for (let y = 0; y <= span; y++) {
+      acc += spanDiff[y];
+      if (acc > 0) { if (run < 0) run = y; }
+      else if (run >= 0) { out.push([gmin + run, gmin + y - 1]); run = -1; }
+    }
+    if (run >= 0) out.push([gmin + run, gmax]);
+    return out.length ? out : null;
+  }
+  const intervals = [];
+  for (let i = 0; i < n; i++) intervals.push([spanLo[i], spanHi[i]]);
+  return mergeColumnIntervals(intervals);
 }
 
 function carvePoolCell(x, y, z, cx, cy, cz, R2, kind, touched, pool, open = false) {
@@ -1898,42 +2300,46 @@ function carvePoolCell(x, y, z, cx, cy, cz, R2, kind, touched, pool, open = fals
   }
   carvePoolCellContents(x, y, z, kind, touched, pool);
 }
+// Per-id cell class cache for the carve fast path (see carvePoolCellContents).
+const CELL_CLS = [];
 function carvePoolCellContents(x, y, z, kind, touched, pool) {
   const bid = getBlock(x, y, z);
   if (bid === AIR) return;
+  // Bit0 liquid, bit1 TNT-like, memoized per block id: one indexed access
+  // instead of repeated registry lookups on every carved cell.
+  let cls = CELL_CLS[bid];
+  if (cls === undefined) {
+    cls = (isLiquid(bid) ? 1 : 0) | (isTntLike(bid) ? 2 : 0);
+    CELL_CLS[bid] = cls;
+  }
   // Liquids survive blasts unless the kind clears them; otherwise
   // the blast passes through them. Custom carveBlast tiers must keep
   // this guard.
-  if (isLiquid(bid) && !kind.clearsLiquids) return;
-  const victimKind = isTntLike(bid) ? kindOfBlock(bid) : null;
+  if ((cls & 1) && !kind.clearsLiquids) return;
+  const victimKind = (cls & 2) ? kindOfBlock(bid) : null;
   // Ultras never pool and are never consumed: any carve uncovering one
   // queues its own band blast instead.
   if (victimKind && victimKind.band) {
     queueChained(x, y, z, victimKind);
     return;
   }
-  if (victimKind && victimKind.pool) {
-    if (pool) {
-      // Pool carve consumes megas silently, members and stragglers alike.
-      clearCell(x, y, z, touched);
-    } else if (wakeMegas) {
-      // Normal carve leaves mega victims standing for the pool.
-      wakeMegas.push([x, y, z]);
-    } else {
-      clearCell(x, y, z, touched);
-    }
-    return;
-  }
-  if (victimKind) {
-    if (pool) {
-      // Normals inside a mega pool go off with it, no delayed cascade.
-      clearCell(x, y, z, touched);
-      return;
-    }
+  if (victimKind && !victimKind.pool && !pool) {
     queueChained(x, y, z, victimKind);
     return;
   }
-  clearCell(x, y, z, touched);
+  if (victimKind && victimKind.pool && !pool && wakeMegas) {
+    // Normal carve leaves mega victims standing for the pool.
+    wakeMegas.push([x, y, z]);
+    return;
+  }
+  // Silent consume (pool members and stragglers, normals inside a pool,
+  // ordinary cells): untrack indexed kinds, then one protected-aware write —
+  // setBlock refuses protected cells itself, so no second getBlock needed.
+  if (bid === GLOWSTONE) clearGlowstoneAt(x, y, z);
+  else if (bid === FLOWER) clearFlowerAt(x, y, z);
+  else if (bid === TNT) untrackRegularTnt(x, y, z);
+  else if (victimKind) untrackMega(x, y, z);
+  if (setBlock(x, y, z, AIR)) touched.push([x, y, z]);
 }
 
 export function litCount() {

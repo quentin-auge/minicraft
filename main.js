@@ -1005,10 +1005,10 @@ function loop(now) {
         refreshBlocks(touched);
       }
       if (dim === "end" && touched.length) notifyEndermanVoxelChange(touched, camera);
-    });
+    }, pos.x, pos.y, pos.z, scene.fog.far);
     tickHomingTnt(dt, dim);
     if (dim === "end") tickEndMobs(dt, camera);
-    drainBlastRemesh(pos.x, pos.z);
+    drainBlastRemesh(pos.x, pos.y, pos.z, scene.fog.far);
     // GPU relief while a wipe, dense mega, or sliced carve runs (master's
     // quality-tier dip): full resolution restores the frame the queues
     // empty. fxDip latches early (imminent fuse) or in onExplode so the
