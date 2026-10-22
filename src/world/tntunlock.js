@@ -1,17 +1,17 @@
 // TNT tier progression: mega and ultra stay locked outside the TNT dimension
-// until enough Ender Dragon kills. ?unlock_tnt=1 bypasses the gate for every
+// until enough Ender Dragon kills. ?cheat=1 bypasses the gate for every
 // tier. Kills reset with a New World; the URL bypass does not.
 import { MEGA_TNT, ULTRA_TNT } from "../core/blocks.js";
+import { isCheat } from "../core/cheat.js";
 
 const UNLOCK_KILLS = new Map([
   [MEGA_TNT, 2],
   [ULTRA_TNT, 3],
 ]);
 
-// Wall-clock boot config (loader/UI exemption): the URL flag is fixed for
+// Wall-clock boot config (loader/UI exemption): the cheat flag is fixed for
 // the whole session, including across New World rebuilds.
-const forced = typeof location !== "undefined" &&
-  new URLSearchParams(location.search).get("unlock_tnt") === "1";
+const forced = isCheat();
 
 let dragonKills = 0;
 

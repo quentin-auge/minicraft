@@ -63,6 +63,7 @@ import { initHomingTnt, fireHomingTnt, tickHomingTnt, clearHomingTnt } from "./s
 import { enterEndMobs, clearEndMobs, tickEndMobs, notifyEndermanVoxelChange, dragonHealth, setDragonVictoryHook, setMobSeed } from "./src/mobs/end.js";
 import { endPortalFrameKeys, resetEndDimension, setEndCleared } from "./src/world/end.js";
 import { resetTntUnlocks } from "./src/world/tntunlock.js";
+import { isCheat } from "./src/core/cheat.js";
 
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x87ceeb);
@@ -831,12 +832,12 @@ document.addEventListener("keydown", (e) => {
     e.preventDefault();
     return;
   }
-  // TEMPORARY debug travel: Z cycles Overworld -> End -> Nether -> TNT,
-  // no portal needed. Gated like grapple (in game, locked, help closed)
-  // plus never mid-build, so a stray keypress can't disturb boot,
+  // Cheat travel: Z cycles Overworld -> End -> Nether -> TNT, no portal
+  // needed (requires ?cheat=1). Gated like grapple (in game, locked, help
+  // closed) plus never mid-build, so a stray keypress can't disturb boot,
   // New World, or a running transition (travelTo no-ops while busy anyway).
   const WORLD_CYCLE = ["over", "end", "nether", "tnt"];
-  if (e.code === "KeyZ" && !e.repeat && started && !isHelpOpen() && isLocked() && !building) {
+  if (e.code === "KeyZ" && !e.repeat && started && !isHelpOpen() && isLocked() && !building && isCheat()) {
     const at = WORLD_CYCLE.indexOf(dim);
     debugTravelTo(WORLD_CYCLE[(at + 1) % WORLD_CYCLE.length]);
     e.preventDefault();
