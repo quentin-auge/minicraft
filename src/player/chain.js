@@ -17,6 +17,7 @@ export const CHAIN_SPEC = {
   sampleStep: 0.5, // sweep sampling density (distance * angle / step)
   sampleMax: 64, // sweep sample cap
   movePx: 15, // deliberate-travel gate: right-hold skips the dead time past this
+  bridgeStillPx: 15, // stillness tolerance: left-hold ignores summed travel below this (raw |dx|+|dy|, mirror of movePx)
   maxStepsPerTick: 2, // anti-spiral: bound repeater iterations per frame; surplus is
   // dropped, never banked, so a hitch slows the chain instead of bursting it
 };
@@ -72,7 +73,8 @@ export function createChainState() {
     chainPlat: null, // plateau running average (flat blocks per 1 rise/fall)
     chainSpin: 0, // spiral turn counter
     leftMoved: false, // mouse moved since last paint tick (one stroke per event)
-    leftEverMoved: false, // mouse moved at all since press (kills bridge path)
+    leftEverMoved: false, // deliberate travel since press (kills bridge path)
+    leftMoveAcc: 0, // summed raw travel since press; gates leftMoved/leftEverMoved (mirror of rightMoveAcc)
     leftTimer: 0, // stillness accumulator before bridge latches
     leftStairs: false, // bridge mode latched
     leftNoPlace: false, // extension guard (master: TNT-locked aim); never set here
@@ -433,6 +435,7 @@ export function chainPressLeft(s, selectedId) {
   h.t = 0;
   h.acc = 0;
   s.leftMoved = false;
+  s.leftMoveAcc = 0;
   s.leftTimer = 0;
   s.leftStairs = false;
   s.leftEverMoved = false;
@@ -465,6 +468,7 @@ export function chainReleaseLeft(s) {
   s.leftTimer = 0;
   s.leftNoPlace = false;
   s.leftMoved = false;
+  s.leftMoveAcc = 0;
   s.anchors.clear();
   s.paintHasPrev = false;
   s.paintPlacedCells.clear();
@@ -489,6 +493,7 @@ export function chainResetOnUnlock(s) {
   s.chainId = null;
   s.leftStairs = false;
   s.leftTimer = 0;
+  s.leftMoveAcc = 0;
   s.rightMoved = false;
   s.rightMoveAcc = 0;
   s.anchors.clear();
@@ -497,9 +502,17 @@ export function chainResetOnUnlock(s) {
   s.digHasPrev = false;
 }
 export function chainNoteMouseMove(s, dx, dy) {
-  s.leftMoved = true;
-  s.leftEverMoved = true;
-  s.leftTimer = 0;
+  // Left-hold stillness tolerance (mirror of the right-hold movePx gate):
+  // micro-travel below bridgeStillPx never sets leftMoved/leftEverMoved and
+  // never resets the latch timer, so small tremors don't kill the bridge path.
+  if (s.hold[0].down) {
+    s.leftMoveAcc += Math.abs(dx) + Math.abs(dy);
+    if (s.leftMoveAcc >= CHAIN_SPEC.bridgeStillPx) {
+      s.leftMoved = true;
+      s.leftEverMoved = true;
+      s.leftTimer = 0;
+    }
+  }
   if (s.hold[2].down) {
     s.rightMoveAcc += Math.abs(dx) + Math.abs(dy);
     if (s.rightMoveAcc >= CHAIN_SPEC.movePx) s.rightMoved = true;
