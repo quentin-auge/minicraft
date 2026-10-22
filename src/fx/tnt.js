@@ -27,7 +27,7 @@ import { flyOn } from "../player/fly.js";
 import { spawnBurst, spawnBurstBatch, spawnFlash, spawnFlashBatch, spawnFireballBatch, sharedFlashGeo, initBandShell, updateBandShell, hideBandShell, spawnDense, denseCount, noteDenseSpawn, resetDenseFx, flushDense } from "./particles.js";
 import { clearGlowstoneAt } from "../world/glowstone.js";
 import { clearFlowerAt } from "../world/flowers.js";
-import { noteBlockLightEdit } from "../render/blocklights.js";
+import { notePoolEdit } from "../render/poollights.js";
 import * as THREE from "three";
 
 // Master values: normal fuse 3 s, blast 3; mega fuse 8 s, pooled blast
@@ -690,7 +690,7 @@ function finishBandJob(job) {
     }
   }
   const purged = onPurge ? onPurge(seeds) ?? [] : [];
-  syncGlowAfterBlast();
+  notePoolEdit();
   if (purged.length) {
     notePortalFramesOnly(purged);
     refreshBlocks(purged);
@@ -782,7 +782,7 @@ function drainBandJobs(dt) {
   // Portal frames track the cleared cells only (cheap Set ops); fills heal
   // from the dirty flag in the periodic scanner — never a per-cell refresh.
   if (cleared.length) notePortalFramesOnly(cleared);
-  syncGlowAfterBlast();
+  notePoolEdit();
   // Throttled shell advance on sim-time: the wall glides with the front
   // instead of paying a full 8k-particle rewrite every frame.
   job.fxAcc = (job.fxAcc || 0) + dt;
@@ -1142,8 +1142,8 @@ function finishCarveJob(job) {
     }
     const beforePurge = touched.length;
     purgeBlastLiquids(touched);
-    syncGlowAfterBlast();
     for (let i = beforePurge; i < touched.length; i++) finalChanges.push(touched[i]);
+    notePoolEdit();
     if (touched.length) notePortalFramesOnly(touched);
     if (finalChanges.length) queueBlastRefresh(finalChanges);
   } finally {
@@ -1389,7 +1389,7 @@ export function tickChain(now, refresh) {
   if (!centers.length) return;
   spawnBlastFxBatch(centers, kindOf("normal"));
   purgeBlastLiquids(touched);
-  syncGlowAfterBlast();
+  notePoolEdit();
   // A lone chained blast keeps the snappy synchronous remesh; a batch goes
   // through the shared budgeted drain so no tick pays a rebuild avalanche.
   if (centers.length === 1) {
@@ -1465,7 +1465,7 @@ function explode(cx, cy, cz, kind, refresh) {
   if (kind.pool) {
     const pooled = explodePool(cx, cy, cz, kind);
     purgeBlastLiquids(pooled);
-    syncGlowAfterBlast();
+    notePoolEdit();
     if (refresh) refresh(pooled);
     return pooled;
   }
@@ -1474,7 +1474,7 @@ function explode(cx, cy, cz, kind, refresh) {
   spawnBlastFx(cx, cy, cz, kind);
   carveNormalBlast(cx, cy, cz, kind, touched);
   purgeBlastLiquids(touched);
-  syncGlowAfterBlast();
+  notePoolEdit();
   if (refresh) refresh(touched);
   if (kind.knockback) applyMegaKnockback(cx, cy, cz, kind);
   if (onBlast) onBlast(cx, cy, cz, kind.radius, kind.key);
@@ -1509,20 +1509,13 @@ function untrackMega(x, y, z) {
   markClusterDirty();
 }
 // Single choke point for blast deletions: keeps the indexes in sync.
-// Glowstone variants clear cheaply here (map deletes only); the light
-// clusters re-sync once per blast via syncGlowAfterBlast below, not per cell.
-let glowBlasted = false;
-function syncGlowAfterBlast() {
-  if (!glowBlasted) return;
-  glowBlasted = false;
-  noteBlockLightEdit();
-}
+// Glowstone variants clear cheaply here (map deletes only); the halo tint
+// follows from the carve remeshes, which read the live index.
 function clearCell(x, y, z, touched) {
   if (isCellProtected(x, y, z)) return false;
   const id = getBlock(x, y, z);
   if (id === GLOWSTONE) {
     clearGlowstoneAt(x, y, z);
-    glowBlasted = true;
   }
   if (id === FLOWER) clearFlowerAt(x, y, z);
   if (id === TNT) untrackRegularTnt(x, y, z);
@@ -1784,7 +1777,7 @@ function explodePool(cx, cy, cz, kind) {
       // synchronous rebuilds.
       fxJobs.push({ x: ax, y: ay, z: az, kind, k: mult, share: 1, shells: true, key: styleKey, delay: 0, R: Rfx, lobes });
       poolLight(ax, ay, az, Rfx, styleKey);
-      syncGlowAfterBlast();
+      notePoolEdit();
       purgeBlastLiquids(touched);
       notePortalFramesOnly(touched);
       queueBlastRefresh(touched);
@@ -1822,7 +1815,7 @@ function explodePool(cx, cy, cz, kind) {
       queueBlastRefresh(touched);
     }
     poolLight(ax, ay, az, Rfx, styleKey);
-    syncGlowAfterBlast();
+    notePoolEdit();
     return [];
   } finally {
     if (!deferredCarve) {

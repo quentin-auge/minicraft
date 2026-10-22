@@ -33,7 +33,7 @@ import {
   CHUNK, WORLD_RADIUS, fillColumn, getBlock, isSolid, key, protectCell,
   registerChunkSource, resetWorld, setBlock, setDimension,
 } from "../core/store.js";
-import { GLOW_VARIANT_COUNT, noteGlowstonePlaceShared } from "./glowstone.js";
+import { GLOW_VARIANTS, GLOW_VARIANT_COUNT, noteGlowstonePlaceShared } from "./glowstone.js";
 
 export const NETHER_FIRE_LEVEL = 12;
 export const NETHER_RETURN_BASE_Y = 30;
@@ -109,7 +109,6 @@ let returnFrameKeys = [];
 let returnPad = null;
 let netherReady = false;
 const generatedChunks = new Set();
-let glowDirty = false;
 // Every frame's glowstone cells: shells never fill them, and siting never
 // lets a new tube touch them.
 let ringCells = new Set();
@@ -170,20 +169,11 @@ export function resetNetherDimension() {
   ringCells = new Set();
   netherReady = false;
   generatedChunks.clear();
-  glowDirty = false;
   landCache.fill(NaN);
   topCache.fill(NaN);
   riverT.fill(-1);
   riverScore.fill(Infinity);
   cascadeMask.fill(0);
-}
-
-// True when streamed generation placed glowstone since the last call: the
-// block-light index must be rebuilt, since it is not retriggered by meshing.
-export function takeNetherGlowDirty() {
-  const dirty = glowDirty;
-  glowDirty = false;
-  return dirty;
 }
 
 function distToSegment(px, pz, ax, az, bx, bz) {
@@ -865,6 +855,46 @@ function frameCells(t) {
     for (let yy = t.plat; yy <= t.plat + 7; yy++) cells.push(wx + "," + yy + "," + wz);
   }
   return cells;
+}
+
+// Tunnel-ring light anchors: one centered lamp per sited ring (never a chain
+// stride — rings are portal structures). The center derives from the siting
+// descriptor, so it stays exact even when the ring straddles partially built
+// streaming chunks. Pure per-tunnel math, so it unit-tests on a fake tunnel.
+export function netherRingLight(t) {
+  const cols = t.cols ?? [];
+  if (!cols.length || t.plat === undefined) return null;
+  let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
+  for (const [wx, wz] of cols) {
+    if (wx < minX) minX = wx;
+    if (wx > maxX) maxX = wx;
+    if (wz < minZ) minZ = wz;
+    if (wz > maxZ) maxZ = wz;
+  }
+  return {
+    x: (minX + maxX) / 2 + 0.5,
+    y: t.plat + 4.0, // opening center: plat..plat+7, cell-centered
+    z: (minZ + maxZ) / 2 + 0.5,
+    color: GLOW_VARIANTS[t.doorV ?? 0].glow,
+  };
+}
+
+// One centered lamp per sited tunnel ring. Empty on fresh worlds (tunnels
+// site at setup); cleared with everything else by the dimension reset.
+export function netherRingLights() {
+  const out = [];
+  for (const t of tunnels) {
+    const a = netherRingLight(t);
+    if (a) out.push(a);
+  }
+  return out;
+}
+
+// Ring membership for the chain pool: ring stones are portal structures, so
+// clusterSpots skips them (a ring reads one centered lamp, never a cluster).
+// Keys carry no dimension, so the pool only consults this in the Nether.
+export function isNetherRingCell(x, y, z) {
+  return ringCells.has(x + "," + y + "," + z);
 }
 
 // Doorstep cells: the lowered floor row just past the frame (continuous d
@@ -1584,7 +1614,6 @@ function resetNetherState(newSeed, floorY = 0) {
   ringCells = new Set();
   netherReady = false;
   generatedChunks.clear();
-  glowDirty = false;
   landCache.fill(NaN);
   topCache.fill(NaN);
   riverT.fill(-1);
@@ -1756,7 +1785,6 @@ function placeFrame(t, x0, x1, z0, z1) {
     if (!sameChunk(wx, wz, x0, x1, z0, z1)) return;
     setBlock(wx, yy, wz, GLOWSTONE);
     noteGlowstonePlaceShared(wx, yy, wz, t.doorV);
-    glowDirty = true;
   };
   cols.forEach(([wx, wz], i) => {
     const jamb = i === 0 || i === cols.length - 1;

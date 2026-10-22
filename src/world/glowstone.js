@@ -11,6 +11,7 @@
 import { GLOWSTONE } from "../core/blocks.js";
 import { key, keyXYZ, dim } from "../core/store.js";
 import { hash2 } from "../core/noise.js";
+import { registerHaloSource } from "../render/halobake.js";
 
 export const CLUSTER_DIST = 10;
 // Hotbar icon / fallback texture variant (yellow, like master).
@@ -115,3 +116,15 @@ export function glowstoneBlocks(name) {
 export function glowstoneVariantKey(name, k) {
   return glowVariants[name].get(k);
 }
+
+// Baked-halo source: every stone tints its neighbors in every dimension,
+// so a line of 200 stones reads lit end to end with no dynamic light
+// involved (see render/halobake.js).
+registerHaloSource({
+  key: "glowstone",
+  radius: 8, // blocks, Euclidean cutoff
+  gain: 2.0, // adjacent-block lift
+  max: 3, // per-channel clamp against overlap blowout
+  positions: (name) => glowstoneSets[name],
+  colorOf: (name, k) => GLOW_VARIANTS[glowstoneVariantKey(name, k) ?? 0].glow,
+});

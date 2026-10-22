@@ -28,6 +28,7 @@ import { AIR, PORTAL, OBSIDIAN, TNT, MEGA_TNT, ULTRA_TNT, isLiquid } from "../co
 import { materialsFor } from "../core/textures.js";
 import { DIMENSION_KEYS, dim, dimBound, key, keyXYZ, getBlock, isSolid } from "../core/store.js";
 import { dimFloorY, dimSpec } from "./dimensions.js";
+import { registerHaloSource } from "../render/halobake.js";
 import {
   pos, yaw, keys,
   PLAYER_HW, PLAYER_H, EYE,
@@ -120,6 +121,31 @@ export function notePortalEdits(coords) {
   }
   portalDirty = true;
 }
+
+// Baked-halo source: every portal frame in the Nether tints its neighbors
+// with its family color, so all Nether frames read lit with no dynamic light
+// involved (see render/halobake.js). Other dimensions keep dark frames —
+// the requirement is Nether-only.
+const frameColorById = new Map();
+for (const s of PORTAL_TYPES) {
+  const hex = parseInt(s.tunnel.slice(1), 16);
+  for (const id of Array.isArray(s.frame) ? s.frame : [s.frame]) frameColorById.set(id, hex);
+}
+const NO_FRAMES = new Set();
+registerHaloSource({
+  key: "portalframe",
+  radius: 8, // blocks, Euclidean cutoff (same tune as glowstone)
+  gain: 2.0, // adjacent-block lift
+  max: 3, // per-channel clamp against overlap blowout
+  positions: (name) => (name === "nether" ? frameSets.nether || NO_FRAMES : NO_FRAMES),
+  // getBlock reads the active dimension, which is the baked one: the mesher
+  // only rebuilds chunks of the dimension being played. Unknown ids (stale
+  // index) fall back to white: a neutral lift with no hue.
+  colorOf: (name, k) => {
+    const [x, y, z] = keyXYZ(k);
+    return frameColorById.get(getBlock(x, y, z)) ?? 0xffffff;
+  },
+});
 
 // Worldgen-placed frames, keyed by the generator (live edits track
 // themselves via trackFrame, so a clear plus this list is exact). Scoped to
@@ -509,6 +535,37 @@ export function initPortals(scene) {
 
 export function portalFillCells(win) {
   return specOf(win).cells(win);
+}
+
+// Pool-light anchors: one light at the middle of every validated window, so
+// each portal reads lit with a single well-placed lamp instead of one per
+// frame cell. Vertical windows light the opening's center; flat ones hover a
+// cell above the ring (a light in the fill plane would sit inside blocks).
+// Color is the family's tunnel color. Anchors are recomputed live, so the
+// pool follows validation exactly: gate-closed windows lose fill and light
+// together, broken rings go dark with the halo.
+export function portalFrameLights() {
+  const out = [];
+  for (const win of portalWindows.values()) {
+    const b = portalFrameBBox(win);
+    const hex = parseInt(specOf(win).tunnel.slice(1), 16);
+    if (win.orient === "h") {
+      out.push({
+        x: (b.minX + b.maxX) / 2 + 0.5,
+        y: b.baseY + 1.5,
+        z: (b.minZ + b.maxZ) / 2 + 0.5,
+        color: hex,
+      });
+    } else {
+      out.push({
+        x: (b.minX + b.maxX) / 2 + 0.5,
+        y: (b.baseY + b.topY) / 2 + 0.5,
+        z: (b.minZ + b.maxZ) / 2 + 0.5,
+        color: hex,
+      });
+    }
+  }
+  return out;
 }
 
 function endFillCells(win) {

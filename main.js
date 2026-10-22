@@ -31,7 +31,7 @@ import { MOON_MIN_Y, MOON_R, generateMoon, generateMoonUnderRows, markMoonBuilt,
 import { WATER, FLOWER, GLOWSTONE, MOON_WATER, TNT, BLOCK_INFO } from "./src/core/blocks.js";
 import { resetGlowstoneMemory, clearGlowstoneDim, setGlowSeed } from "./src/world/glowstone.js";
 import { resetFlowerMemory, clearFlowerDim, setFlowerSeed } from "./src/world/flowers.js";
-import { initBlockLights, tickBlockLights, rebuildBlockLightIndexes, resetBlockLightMemory } from "./src/render/blocklights.js";
+import { initPoolLights, tickPoolLights, resetPoolLightMemory } from "./src/render/poollights.js";
 import { initRenderer, rebuildAll, maybeStream, streamChunks, drainChunkQueue, beginDispose, disposeSome, refreshBlocks, queueRefreshBlocks, setEyeMedium, setRegionFade, nearestMissingDist, tickChunkFades, UNLOAD_MARGIN } from "./src/render/mesher.js";
 import { applyRegions } from "./src/render/regions.js";
 import { resetItems, select, selected, selectedId, initHotbarInput, setItem, getItems } from "./src/ui/hotbar.js";
@@ -41,7 +41,7 @@ import { toggleDebug, tickDebug } from "./src/ui/debug.js";
 import { tickWaterFog, eyeMediumId } from "./src/render/waterfog.js";
 import { initSky, tickSky } from "./src/render/sky.js";
 import { initAmbient, tickAmbient, exitAmbient } from "./src/fx/ambient.js";
-import { resetNetherDimension, takeNetherGlowDirty } from "./src/world/nether.js";
+import { resetNetherDimension } from "./src/world/nether.js";
 import {
   initPortals, buildPortalDom, setPortalTravelHook, tickPortals,
   resetFrameSet, scanWorldPortals, clearPortalFills, notePortalEdits,
@@ -106,7 +106,7 @@ initSky(scene);
 initPrecip(scene);
 initTNTFx(scene);
 initHomingTnt(scene);
-initBlockLights(scene);
+initPoolLights(scene);
 initAmbient(scene);
 initRope(scene);
 initPortals(scene);
@@ -343,7 +343,7 @@ async function buildWorld() {
   renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
   resetGlowstoneMemory();
   resetFlowerMemory();
-  resetBlockLightMemory();
+  resetPoolLightMemory();
   scene.fog.near = LOAD_FOG_NEAR;
   scene.fog.far = LOAD_FOG_FAR;
   envAir.near = LOAD_FOG_NEAR;
@@ -367,7 +367,6 @@ async function buildWorld() {
     spawnPlayer();
     // No glowstone rescan: worldgen places none and the live index starts
     // empty (player edits track themselves).
-    rebuildBlockLightIndexes();
     rebuildAll(pos.x, pos.z, 2);
     if (aborted()) return;
     clearPortalFills();
@@ -542,7 +541,6 @@ async function runTravel(dest, msg) {
       if (arrival) placeArrival(arrival);
       else spawnPlayer();
     }
-    rebuildBlockLightIndexes();
     updateCamera();
     // Voxels and arrival done: meshes from here on (the scene was already
     // disposed under the fade-in). Queue the full ring, then drain it in
@@ -893,7 +891,7 @@ function loop(now) {
       renderer.setPixelRatio(1);
     }
     tickSnow(dt, simTime, camera);
-    tickBlockLights(dt, camera);
+    tickPoolLights(dt, camera);
     tickHookFx(dt);
     // Streaming fog first, so the loader sees the tightened range; dive murk
     // after, restoring the tracked air baseline on resurface. The pocket
@@ -902,7 +900,6 @@ function loop(now) {
     updateStreamingFog();
     tickSky(scene, camera, sun, hemi, envAir, dimEnv(dim), simActive ? dt : 0);
     tickAmbient(simActive ? dt : 0, simTime, camera, dimSpec(dim)?.ambient);
-    if (takeNetherGlowDirty()) rebuildBlockLightIndexes();
     applyRegions(camera.position, scene.background, setRegionFade);
     // One eye-medium lookup per frame, shared by the murk and the veil gate
     // (it used to run twice, with a bounded air flood each time in pockets).

@@ -12,7 +12,7 @@ import { PLAYER_HW, PLAYER_H, pos } from "./physics.js";
 import { igniteTNT, isLitTNT, detonateNow, noteTntPlaced, kindOfBlock, trackMegaPlaced, trackRegularTntPlaced } from "../fx/tnt.js";
 import { noteGlowstonePlace, noteGlowstonePlaceShared, glowVariantAt, clearGlowstoneAt } from "../world/glowstone.js";
 import { noteFlowerPlace, clearFlowerAt } from "../world/flowers.js";
-import { noteBlockLightEdit } from "../render/blocklights.js";
+import { notePoolEdit } from "../render/poollights.js";
 import { notePortalEdit, notePortalEdits, notePortalFramesOnly } from "../world/portals.js";
 
 export let currentBlock = null;
@@ -139,7 +139,6 @@ export function purgeFloatingLiquidsAround(coords) {
 // caller flushes once per tick via flushChainBatch. Discrete taps use the
 // default unbatched path, unchanged.
 const pendingChainGlow = [];
-let pendingChainGlowBreak = false;
 
 export function breakBlockAt(x, y, z, opts) {
   const batched = !!opts?.batch;
@@ -162,14 +161,11 @@ export function breakBlockAt(x, y, z, opts) {
     igniteTNT(x, y, z);
     return [];
   }
-  if (bid === GLOWSTONE) {
-    clearGlowstoneAt(x, y, z);
-    if (batched) pendingChainGlowBreak = true;
-    else noteBlockLightEdit();
-  }
+  if (bid === GLOWSTONE) clearGlowstoneAt(x, y, z);
   if (bid === FLOWER) clearFlowerAt(x, y, z);
   setBlock(x, y, z, AIR);
   if (dimInfinite()) pinTntCellAt(x, y, z);
+  notePoolEdit();
   if (batched) return [[x, y, z]];
   notePortalEdit(x, y, z);
   const purged = purgeFloatingLiquidsAround([[x, y, z]]);
@@ -189,17 +185,17 @@ export function tryPlace(id, px, py, pz, opts) {
   if (!(target === AIR || isLiquid(target))) return null;
   if (BLOCK_INFO[id].solid && intersectsPlayer(px, py, pz)) return null;
   setBlock(px, py, pz, id);
+  notePoolEdit();
   if (id === TNT) trackRegularTntPlaced(px, py, pz);
   // Player content pins its stream cell: edits (and portal frames built
   // from them) never evict within a visit.
   if (dimInfinite()) pinTntCellAt(px, py, pz);
   if (id === GLOWSTONE) {
     // Variant assignment is deferred in batch mode (the remesh drain reads
-    // it later); the single light recompute happens in flushChainBatch.
+    // it later); the halo tint follows from the chunk rebuilds.
     if (batched) pendingChainGlow.push([px, py, pz]);
     else {
       noteGlowstonePlace(px, py, pz);
-      noteBlockLightEdit();
     }
   }
   if (id === FLOWER) noteFlowerPlace(px, py, pz);
@@ -212,15 +208,13 @@ export function tryPlace(id, px, py, pz, opts) {
 }
 
 // End-of-tick flush for the batched chain path: glowstone variants, one
-// light recompute, one liquid purge over the union, one portal frame pass
-// (fills heal from the dirty flag via the periodic scanner, like band wipes).
+// liquid purge over the union, one portal frame pass (fills heal from the
+// dirty flag via the periodic scanner, like band wipes).
 // Adjacent pending stones share the previous variant instead of rescanning
 // the whole stone set each (pads stamp neighbours; the shared color is the
 // clustering intent); non-adjacent ones roll normally. Returns the purged
 // cells so the caller can refresh them too.
 export function flushChainBatch(cells) {
-  let glow = pendingChainGlowBreak;
-  pendingChainGlowBreak = false;
   let last = null;
   for (const [x, y, z] of pendingChainGlow.splice(0)) {
     if (
@@ -233,9 +227,8 @@ export function flushChainBatch(cells) {
       noteGlowstonePlace(x, y, z);
     }
     last = [x, y, z, glowVariantAt(x, y, z)];
-    glow = true;
   }
-  if (glow) noteBlockLightEdit();
+  notePoolEdit();
   if (!cells.length) return [];
   const purged = purgeFloatingLiquidsAround(cells);
   notePortalFramesOnly(purged.length ? [...cells, ...purged] : cells);

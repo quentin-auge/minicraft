@@ -5,6 +5,7 @@ import { AIR, BLOCK_INFO, FLOWER, GLASS, GLOWSTONE, isLiquid } from "../core/blo
 import { WORLD_RADIUS, CHUNK, renderDist, getBlock, topAt, colTopIdx, colOcc, dim, dimInfinite, chunkOf, isEnclosedAir, ensureChunkSource } from "../core/store.js";
 import { materialsFor, liquidSurfaceMat, glowstoneMats } from "../core/textures.js";
 import { FLOWER_GEOS, FLOWER_MAT } from "./flowers.js";
+import { haloRadius, bakeHaloTint } from "./halobake.js";
 import { flowerVariantAt, flowerAngleAt } from "../world/flowers.js";
 import { GLOW_VARIANT_COUNT, glowVariantAt } from "../world/glowstone.js";
 import { MOON_SURFACE_Y } from "../world/moon.js";
@@ -539,7 +540,10 @@ export function rebuildChunk(cx, cz, fade = false) {
   // Region meshes stay scene-level under their own fade gate.
   const restGroup = new THREE.Group();
   restGroup.matrixAutoUpdate = false;
-  const buildBoxes = (list, mats) => {
+  // Baked halo scratch: one color, reused for every tinted instance (chunk
+  // builds are budgeted, so no per-instance allocation here).
+  const tintScratch = new THREE.Color();
+  const buildBoxes = (list, mats, tintMap) => {
     const mesh = new THREE.InstancedMesh(boxGeo, mats, list.length);
     // Translation-only instances: write the column-major matrix directly
     // instead of composing through the shared dummy Object3D.
@@ -552,15 +556,31 @@ export function rebuildChunk(cx, cz, fade = false) {
       a[o + 12] = list[i][0] + 0.5; a[o + 13] = list[i][1] + 0.5; a[o + 14] = list[i][2] + 0.5; a[o + 15] = 1;
     }
     mesh.instanceMatrix.needsUpdate = true;
+    // Baked halo: untinted instances read white (no-op multiply), so the
+    // color buffer only exists on meshes a source actually reaches. Shared
+    // materials stay shared — three keys programs per object state, not per
+    // material, so tinted and untinted chunks coexist on one material.
+    if (tintMap && tintMap.size) {
+      for (let i = 0; i < list.length; i++) {
+        const t = tintMap.get(list[i][0] + "," + list[i][1] + "," + list[i][2]);
+        if (t) mesh.setColorAt(i, tintScratch.setRGB(t[0], t[1], t[2]));
+        else mesh.setColorAt(i, tintScratch.setRGB(1, 1, 1));
+      }
+      mesh.instanceColor.needsUpdate = true;
+    }
     stampStatic(mesh, x0, x1, z0, z1, chunkTop, chunkBottom);
     return mesh;
   };
+  // One halo map per chunk build: sources are read R past the chunk in every
+  // axis, so border cells pick up their neighbor chunk's sources too. Skipped
+  // when the chunk holds no tintable blocks (glowstone-only chunks).
+  const tintMap = perId.size ? bakeHaloTint(dim, x0, x1, z0, z1, chunkBottom, chunkTop) : null;
   for (const [id, list] of perId) {
     const { rest, groups, restTop: rt, restBottom: rb } = partitionRegion(id, list);
     if (rt > restTop) restTop = rt;
     if (rb < restBottom) restBottom = rb;
     if (rest.length) {
-      const mesh = buildBoxes(rest, getMats(id));
+      const mesh = buildBoxes(rest, getMats(id), tintMap);
       // Glass draws after liquids so it composites over water whether the
       // glass sits behind or in front of the surface.
       if (id === GLASS) mesh.renderOrder = 13;
@@ -568,7 +588,7 @@ export function rebuildChunk(cx, cz, fade = false) {
       meshes.set(id, mesh);
     }
     for (const g of groups.values()) {
-      const mesh = buildBoxes(g.list, regionMaterials(g.region, "b:" + id, () => getMats(id)));
+      const mesh = buildBoxes(g.list, regionMaterials(g.region, "b:" + id, () => getMats(id)), tintMap);
       if (id === GLASS) mesh.renderOrder = 13;
       registerRegionMesh(g.region, mesh);
       sceneRef.add(mesh);
@@ -1009,7 +1029,13 @@ function columnKeys(x, z) {
 export function refreshBlocks(coords) {
   const keys = new Set();
   for (const [x, , z] of coords) {
-    for (const ck of columnKeys(x, z)) keys.add(ck);
+    // Halo range, not just the edited column: a source add/remove re-tints
+    // neighbor chunks up to haloRadius() past their border, so they rebuild
+    // too. Interior edits still map to exactly their own chunk (R < CHUNK);
+    // border edits fan out to at most 2x2. This superset covers the old
+    // adjacent-chunk exposure rule, so columnKeys stays only for the
+    // band-wipe frontier gating below.
+    for (const ck of haloKeys(x, z)) keys.add(ck);
   }
   for (const ck of keys) {
     if (chunkMeshes.has(ck)) {
@@ -1035,8 +1061,25 @@ export function refreshBlocks(coords) {
 const pendingRefresh = new Set();
 export function queueRefreshBlocks(coords) {
   for (const [x, , z] of coords) {
-    for (const ck of columnKeys(x, z)) pendingRefresh.add(ck);
+    // Same halo range as refreshBlocks: the budgeted drain covers the rim.
+    for (const ck of haloKeys(x, z)) pendingRefresh.add(ck);
   }
+}
+// Chunk range touched by an edit's baked halo: sources up to haloRadius()
+// away re-tint this chunk's border cells, so every chunk intersecting the R
+// square around (x, z) rebuilds. R < CHUNK keeps this at 1..4 chunks.
+// Unioned with the old adjacent-chunk exposure rule, so border edits keep
+// their neighbor refresh even if no halo source is registered.
+function haloKeys(x, z) {
+  const R = haloRadius();
+  const cx0 = chunkOf(x - R), cx1 = chunkOf(x + R);
+  const cz0 = chunkOf(z - R), cz1 = chunkOf(z + R);
+  const out = [];
+  for (let cx = cx0; cx <= cx1; cx++) {
+    for (let cz = cz0; cz <= cz1; cz++) out.push(cx + "_" + cz);
+  }
+  for (const ck of columnKeys(x, z)) if (!out.includes(ck)) out.push(ck);
+  return out;
 }
 function drainPendingRefresh(px, eyeY, pz, budgetMs) {
   if (!pendingRefresh.size) return;
