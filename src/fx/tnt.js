@@ -1248,9 +1248,9 @@ function makeFuseSprite() {
   const c = document.createElement("canvas");
   c.width = 128; c.height = 64;
   const tex = new THREE.CanvasTexture(c);
-  const spr = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, depthTest: false, transparent: true }));
+  const spr = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, depthTest: true, depthWrite: false, transparent: true }));
   spr.scale.set(1.5, 0.75, 1);
-  // Above liquid sheets (10-13), below the block highlight (999): no sort flicker.
+  // Depth-tested so relief occludes the ticking; above liquids (10-13), below highlight (999).
   spr.renderOrder = 20;
   spr.userData = { canvas: c, tex, shown: null };
   return spr;
