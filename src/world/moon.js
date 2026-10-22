@@ -9,7 +9,7 @@
 // pass needed.
 import { MOON, MOON_WATER } from "../core/blocks.js";
 import { hash2 } from "../core/noise.js";
-import { WORLD_RADIUS, CHUNK } from "../core/store.js";
+import { WORLD_RADIUS, CHUNK, getBlock, isSolid } from "../core/store.js";
 
 export const MOON_R = WORLD_RADIUS;
 export const MOON_THICK = 5;
@@ -77,6 +77,28 @@ export function generateMoon(seed, setBlock) {
   generateMoonSurface(seed, setBlock);
   generateMoonUnderRows(seed, setBlock, -MOON_R, MOON_R + 1);
   markMoonBuilt(seed);
+}
+
+// Moon spawn for the ?startdim=moon boot alias (overworld, not a dimension):
+// nearest-to-origin solid MOON cap outside the lake shafts, with headroom.
+// The cap top is flat at MOON_SURFACE_Y, so only the lake check varies.
+export function findMoonSpawn() {
+  const base = MOON_SURFACE_Y;
+  const R2 = MOON_R * MOON_R;
+  for (let r = 0; r <= MOON_R; r++) {
+    for (let dx = -r; dx <= r; dx++) {
+      for (let dz = -r; dz <= r; dz++) {
+        if (Math.max(Math.abs(dx), Math.abs(dz)) !== r) continue;
+        if (dx * dx + dz * dz > R2) continue;
+        if (getBlock(dx, base, dz) !== MOON) continue;
+        if (isSolid(dx, base + 1, dz) || isSolid(dx, base + 2, dz)) continue;
+        const len = Math.hypot(dx, dz);
+        const yaw = len > 0 ? Math.atan2(dx, dz) : 0;
+        return { x: dx, z: dz, y: base, yaw };
+      }
+    }
+  }
+  return { x: 0, z: 0, y: base, yaw: 0 };
 }
 
 // Chunk-center block coords overlapping the disc, for post-fill refresh:

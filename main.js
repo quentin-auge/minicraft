@@ -27,7 +27,7 @@ import { initRope } from "./src/player/rope.js";
 import { tickTNT, initTNTFx, resetTNTMemory, clearRegularTntDim, onExplode, onLiquidPurge, shakeSpecFor, bandFront, bandActive, drainBlastRemesh, queueBlastRefresh, megaImminent, megaCarveActive, megaFxActive, MEGA_BLAST_T, MEGA_BLAST_TIME_SCALE } from "./src/fx/tnt.js";
 import { initFx, tickFx, tickDenseFx, denseFxActive, prewarmDenseFx, spawnDense, flushDense, noteDenseSpawn } from "./src/fx/particles.js";
 import { initPrecip, tickSnow } from "./src/fx/precip.js";
-import { MOON_MIN_Y, MOON_R, generateMoon, generateMoonUnderRows, markMoonBuilt, moonReady, moonChunkCenters } from "./src/world/moon.js";
+import { MOON_MIN_Y, MOON_R, generateMoon, generateMoonUnderRows, markMoonBuilt, moonReady, moonChunkCenters, findMoonSpawn } from "./src/world/moon.js";
 import { WATER, FLOWER, GLOWSTONE, MOON_WATER, TNT, BLOCK_INFO } from "./src/core/blocks.js";
 import { resetGlowstoneMemory, clearGlowstoneDim, setGlowSeed } from "./src/world/glowstone.js";
 import { resetFlowerMemory, clearFlowerDim, setFlowerSeed } from "./src/world/flowers.js";
@@ -306,8 +306,11 @@ let bandDpr = false;
 let moonBand = false;
 // Boot dimension: the overworld by default; ?startdim=<dimension key> builds
 // that registered dimension directly. Unknown values fall back to overworld.
-const _startDim = new URLSearchParams(location.search).get("startdim");
-const BOOT_DIM = dimSpec(_startDim) ? _startDim : "over";
+// ?startdim=moon is an alias, not a dimension: it boots the overworld but
+// spawns on the Moon surface (respawns stay on ground spawn).
+const _rawStartDim = new URLSearchParams(location.search).get("startdim");
+const isMoonBoot = _rawStartDim === "moon";
+const BOOT_DIM = isMoonBoot ? "over" : (dimSpec(_rawStartDim) ? _rawStartDim : "over");
 // Reproducible worlds: ?seed=<integer> reuses that world seed instead of
 // rolling a fresh one every boot. Without it every build rolls fresh.
 const _seedParam = new URLSearchParams(location.search).get("seed");
@@ -365,6 +368,15 @@ async function buildWorld() {
     const ok = await gen(seed, aborted);
     if (!ok || aborted()) return;
     spawnPlayer();
+    // Moon alias: override the ground spawn with the lunar surface pick
+    // before meshing the neighborhood, so the first built chunks are lunar.
+    if (isMoonBoot) {
+      const m = findMoonSpawn();
+      pos.set(m.x + 0.5, m.y + 1.01, m.z + 0.5);
+      vel.set(0, 0, 0);
+      setYaw(m.yaw);
+      setPitch(0);
+    }
     // No glowstone rescan: worldgen places none and the live index starts
     // empty (player edits track themselves).
     rebuildAll(pos.x, pos.z, 2);
