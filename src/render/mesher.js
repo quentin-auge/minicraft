@@ -5,7 +5,7 @@ import { AIR, BLOCK_INFO, FLOWER, GLASS, GLOWSTONE, isLiquid } from "../core/blo
 import { WORLD_RADIUS, CHUNK, renderDist, getBlock, topAt, colTopIdx, colOcc, dim, dimInfinite, chunkOf, isEnclosedAir, ensureChunkSource } from "../core/store.js";
 import { materialsFor, liquidSurfaceMat, glowstoneMats } from "../core/textures.js";
 import { FLOWER_GEOS, FLOWER_MAT } from "./flowers.js";
-import { haloRadius, bakeHaloTint } from "./halobake.js";
+import { haloRadius, bakeHaloTint, isHaloSuspended } from "./halobake.js";
 import { flowerVariantAt, flowerAngleAt } from "../world/flowers.js";
 import { GLOW_VARIANT_COUNT, glowVariantAt } from "../world/glowstone.js";
 import { MOON_SURFACE_Y } from "../world/moon.js";
@@ -147,6 +147,17 @@ function unregisterVeils(meshes) {
   }
 }
 const chunkMeshes = new Map(); // "cx_cz" -> Map<id, InstancedMesh>
+// Per-chunk rebuild counter for the optimistic chain proxy (`chainproxy.js`):
+// bumped on every rebuild and every dispose, cleared with the rest on
+// beginDispose, so transient overlay cells know exactly when their real mesh
+// has taken over. Equality-checked only — double bumps are harmless.
+const chunkVersions = new Map(); // "cx_cz" -> int
+export function chunkVersion(ck) {
+  return chunkVersions.get(ck);
+}
+function bumpVersion(ck) {
+  chunkVersions.set(ck, (chunkVersions.get(ck) ?? 0) + 1);
+}
 // Rest groups for fog culling: ck -> { group, x0, x1, z0, z1, top }, where
 // top is the highest non-region cell of the chunk. Region meshes stay
 // scene-level under their own fade gate.
@@ -338,6 +349,8 @@ export function beginDispose() {
   // Fast non-mesh state clears up front: nothing reads mid-teardown (sim
   // frozen, streaming gated), and every cache below repopulates on build.
   cullVersion++;
+  chunkVersions.clear();
+  suspendedBuilt.clear(); // geometry-only chunks are gone; nothing to re-tint
   gatedVeils.clear();
   topMaxCache.clear();
   regionMeshes.clear();
@@ -376,6 +389,7 @@ export function disposeSome(count) {
 
 function disposeChunk(ck) {
   topMaxCache.delete(ck);
+  bumpVersion(ck); // an evicted chunk drops the real mesh: proxies follow it
   // A chunk rebuilt or evicted mid-fade drops its fade entries: the clones
   // die with the meshes, steady state never holds one.
   for (let i = fading.length - 1; i >= 0; i--) {
@@ -406,6 +420,7 @@ export function rebuildChunk(cx, cz, fade = false) {
   ensureChunkSource(cx, cz);
   topMaxCache.delete(ck);
   disposeChunk(ck);
+  bumpVersion(ck); // the fresh mesh covers every proxied cell of this chunk
   const B = clipBound();
   const x0 = Math.max(cx * CHUNK, -B);
   const x1 = Math.min(cx * CHUNK + CHUNK - 1, B);
@@ -575,6 +590,9 @@ export function rebuildChunk(cx, cz, fade = false) {
   // axis, so border cells pick up their neighbor chunk's sources too. Skipped
   // when the chunk holds no tintable blocks (glowstone-only chunks).
   const tintMap = perId.size ? bakeHaloTint(dim, x0, x1, z0, z1, chunkBottom, chunkTop) : null;
+  // Halo suspended (still-hold bridge stroke): this chunk built geometry-only
+  // and needs a tint pass on release. Tracked only when a bake would have run.
+  if (perId.size && isHaloSuspended()) suspendedBuilt.add(ck);
   for (const [id, list] of perId) {
     const { rest, groups, restTop: rt, restBottom: rb } = partitionRegion(id, list);
     if (rt > restTop) restTop = rt;
@@ -1064,6 +1082,20 @@ export function queueRefreshBlocks(coords) {
     // Same halo range as refreshBlocks: the budgeted drain covers the rim.
     for (const ck of haloKeys(x, z)) pendingRefresh.add(ck);
   }
+}
+// Chunk keys ("cx_cz") built while the halo was suspended (still-hold bridge
+// stroke): the geometry is current but the tint is missing. Drained by the
+// caller on release and re-queued through the budgeted drain, which drops
+// keys evicted in the meantime; cleared with everything else on teardown.
+const suspendedBuilt = new Set();
+export function takeSuspendedBuilt() {
+  if (!suspendedBuilt.size) return [];
+  const out = [...suspendedBuilt];
+  suspendedBuilt.clear();
+  return out;
+}
+export function queueRefreshKeys(keys) {
+  for (const ck of keys) pendingRefresh.add(ck);
 }
 // Chunk range touched by an edit's baked halo: sources up to haloRadius()
 // away re-tint this chunk's border cells, so every chunk intersecting the R

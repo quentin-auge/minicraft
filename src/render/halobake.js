@@ -19,6 +19,18 @@ import { keyXYZ } from "../core/store.js";
 
 export const HALO_SOURCES = [];
 
+// Suspended spec keys: the bake skips them until cleared. Still-hold bridge
+// strokes suspend the glowstone halo so dense placements rebuild cheap
+// geometry-only chunks; the caller re-queues the touched range on release and
+// the tint bakes then. Null (default) suspends nothing.
+let suspendedKeys = null;
+export function setHaloSuspended(keys) {
+  suspendedKeys = keys;
+}
+export function isHaloSuspended() {
+  return suspendedKeys !== null;
+}
+
 // Source spec: radius (blocks, Euclidean cutoff), gain (adjacent-block lift),
 // max (per-channel clamp against overlap blowout), positions(name) -> Set of
 // voxel keys, colorOf(name, voxelKey) -> hex.
@@ -57,6 +69,7 @@ export function bakeHaloTint(name, x0, x1, z0, z1, yLo, yHi) {
   let out = null;
   let clamp = 0;
   for (const spec of HALO_SOURCES) {
+    if (suspendedKeys && suspendedKeys.has(spec.key)) continue;
     const set = spec.positions(name);
     if (!set || !set.size) continue;
     if (spec.max > clamp) clamp = spec.max;

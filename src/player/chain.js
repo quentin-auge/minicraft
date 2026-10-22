@@ -522,6 +522,14 @@ export function chainHoldActive(s) {
   return s.hold[0].down || s.hold[2].down;
 }
 
+// True while the left button drives bridge stairs (still-hold latched,
+// arrival / spiral / plateau steppers) as opposed to a moving paint stroke.
+// Paint only runs when !leftStairs, so every placement under this gate is
+// bridge-type — the official bridge-vs-chain switch for effects policy.
+export function chainBridgeActive(s) {
+  return s.hold[0].down && s.leftStairs;
+}
+
 // Per-frame tick behind simActive. Returns the flat touched-cell list; the
 // caller performs the single refresh. Dead times (1.0 s still, both buttons)
 // and the 10 -> 60/s acceleration match master exactly.

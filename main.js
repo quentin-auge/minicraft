@@ -31,8 +31,10 @@ import { MOON_MIN_Y, MOON_R, generateMoon, generateMoonUnderRows, markMoonBuilt,
 import { WATER, FLOWER, GLOWSTONE, MOON_WATER, TNT, BLOCK_INFO } from "./src/core/blocks.js";
 import { resetGlowstoneMemory, clearGlowstoneDim, setGlowSeed } from "./src/world/glowstone.js";
 import { resetFlowerMemory, clearFlowerDim, setFlowerSeed } from "./src/world/flowers.js";
-import { initPoolLights, tickPoolLights, resetPoolLightMemory } from "./src/render/poollights.js";
-import { initRenderer, rebuildAll, maybeStream, streamChunks, drainChunkQueue, beginDispose, disposeSome, refreshBlocks, queueRefreshBlocks, setEyeMedium, setRegionFade, nearestMissingDist, tickChunkFades, UNLOAD_MARGIN } from "./src/render/mesher.js";
+import { initPoolLights, tickPoolLights, resetPoolLightMemory, notePoolEdit } from "./src/render/poollights.js";
+import { initRenderer, rebuildAll, maybeStream, streamChunks, drainChunkQueue, beginDispose, disposeSome, refreshBlocks, queueRefreshBlocks, queueRefreshKeys, takeSuspendedBuilt, setEyeMedium, setRegionFade, nearestMissingDist, tickChunkFades, UNLOAD_MARGIN } from "./src/render/mesher.js";
+import { setHaloSuspended } from "./src/render/halobake.js";
+import { initChainProxy, proxyNote, proxyCull, proxyClear } from "./src/render/chainproxy.js";
 import { applyRegions } from "./src/render/regions.js";
 import { resetItems, select, selected, selectedId, initHotbarInput, setItem, getItems } from "./src/ui/hotbar.js";
 import { initMenu, enterGame, started, isLocked } from "./src/ui/menu.js";
@@ -53,9 +55,18 @@ import { villageFrames } from "./src/world/village.js";
 import {
   createChainState, chainPressLeft, chainPressRight, chainReleaseLeft,
   chainReleaseRight, chainResetOnUnlock, chainNoteMouseMove, chainSavePaintRay,
-  chainSaveDigRay, chainAnchorPush, chainNotePressPlace, chainHoldActive, tickChain,
+  chainSaveDigRay, chainAnchorPush, chainNotePressPlace, chainHoldActive, chainBridgeActive, tickChain,
 } from "./src/player/chain.js";
 const chain = createChainState();
+// Still-hold light suspension: while the left button drives bridge stairs the
+// glowstone halo bake is suspended (dense placements rebuild geometry-only
+// chunks) and pool-light resyncs pause; moving paint/dig strokes keep full
+// lights. On bridge release the touched union plus every chunk built under
+// suspension re-queue through the budgeted drain and the tint bakes then.
+// Blast/countdown lights are untouched (owned by fx/tnt.js).
+const GLOW_SUSPENDED = new Set(["glowstone"]);
+let wasBridgeHeld = false;
+const bridgeTouchedUnion = [];
 import { CHUNK, renderDist, dim, setDimension, setBlock, getBlock, outOfWorld, worlds } from "./src/core/store.js";
 import { dimEnv, dimSpec, dimHasMoon, dimHotbar } from "./src/world/dimensions.js";
 import { EYE, setFlyStepAllow } from "./src/player/physics.js";
@@ -102,6 +113,7 @@ const hemi = new THREE.HemisphereLight(0xbfd4ff, 0x5a6a4a, 0.75);
 scene.add(hemi);
 
 initRenderer(scene);
+initChainProxy(scene);
 initFx(scene);
 initSky(scene);
 initPrecip(scene);
@@ -348,6 +360,11 @@ async function buildWorld() {
   resetGlowstoneMemory();
   resetFlowerMemory();
   resetPoolLightMemory();
+  proxyClear();
+  // A world reset ends any bridge stroke: drop its pending tint pass too.
+  setHaloSuspended(null);
+  bridgeTouchedUnion.length = 0;
+  wasBridgeHeld = false;
   scene.fog.near = LOAD_FOG_NEAR;
   scene.fog.far = LOAD_FOG_FAR;
   envAir.near = LOAD_FOG_NEAR;
@@ -481,6 +498,11 @@ async function runTravel(dest, msg) {
   // the overlay covers the frozen frame. Nothing reads the scene until phase
   // 2 re-queues it (renders skipped, sim frozen, queue cleared last).
   beginDispose();
+  proxyClear(); // versions reset with the mesher; drop the overlay with them
+  // Travel ends any bridge stroke: drop its pending tint pass too.
+  setHaloSuspended(null);
+  bridgeTouchedUnion.length = 0;
+  wasBridgeHeld = false;
   while (disposeSome(80)) {
     if (!alive()) return;
     await raf();
@@ -892,6 +914,7 @@ function loop(now) {
     if (worldReady) tickTntStream(pos.x, pos.y, pos.z, dt, vel.length(), vel.y, queueRefreshBlocks, hookPin());
     tickChunkFades(dt, pos.x, camera.position.y, pos.z, scene.fog.far);
     tickPortalFillFades(dt, pos.x, camera.position.y, pos.z, scene.fog.far);
+    proxyCull(simTime);
     renderer.render(scene, camera);
     return;
   }
@@ -908,7 +931,9 @@ function loop(now) {
       renderer.setPixelRatio(1);
     }
     tickSnow(dt, simTime, camera);
-    tickPoolLights(dt, camera);
+    // Frozen while a bridge stroke is held (lamps pop back on release via the
+    // forced resync there); blast and countdown lights live in fx/tnt.js.
+    if (!chainBridgeActive(chain)) tickPoolLights(dt, camera);
     tickHookFx(dt);
     // Streaming fog first, so the loader sees the tightened range; dive murk
     // after, restoring the tracked air baseline on resurface. The pocket
@@ -1097,12 +1122,33 @@ function loop(now) {
       pos,
       yaw: player.yaw,
     });
+    // Bridge-only suspension: still-hold placements (and streamed chunks
+    // alike) build geometry-only; moving strokes keep the full bake.
+    const bridge = chainBridgeActive(chain);
+    setHaloSuspended(bridge ? GLOW_SUSPENDED : null);
     if (touched.length) {
       for (const c of flushChainBatch(touched)) touched.push(c);
       if (dim === "end") notifyEndermanVoxelChange(touched, camera);
-      if (chainHoldActive(chain)) queueRefreshBlocks(touched);
-      else refreshBlocks(touched);
+      if (chainHoldActive(chain)) {
+        // Remember the bridge union for the release tint pass.
+        if (bridge) for (const c of touched) bridgeTouchedUnion.push(c);
+        queueRefreshBlocks(touched);
+      } else refreshBlocks(touched);
+      // Optimistic overlay: drawn this frame in the blocks' own materials,
+      // culled as each chunk's real mesh rebuilds (see chainproxy.js).
+      proxyNote(touched, simTime);
     }
+    // Bridge release: bake the whole stroke's tint through the budgeted drain
+    // (touched union + chunks built under suspension), then resync pools once.
+    if (wasBridgeHeld && !bridge) {
+      if (bridgeTouchedUnion.length) {
+        queueRefreshBlocks(bridgeTouchedUnion);
+        bridgeTouchedUnion.length = 0;
+      }
+      queueRefreshKeys(takeSuspendedBuilt());
+      notePoolEdit();
+    }
+    wasBridgeHeld = bridge;
   } else {
     highlight.visible = false;
   }
@@ -1117,6 +1163,7 @@ function loop(now) {
   if (worldReady && !travelActive) tickTntStream(pos.x, pos.y, pos.z, dt, vel.length(), vel.y, queueRefreshBlocks, hookPin());
   tickChunkFades(dt, pos.x, camera.position.y, pos.z, scene.fog.far);
   tickPortalFillFades(dt, pos.x, camera.position.y, pos.z, scene.fog.far);
+  proxyCull(simTime);
   if (!travelActive) renderer.render(scene, camera);
 }
 
