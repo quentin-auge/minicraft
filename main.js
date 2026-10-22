@@ -60,7 +60,7 @@ import { CHUNK, renderDist, dim, setDimension, setBlock, getBlock, outOfWorld, w
 import { dimEnv, dimSpec, dimHasMoon, dimHotbar } from "./src/world/dimensions.js";
 import { EYE, setFlyStepAllow } from "./src/player/physics.js";
 import { initHomingTnt, fireHomingTnt, tickHomingTnt, clearHomingTnt } from "./src/mobs/homing.js";
-import { enterEndMobs, clearEndMobs, tickEndMobs, dragonHealth, setDragonVictoryHook, setMobSeed } from "./src/mobs/end.js";
+import { enterEndMobs, clearEndMobs, tickEndMobs, notifyEndermanVoxelChange, dragonHealth, setDragonVictoryHook, setMobSeed } from "./src/mobs/end.js";
 import { endPortalFrameKeys, resetEndDimension, setEndCleared } from "./src/world/end.js";
 import { resetTntUnlocks } from "./src/world/tntunlock.js";
 
@@ -760,6 +760,7 @@ document.addEventListener("mousedown", (e) => {
     const changed = placeAtSelection(id);
     if (changed) {
       refreshBlocks(changed);
+      if (dim === "end") notifyEndermanVoxelChange(changed, camera);
       if (face && base) chainNotePressPlace(chain, base[0] + face[0], base[1] + face[1], base[2] + face[2]);
       else for (const c of changed) chainAnchorPush(chain, c[0], c[1], c[2]);
     }
@@ -769,7 +770,10 @@ document.addEventListener("mousedown", (e) => {
     const bt = breakTarget(camera);
     if (bt) {
       const changed = breakBlockAt(bt.x, bt.y, bt.z);
-      if (changed.length) refreshBlocks(changed);
+      if (changed.length) {
+        refreshBlocks(changed);
+        if (dim === "end") notifyEndermanVoxelChange(changed, camera);
+      }
       chainAnchorPush(chain, bt.x, bt.y, bt.z);
     }
   } else if (e.button === 1) {
@@ -962,6 +966,7 @@ function loop(now) {
         notePortalEdits(touched);
         refreshBlocks(touched);
       }
+      if (dim === "end" && touched.length) notifyEndermanVoxelChange(touched, camera);
     });
     tickHomingTnt(dt, dim);
     if (dim === "end") tickEndMobs(dt, camera);
@@ -1081,6 +1086,7 @@ function loop(now) {
     });
     if (touched.length) {
       for (const c of flushChainBatch(touched)) touched.push(c);
+      if (dim === "end") notifyEndermanVoxelChange(touched, camera);
       if (chainHoldActive(chain)) queueRefreshBlocks(touched);
       else refreshBlocks(touched);
     }

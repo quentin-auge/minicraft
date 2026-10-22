@@ -3,6 +3,8 @@ import * as THREE from "three";
 import { registerMobType, mobType, createMob } from "./registry.js";
 import { registerHomingTarget } from "./homing.js";
 import { pickBlock } from "../player/edit.js";
+import { BLOCK_INFO } from "../core/blocks.js";
+import { getBlock, topAt } from "../core/store.js";
 import { spawnBurst } from "../fx/particles.js";
 import { END_PLATFORM_RADIUS, END_PLATFORM_TOP, END_RETURN_Z, setEndCleared } from "../world/end.js";
 import { noteDragonKill } from "../world/tntunlock.js";
@@ -12,9 +14,11 @@ import { hash2 } from "../core/noise.js";
 // Set per End entry; per-frame death-shake jitter stays cosmetic Math.random.
 let mobSeed = 1;
 let mobSpawnCount = 0;
+let teleportNonce = 0;
 export function setMobSeed(s) {
   mobSeed = s | 0;
   mobSpawnCount = 0;
+  teleportNonce = 0;
 }
 const mobHash = (a, b, salt) => hash2(a | 0, b | 0, mobSeed + salt);
 
@@ -420,24 +424,117 @@ function endermanLookedAt(mob, camera) {
 }
 
 function teleportEnderman(mob, camera) {
+  teleportNonce++;
   const from = mob.pos;
-  spawnBurst({ x: from.x, y: from.y + 1.2, z: from.z, count: 24, color: [0.55, 0.12, 0.9], speedMin: 1, speedMax: 5, life: 0.45, size: 0.12, gravity: 0 });
   let pick = null;
   for (let i = 0; i < 32; i++) {
-    const a = mobHash(i, mobSpawnCount, 9407) * Math.PI * 2;
-    const r = 5 + mobHash(mobSpawnCount, i, 9408) * 13;
+    const a = mobHash(i + teleportNonce * 31, mobSpawnCount, 9407) * Math.PI * 2;
+    const r = 5 + mobHash(mobSpawnCount + teleportNonce, i, 9408) * 13;
     const x = Math.max(-END_PLATFORM_RADIUS + 1, Math.min(END_PLATFORM_RADIUS - 1, Math.round(from.x + Math.cos(a) * r)));
     const z = Math.max(-END_PLATFORM_RADIUS + 1, Math.min(END_PLATFORM_RADIUS - 1, Math.round(from.z + Math.sin(a) * r)));
     if (Math.abs(x) <= 3 && Math.abs(z - END_RETURN_Z) <= 3) continue;
     if (mobsOfType("enderman").some((other) => other !== mob && Math.hypot(other.pos.x - x, other.pos.z - z) < 2.5)) continue;
-    if (Math.hypot(camera.position.x - x, camera.position.z - z) < 4) continue;
-    pick = { x, z }; break;
+    if (camera && Math.hypot(camera.position.x - x, camera.position.z - z) < 4) continue;
+    const y = groundYAt(x, z);
+    if (!endermanSpotFree(x, y, z, mob.hw, mob.h)) continue;
+    if (!endermanSpotSupported(x, y, z, mob.hw)) continue;
+    pick = { x, y, z }; break;
   }
-  if (!pick) pick = { x: -Math.sign(from.x || 1) * 26, z: from.z };
-  mob.root.position.set(pick.x, END_PLATFORM_TOP + 1, pick.z);
+  if (!pick) {
+    const fx = Math.max(-END_PLATFORM_RADIUS + 1, Math.min(END_PLATFORM_RADIUS - 1, Math.round(-Math.sign(from.x || 1) * 26)));
+    const fz = Math.max(-END_PLATFORM_RADIUS + 1, Math.min(END_PLATFORM_RADIUS - 1, Math.round(from.z)));
+    const fy = groundYAt(fx, fz);
+    if (endermanSpotFree(fx, fy, fz, mob.hw, mob.h) && endermanSpotSupported(fx, fy, fz, mob.hw)) pick = { x: fx, y: fy, z: fz };
+  }
+  if (!pick) return;
+  spawnBurst({ x: from.x, y: from.y + 1.2, z: from.z, count: 24, color: [0.55, 0.12, 0.9], speedMin: 1, speedMax: 5, life: 0.45, size: 0.12, gravity: 0 });
+  mob.root.position.set(pick.x, pick.y, pick.z);
   mob.pos.copy(mob.root.position);
   mob.lookTime = 0; mob.angryTime = 0.5; mob.redTime = 0.5;
   spawnBurst({ x: pick.x, y: mob.pos.y + 1.2, z: pick.z, count: 24, color: [0.55, 0.12, 0.9], speedMin: 1, speedMax: 5, life: 0.45, size: 0.12, gravity: 0 });
+}
+
+// Voxel-displacement housing: a placed block intersecting the body, or a
+// removed block under the feet, teleports the Enderman instead of leaving it
+// stuck or floating. edit.js cannot call here (it is already imported above
+// for pickBlock), so main.js notifies after each voxel write.
+function isSolidCell(x, y, z) {
+  const info = BLOCK_INFO[getBlock(x, y, z)];
+  return !!info && info.solid;
+}
+
+function aabbIntersectsSolid(px, py, pz, hw, h) {
+  const x0 = Math.floor(px - hw), x1 = Math.floor(px + hw);
+  const z0 = Math.floor(pz - hw), z1 = Math.floor(pz + hw);
+  const y0 = Math.floor(py), y1 = Math.floor(py + h - 1e-4);
+  for (let by = y0; by <= y1; by++)
+    for (let bx = x0; bx <= x1; bx++)
+      for (let bz = z0; bz <= z1; bz++) {
+        if (bx + 1 <= px - hw || bx >= px + hw) continue;
+        if (bz + 1 <= pz - hw || bz >= pz + hw) continue;
+        if (by + 1 <= py || by >= py + h) continue;
+        if (isSolidCell(bx, by, bz)) return true;
+      }
+  return false;
+}
+
+function endermanIntersectsSolid(mob) {
+  return aabbIntersectsSolid(mob.pos.x, mob.pos.y, mob.pos.z, mob.hw, mob.h);
+}
+
+function spotHasSupport(px, py, pz, hw) {
+  const baseY = Math.floor(py + 1e-4) - 1;
+  const x0 = Math.floor(px - hw), x1 = Math.floor(px + hw);
+  const z0 = Math.floor(pz - hw), z1 = Math.floor(pz + hw);
+  for (let bx = x0; bx <= x1; bx++)
+    for (let bz = z0; bz <= z1; bz++) {
+      if (bx + 1 <= px - hw || bx >= px + hw) continue;
+      if (bz + 1 <= pz - hw || bz >= pz + hw) continue;
+      if (isSolidCell(bx, baseY, bz)) return true;
+    }
+  return false;
+}
+
+function endermanHasSupport(mob) {
+  return spotHasSupport(mob.pos.x, mob.pos.y, mob.pos.z, mob.hw);
+}
+
+function endermanSpotFree(x, y, z, hw, h) {
+  return !aabbIntersectsSolid(x, y, z, hw, h);
+}
+
+function endermanSpotSupported(x, y, z, hw) {
+  return spotHasSupport(x, y, z, hw);
+}
+
+// Highest solid top + 1, so arrivals land on player towers as well as the
+// platform instead of the hardcoded platform top.
+function groundYAt(x, z) {
+  let y = topAt("end", x, z);
+  let guard = 0;
+  while (y > END_PLATFORM_TOP && guard++ < 8) {
+    const info = BLOCK_INFO[getBlock(x, y, z)];
+    if (info && info.solid) break;
+    y--;
+  }
+  return y + 1;
+}
+
+export function notifyEndermanVoxelChange(changed, camera) {
+  if (!changed || !changed.length || !sceneRef) return;
+  for (const mob of mobs) {
+    if (!mob.alive || mob.type !== "enderman") continue;
+    let relevant = false;
+    const yLo = Math.floor(mob.pos.y) - 1, yHi = Math.floor(mob.pos.y + mob.h);
+    for (const c of changed) {
+      if (Math.abs(c[0] + 0.5 - mob.pos.x) > mob.hw + 1.5) continue;
+      if (Math.abs(c[2] + 0.5 - mob.pos.z) > mob.hw + 1.5) continue;
+      if (c[1] < yLo || c[1] > yHi) continue;
+      relevant = true; break;
+    }
+    if (!relevant) continue;
+    if (endermanIntersectsSolid(mob) || !endermanHasSupport(mob)) teleportEnderman(mob, camera);
+  }
 }
 
 function tickEnderman(mob, dt, camera) {
@@ -453,6 +550,12 @@ function tickEnderman(mob, dt, camera) {
   mob.armR.rotation.x = Math.sin(phase + 0.6) * amp;
   mob.eyesMat.color.setHex(mob.redTime > 0 || mob.lookTime > 0 ? 0xff2222 : 0xb44cff);
   if (mob.angryTime > 0) return;
+  // Safety net for voxel changes from any source (blasts, chain batches):
+  // a buried or undermined Enderman teleports out on the next sim frame.
+  if (endermanIntersectsSolid(mob) || !endermanHasSupport(mob)) {
+    teleportEnderman(mob, camera);
+    return;
+  }
   if (endermanLookedAt(mob, camera)) {
     mob.lookTime += dt;
     if (mob.lookTime >= 0.3) teleportEnderman(mob, camera);
