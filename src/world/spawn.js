@@ -124,3 +124,13 @@ export function findSpawn(eyeHeight, floorY = 0) {
   }
   return { x: fx, z: fz, y: fy, yaw: ff };
 }
+
+// Hovering overwatch above the village pen, so the livestock set is visible
+// from the first frame. Null until the village layout exists.
+export function findPenOverwatch() {
+  const p = village.pen;
+  if (!p) return null;
+  let y = p.vy + 15;
+  while (y < p.vy + 48 && (isSolid(p.cx, y + 1, p.cz) || isSolid(p.cx, y + 2, p.cz))) y++;
+  return { x: p.cx, z: p.cz, y, yaw: 0, pitch: -Math.PI / 2 + 0.01, fly: true };
+}

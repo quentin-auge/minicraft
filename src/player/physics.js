@@ -107,18 +107,20 @@ export function tickKnockback(dt) {
 
 // Spawn selection lives in the active dimension's spec (`DIMENSIONS`:
 // pure voxel search over finished world data); here the pick is applied to
-// the player body. Pitch resets so respawns and regens never inherit the
-// old look angle.
+// the player body. Pitch defaults to level so respawns and regens never
+// inherit the old look angle; a spec may override it and request fly mode
+// (the overworld pen overwatch does).
 export function spawnPlayer() {
   const s = dimSpec(dim).findSpawn();
   pos.set(s.x + 0.5, s.y + 1.01, s.z + 0.5);
   setYaw(s.yaw);
-  setPitch(0);
+  setPitch(s.pitch ?? 0);
   vel.set(0, 0, 0);
   knockVel.set(0, 0, 0);
   onGround = false;
   stepDown = false;
   stepUp = false;
+  return s;
 }
 
 export function headInWater() {

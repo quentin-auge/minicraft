@@ -337,6 +337,13 @@ function rollSeed() {
   return _seedPinned ? _seedNum : Math.floor(Math.random() * 100000);
 }
 
+// Apply the active dimension's spawn pick; a spec may request fly mode (the
+// overworld pen overwatch does).
+function applySpawn() {
+  const s = spawnPlayer();
+  if (s?.fly) setFly(true);
+}
+
 // The level loads behind the translucent menu in slices: voxels generate a
 // dozen rows per frame, then the spawn neighborhood builds (radius 2: the
 // closed-in fog only shows ~30 blocks, the clear-bubble guard covers the
@@ -390,7 +397,7 @@ async function buildWorld() {
     const gen = dimSpec(BOOT_DIM).generateAsync;
     const ok = await gen(seed, aborted);
     if (!ok || aborted()) return;
-    spawnPlayer();
+    applySpawn();
     // Moon alias: override the ground spawn with the lunar surface pick
     // before meshing the neighborhood, so the first built chunks are lunar.
     if (isMoonBoot) {
@@ -399,6 +406,7 @@ async function buildWorld() {
       vel.set(0, 0, 0);
       setYaw(m.yaw);
       setPitch(0);
+      setFly(false);
     }
     // No glowstone rescan: worldgen places none and the live index starts
     // empty (player edits track themselves).
@@ -540,7 +548,7 @@ async function runTravel(dest, msg) {
       setFlowerSeed(seed);
       const ok = await spec.generateAsync(seed, () => !alive());
       if (!ok || !alive()) return;
-      spawnPlayer();
+      applySpawn();
     } else if (dest === "end") {
       const spec = dimSpec("end");
       const seed = rollSeed();
@@ -549,7 +557,7 @@ async function runTravel(dest, msg) {
       if (!ok || !alive()) return;
       resetFrameSet(endPortalFrameKeys());
       setEndCleared(false);
-      spawnPlayer();
+      applySpawn();
       const arrival = resolveTravelArrival("end", pos);
       if (arrival) placeArrival(arrival);
     } else if (dest === "nether") {
@@ -565,7 +573,7 @@ async function runTravel(dest, msg) {
       }
       // Spawn first so an unlinked arrival anchors on destination
       // coordinates (like the End branch); a found arrival overrides it.
-      spawnPlayer();
+      applySpawn();
       const arrival = resolveTravelArrival("nether", pos);
       if (arrival) placeArrival(arrival);
     } else {
@@ -579,7 +587,7 @@ async function runTravel(dest, msg) {
       }
       const arrival = resolveTravelArrival("over");
       if (arrival) placeArrival(arrival);
-      else spawnPlayer();
+      else applySpawn();
     }
     updateCamera();
     // Voxels and arrival done: meshes from here on (the scene was already
@@ -1004,7 +1012,7 @@ function loop(now) {
     if (floorY != null && pos.y < floorY) {
       vel.set(0, 0, 0);
       severHook();
-      spawnPlayer();
+      applySpawn();
     }
     // While a band carves, blast refresh splits: portal frames track only
     // (fills heal from the dirty flag), chunk keys queue for the budgeted

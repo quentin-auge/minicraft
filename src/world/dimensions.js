@@ -22,7 +22,7 @@
 import {
   generateOverworld, generateOverworldAsync,
 } from "./overworld.js";
-import { findSpawn } from "./spawn.js";
+import { findSpawn, findPenOverwatch } from "./spawn.js";
 import {
   generateTntDimension, findTntSpawn, TNT_ENV,
 } from "./tntdim.js";
@@ -61,7 +61,7 @@ export const DIMENSIONS = [
     skyGrapple: false,
     generate: (seed) => generateOverworld(seed, dimFloorY("over")),
     generateAsync: (seed, abort) => generateOverworldAsync(seed, abort, dimFloorY("over")),
-    findSpawn: () => findSpawn(1.62, dimFloorY("over")),
+    findSpawn: () => findPenOverwatch() ?? findSpawn(1.62, dimFloorY("over")),
     frameKeys: () => villageFrames,
     hotbar: BASE_ITEMS,
   },
