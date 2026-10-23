@@ -22,7 +22,7 @@ import {
 import * as player from "./src/player/physics.js";
 import { flyOn, setFly, updateFly } from "./src/player/fly.js";
 import { updateTarget, breakTarget, placeAtSelection, breakBlockAt, pickBlock, tryPlace, currentBlock, flushChainBatch, purgeFloatingLiquidsAround } from "./src/player/edit.js";
-import { fireHookTarget, fireSkyHook, grapplePick, cancelHook, severHook, updateHook, hookActive, hookAnchor, tickHookFx } from "./src/player/hook.js";
+import { fireHookTarget, fireSkyHook, grapplePick, cancelHook, severHook, updateHook, hookActive, hookHeldSwim, hookAnchor, tickHookFx } from "./src/player/hook.js";
 import { initRope } from "./src/player/rope.js";
 import { tickTNT, initTNTFx, resetTNTMemory, clearRegularTntDim, onExplode, onLiquidPurge, shakeSpecFor, bandFront, bandActive, drainBlastRemesh, queueBlastRefresh, megaImminent, megaCarveActive, megaFxActive, MEGA_BLAST_T, MEGA_BLAST_TIME_SCALE } from "./src/fx/tnt.js";
 import { initFx, tickFx, tickDenseFx, denseFxActive, prewarmDenseFx, spawnDense, flushDense, noteDenseSpawn } from "./src/fx/particles.js";
@@ -69,7 +69,7 @@ let wasBridgeHeld = false;
 const bridgeTouchedUnion = [];
 import { CHUNK, renderDist, dim, setDimension, setBlock, getBlock, outOfWorld, worlds } from "./src/core/store.js";
 import { dimEnv, dimSpec, dimHasMoon, dimHotbar } from "./src/world/dimensions.js";
-import { EYE, setFlyStepAllow } from "./src/player/physics.js";
+import { EYE, setFlyStepAllow, updateFreeSwim } from "./src/player/physics.js";
 import { initHomingTnt, fireHomingTnt, tickHomingTnt, clearHomingTnt } from "./src/mobs/homing.js";
 import { enterEndMobs, clearEndMobs, tickEndMobs, notifyEndermanVoxelChange, dragonHealth, setDragonVictoryHook, setMobSeed } from "./src/mobs/end.js";
 import { endPortalFrameKeys, resetEndDimension, setEndCleared } from "./src/world/end.js";
@@ -981,7 +981,8 @@ function loop(now) {
     tickKnockback(dt);
     const hookOwnsFrame = hookActive() ? updateHook(dt) : false;
     if (!hookOwnsFrame) {
-      if (flyOn) updateFly(dt);
+      if (hookHeldSwim()) updateFreeSwim(dt);
+      else if (flyOn) updateFly(dt);
       else updatePlayer(dt);
     }
     // Per-dimension floor, bounded dims only (overworld: below -20 means out

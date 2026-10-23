@@ -13,8 +13,12 @@
 // visibly onto it, then rides back to the eye on release. The pull runs
 // through the shared axis movers in small substeps with the anchor column
 // ghosted, landing the player top-or-before while the rope stays on the
-// face; the rope stays pinned until mouse-up.
-import { pos, vel, playerBody, collideBody, headInWater, setOnGround, setGhostPass, setHookPlanar, setHookWet, noteFling, PLAYER_HW, PLAYER_H, EYE } from "./physics.js";
+// face; the rope stays pinned until mouse-up. A settled hook with the body in
+// liquid swims while held, wherever the shot came from (look-driven, eye
+// forced back under the liquid): the top submerged cell floats, deeper cells
+// swim freely, and nobody leaves the water while held. In open air it freezes
+// the player until release.
+import { pos, vel, playerBody, collideBody, headInWater, headInWaterAt, setOnGround, setGhostPass, noteFling, PLAYER_HW, PLAYER_H, EYE } from "./physics.js";
 import { dim, isSolid } from "../core/store.js";
 import { dimSpec } from "../world/dimensions.js";
 import { skyGrappleTarget } from "../world/tntstream.js";
@@ -66,7 +70,7 @@ function hookKindOf(key) {
   return HOOK_TYPES.find((h) => h.key === key) ?? HOOK_TYPES[0];
 }
 
-let hook = null; // logic: { kind, spec, bx, by, bz, topY, topLand, fx, fy, fz, sx, sy, sz, tx, ty, tz, px, py, pz, ax, ay, az, hx, hy, hz, fly, dist, flying, arrived, hang, pulling, stuck }
+let hook = null; // logic: { kind, spec, bx, by, bz, topY, topLand, fx, fy, fz, sx, sy, sz, tx, ty, tz, px, py, pz, ax, ay, az, hx, hy, hz, fly, dist, flying, arrived, pulling, stuck }
 let line = null; // visual rope: { spec, hx, hy, hz, retracting, total? }
 
 export function hookActive() {
@@ -138,7 +142,7 @@ function fireBlock(t, spec) {
   const sx = pos.x, sy = pos.y + spec.eyeDy, sz = pos.z;
   if (Math.hypot(a.tx - sx, a.ty - sy, a.tz - sz) < 0.3) return false;
   const dist = Math.hypot(a.ax - sx, a.ay - sy, a.az - sz);
-  hook = { ...a, spec, sx, sy, sz, tx: a.tx, ty: a.ty, tz: a.tz, hx: sx, hy: sy, hz: sz, fly: 0, dist, flying: true, arrived: false, hang: false, pulling: false, stuck: 0 };
+  hook = { ...a, spec, sx, sy, sz, tx: a.tx, ty: a.ty, tz: a.tz, hx: sx, hy: sy, hz: sz, fly: 0, dist, flying: true, arrived: false, pulling: false, stuck: 0 };
   line = { spec, hx: sx, hy: sy, hz: sz, retracting: false };
   setGhostPass((bx, by, bz) => !!hook && !hook.arrived && hookGhost(bx, by, bz, hook));
   return true;
@@ -166,7 +170,7 @@ function firePortal(t, spec) {
   const sx = pos.x, sy = pos.y + spec.eyeDy, sz = pos.z;
   if (Math.hypot(a.tx - sx, a.ty - sy, a.tz - sz) < 0.3) return false;
   const dist = Math.hypot(a.ax - sx, a.ay - sy, a.az - sz);
-  hook = { ...a, sx, sy, sz, hx: sx, hy: sy, hz: sz, fly: 0, dist, flying: true, arrived: false, hang: false, pulling: false, stuck: 0 };
+  hook = { ...a, sx, sy, sz, hx: sx, hy: sy, hz: sz, fly: 0, dist, flying: true, arrived: false, pulling: false, stuck: 0 };
   line = { spec, hx: sx, hy: sy, hz: sz, retracting: false };
   setGhostPass((bx, by, bz) => !!hook && !hook.arrived && hookGhost(bx, by, bz, hook));
   return true;
@@ -229,8 +233,6 @@ function grappleGhost(bx, by, bz, h) {
 function clearHook() {
   hook = null;
   setGhostPass(null);
-  setHookPlanar(false);
-  setHookWet(false);
 }
 
 // Sever: instant silent teardown for teleports (out-of-level respawn, New
@@ -241,8 +243,6 @@ export function severHook() {
   line = null;
   hideRope();
   setGhostPass(null);
-  setHookPlanar(false);
-  setHookWet(false);
 }
 
 // True when a player body fits at (tx, ty, tz): feet + head cells free.
@@ -265,10 +265,9 @@ function landingSupported(tx, ty, tz) {
 }
 
 function arrive() {
-  // Reached the landing: snap onto it and stop dead — the next jump is a
-  // plain regular jump. Rope stays pinned on the face anchor until
-  // mouse-up. Top-of-block hooks stand plane-locked with physics live;
-  // face hooks hang frozen until release (plain drop).
+  // Reached the landing: snap onto it and stop dead. Rope stays pinned on
+  // the face anchor until mouse-up. Settled movement is liquid-only: held
+  // swim in liquid, frozen in open air until release.
   pos.set(hook.tx, hook.ty, hook.tz);
   settleArrival();
 }
@@ -294,9 +293,9 @@ function applyArriveGap() {
 // alone. Past it, the rope stays up until release.
 const ARRIVAL_EPS = 0.05;
 
-// Shared ending: clear the anchor surface, pin the rope, stop dead, arm
-// the plane-lock. Movement at destination is allowed only for top-of-block
-// hooks; face hooks hang.
+// Shared ending: clear the anchor surface, pin the rope, stop dead. A settled
+// hook only lets the player move while the body is in liquid; the rope stays
+// attached either way. In open air it freezes until release.
 function settleArrival() {
   applyArriveGap();
   hook.arrived = true;
@@ -305,16 +304,33 @@ function settleArrival() {
   hook.px = pos.x; hook.py = pos.y; hook.pz = pos.z;
   line = { spec: hook.spec, hx: hook.ax, hy: hook.ay, hz: hook.az, retracting: false };
   vel.set(0, 0, 0);
-  hook.hang = !hook.topLand;
   setOnGround(hook.topLand && landingSupported(pos.x, pos.y, pos.z));
-  setHookPlanar(true);
-  setHookWet(headInWater());
+}
+
+// Settled frame: liquid hands movement back to physics (held swim while the
+// body is submerged, wherever the shot came from). Open air owns the frame
+// and holds the player still. Returns true when the hook owns the frame
+// (frozen).
+function settledFrame() {
+  if (!hookAlive(hook)) { cancelHook(false); return false; }
+  if (!headInWater()) { vel.set(0, 0, 0); hook.pulling = false; return true; }
+  hook.pulling = false;
+  return false;
+}
+
+// Main-loop dispatch: true while the held grapple owns liquid movement —
+// settled, body submerged, fire origin irrelevant. The physics mover floats
+// the top cell, swims deeper cells, drags a dry eye back under the surface,
+// and never lets anyone out of the water. Portal anchors keep travel rules
+// and never swim.
+export function hookHeldSwim() {
+  return !!hook && hook.arrived && hook.kind !== "portal" && headInWater();
 }
 
 // Release (middle mouse-up): mid-pull yank flings along the launch
-// direction (pull speed in liquid, no fling); flying, hanging, or standing
-// releases just retract fast. Ground contact is re-measured so a hang-drop
-// never inherits a stale grounded jump. The head rides back to the eye;
+// direction (pull speed in liquid, no fling); flying, settled, or standing
+// releases just retract fast. Ground contact is re-measured so a settled
+// drop never inherits a stale grounded jump. The head rides back to the eye;
 // movement resumes at once. The mark detaches from the anchor with the
 // head, so nothing stays welded on the face during the ride back.
 export function cancelHook(fling = true) {
@@ -345,20 +361,16 @@ export function cancelHook(fling = true) {
 // Runs alongside updatePlayer while the hook is live: fly the head out,
 // then yank toward the landing until close (dispatched through spec.pull).
 // Only the pull owns the frame (velocity driven toward the landing,
-// sliding along obstacles); head flight and standing arrivals yield so
-// normal physics runs — falls continue under a flying head. Face stops
-// hang frozen, jump inert, until mouse-up; stalled pulls stop in place
-// the same way.
-// Returns true when the hook owns the frame (pulling/hanging); false
+// sliding along obstacles); head flight and settled liquid arrivals yield so
+// the caller runs physics — falls continue under a flying head, and a settled
+// hook with the body in liquid swims while held without ever leaving the
+// water, wherever the shot came from. Settled stops in open air freeze in
+// place, jump inert, until mouse-up; stalled pulls stop the same way.
+// Returns true when the hook owns the frame (pulling/frozen); false
 // otherwise, so the caller runs normal player physics with the visuals drawn.
 export function updateHook(dt) {
   if (!hook) return false;
-  if (hook.arrived) {
-    if (!hookAlive(hook)) { cancelHook(false); return false; } // anchor mined under a settled hook: let go
-    if (hook.hang) { vel.set(0, 0, 0); hook.pulling = false; return true; }
-    hook.pulling = false;
-    return false;
-  }
+  if (hook.arrived) return settledFrame();
   const spec = hook.spec;
   if (hook.flying) {
     hookRetarget(hook); // track column edits (mob kinds: mob.pos) mid-flight
@@ -383,31 +395,51 @@ export function updateHook(dt) {
   // Pull-mode dispatch: grapple yanks the player to the landing; future
   // kinds (mob grab: "anchor-to-self") add their branch beside it.
   if (spec.pull === "self-to-anchor") return pullSelfToAnchor(dt);
-  return hook.hang;
+  return false;
 }
 
 // "self-to-anchor": drive the player toward the landing in substepped
-// collision + slide until close, then stand or hang by targeting.
+// collision + slide until close, then settle (free in liquid, frozen in air).
+// A pull that starts in water never carries the player out of it: reaching
+// the water edge settles in place with the rope pinned instead of climbing
+// onto a surface block and freezing there. Portal-fill pulls are exempt —
+// entering the fill is what fires travel.
 function pullSelfToAnchor(dt) {
   const spec = hook.spec;
   hookRetarget(hook);
   if (!hookAlive(hook)) { cancelHook(false); return false; } // anchor gone: retract
   line.hx = hook.ax; line.hy = hook.ay; line.hz = hook.az;
+  const wasInWater = headInWater();
+  const waterLock = wasInWater && hook.kind !== "portal";
   const dx = hook.tx - pos.x, dy = hook.ty - pos.y, dz = hook.tz - pos.z;
   const dist = Math.hypot(dx, dy, dz);
   const step = spec.pullSpeed * dt;
   if (dist <= step + 0.001) {
-    if (landingFree(hook.tx, hook.ty, hook.tz)) arrive();
+    // Landing reached: snap on, unless that would lift a waterborne player
+    // out of the water — then settle where the swim already is.
+    if (waterLock && !headInWaterAt(hook.tx, hook.ty, hook.tz)) settleArrival();
+    else if (landingFree(hook.tx, hook.ty, hook.tz)) arrive();
     else settleArrival(); // landing area reached but blocked: stop against it
-    return hook.hang;
+    return settledFrame();
   }
   const px = pos.x, py = pos.y, pz = pos.z;
   const n = Math.max(1, Math.ceil(step / spec.substep));
   vel.set(dx / dist * spec.pullSpeed, dy / dist * spec.pullSpeed, dz / dist * spec.pullSpeed);
-  for (let i = 0; i < n; i++) collideBody(dt / n, playerBody, true);
+  for (let i = 0; i < n; i++) {
+    const qx = pos.x, qy = pos.y, qz = pos.z;
+    collideBody(dt / n, playerBody, true);
+    // Ride stops at the water edge: restore the last wet spot and settle
+    // swimming instead of climbing out mid-pull.
+    if (waterLock && !headInWater()) {
+      pos.set(qx, qy, qz);
+      vel.set(0, 0, 0);
+      settleArrival();
+      return settledFrame();
+    }
+  }
   const moved = Math.hypot(pos.x - px, pos.y - py, pos.z - pz);
   if (moved < step * 0.25) {
-    if (++hook.stuck >= 3) { settleArrival(); return hook.hang; } // stalled: stop in place
+    if (++hook.stuck >= 3) { settleArrival(); return settledFrame(); } // stalled: stop in place
     hook.pulling = false;
     return true;
   }

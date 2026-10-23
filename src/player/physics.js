@@ -35,6 +35,10 @@ const SWIM_ACCEL = 8;
 const SWIM_AREA = 10;
 const SWIM_BRAKE = 2.0;
 const SWIM_MAX = 64;
+const SWIM_SPEED = 4.2;
+const HOOK_FLOAT_RISE = 1.5;
+const HOOK_SINK = 1.5;
+const FREE_SWIM_AXES = ["y", "x", "z"];
 
 export const pos = new THREE.Vector3(0, 20, 0);
 export const vel = new THREE.Vector3();
@@ -80,17 +84,6 @@ let jumpHoldContinuous = false;
 let lastSpaceDownY = null;
 let prevSpace = false;
 
-// Hook plane-lock: while a grapple arrival is pinned (not hanging), the
-// player is locked to the horizontal plane — horizontal moves, regular
-// gravity on drops, never up. Armed by hook arrival, cleared on release.
-let hookPlanar = false;
-export function setHookPlanar(v) { hookPlanar = v; }
-// Hook wet snapshot: whether the arrival itself was in liquid. A wet
-// arrival sinks and stays down (horizontal swim only); a dry arrival that
-// walks into water floats normally.
-let hookWet = false;
-export function setHookWet(v) { hookWet = v; }
-
 export const keys = {};
 
 // Knockback impulse shared by every movement mode: blasts add to it, each
@@ -129,14 +122,35 @@ export function spawnPlayer() {
 }
 
 export function headInWater() {
-  const y0 = Math.floor(pos.y + 0.01);
-  const y1 = Math.floor(pos.y + PLAYER_H - 0.01);
-  for (let y = y0; y <= y1; y++)
-    for (let bx = Math.floor(pos.x - PLAYER_HW); bx <= Math.floor(pos.x + PLAYER_HW); bx++)
-      for (let bz = Math.floor(pos.z - PLAYER_HW); bz <= Math.floor(pos.z + PLAYER_HW); bz++) {
-        if (isLiquid(getBlock(bx, y, bz))) return true;
+  return headInWaterAt(pos.x, pos.y, pos.z);
+}
+
+// Body-span liquid test at a candidate feet position, so the grapple pull
+// can tell whether a landing would leave the water without moving there.
+export function headInWaterAt(x, y, z) {
+  const y0 = Math.floor(y + 0.01);
+  const y1 = Math.floor(y + PLAYER_H - 0.01);
+  for (let cy = y0; cy <= y1; cy++)
+    for (let bx = Math.floor(x - PLAYER_HW); bx <= Math.floor(x + PLAYER_HW); bx++)
+      for (let bz = Math.floor(z - PLAYER_HW); bz <= Math.floor(z + PLAYER_HW); bz++) {
+        if (isLiquid(getBlock(bx, cy, bz))) return true;
       }
   return false;
+}
+
+// Camera-cell liquid checks for the held-grapple swim. eyeInWater accepts a
+// move outright; otherwise only non-ascending moves pass, so the eye fills
+// the top liquid cell but never rises into the air above. eyeDeepInWater
+// marks the free zone: the eye is in the second submerged cell or deeper
+// (the cell above it is liquid too).
+export function eyeInWater() {
+  const ex = Math.floor(pos.x), ey = Math.floor(pos.y + EYE), ez = Math.floor(pos.z);
+  return isLiquid(getBlock(ex, ey, ez));
+}
+
+export function eyeDeepInWater() {
+  const ex = Math.floor(pos.x), ey = Math.floor(pos.y + EYE), ez = Math.floor(pos.z);
+  return isLiquid(getBlock(ex, ey, ez)) && isLiquid(getBlock(ex, ey + 1, ez));
 }
 
 function waterSurfaceTop() {
@@ -154,7 +168,6 @@ function waterSurfaceTop() {
 
 function tryStep(bx, by, bz) {
   if (stepDown) return false;
-  if (hookPlanar) return false; // plane-locked: blocked, never climb
   if (!stepFromWater) {
     if (!onGround) return false;
     if (by !== Math.floor(pos.y)) return false;
@@ -302,11 +315,68 @@ const _fwd = new THREE.Vector3();
 const _right = new THREE.Vector3();
 const _move = new THREE.Vector3();
 
+// Shared look-relative thrust used by Fly and the held-grapple free swim.
+// Returns the pre-knockback thrust so the swim can tell idle float from
+// deliberate vertical input.
+function setLookThrust(speed, sprintSpeed) {
+  const cp = Math.cos(pitch);
+  _fwd.set(-Math.sin(yaw) * cp, Math.sin(pitch), -Math.cos(yaw) * cp);
+  _right.set(Math.cos(yaw), 0, -Math.sin(yaw));
+  _move.set(0, 0, 0);
+  if (keys["KeyW"] || keys["ArrowUp"]) _move.add(_fwd);
+  if (keys["KeyS"] || keys["ArrowDown"]) _move.sub(_fwd);
+  if (keys["KeyD"] || keys["ArrowRight"]) _move.add(_right);
+  if (keys["KeyA"] || keys["ArrowLeft"]) _move.sub(_right);
+  const sprint = keys["Slash"] || keys["/"];
+  if (_move.lengthSq() > 0) _move.normalize().multiplyScalar(sprint ? sprintSpeed : speed);
+  vel.set(_move.x, _move.y, _move.z);
+  // Blast knockback rides on top of the thrust and decays away.
+  vel.add(knockVel);
+  return _move;
+}
+
+// Free-flight mover (Fly): look-relative thrust through the shared axis
+// movers with a 1-block instant step-up onto live portal sills.
+export function thrustMove(dt, speed, sprintSpeed, flyStep = false) {
+  setLookThrust(speed, sprintSpeed);
+  collideBody(dt, playerBody, false, flyStep);
+}
+
+// Held-grapple swim underwater: same look-relative thrust, but the eye is
+// forced back under the liquid and then kept there — the camera fills the
+// top liquid cell at most, never the air above. A dry eye sinks until it
+// submerges (upward intent stays inert: no exit while held); a wet eye in
+// the top cell floats with no vertical thrust, while deliberate dive/climb
+// thrust is preserved. Deeper cells swim neutrally. Axes are moved one at a
+// time so the body slides along the surface/boundary instead of sticking;
+// any axis move raising a dry eye is reverted.
+export function updateFreeSwim(dt) {
+  const thrust = setLookThrust(SWIM_SPEED, SPRINT);
+  const eyeWet = eyeInWater();
+  const surfaceCell = eyeWet && !eyeDeepInWater();
+  if (surfaceCell && Math.abs(thrust.y) < 1e-9) vel.y = HOOK_FLOAT_RISE + knockVel.y;
+  else if (!eyeWet && thrust.y <= 1e-9) vel.y = -HOOK_SINK + knockVel.y;
+  const vx = vel.x, vy = vel.y, vz = vel.z;
+  let nx = 0, ny = 0, nz = 0;
+  for (const axis of FREE_SWIM_AXES) {
+    const px = pos.x, py = pos.y, pz = pos.z;
+    const ey0 = pos.y + EYE;
+    vel.set(axis === "x" ? vx : 0, axis === "y" ? vy : 0, axis === "z" ? vz : 0);
+    collideBody(dt, playerBody, false);
+    const moved = axis === "x" ? vel.x : axis === "y" ? vel.y : vel.z;
+    if (eyeInWater() || pos.y + EYE <= ey0 + 1e-9) {
+      if (axis === "x") nx = moved;
+      else if (axis === "y") ny = moved;
+      else nz = moved;
+    } else {
+      pos.set(px, py, pz);
+    }
+  }
+  vel.set(nx, ny, nz);
+  onGround = false;
+}
+
 export function updatePlayer(dt) {
-  // Plane-locked (pinned grapple): never climb — drop any pending step-up
-  // before the movement logic runs. The pull phase never passes through
-  // here, so its stepping is unaffected.
-  if (hookPlanar) stepUp = false;
   // Low gravity near the Moon and above (master rule): one factor per
   // frame, shared by every acceleration and energy calc below so arcs
   // stay consistent.
@@ -348,7 +418,7 @@ export function updatePlayer(dt) {
   // Rebound: jumping toward water while holding jump bounces back out to the
   // height the jump started from.
   let bounced = false;
-  if (enteredWater && spaceNow && !hookPlanar && (jumpOriginY !== null || lastSpaceDownY !== null)) {
+  if (enteredWater && spaceNow && (jumpOriginY !== null || lastSpaceDownY !== null)) {
     const surface = waterSurfaceTop();
     let liquid = false;
     for (let bx = Math.floor(pos.x - PLAYER_HW); bx <= Math.floor(pos.x + PLAYER_HW); bx++)
@@ -391,7 +461,7 @@ export function updatePlayer(dt) {
   } else if (inWater) {
     stepDown = false;
     stepFromWater = true;
-    const speed = (sprintKey && _move.lengthSq() > 0) ? SPRINT : 4.2;
+    const speed = (sprintKey && _move.lengthSq() > 0) ? SPRINT : SWIM_SPEED;
     if (_move.lengthSq() > 0) _move.normalize().multiplyScalar(speed);
     vel.x += (_move.x - vel.x) * Math.min(1, dt * 8);
     vel.z += (_move.z - vel.z) * Math.min(1, dt * 8);
@@ -404,10 +474,6 @@ export function updatePlayer(dt) {
         stepUp = false;
         onGround = true;
       }
-    } else if (hookPlanar && hookWet) {
-      // Pinned wet arrival: sink by gravity, horizontal only.
-      vel.y -= G * dt;
-      vel.y = Math.min(Math.max(vel.y, -SWIM_MAX), SWIM_MAX);
     } else {
       const surface = waterSurfaceTop();
       if (surface === -Infinity) {
@@ -483,7 +549,7 @@ export function updatePlayer(dt) {
         if (airT <= JUMP_BOOST_TIME) vel.y += JUMP_BOOST_ACCEL * dt;
       }
     }
-    if (jumpBuffer > 0 && onGround && !hookPlanar) {
+    if (jumpBuffer > 0 && onGround) {
       jumpBuffer = 0;
       vel.y = JUMP_MIN; onGround = false; stepDown = false; stepUp = false;
       jumpOriginY = pos.y; jumpPeakY = pos.y; jumpHoldContinuous = true; lastSpaceDownY = pos.y; airT = 0;
