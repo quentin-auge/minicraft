@@ -317,6 +317,10 @@ let buildToken = 0;
 let bandDpr = false;
 // Moon-band hotbar (slots flip at the Moon's lower end); reset per world.
 let moonBand = false;
+// V (cheat only) cycles the world simulation speed. Player, camera, chain
+// editing, and loader/visual transitions stay on real dt (world ticks use sdt).
+const GAME_SPEEDS = [1, 2, 4, 8, 16];
+let gameSpeed = 1;
 // Boot dimension: the overworld by default; ?startdim=<dimension key> builds
 // that registered dimension directly. Unknown values fall back to overworld.
 // ?startdim=moon is an alias, not a dimension: it boots the overworld but
@@ -355,6 +359,7 @@ async function buildWorld() {
   if (BOOT_DIM !== "end") resetEndDimension();
   if (BOOT_DIM !== "nether") resetNetherDimension();
   resetTNTMemory();
+  gameSpeed = 1;
   bandDpr = false;
   renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
   resetGlowstoneMemory();
@@ -865,6 +870,12 @@ document.addEventListener("keydown", (e) => {
     e.preventDefault();
     return;
   }
+  if (e.code === "KeyV" && !e.repeat && started && !isHelpOpen() && isLocked() && isCheat()) {
+    gameSpeed = GAME_SPEEDS[(GAME_SPEEDS.indexOf(gameSpeed) + 1) % GAME_SPEEDS.length];
+    toast(`Speed ×${gameSpeed}`);
+    e.preventDefault();
+    return;
+  }
   keys[e.code] = true;
   keys[e.key] = true;
   if (e.code === "KeyK") select(selected - 1);
@@ -891,6 +902,7 @@ let simTime = 0;
 function loop(now) {
   requestAnimationFrame(loop);
   const dt = Math.min(0.05, (now - last) / 1000);
+  const sdt = dt * gameSpeed;
   last = now;
   // Pause = pointer unlocked (menu) or help open: everything sim and visual
   // freezes; only the loader, the debug readout, and the final render run.
@@ -920,9 +932,9 @@ function loop(now) {
   }
   tickDebug(dt, pos.x, pos.y, pos.z);
   if (simActive) {
-    simTime += dt;
-    tickFx(dt);
-    tickDenseFx(dt);
+    simTime += sdt;
+    tickFx(sdt);
+    tickDenseFx(sdt);
     // Anticipated DPR dip: a lit mega within 0.6 s of detonation drops to
     // full-low before the blast frame, so the resize hitch never stacks on
     // top of carve + seeding + uploads.
@@ -930,18 +942,18 @@ function loop(now) {
       fxDip = true;
       renderer.setPixelRatio(1);
     }
-    tickSnow(dt, simTime, camera);
+    tickSnow(sdt, simTime, camera);
     // Frozen while a bridge stroke is held (lamps pop back on release via the
     // forced resync there); blast and countdown lights live in fx/tnt.js.
-    if (!chainBridgeActive(chain)) tickPoolLights(dt, camera);
+    if (!chainBridgeActive(chain)) tickPoolLights(sdt, camera);
     tickHookFx(dt);
     // Streaming fog first, so the loader sees the tightened range; dive murk
     // after, restoring the tracked air baseline on resurface. The pocket
     // veil gate rides along: water-side white shows only for divers, the
     // tinted veil only for open-air eyes, flipping together with the murk.
     updateStreamingFog();
-    tickSky(scene, camera, sun, hemi, envAir, dimEnv(dim), simActive ? dt : 0);
-    tickAmbient(simActive ? dt : 0, simTime, camera, dimSpec(dim)?.ambient);
+    tickSky(scene, camera, sun, hemi, envAir, dimEnv(dim), simActive ? sdt : 0);
+    tickAmbient(simActive ? sdt : 0, simTime, camera, dimSpec(dim)?.ambient);
     applyRegions(camera.position, scene.background, setRegionFade);
     // One eye-medium lookup per frame, shared by the murk and the veil gate
     // (it used to run twice, with a bounded air flood each time in pockets).
@@ -997,7 +1009,7 @@ function loop(now) {
     // While a band carves, blast refresh splits: portal frames track only
     // (fills heal from the dirty flag), chunk keys queue for the budgeted
     // remesh drain below — never a synchronous rebuild avalanche.
-    tickTNT(dt, (touched) => {
+    tickTNT(sdt, (touched) => {
       if (bandActive()) {
         notePortalFramesOnly(touched);
         queueBlastRefresh(touched);
@@ -1007,8 +1019,8 @@ function loop(now) {
       }
       if (dim === "end" && touched.length) notifyEndermanVoxelChange(touched, camera);
     }, pos.x, pos.y, pos.z, scene.fog.far);
-    tickHomingTnt(dt, dim);
-    if (dim === "end") tickEndMobs(dt, camera);
+    tickHomingTnt(sdt, dim);
+    if (dim === "end") tickEndMobs(sdt, camera);
     drainBlastRemesh(pos.x, pos.y, pos.z, scene.fog.far);
     // GPU relief while a wipe, dense mega, or sliced carve runs (master's
     // quality-tier dip): full resolution restores the frame the queues
@@ -1023,8 +1035,8 @@ function loop(now) {
     }
     // Mega overlay decay on sim-time (pause freezes the glare mid-fade).
     if (megaFlashV > 0 || megaVeilV > 0) {
-      megaFlashV = Math.max(0, megaFlashV - dt / (0.9 * MEGA_BLAST_TIME_SCALE));
-      megaVeilV = Math.max(0, megaVeilV - dt / BLAST_T);
+      megaFlashV = Math.max(0, megaFlashV - sdt / (0.9 * MEGA_BLAST_TIME_SCALE));
+      megaVeilV = Math.max(0, megaVeilV - sdt / BLAST_T);
       if (megaFlashEl) {
         megaFlashEl.style.opacity = String(megaFlashV);
         if (megaFlashV <= 0) megaFlashEl.style.display = "none";
@@ -1035,11 +1047,11 @@ function loop(now) {
       }
     }
     // Ultra bands re-top the shake while the camera sits inside the
-    // advancing front (decays naturally once outside); pause-safe, dt-driven.
+    // advancing front (decays naturally once outside); pause-safe, world-time.
     const bf = bandFront();
     if (bf) {
       const bdx = camera.position.x - bf.x, bdy = camera.position.y - bf.y, bdz = camera.position.z - bf.z;
-      if (bdx * bdx + bdy * bdy + bdz * bdz < bf.r * bf.r) addCamShake(dt * 2);
+      if (bdx * bdx + bdy * bdy + bdz * bdz < bf.r * bf.r) addCamShake(sdt * 2);
     }
     // Ground-zero sustain: while the camera stays inside the last mega
     // crater (BLAST_T window), trauma re-tops to the cap every frame instead
@@ -1048,7 +1060,7 @@ function loop(now) {
       const mdx = camera.position.x - lastMegaBlast.x;
       const mdy = camera.position.y - lastMegaBlast.y;
       const mdz = camera.position.z - lastMegaBlast.z;
-      if (mdx * mdx + mdy * mdy + mdz * mdz < lastMegaBlast.R * lastMegaBlast.R) addCamShake(dt * 3);
+      if (mdx * mdx + mdy * mdy + mdz * mdz < lastMegaBlast.R * lastMegaBlast.R) addCamShake(sdt * 3);
     } else if (lastMegaBlast) {
       lastMegaBlast = null;
     }
@@ -1070,7 +1082,7 @@ function loop(now) {
         if (fin) {
           // Degressive floor: same 2.2 s end as outside, brighter while in.
           megaVeilV = Math.max(megaVeilV, 0.85 * (1 - age / BLAST_T));
-          addCamShake(dt * 3);
+          addCamShake(sdt * 3);
         }
         if (fin) {
           if (age >= furnace.nextWave) {
@@ -1096,7 +1108,7 @@ function loop(now) {
         }
       }
     }
-    tickPortals(dt, true);
+    tickPortals(sdt, true);
     const hit = updateTarget(camera, selectedId());
     if (hit) {
       highlight.visible = true;
