@@ -9,8 +9,8 @@ import {
   dropAllowed, floatTargetY, FARM_WALK_DIVISOR,
 } from "./livestock.js";
 import {
-  normYaw, dirVec, cellCenter, oppositeYaw,
-  classifyExits, updateLane,
+  PROBE_DIST, normYaw, dirVec, cellCenter, oppositeYaw, snapCardinal,
+  classifyExits, updateLane, flanksOpen,
 } from "./corridor.js";
 
 // Base stride speed straight from master's pig/cow walk; the divisor slows
@@ -33,6 +33,18 @@ export const SERVO_SPIN = 1.2;
 // Corner swing duration: the junction blend turns entry→exit over this
 // time, tracked by the fast servo yaw above so the drive never stops.
 export const BLEND_T = 0.3;
+// Gap funnel: forward blocked with a bounded through-hole ahead (offset
+// narrowing mouth, door in the end wall). Lateral scan half-width/step at
+// the forward distances; a single free offset counts since 1-wide mouths
+// read exactly one body-fit offset until aligned; bounded flanks plus a
+// through route along the axis reject side alcoves (corners stay blended).
+// Give-up + cooldown bound any wedge.
+export const FUNNEL_DISTS = [1.0, 1.6];
+export const FUNNEL_LAT = 2.5;
+export const FUNNEL_STEP = 0.25;
+export const FUNNEL_MINW = 0.25;
+export const FUNNEL_GIVEUP = 1.0;
+export const FUNNEL_COOL = 2.0;
 // Free wander step: heading + distance from the current position, never
 // anchored anywhere. The pen holds mobs by physics (fence collision), not
 // by steering — there is no wander center.
@@ -159,6 +171,22 @@ export function headroomOk(mob, x, z, refY) {
   return headroomOkAt(mob, x, z, refY, mob.yaw);
 }
 
+// Whole-cell walkability for branch classification: column solid-free over
+// the body height, dry feet, legal ground underfoot with headroom above it.
+// Same unified rule as the stepper, cell-quantized for neighbourhood tests.
+export function makeCellFree(mob) {
+  return (bx, bz) => {
+    const refY = mob.pos.y;
+    for (let by = Math.floor(refY); by <= Math.floor(refY + mob.h - 1e-4); by++) {
+      if (isSolidCell(bx, by, bz)) return false;
+    }
+    if (isLiquid(getBlock(bx, Math.floor(refY), bz))) return false;
+    const g = groundBelow(bx + 0.5, refY + 1, bz + 0.5);
+    if (g == null || !dropAllowed(refY, g, mob.maxDrop)) return false;
+    return centerHeadroom(bx + 0.5, g, bz + 0.5, mob.h);
+  };
+}
+
 // One unified blocked predicate: solid overlap OR illegal ground under the
 // body circles OR missing headroom. Corridor probes and the stepper share
 // it, so air walls (drop > maxDrop) and physical walls read identically.
@@ -246,18 +274,210 @@ export function moveVector(mob, nx, nz, stepOk) {
   return 0;
 }
 
+// Descent gate for servo steps: the unified probe allows legal drops, but
+// a descent the mob can never climb back out of (no step-up) is a trap —
+// refuse steps down into a local minimum (pit) while letting ramps
+// (walkable continuation at the lower level) and liquid entries
+// (swim/float takes over) through. Flat ground short-circuits untouched.
+function descendOk(mob, nx, nz) {
+  const g = groundBelow(nx, mob.pos.y + 1, nz);
+  if (g == null || g >= mob.pos.y - 1e-3) return true;
+  for (let by = Math.floor(g); by <= Math.floor(mob.pos.y); by++) {
+    if (isLiquid(getBlock(Math.floor(nx), by, Math.floor(nz)))) return true;
+  }
+  const dirs = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+  for (const [dx, dz] of dirs) {
+    const cx = Math.floor(nx) + dx + 0.5, cz = Math.floor(nz) + dz + 0.5;
+    if (aabbIntersectsSolid(cx, g, cz, mob.hw, mob.h)) continue;
+    const gg = groundBelow(cx, g + 1, cz);
+    if (gg == null || Math.abs(gg - g) > 1e-3) continue;
+    if (!centerHeadroom(cx, gg, cz, mob.h)) continue;
+    return true;
+  }
+  return false;
+}
+// Doorway scan: facing a wall, look for a contiguous free run across the
+// forward distances. A run counts only when walled on both flanks — a true
+// hole, never an open edge — and when its middle cell runs on along the
+// axis (a through route, never a side alcove). Runs touching the scan edge
+// probe one step further to check the flank. Returns {axis, line}: the
+// committed lateral line (through-cell middle for narrow mouths, run
+// middle for true 2-wide gaps), or null.
+export function scanGap(mob, axisYaw, blockAt) {
+  const [fx, fz] = dirVec(axisYaw);
+  const latx = -fz, latz = fx;
+  const cellFree = makeCellFree(mob);
+  const at = (dist, o) => blockAt(
+    mob.pos.x + fx * dist + latx * o, mob.pos.z + fz * dist + latz * o);
+  for (const dist of FUNNEL_DISTS) {
+    let best = null, runStart = null, prev = 0;
+    const close = () => {
+      if (runStart == null) return;
+      const width = prev - runStart + FUNNEL_STEP;
+      const boundedL = runStart > -FUNNEL_LAT + 1e-9 || at(dist, runStart - FUNNEL_STEP);
+      const boundedR = prev < FUNNEL_LAT - 1e-9 || at(dist, prev + FUNNEL_STEP);
+      const center = (runStart + prev) / 2;
+      const mcx = Math.floor(mob.pos.x + fx * dist + latx * center);
+      const mcz = Math.floor(mob.pos.z + fz * dist + latz * center);
+      const through = cellFree(mcx + fx, mcz + fz) && cellFree(mcx - fx, mcz - fz);
+      // Transit: the mob must be able to slide to the mouth — every
+      // lateral sample from the axis to the run centre, taken on the mob's
+      // own row (where the slide happens), must itself fit. Without this a
+      // parallel corridor past solid rock reads as a gap (mouth walks,
+      // through route holds beyond the walls) and the funnel grinds along
+      // the wall toward an unreachable line, gives up, and drops the lane.
+      // Runs straddling the axis always pass.
+      let transit = true;
+      const step = center > 0 ? FUNNEL_STEP : -FUNNEL_STEP;
+      for (let o = 0; transit && Math.abs(o) <= Math.abs(center) + 1e-9; o += step) {
+        if (at(0, o)) transit = false;
+      }
+      if (width >= FUNNEL_MINW && boundedL && boundedR && through && transit &&
+          (!best || width > best.width ||
+            (width === best.width && Math.abs(center) < Math.abs(best.center)))) {
+        best = { width, center, mcx, mcz };
+      }
+      runStart = null;
+    };
+    for (let o = -FUNNEL_LAT; o <= FUNNEL_LAT + 1e-9; o += FUNNEL_STEP) {
+      if (!at(dist, o)) { if (runStart == null) runStart = o; prev = o; }
+      else close();
+    }
+    close();
+    if (best) {
+      const narrow = best.width < 1.0;
+      const line = (fx === 0)
+        ? (narrow ? best.mcx + 0.5 : mob.pos.x + latx * best.center)
+        : (narrow ? best.mcz + 0.5 : mob.pos.z + latz * best.center);
+      return { axis: axisYaw, line };
+    }
+  }
+  return null;
+}
+
+// Funnel drive toward the committed lateral line: face the axis, advance
+// forward and slide sideways as two independently gated moves (never one
+// diagonal — diagonals wedge into step-wall pockets). Give-up + cooldown
+// bound any wedge; the normal flow resumes past the constriction.
+export function funnelDrive(mob, dt, funnel, supported, floating) {
+  const { axis, line } = funnel;
+  const [ax, az] = dirVec(axis);
+  mob.yawTarget = axis;
+  turnTo(mob, dt, SERVO_TURN);
+  const err = Math.abs(normYaw(mob.yawTarget - mob.yaw));
+  // Level routes only (see descendOk): a funnel that descends into a pit
+  // strands the mob below with no way back up.
+  const driveOk = (nx, nz) =>
+    makeStepOk(mob, supported, floating, 0, mob.yaw, 0)(nx, nz) && descendOk(mob, nx, nz);
+  let moved = false;
+  if (err < SERVO_SPIN) {
+    const stride = mob.speed * Math.max(0, Math.cos(Math.min(err, Math.PI / 2))) * dt;
+    if (stride > 1e-6) {
+      const bx = mob.pos.x, bz = mob.pos.z;
+      moveVector(mob, bx + Math.sin(mob.yaw) * stride, bz + Math.cos(mob.yaw) * stride, driveOk);
+      moved = moved || Math.hypot(mob.pos.x - bx, mob.pos.z - bz) > 1e-6;
+    }
+    const cur = ax === 0 ? mob.pos.x : mob.pos.z;
+    const e = line - cur;
+    const cap = mob.speed * dt * 0.9;
+    const c = Math.max(-cap, Math.min(cap, e));
+    if (Math.abs(c) > 1e-4) {
+      const baseOk = makeStepOk(mob, supported, floating, 0, axis, 0);
+      const axisOk = (nx, nz) => baseOk(nx, nz) && descendOk(mob, nx, nz);
+      const tx = ax === 0 ? mob.pos.x + c : mob.pos.x;
+      const tz = ax === 0 ? mob.pos.z : mob.pos.z + c;
+      if (axisOk(tx, tz)) {
+        moved = moved || Math.abs(c) > 1e-6;
+        mob.pos.x = tx; mob.pos.z = tz;
+      }
+    }
+  }
+  if (!moved && err < SERVO_SPIN) mob.funnelT = (mob.funnelT ?? 0) + dt;
+  else if (moved) mob.funnelT = 0;
+  if ((mob.funnelT ?? 0) > FUNNEL_GIVEUP) {
+    mob.funnelT = 0; mob.funnelCool = FUNNEL_COOL;
+    return false;
+  }
+  mob.stuckT = 0;
+  return true;
+}
+
+// Permanent 1-path centering: the cruise-path lateral slide, callable on
+// every lane event (engage/junction/lock-turn, dead-end seek) — never
+// straights-only — so blend arcs exit centered and turns never slide
+// sideways. Same target as the cruise path (follow-line middle while
+// wall-following, with opposite headings sharing the line, else the cell
+// centre); the axisOk probe below refuses any slide into a wall, so
+// junction mouths stay honest. Returns the applied slide (0 when refused)
+// so the stall guard can credit it as progress.
+function center1Wide(mob, dt, supported, floating) {
+  const [ax, az] = dirVec(mob.lane.axis);
+  let ccx = cellCenter(mob.pos.x), ccz = cellCenter(mob.pos.z);
+  const vw = mob.followLine;
+  if (vw) {
+    const dd = Math.abs(normYaw(vw.axis - mob.lane.axis));
+    if (dd < 1e-6 || dd > Math.PI - 1e-6) {
+      // Hold a virtual line the body is already riding; a stale line far
+      // from the body is ignored in favour of the centre (following it
+      // would drag the turn into the wall it was latched against).
+      if (ax === 0 && Math.abs(mob.pos.x - vw.line) <= Math.abs(mob.pos.x - ccx)) ccx = vw.line;
+      if (ax !== 0 && Math.abs(mob.pos.z - vw.line) <= Math.abs(mob.pos.z - ccz)) ccz = vw.line;
+    }
+  }
+  const e = (ccx - mob.pos.x) * -az + (ccz - mob.pos.z) * ax;
+  const cap = mob.speed * dt * 0.9;
+  const c = Math.max(-cap, Math.min(cap, e));
+  if (Math.abs(c) <= 1e-4) return 0;
+  const centerBase = makeStepOk(mob, supported, floating, 0, mob.lane.axis, 0);
+  const axisOk = (nx, nz) => centerBase(nx, nz) && descendOk(mob, nx, nz);
+  const tx = mob.pos.x + -az * c, tz = mob.pos.z + ax * c;
+  if (!axisOk(tx, tz)) return 0;
+  mob.pos.x = tx; mob.pos.z = tz;
+  return Math.abs(c);
+}
+
 // 1-wide servo tick: corridor-centre cruise, fluid junction turns, in-place
 // U-turns. Runs only grounded and dry; returns true when it owns this tick
 // (lane engaged), false in the open so the wander takes over. The wander
 // target is left untouched behind it, so leaving a path resumes cleanly.
+// Servo tick body. Follow-line state (mob.followLine = {axis, line,
+// side} | null) only biases the cruise slide target; all probes read real
+// voxels, so branch visibility and ground truth stay exact.
 export function servoTick(mob, dt, supported, floating, rand = Math.random) {
   if (!supported || floating) { mob.lane = null; return false; }
+  if ((mob.funnelCool ?? 0) > 0) mob.funnelCool -= dt;
   // Body-only direction sensing (footNose 0, no nose disc): the classifier
   // asks which cells fit the body, so 1-cell arms ending in a wall still
-  // read open. The drive below keeps the real nose reach.
-  const probeBlocked = (nx, nz, dirYaw) =>
-    !makeStepOk(mob, true, false, 0, dirYaw, 0)(nx, nz);
-  const opens = classifyExits(mob.pos.x, mob.pos.z, probeBlocked);
+  // read open. descendOk gates pit mouths: a legal drop into a local
+  // minimum reads as a wall (the drives below refuse it too), so the lane
+  // U-turns at the lip instead of funneling or cruising in.
+  // The drive below keeps the real nose reach.
+  const axisProbe = mob.lane ? mob.lane.axis : snapCardinal(mob.yaw);
+  const fitBody = (yaw) => {
+    const base = makeStepOk(mob, true, false, 0, yaw, 0);
+    return (nx, nz) => base(nx, nz) && descendOk(mob, nx, nz);
+  };
+  const blockAt = (x, z) => !fitBody(axisProbe)(x, z);
+  const pointFree = (nx, nz, dirYaw) => fitBody(dirYaw)(nx, nz);
+  const cellFree = makeCellFree(mob);
+  const opens = classifyExits(mob.pos.x, mob.pos.z, axisProbe, pointFree, cellFree);
+  // Open-space release: forward open and both flanks truly open (near and
+  // far cells walk with continuity — field, room middle, wide hall; never
+  // a corridor). Commit straight out with the current heading bias instead
+  // of random spins; roam owns the next tick.
+  const [pax, paz] = dirVec(axisProbe);
+  const fwdOpen = pointFree(mob.pos.x + pax * PROBE_DIST, mob.pos.z + paz * PROBE_DIST, axisProbe);
+  // Gap funnel when free walking is impossible with no lane (facing a wall
+  // with a through gap: offset narrowing mouth, house door, pen breach).
+  // Mid-corridor turns stay blended; dead ends funnel inside uturn below.
+  if (!fwdOpen && (mob.funnelCool ?? 0) <= 0 && !mob.lane) {
+    const gap = scanGap(mob, axisProbe, blockAt);
+    if (gap) return funnelDrive(mob, dt, gap, supported, floating);
+  }
+  if (mob.lane && fwdOpen && flanksOpen(mob.pos.x, mob.pos.z, mob.lane.axis, cellFree)) {
+    mob.lane = null; mob.blendFrom = null; mob.blendT = 0; mob.stuckT = 0;
+    return false;
+  }
   const cx = Math.floor(mob.pos.x), cz = Math.floor(mob.pos.z);
   const res = updateLane(mob.lane, cx, cz, mob.yaw, opens, rand);
   if (!res.lane) { mob.lane = null; return false; }
@@ -267,11 +487,31 @@ export function servoTick(mob, dt, supported, floating, rand = Math.random) {
   // drive itself refuses — the mob touches the back wall, then U-turns.
   if (res.event === "uturn") {
     const forward = mob.lane.entry; // pre-flip axis: updateLane already swapped
+    // Dead end facing a through gap (offset narrowing mouth, door in the
+    // end wall): funnel into it, dropping the flipped lane so the funnel
+    // re-fires every tick until through (a kept flip would cruise back).
+    // Side mouths never qualify (no through route along the axis), so
+    // junction corners stay blended.
+    if ((mob.funnelCool ?? 0) <= 0) {
+      const gap = scanGap(mob, forward, blockAt);
+      if (gap) {
+        mob.lane = null; mob.blendFrom = null; mob.blendT = 0;
+        return funnelDrive(mob, dt, gap, supported, floating);
+      }
+    }
     mob.yawTarget = forward;
     turnTo(mob, dt, SERVO_TURN);
     const serr = Math.abs(normYaw(mob.yawTarget - mob.yaw));
+    // Recentre first (no corridor gate: a corner wedge is never a true
+    // 1-wide cell, and that is exactly when the seek needs centring —
+    // the axisOk probe below refuses any slide into a wall, and a stale
+    // flipped follow line still pins the lateral via modulo-π).
+    center1Wide(mob, dt, supported, floating);
     const sstride = mob.speed * Math.max(0, Math.cos(Math.min(serr, Math.PI / 2))) * dt;
-    const sdrive = makeStepOk(mob, supported, floating, 0, mob.yaw, 0);
+    // Dead-end seek refuses pit descents (see descendOk): the pit lip is
+    // the end of the line — touch it, turn, leave.
+    const sdriveBase = makeStepOk(mob, supported, floating, 0, mob.yaw, 0);
+    const sdrive = (nx, nz) => sdriveBase(nx, nz) && descendOk(mob, nx, nz);
     let sscale = 0;
     if (serr < SERVO_SPIN && sstride > 1e-6) {
       sscale = moveVector(
@@ -283,7 +523,7 @@ export function servoTick(mob, dt, supported, floating, rand = Math.random) {
     }
     if (sscale > 0) {
       // Still advancing: keep seeking with the forward axis restored.
-      mob.lane = { axis: forward, entry: oppositeYaw(forward), lockX: -1, lockZ: -1, wide: 0 };
+      mob.lane = { axis: forward, entry: oppositeYaw(forward), lockX: -1, lockZ: -1 };
       mob.stuckT = 0;
       return true;
     }
@@ -314,7 +554,10 @@ export function servoTick(mob, dt, supported, floating, rand = Math.random) {
   turnTo(mob, dt, SERVO_TURN);
   const err = Math.abs(normYaw(mob.yawTarget - mob.yaw));
   const stride = mob.speed * Math.max(0, Math.cos(Math.min(err, Math.PI / 2))) * dt;
-  const driveOk = makeStepOk(mob, supported, floating, 0, mob.yaw, 0);
+  // Cruise never descends into a pit (see descendOk): ramps with a
+  // walkable continuation pass through, local minima read as walls.
+  const cruiseBase = makeStepOk(mob, supported, floating, 0, mob.yaw, 0);
+  const driveOk = (nx, nz) => cruiseBase(nx, nz) && descendOk(mob, nx, nz);
   let scale = 1;
   if (err < SERVO_SPIN && stride > 1e-6) {
     scale = moveVector(
@@ -325,21 +568,39 @@ export function servoTick(mob, dt, supported, floating, rand = Math.random) {
     );
   }
   // Stall guard: a latched lane that cannot advance (nose wedged where the
-  // body fits) releases to the wander instead of freezing in place.
-  if (scale === 0 && err < SERVO_SPIN) mob.servoStall = (mob.servoStall ?? 0) + dt;
+  // body fits) releases to the wander instead of freezing in place. A
+  // successful 1-wide recentre counts as progress, not a stall.
+  const recentered = res.event === "cruise"
+    ? 0
+    : center1Wide(mob, dt, supported, floating);
+  if (scale === 0 && recentered === 0 && err < SERVO_SPIN) mob.servoStall = (mob.servoStall ?? 0) + dt;
   else mob.servoStall = 0;
-  if (mob.servoStall > 0.75) { mob.lane = null; mob.servoStall = 0; return false; }
-  // Lateral centering on straights only: yaw stays locked on the corridor
-  // axis (no hunting), the body slides toward the cell centre when free.
+  if (mob.servoStall > 0.75) {
+    mob.lane = null; mob.servoStall = 0; mob.followCool = 2.0;
+    return false;
+  }
+  // Lateral centering on straights: yaw stays locked on the corridor
+  // axis (no hunting), the body slides toward the lane middle when free —
+  // the cell centre in a true 1-wide corridor, the virtual-lane middle
+  // while wall-following. Turns and seeks centre through center1Wide above.
   if (res.event === "cruise") {
     const [ax, az] = dirVec(mob.lane.axis);
-    const ccx = cellCenter(mob.pos.x), ccz = cellCenter(mob.pos.z);
+    let ccx = cellCenter(mob.pos.x), ccz = cellCenter(mob.pos.z);
+    const vw = mob.followLine;
+    if (vw) {
+      // Same corridor line reads the same middle from either direction.
+      const vdd = Math.abs(normYaw(vw.axis - mob.lane.axis));
+      if (vdd < 1e-6 || vdd > Math.PI - 1e-6) {
+        if (ax === 0) ccx = vw.line; else ccz = vw.line;
+      }
+    }
     const e = (ccx - mob.pos.x) * -az + (ccz - mob.pos.z) * ax;
     const cap = mob.speed * dt * 0.9;
     const c = Math.max(-cap, Math.min(cap, e));
     if (Math.abs(c) > 1e-4) {
-      const axisOk = makeStepOk(mob, supported, floating, 0, mob.lane.axis, 0);
-      const tx = mob.pos.x + -az * c, tz = mob.pos.z + az * c;
+      const cruiseAxisBase = makeStepOk(mob, supported, floating, 0, mob.lane.axis, 0);
+      const axisOk = (nx, nz) => cruiseAxisBase(nx, nz) && descendOk(mob, nx, nz);
+      const tx = mob.pos.x + -az * c, tz = mob.pos.z + ax * c;
       if (axisOk(tx, tz)) { mob.pos.x = tx; mob.pos.z = tz; }
     }
   }
@@ -388,7 +649,8 @@ export function tickFarmMob(mob, dt, pickTarget, rand = mob.rand ?? Math.random)
   // 1-wide servo first: grounded dry mobs on walled paths cruise their
   // corridor instead of chasing the wander target through walls.
   const servoed = servoTick(mob, dt, supported, floating);
-  if (mob.target && !servoed) {
+  const roamed = false;
+  if (mob.target && !servoed && !roamed) {
     mob.yawTarget = Math.atan2(mob.target.x - mob.pos.x, mob.target.z - mob.pos.z);
     turnTo(mob, dt);
     const fx = Math.sin(mob.yaw) * mob.speed * dt;
