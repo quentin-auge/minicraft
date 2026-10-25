@@ -2,7 +2,7 @@
 // No mobs: houses, pen, and pool are plain structures. Radius and house
 // count are parameters so the village can grow later without touching
 // terrain code.
-import { AIR, GRASS, STONE, LOG, WATER, GLASS, PLANKS, PORTAL, OBSIDIAN } from "../core/blocks.js";
+import { AIR, GRASS, STONE, LOG, WATER, GLASS, PLANKS, PORTAL, OBSIDIAN, BLOCK_INFO } from "../core/blocks.js";
 import { hash2 } from "../core/noise.js";
 import { WATER_LEVEL, WORLD_RADIUS, key } from "../core/store.js";
 
@@ -180,7 +180,7 @@ function placePen(setBlock, getBlock) {
   }
 }
 
-function placeHouses(setBlock) {
+function placeHouses(setBlock, getBlock) {
   for (const h of village.houses) {
     const hh = 5;
     const { minX, maxX, minZ, maxZ, vy } = h;
@@ -225,10 +225,72 @@ function placeHouses(setBlock) {
     for (const [dx, dz] of [[h.d0x, h.d0z], [h.d1x, h.d1z]])
       for (let y = vy + 1; y <= vy + 3; y++) setBlock(dx, y, dz, AIR);
   }
+  for (const h of village.houses) levelHouse(h, setBlock, getBlock);
+}
+
+// Doorstep leveling: houses sit on natural (sloped) terrain while their
+// walls start at the village height, so sills can bury or float past a
+// legal step. Level the sill row, a 2-cell apron outside, and the interior
+// floor to vy with 3-high headroom, so every door walks both ways for
+// mobs (never up, down at most the per-type drop) and players alike.
+// Only terrain and vegetation are ever cut (never structure blocks), and
+// columns inside another house's rect are skipped, so neighbours,
+// fences, pools, and portal frames survive. Deterministic per seed.
+function levelHouse(h, setBlock, getBlock) {
+  const { vy, doorNx, doorNz } = h;
+  const inOther = (x, z) => village.houses.some((o) =>
+    o !== h && x >= o.minX && x <= o.maxX && z >= o.minZ && z <= o.maxZ);
+  const p = village.pen, q = village.pool;
+  const inPenPool = (x, z) =>
+    (p && x >= p.minX && x <= p.maxX && z >= p.minZ && z <= p.maxZ) ||
+    (q && x >= q.minX && x <= q.maxX && z >= q.minZ && z <= q.maxZ);
+  // Sills + interior floor: placeHouses already cleared them to vy+1..3,
+  // so solid never stands above vy here — fill dips to vy, clear headroom.
+  // Aprons (outside the walls) keep natural terrain: cut mounds above vy
+  // too, capped below the roof band (vy+5, never touched).
+  const flat = [], rough = [];
+  for (const [dx, dz] of [[h.d0x, h.d0z], [h.d1x, h.d1z]]) {
+    flat.push([dx, dz]);
+    for (let i = 1; i <= 2; i++) rough.push([dx + doorNx * i, dz + doorNz * i]);
+  }
+  for (let x = h.minX + 1; x <= h.maxX - 1; x++)
+    for (let z = h.minZ + 1; z <= h.maxZ - 1; z++) flat.push([x, z]);
+  const isCut = (id) => {
+    const info = BLOCK_INFO[id];
+    return !!info && !!info.solid && info.placeable &&
+      id !== PLANKS && id !== GLASS && id !== PORTAL && id !== OBSIDIAN;
+  };
+  const solidTop = (x, z, cap) => {
+    for (let y = cap; y >= 0; y--) {
+      if (BLOCK_INFO[getBlock(x, y, z)]?.solid) return y;
+    }
+    return -1;
+  };
+  for (const [x, z] of [...flat, ...rough]) {
+    if (inOther(x, z) || inPenPool(x, z)) continue;
+    // Floor dips fill to vy. The scan stays at/below vy: headroom above
+    // holds door lintels and roofs (vy+4 up), which must never read as
+    // ground to fill against — or mask a dip below.
+    const ftop = solidTop(x, z, vy);
+    if (ftop < vy) {
+      for (let y = ftop + 1; y <= vy; y++) setBlock(x, y, z, STONE);
+    }
+    for (let y = vy + 1; y <= vy + 3; y++) {
+      const id = getBlock(x, y, z);
+      if (id !== AIR && isCut(id)) setBlock(x, y, z, AIR);
+    }
+  }
+  for (const [x, z] of rough) {
+    if (inOther(x, z) || inPenPool(x, z)) continue;
+    const top = solidTop(x, z, vy + 4);
+    for (let y = Math.min(top, vy + 4); y > vy; y--) {
+      if (isCut(getBlock(x, y, z))) setBlock(x, y, z, AIR);
+    }
+  }
 }
 
 export function placeVillage(setBlock, getBlock) {
   placePen(setBlock, getBlock);
   placePool(setBlock, getBlock);
-  placeHouses(setBlock);
+  placeHouses(setBlock, getBlock);
 }

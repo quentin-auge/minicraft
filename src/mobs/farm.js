@@ -9,15 +9,14 @@ import * as THREE from "three";
 import { registerMobType, createMob } from "./registry.js";
 import {
   LIVESTOCK_SPECS, PIG_COUNT, COW_COUNT, setFarmSeed, pickPenSpawns,
-  isStrictPenCell, penIntact, dropAllowed, specCircles,
+  specCircles,
 } from "./livestock.js";
 import {
-  FARM_WALK, WANDER_MIN, WANDER_MAX,
-  aabbIntersectsSolid, centerHeadroom, groundBelow,
-  tickFarmMob, separateFarmMobs,
+  FARM_WALK,
+  aabbIntersectsSolid,
+  tickFarmMob, separateFarmMobs, strideTarget,
 } from "./mover.js";
-import { isLiquid } from "../core/blocks.js";
-import { getBlock, getBlockIn } from "../core/store.js";
+import { getBlockIn } from "../core/store.js";
 import { village } from "../world/village.js";
 import { dimSpec } from "../world/dimensions.js";
 import { hash2 } from "../core/noise.js";
@@ -105,48 +104,12 @@ function makeFarmMob(kind, { x, z, y, dim, yaw, rand = Math.random }) {
   return mob;
 }
 
-function penCellAt(x, y, z) {
-  return getBlockIn(activeDim, x, y, z);
-}
-
-function inPen(mob) {
-  const p = village.pen;
-  return !!p && activeDim === "over" &&
-    mob.pos.x >= p.minX && mob.pos.x < p.maxX + 1 &&
-    mob.pos.z >= p.minZ && mob.pos.z < p.maxZ + 1;
-}
-
 function pickTarget(mob, rand = Math.random) {
-  const p = village.pen;
-  // Boundary, not an anchor: inside an intact pen targets stay in the
-  // strict interior so mobs don't grind against the posts; everything else
-  // is a free random step from the current position.
-  if (p && inPen(mob) && penIntact(p, penCellAt)) {
-    for (let t = 0; t < 12; t++) {
-      const sx = p.minX + 1 + Math.floor(rand() * (p.maxX - p.minX - 1)) + 0.5;
-      const sz = p.minZ + 1 + Math.floor(rand() * (p.maxZ - p.minZ - 1)) + 0.5;
-      if (!isStrictPenCell(p, sx, sz, penCellAt)) continue;
-      return { x: sx, z: sz };
-    }
-    return null;
-  }
-  for (let t = 0; t < 12; t++) {
-    const heading = rand() * Math.PI * 2;
-    const dist = WANDER_MIN + rand() * (WANDER_MAX - WANDER_MIN);
-    const sx = Math.floor(mob.pos.x + Math.sin(heading) * dist) + 0.5;
-    const sz = Math.floor(mob.pos.z + Math.cos(heading) * dist) + 0.5;
-    const gy = groundBelow(sx, mob.pos.y + 1, sz);
-    if (gy == null) continue;
-    // Same legal-step rule as the mover: never up, down at most maxDrop —
-    // plus dry feet. A cheap center-column pre-filter (the mover re-gates
-    // every step on all three body circles); walls on the way still
-    // resolve through the stuck re-pick.
-    if (!dropAllowed(mob.pos.y, gy, mob.maxDrop ?? 1)) continue;
-    if (isLiquid(getBlock(Math.floor(sx), gy, Math.floor(sz)))) continue;
-    if (!centerHeadroom(sx, gy, sz, mob.h)) continue;
-    return { x: sx, z: sz };
-  }
-  return null;
+  // Single unified path: random stride validated end-to-end (destination
+  // rules plus the whole segment via strideTarget). Pen fence, house walls,
+  // and troughs bound targets emergently — no pen fork: a stride through a
+  // wall simply fails validation, so only walkable targets come back.
+  return strideTarget(mob, null, rand);
 }
 
 const sepBuf = [];

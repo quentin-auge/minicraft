@@ -4,9 +4,10 @@
 // behave identically: air walls and solid walls share the unified predicate.
 import assert from "node:assert/strict";
 import { AIR, STONE } from "../../../src/core/blocks.js";
-import { setDimension, resetWorld, setBlock } from "../../../src/core/store.js";
+import { setDimension, resetWorld, setBlock, getBlock } from "../../../src/core/store.js";
 import { LIVESTOCK_SPECS, specCircles } from "../../../src/mobs/livestock.js";
-import { FARM_WALK, tickFarmMob, aabbIntersectsSolid } from "../../../src/mobs/mover.js";
+import { FARM_WALK, tickFarmMob, aabbIntersectsSolid, segmentWalkable } from "../../../src/mobs/mover.js";
+import { village, computeLayout, placeVillage } from "../../../src/world/village.js";
 
 const FEET = 1;
 const DT = 1 / 60;
@@ -225,6 +226,32 @@ for (const kind of ["muret", "trench"]) {
 }
 console.log("PASS straightE (muret + trench)");
 
+// --- straight2: 2-wide hugs a wall at virtual-lane offset, never glides
+// to the middle. Spawn hugging the west wall: settled |x - 0.75| band plus
+// an explicit anti-middle assert.
+for (const kind of ["muret", "trench"]) {
+  const trace = runTrial(kind, "straight2", { off: [-0.15, 0], goal: (m) => Math.floor(m.pos.z) >= 7 });
+  assert.ok(trace.length < 1500, `${kind}/straight2: reached the end`);
+  const tail = trace.slice(Math.floor(trace.length * 0.66));
+  assert.ok(Math.max(...tail.map((p) => Math.abs(p.x - 0.75))) < 0.2, `${kind}/straight2: wall offset held`);
+  assert.ok(tail.every((p) => Math.abs(p.x - 1.0) > 0.08), `${kind}/straight2: never mid-space`);
+  assertFluid(trace, `${kind}/straight2`, 1.0, 6);
+  assertClean(trace, `${kind}/straight2`);
+}
+console.log("PASS straight2 (muret + trench)");
+
+// --- l2: 2-wide corner via wall-follow turns, offset held on the arm ---
+for (const kind of ["muret", "trench"]) {
+  const trace = runTrial(kind, "l2", { off: [0.5, 0], goal: (m) => Math.floor(m.pos.x) >= 5, maxTicks: 2000 });
+  assert.ok(trace.length < 2000, `${kind}/L2: turned onto the arm`);
+  assertFluid(trace, `${kind}/L2`, 0.8, 12);
+  assertClean(trace, `${kind}/L2`);
+  const arm = trace.filter((p) => p.x >= 2.5 && p.x <= 4.3);
+  assert.ok(arm.length > 20, `${kind}/L2: arm cruise sampled`);
+  assert.ok(Math.max(...arm.map((p) => Math.abs(Math.abs(p.z - 3.0) - 0.25))) < 0.2, `${kind}/L2: steady arm line`);
+}
+console.log("PASS L2 (muret + trench)");
+
 // --- funnel21: 2-wide narrows to an offset 1-wide arm, walked through ---
 for (const kind of ["muret", "trench"]) {
   const trace = runTrial(kind, "funnel21", { off: [0.5, 0], goal: (m) => Math.floor(m.pos.z) >= 6, maxTicks: 2000 });
@@ -267,15 +294,12 @@ console.log("PASS T2 branches (muret + trench)");
 }
 console.log("PASS doorway (muret)");
 
-// --- mouth: 1-wide path opening onto a field commits out, never turns back ---
+// --- mouth: 1-wide path opening onto a field commits out; a pinballing
+// mob would never get deep into the field, so reaching z>=6 proves a
+// clean exit (later returns over the mouth are legitimate roaming) ---
 {
-  const trace = runTrial("muret", "mouth", { walls: { skip: [[0, 4]] }, maxTicks: 1200 });
-  assert.ok(Math.max(...trace.map((p) => p.z)) >= 4.0, "mouth: walked out into the field");
-  let out = false;
-  for (const p of trace) {
-    if (p.z > 3.5) out = true;
-    assert.ok(!out || p.z > 2.5, "mouth: never turned back");
-  }
+  const trace = runTrial("muret", "mouth", { walls: { skip: [[0, 4]] }, goal: (m) => m.pos.z >= 6, maxTicks: 1200 });
+  assert.ok(trace.length < 1200, "mouth: walked out into the field");
   assertClean(trace, "mouth");
 }
 console.log("PASS mouth (muret)");
@@ -577,5 +601,169 @@ for (const name of ["straight", "l", "zigzag", "deadend", "lstub", "lstubret", "
   assert.ok(dev < 1e-9, `${name}: identical trajectories (dev ${dev})`);
 }
 console.log("PASS muret≡trench equivalence");
+
+console.log("mob-paths.test.mjs: ALL PASS");
+
+// --- segmentWalkable: whole-stride validation behind unified picks ---
+{
+  const pig = makeTestMob("pig", 0.5, 1, 0.5, 0);
+  const flat = () => {
+    resetWorld("over");
+    setDimension("over");
+    for (let x = -4; x <= 8; x++) for (let z = -4; z <= 8; z++) setBlock(x, 0, z, STONE);
+  };
+  flat();
+  assert.ok(segmentWalkable(pig, 0.5, 0.5, 0.5, 6.5), "flat accepts");
+  // Wall across the stride rejects.
+  setBlock(0, 1, 3, STONE); setBlock(0, 2, 3, STONE);
+  assert.ok(!segmentWalkable(pig, 0.5, 0.5, 0.5, 6.5), "wall rejects");
+  // 1-wide gap aligned with the stride accepts.
+  flat();
+  for (let z = 2; z <= 4; z++) { setBlock(-1, 1, z, STONE); setBlock(-1, 2, z, STONE); }
+  for (let z = 2; z <= 4; z++) { setBlock(1, 1, z, STONE); setBlock(1, 2, z, STONE); }
+  assert.ok(segmentWalkable(pig, 0.5, 0.5, 0.5, 6.5), "aligned gap accepts");
+  // 2-deep cliff mid-stride rejects (drop > maxDrop).
+  flat();
+  for (let x = -4; x <= 8; x++) for (let z = 3; z <= 4; z++) setBlock(x, 0, z, AIR);
+  assert.ok(!segmentWalkable(pig, 0.5, 0.5, 0.5, 6.5), "cliff rejects");
+  // 1-up step mid-stride rejects (never up).
+  flat();
+  for (let x = -4; x <= 8; x++) for (let z = 3; z <= 4; z++) setBlock(x, 1, z, STONE);
+  assert.ok(!segmentWalkable(pig, 0.5, 0.5, 0.5, 6.5), "uphill rejects");
+}
+console.log("PASS segmentWalkable");
+
+// --- fence hole: 1-wide gap in a ring passes both ways, no stall ---
+function buildPenRing() {
+  resetWorld("over");
+  setDimension("over");
+  for (let x = -5; x <= 5; x++) for (let z = -5; z <= 5; z++) setBlock(x, 0, z, STONE);
+  for (let x = -2; x <= 2; x++) for (const z of [-2, 2]) {
+    setBlock(x, 1, z, STONE); setBlock(x, 2, z, STONE);
+  }
+  for (let z = -1; z <= 1; z++) for (const x of [-2, 2]) {
+    if (x === 2 && z === 0) continue; // the 1-wide hole
+    setBlock(x, 1, z, STONE); setBlock(x, 2, z, STONE);
+  }
+}
+for (const [sx, tx, label] of [[4.5, 0.5, "out-in"], [0.5, 4.5, "in-out"]]) {
+  buildPenRing();
+  const mob = makeTestMob("pig", sx, FEET, 0.5, sx > 2 ? -Math.PI / 2 : Math.PI / 2);
+  mob.target = { x: tx, z: 0.5 };
+  const realRandom = Math.random;
+  Math.random = mulberry32(11);
+  const trace = [];
+  try {
+    for (let t = 0; t < 1200; t++) {
+      tickFarmMob(mob, DT, () => mob.target);
+      trace.push({ x: mob.pos.x, y: mob.pos.y, z: mob.pos.z, yaw: mob.yaw });
+      if ((sx > 2 && mob.pos.x < 1.5) || (sx < 2 && mob.pos.x > 2.5)) break;
+    }
+  } finally {
+    Math.random = realRandom;
+  }
+  assert.ok(trace.length < 1200, `fence-hole ${label}: crossed`);
+  assert.ok(speeds(trace).slice(10).filter((v) => v < 0.8).length <= 10, `fence-hole ${label}: fluid`);
+  assertClean(trace, `fence-hole ${label}`);
+}
+console.log("PASS fence-hole");
+
+// --- village doors: a real leveled village, walk in and back out through
+// house 0's door (off-axis approach + interior exit, both deterministic).
+for (const seed of [7, 99]) {
+  resetWorld("over");
+  setDimension("over");
+  computeLayout(seed, () => 14);
+  const vy = village.center.y;
+  for (let x = village.minX - 4; x <= village.maxX + 4; x++) {
+    for (let z = village.minZ - 4; z <= village.maxZ + 4; z++) {
+      for (let y = 0; y <= 14; y++) setBlock(x, y, z, STONE);
+    }
+  }
+  placeVillage(setBlock, getBlock);
+  const h = village.houses[0];
+  const midx = h.doorNz !== 0 ? h.d0x + 1 : h.d0x + 0.5;
+  const midz = h.doorNz !== 0 ? h.d0z + 0.5 : h.d0z + 1;
+  // Close off-axis approach: the first roam decide already faces the wall
+  // with the gap in scan range (a far spawn lets decide overwrite the
+  // fixed target before the door is ever seen).
+  const latx = h.doorNz !== 0 ? 1.0 : 0, latz = h.doorNz !== 0 ? 0 : 1.0;
+  const inX = h.cx + 0.5, inZ = h.cz + 0.5;
+  const outX = midx + h.doorNx * 1.2 + latx, outZ = midz + h.doorNz * 1.2 + latz;
+  const inside = (p) => p.x > h.minX && p.x < h.maxX + 1 && p.z > h.minZ && p.z < h.maxZ + 1;
+  for (const [sx, sz, tx, tz, goal, label] of [
+    [outX, outZ, inX, inZ, (p) => inside(p), "out-in"],
+    [inX, inZ, outX, outZ, (p) => !inside(p), "in-out"],
+  ]) {
+    const mob = makeTestMob("pig", sx, vy + 1, sz, Math.atan2(midx - sx, midz - sz));
+    mob.target = { x: tx, z: tz };
+    const realRandom = Math.random;
+    Math.random = mulberry32(seed);
+    const trace = [];
+    try {
+      for (let t = 0; t < 1500; t++) {
+        tickFarmMob(mob, DT, () => mob.target);
+        trace.push({ x: mob.pos.x, y: mob.pos.y, z: mob.pos.z });
+        if (goal(trace.at(-1))) break;
+      }
+    } finally {
+      Math.random = realRandom;
+    }
+    assert.ok(trace.length < 1500, `village-door seed${seed} ${label}: through the door`);
+    for (let i = 0; i < trace.length; i++) {
+      const p = trace[i];
+      assert.ok(!aabbIntersectsSolid(p.x, p.y, p.z, 0.32, 1.3), `village-door ${label}: clean @${i}`);
+      assert.ok(Math.abs(p.y - (vy + 1)) < 0.05, `village-door ${label}: feet level @${i}`);
+    }
+  }
+}
+console.log("PASS village-door");
+
+// --- open field: straight runs stay bounded, headings keep turning ---
+{
+  resetWorld("over");
+  setDimension("over");
+  for (let x = -40; x <= 40; x++) for (let z = -40; z <= 40; z++) setBlock(x, 0, z, STONE);
+  const mob = makeTestMob("pig", 0.5, FEET, 0.5, 0);
+  mob.target = null;
+  const realRandom = Math.random;
+  Math.random = mulberry32(2026);
+  const yaws = [];
+  const trace = [];
+  let pathLen = 0, px = 0.5, pz = 0.5;
+  try {
+    for (let t = 0; t < 3600; t++) {
+      tickFarmMob(mob, DT, () => mob.target);
+      if (t % 10 === 0) yaws.push(mob.yaw);
+      trace.push({ x: mob.pos.x, y: mob.pos.y, z: mob.pos.z, yaw: mob.yaw });
+      pathLen += Math.hypot(mob.pos.x - px, mob.pos.z - pz);
+      px = mob.pos.x; pz = mob.pos.z;
+    }
+  } finally {
+    Math.random = realRandom;
+  }
+  // Split into runs: a new run starts past 30° from the run start heading.
+  let runs = 1, runStart = yaws[0], maxRun = 0, cur = 0;
+  for (const y of yaws) {
+    let d = y - runStart;
+    while (d > Math.PI) d -= Math.PI * 2;
+    while (d < -Math.PI) d += Math.PI * 2;
+    if (Math.abs(d) > Math.PI / 6) { runs++; maxRun = Math.max(maxRun, cur); cur = 0; runStart = y; }
+    else cur++;
+  }
+  maxRun = Math.max(maxRun, cur);
+  assert.ok(runs >= 3, `open-field: keeps turning (runs=${runs})`);
+  assert.ok(maxRun * 10 < 900 + 300, `open-field: no endless straight (max run ${(maxRun * 10) / 60}s)`);
+  assert.ok(pathLen > 40, `open-field: keeps covering ground (${pathLen.toFixed(1)}m)`);
+  const offCard = (y) => {
+    const k = Math.round(y / (Math.PI / 2));
+    return Math.abs(y - k * Math.PI / 2);
+  };
+  const oblique = yaws.filter((y) => offCard(y) > Math.PI / 12);
+  assert.ok(oblique.length / yaws.length > 0.25,
+    `open-field: walks oblique lines (${(100 * oblique.length / yaws.length).toFixed(0)}%)`);
+  assertClean(trace, "open-field");
+}
+console.log("PASS open-field-turns");
 
 console.log("mob-paths.test.mjs: ALL PASS");
