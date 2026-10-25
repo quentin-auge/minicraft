@@ -72,6 +72,7 @@ import { dimEnv, dimSpec, dimHasMoon, dimHotbar } from "./src/world/dimensions.j
 import { EYE, setFlyStepAllow, updateFreeSwim } from "./src/player/physics.js";
 import { initHomingTnt, fireHomingTnt, tickHomingTnt, clearHomingTnt } from "./src/mobs/homing.js";
 import { enterEndMobs, clearEndMobs, tickEndMobs, notifyEndermanVoxelChange, dragonHealth, setDragonVictoryHook, setMobSeed } from "./src/mobs/end.js";
+import { enterFarmMobs, clearFarmMobs, tickFarmMobs, handleFarmTravel, setFarmSeed } from "./src/mobs/farm.js";
 import { endPortalFrameKeys, resetEndDimension, setEndCleared } from "./src/world/end.js";
 import { resetTntUnlocks } from "./src/world/tntunlock.js";
 import { isCheat } from "./src/core/cheat.js";
@@ -361,6 +362,7 @@ async function buildWorld() {
   severHook();
   clearHomingTnt();
   clearEndMobs();
+  clearFarmMobs();
   resetTravelLinks();
   resetTntUnlocks();
   if (BOOT_DIM !== "end") resetEndDimension();
@@ -387,6 +389,7 @@ async function buildWorld() {
     setGlowSeed(seed);
     setFlowerSeed(seed);
     setMobSeed(seed);
+    setFarmSeed(seed);
     exitAmbient();
     // Direct End boot still prepares the Overworld destination so its return
     // portal has a real world to return to.
@@ -426,6 +429,7 @@ async function buildWorld() {
       if (arrival) placeArrival(arrival);
     }
     if (dim === "end") enterEndMobs(scene);
+    if (dim === "over") enterFarmMobs(scene, "over");
     moonBand = false;
     resetItems(dimHotbar(dim));
     select(0);
@@ -531,7 +535,8 @@ async function runTravel(dest, msg) {
     setDimension(dest);
     // Regenerate dimensions rebuild voxels on every entry: drop their own
     // side memories (glowstone variants/index, flower looks, placed-TNT
-    // index) so nothing stale leaks into the fresh world — no ghost lights,
+    // index, that dim's farm mobs via handleFarmTravel below) so nothing
+    // stale leaks into the fresh world — no ghost lights,
     // no inherited colors, no phantom chain links. Driven by the persistence
     // spec, so future regenerate dimensions inherit it. Retain dimensions
     // keep theirs across trips.
@@ -612,6 +617,7 @@ async function runTravel(dest, msg) {
     // by id, so a held TNT survives the trip; anything else clamps.
     resetItems(dimHotbar(dim));
     if (dest === "end") enterEndMobs(scene);
+    handleFarmTravel(scene, dest);
     updateBossBar();
     updateCamera();
     // Compile behind the spiral, once per dimension per session: programs
@@ -1029,6 +1035,7 @@ function loop(now) {
     }, pos.x, pos.y, pos.z, scene.fog.far);
     tickHomingTnt(sdt, dim);
     if (dim === "end") tickEndMobs(sdt, camera);
+    tickFarmMobs(sdt, dim);
     drainBlastRemesh(pos.x, pos.y, pos.z, scene.fog.far);
     // GPU relief while a wipe, dense mega, or sliced carve runs (master's
     // quality-tier dip): full resolution restores the frame the queues

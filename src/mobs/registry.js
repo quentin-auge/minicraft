@@ -1,7 +1,11 @@
-// Stable-key mob type registry. Capabilities are data so future flying mobs
-// inherit the ordinary guided-TNT volley limit without framework branches.
+// Stable-key mob type registry. Capabilities are data so future mob kinds
+// need no framework branches: locomotion dispatches on walk/jump/float/
+// swim/fly, guided-TNT targeting on homingTnt. float is passive buoyancy at
+// the liquid surface (2/3 of the body out of the water); swim is directed
+// underwater locomotion (fish only). Flying mobs default to homing-TNT
+// targeting with the ordinary three-shot volley cap.
 const MOB_DEFAULTS = {
-  capabilities: { flying: false, homingTnt: false },
+  capabilities: { walk: false, jump: false, float: false, swim: false, flying: false, homingTnt: false },
   homingTntShots: 3,
   homingTntDamage: 1,
   aimHitTest: null,
