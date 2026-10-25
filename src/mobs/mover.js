@@ -12,6 +12,7 @@ import {
   PROBE_DIST, normYaw, dirVec, cellCenter, oppositeYaw, snapCardinal,
   classifyExits, updateLane, flanksOpen,
 } from "./corridor.js";
+import { roamManage, roamStep, roamSpan, ARRIVE_D, FOLLOW_COOL } from "./roam.js";
 
 // Base stride speed straight from master's pig/cow walk; the divisor slows
 // it to a farm amble.
@@ -27,6 +28,9 @@ export const TURN_RATE = 3;
 // Yaw tracks the corner blend fast (tight arcs at full stride: a 90° swing
 // covers ~0.4 m, inside one cell) — slowing down is never how a turn fits.
 export const SERVO_TURN = 7;
+// Virtual-lane half width: wall-following frames a lane this wide against
+// the real wall (clearance ~0.43 at the middle, no graze).
+export const VIRTUAL_W = 1.5;
 // Rotate-in-place past this yaw error (U-turn starts, corner entries); below
 // it forward speed scales with cos(error) for arc-while-moving fluidity.
 export const SERVO_SPIN = 1.2;
@@ -52,7 +56,7 @@ export const WANDER_MIN = 4;
 export const WANDER_MAX = 10;
 // Pushing against a wall toward an unreachable target re-picks this fast
 // instead of waiting out wanderT, so a breach gets used instead of missed.
-export const STUCK_T = 1.5;
+export const STUCK_T = 0.5;
 // Separation gap added to every circle-pair need, and vertical gate:
 // mobs more than this far apart in Y never interact.
 export const SEP_GAP = 0.1;
@@ -402,6 +406,52 @@ export function funnelDrive(mob, dt, funnel, supported, floating) {
   return true;
 }
 
+// Segment walkability: the whole heading+dist strides legal — body fits
+// at 0.5 m samples (overlapping coverage: 0.5 step < 0.64 body, no blind
+// spots at voxel scale) with chained legal steps (never up, down at most
+// maxDrop per sample, same dropAllowed as the stepper), dry feet at the
+// destination (water en route stays swimmable for float walkers). One
+// shared validation behind the farm picker and roam commits: picked
+// targets never aim through walls, over cliffs, or uphill, so fences,
+// house walls, and troughs bound targets emergently — no pen fork.
+export function segmentWalkable(mob, x0, z0, x1, z1) {
+  const dist = Math.hypot(x1 - x0, z1 - z0);
+  const steps = Math.max(1, Math.ceil(dist / 0.5));
+  let prevG = groundBelow(x0, mob.pos.y + 1, z0);
+  if (prevG == null) return false;
+  for (let i = 1; i <= steps; i++) {
+    const t = i / steps;
+    const x = x0 + (x1 - x0) * t, z = z0 + (z1 - z0) * t;
+    if (aabbIntersectsSolid(x, mob.pos.y, z, mob.hw, mob.h)) return false;
+    const g = groundBelow(x, mob.pos.y + 1, z);
+    if (g == null) return false;
+    if (g > prevG + 1e-3 || prevG - g > mob.maxDrop + 1e-3) return false;
+    prevG = g;
+    if (!centerHeadroom(x, g, z, mob.h)) return false;
+  }
+  return true;
+}
+
+// Shared stride target: random heading (or the given one) + 4–10 m, first
+// validating (destination rules + whole segment). Single pick path for the
+// farm picker and roam commits.
+export function strideTarget(mob, heading = null, rand = Math.random) {
+  for (let t = 0; t < 12; t++) {
+    const h = heading ?? rand() * Math.PI * 2;
+    const dist = WANDER_MIN + rand() * (WANDER_MAX - WANDER_MIN);
+    const sx = Math.floor(mob.pos.x + Math.sin(h) * dist) + 0.5;
+    const sz = Math.floor(mob.pos.z + Math.cos(h) * dist) + 0.5;
+    const gy = groundBelow(sx, mob.pos.y + 1, sz);
+    if (gy == null) continue;
+    if (!dropAllowed(mob.pos.y, gy, mob.maxDrop ?? 1)) continue;
+    if (isLiquid(getBlock(Math.floor(sx), gy, Math.floor(sz)))) continue;
+    if (!centerHeadroom(sx, gy, sz, mob.h)) continue;
+    if (!segmentWalkable(mob, mob.pos.x, mob.pos.z, sx, sz)) continue;
+    return { x: sx, z: sz };
+  }
+  return null;
+}
+
 // Permanent 1-path centering: the cruise-path lateral slide, callable on
 // every lane event (engage/junction/lock-turn, dead-end seek) — never
 // straights-only — so blend arcs exit centered and turns never slide
@@ -436,10 +486,6 @@ function center1Wide(mob, dt, supported, floating) {
   return Math.abs(c);
 }
 
-// 1-wide servo tick: corridor-centre cruise, fluid junction turns, in-place
-// U-turns. Runs only grounded and dry; returns true when it owns this tick
-// (lane engaged), false in the open so the wander takes over. The wander
-// target is left untouched behind it, so leaving a path resumes cleanly.
 // Servo tick body. Follow-line state (mob.followLine = {axis, line,
 // side} | null) only biases the cruise slide target; all probes read real
 // voxels, so branch visibility and ground truth stay exact.
@@ -576,7 +622,7 @@ export function servoTick(mob, dt, supported, floating, rand = Math.random) {
   if (scale === 0 && recentered === 0 && err < SERVO_SPIN) mob.servoStall = (mob.servoStall ?? 0) + dt;
   else mob.servoStall = 0;
   if (mob.servoStall > 0.75) {
-    mob.lane = null; mob.servoStall = 0; mob.followCool = 2.0;
+    mob.lane = null; mob.servoStall = 0; mob.followCool = FOLLOW_COOL;
     return false;
   }
   // Lateral centering on straights: yaw stays locked on the corridor
@@ -608,9 +654,10 @@ export function servoTick(mob, dt, supported, floating, rand = Math.random) {
   return true;
 }
 
-// Full per-mob tick: stuck detection, target refresh, servo-then-wander
+// Full per-mob tick: stuck detection, target refresh, servo/roam/wander
 // planes, gravity/float vertical, cosmetic gait (scene only). pickTarget is
-// injected (farm.js: pen-bounded or free wander) so this stays world-free.
+// injected (farm.js) so this stays world-free; it now validates whole
+// strides, so pen fence and house walls bound it emergently (no pen fork).
 export function tickFarmMob(mob, dt, pickTarget, rand = mob.rand ?? Math.random) {
   mob.wanderT -= dt;
   const dx = mob.target ? mob.target.x - mob.pos.x : 0;
@@ -624,7 +671,7 @@ export function tickFarmMob(mob, dt, pickTarget, rand = mob.rand ?? Math.random)
     else mob.stuckT = 0;
     if (mob.stuckT >= STUCK_T) {
       mob.target = pickTarget(mob, rand);
-      mob.wanderT = 3 + rand() * 4;
+      mob.wanderT = roamSpan(rand);
       mob.stuckT = 0;
     }
   } else {
@@ -632,9 +679,9 @@ export function tickFarmMob(mob, dt, pickTarget, rand = mob.rand ?? Math.random)
   }
   mob.lastX = mob.pos.x;
   mob.lastZ = mob.pos.z;
-  if (!mob.target || Math.hypot(dx, dz) < 0.6 || mob.wanderT <= 0) {
+  if (!mob.target || Math.hypot(dx, dz) < ARRIVE_D || mob.wanderT <= 0) {
     mob.target = pickTarget(mob, rand);
-    mob.wanderT = 3 + rand() * 4;
+    mob.wanderT = roamSpan(rand);
   }
   // Support state drives both planes: floating bodies are carried by
   // water (drop gate bypassed); airborne bodies keep walking while the
@@ -646,10 +693,18 @@ export function tickFarmMob(mob, dt, pickTarget, rand = mob.rand ?? Math.random)
   const floating = surface != null;
   const supported = floating || hasSupport(mob.pos.x, mob.pos.y, mob.pos.z, mob.hw);
   if (supported) mob.fallFrom = mob.pos.y;
+  // Roam management (virtual upkeep, target identity) runs gated like the
+  // servo; roam stepping owns lane-less ticks the servo declines.
+  const api = {
+    turnTo, moveClamped, makeStepOk, makeCellFree,
+    pickTarget, strideTarget, virtualW: VIRTUAL_W,
+  };
+  if (supported && !floating) roamManage(mob, dt, api);
   // 1-wide servo first: grounded dry mobs on walled paths cruise their
   // corridor instead of chasing the wander target through walls.
   const servoed = servoTick(mob, dt, supported, floating);
-  const roamed = false;
+  let roamed = false;
+  if (!servoed && supported && !floating) roamed = roamStep(mob, dt, api, supported, floating);
   if (mob.target && !servoed && !roamed) {
     mob.yawTarget = Math.atan2(mob.target.x - mob.pos.x, mob.target.z - mob.pos.z);
     turnTo(mob, dt);

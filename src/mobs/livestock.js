@@ -3,7 +3,7 @@
 // on the registry capability flags (walk + float for pigs and cows).
 // Anticipated kinds reuse the same shape: chicken/wolf/cat add jump,
 // fish swaps walk+float for swim, birds add fly.
-import { AIR, LOG, BLOCK_INFO } from "../core/blocks.js";
+import { AIR, BLOCK_INFO } from "../core/blocks.js";
 import { hash2 } from "../core/noise.js";
 
 export const PIG_COUNT = 4;
@@ -96,19 +96,6 @@ export function isStrictPenCell(pen, x, z, cellAt) {
   if (!isSolidId(cellAt(bx, pen.vy, bz))) return false;
   if (cellAt(bx, pen.vy + 1, bz) !== AIR) return false;
   if (cellAt(bx, pen.vy + 2, bz) !== AIR) return false;
-  return true;
-}
-
-// The fence ring is intact while every edge cell still holds its LOG post.
-export function penIntact(pen, cellAt) {
-  for (let x = pen.minX; x <= pen.maxX; x++) {
-    if (cellAt(x, pen.vy + 1, pen.minZ) !== LOG) return false;
-    if (cellAt(x, pen.vy + 1, pen.maxZ) !== LOG) return false;
-  }
-  for (let z = pen.minZ + 1; z <= pen.maxZ - 1; z++) {
-    if (cellAt(pen.minX, pen.vy + 1, z) !== LOG) return false;
-    if (cellAt(pen.maxX, pen.vy + 1, z) !== LOG) return false;
-  }
   return true;
 }
 

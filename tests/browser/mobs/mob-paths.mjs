@@ -147,6 +147,22 @@ try {
     assert.ok(Math.max(...r.trace.map((p) => p.z)) >= 4.0, "mouth: walked out");
     console.log("PASS mouth");
   }
+  for (const dir of ["out-in", "in-out"]) {
+    const r = await page.evaluate(async (d) => window.__test.walkFence(d, {}), dir);
+    assert.ok(r.ok && r.trace.length < 1200, `fence-hole ${dir}: crossed`);
+    console.log(`PASS fence-hole ${dir}`);
+  }
+  for (const dir of ["out-in", "in-out"]) {
+    const r = await page.evaluate(async (d) => window.__test.walkVillageDoor(d, { seed: 7 }), dir);
+    assert.ok(r.ok, `village-door ${dir}: ran (${r.reason ?? r.type})`);
+    if (r.ok) {
+      const h = r.house;
+      const inside = (p) => p.x > h.minX && p.x < h.maxX + 1 && p.z > h.minZ && p.z < h.maxZ + 1;
+      assert.ok(dir === "out-in" ? inside(r.trace.at(-1)) : !inside(r.trace.at(-1)),
+        `village-door ${dir}: through the door`);
+    }
+    console.log(`PASS village-door ${dir}`);
+  }
   // Equivalence: same seed, same rig => identical traces.
   for (const name of ["straight", "l", "zigzag", "straight2", "l2", "funnel21"]) {
     const a = await walk("muret", name, { seed: 7, maxTicks: 1200, goal: GOALS[name] });
