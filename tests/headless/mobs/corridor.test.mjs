@@ -3,7 +3,8 @@
 import assert from "node:assert/strict";
 import {
   normYaw, yawDiff, snapCardinal, oppositeYaw, dirVec,
-  classifyExits, junctionOptions, pickExit, updateLane,
+  rayDist, sideBranch, classifyExits, flanksOpen,
+  junctionOptions, pickExit, updateLane,
 } from "../../../src/mobs/corridor.js";
 
 const N = 0, E = Math.PI / 2, S = Math.PI, W = -Math.PI / 2;
@@ -30,14 +31,58 @@ assert.deepEqual(dirVec(E), [1, 0]);
 assert.deepEqual(dirVec(W), [-1, 0]);
 console.log("PASS helpers");
 
-// --- classifyExits delegates to the injected predicate ---
+// --- classifyExits: axis-aware, sides count only when they branch ---
 {
-  const blocked = new Set(["1,0", "-1,0"]); // walls east+west of origin
-  const isBlocked = (x, z) => blocked.has(`${Math.floor(x)},${Math.floor(z)}`);
-  const opens = classifyExits(0.5, 0.5, isBlocked);
-  assert.deepEqual(new Set(opens), new Set([N, S]));
+  // 1-wide straight along z at x=0: walls east+west, open north+south.
+  const solid = new Set(["1,0", "-1,0", "1,1", "-1,1"]);
+  const pointFree = (x, z) => !solid.has(`${Math.floor(x)},${Math.floor(z)}`);
+  const cellFree = (bx, bz) => !solid.has(`${bx},${bz}`);
+  assert.deepEqual(new Set(classifyExits(0.5, 0.5, N, pointFree, cellFree)), new Set([N, S]));
 }
 console.log("PASS classifyExits");
+
+// --- sideBranch: mouth + (far or non-continuing) ---
+assert.equal(sideBranch(false, false, false), false); // wall
+assert.equal(sideBranch(true, true, true), true);     // long/wide arm
+assert.equal(sideBranch(true, false, false), true);   // 1-cell arm, doorway
+assert.equal(sideBranch(true, false, true), false);   // own corridor lane
+assert.equal(sideBranch(true, true, false), true);
+console.log("PASS sideBranch");
+
+// --- rayDist: first-blocked distance along a ray ---
+{
+  const blocked = new Set(["2,0"]);
+  const blockedAt = (x) => blocked.has(`${Math.floor(x)},0`);
+  assert.ok(Math.abs(rayDist(0.5, 0.5, 1, 0, blockedAt, 4, 0.1) - 1.5) < 0.15);
+  assert.equal(rayDist(0.5, 0.5, -1, 0, blockedAt, 4, 0.1), 4);
+}
+console.log("PASS rayDist");
+
+// --- 2-wide straight: neighbouring lane is not a branch (no pinball) ---
+// Mob hugging the west wall (x=0.6): the east point probe is free, but the
+// mouth cell continues alongside with a wall beyond — own corridor.
+{
+  const wall = (x) => x < 0 || x > 1;
+  const pointFree = (x) => !wall(Math.floor(x - 0.32)) && !wall(Math.floor(x + 0.32));
+  const cellFree = (bx) => !wall(bx);
+  const opens = classifyExits(0.6, 2.5, N, pointFree, (bx) => cellFree(bx));
+  assert.deepEqual(new Set(opens), new Set([N, S]));
+}
+console.log("PASS no-pinball-2wide");
+
+// --- flanksOpen: true open on both sides, never a corridor ---
+{
+  // Open field: everything walks.
+  const field = () => true;
+  assert.equal(flanksOpen(0.5, 0.5, N, field), true);
+  // 1-wide corridor: mouths blocked.
+  const corr1 = (bx) => bx === 0;
+  assert.equal(flanksOpen(0.5, 0.5, N, (bx, bz) => corr1(bx)), false);
+  // 2-wide corridor (cells 0,1): far cells blocked.
+  const corr2 = (bx) => bx === 0 || bx === 1;
+  assert.equal(flanksOpen(1.0, 2.5, N, (bx) => corr2(bx)), false);
+}
+console.log("PASS flanksOpen");
 
 // --- junctionOptions excludes the entry way (no U-turn at junctions) ---
 assert.deepEqual(new Set(junctionOptions([N, S, E, W], S)), new Set([N, E, W]));
@@ -84,6 +129,28 @@ console.log("PASS l-turn");
 }
 console.log("PASS dead-end");
 
+// --- lock-turn still U-turns on a fresh dead end (stub right past a turn):
+// the lock only suppresses re-picks, never the dead-end flip ---
+{
+  const lane = { axis: E, entry: W, lockX: 3, lockZ: 3 };
+  const r = updateLane(lane, 3, 3, E, [W]);
+  assert.equal(r.event, "uturn");
+  assert.ok(Math.abs(normYaw(r.lane.axis - W)) < 1e-9);
+  assert.ok(Math.abs(normYaw(r.lane.entry - E)) < 1e-9);
+}
+console.log("PASS lock-dead-end");
+
+// --- straight cruise heals a stale entry (turn-then-straight): the next
+// straight cell never coin-flips a backtrack, only true junctions pick ---
+{
+  const lane = { axis: N, entry: W, lockX: -1, lockZ: -1 };
+  const r = updateLane(lane, 0, 2, N, [W, N]);
+  assert.equal(r.event, "cruise");
+  assert.ok(Math.abs(normYaw(r.lane.axis - N)) < 1e-9);
+  assert.ok(Math.abs(normYaw(r.lane.entry - S)) < 1e-9);
+}
+console.log("PASS cruise-heals-entry");
+
 // --- T junction: random branch, both taken over trials, entry never ---
 {
   const seen = new Set();
@@ -99,17 +166,18 @@ console.log("PASS dead-end");
 }
 console.log("PASS t-junction-branches");
 
-// --- release: two free-choice cells in a row open onto a field ---
+// --- consecutive junctions keep picking (bars, cross mazes): open-space
+// release lives in the mover's flanksOpen guard, never here ---
 {
-  let lane = { axis: N, entry: S, lockX: -1, lockZ: -1, wide: 0 };
+  let lane = { axis: N, entry: S, lockX: -1, lockZ: -1 };
   let r = updateLane(lane, 0, 0, N, [N, S, E], mulberry32(7));
   assert.equal(r.event, "junction");
   lane = r.lane;
   r = updateLane(lane, 0, 1, N, [N, S, E, W], mulberry32(8));
-  assert.equal(r.event, "release");
-  assert.equal(r.lane, null);
+  assert.equal(r.event, "junction");
+  assert.ok(r.lane);
 }
-console.log("PASS release");
+console.log("PASS consecutive-junctions");
 
 // --- pickExit is uniform-ish over many draws ---
 {

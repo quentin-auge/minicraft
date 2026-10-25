@@ -1,4 +1,4 @@
-// Browser instrumentation for 1-wide mob paths (mirror of the headless
+// Browser instrumentation for mob paths (mirror of the headless
 // tests/headless/mob-paths.test.mjs, on live voxels + the real game tick).
 //
 // Run:  1. npm i -D puppeteer   (peer dep, never shipped; static host keeps
@@ -24,21 +24,18 @@ try {
   process.exit(2);
 }
 
-const LAYOUTS = {
-  straight: [[0, 0], [0, 1], [0, 2], [0, 3], [0, 4], [0, 5], [0, 6]],
-  l: [[0, 0], [0, 1], [0, 2], [1, 2], [2, 2], [3, 2]],
-  t: [[1, 0], [1, 1], [0, 2], [1, 2], [2, 2]],
-  cross: [[1, -1], [1, 0], [1, 1], [1, 2], [1, 3], [0, 1], [2, 1]],
-  zigzag: [[0, 0], [0, 1], [1, 1], [1, 2], [2, 2], [2, 3], [2, 4]],
-  deadend: [[0, 0], [0, 1], [0, 2]],
-};
 const GOALS = {
   straight: "(m) => Math.floor(m.z) >= 6",
-  l: "(m) => Math.floor(m.x) >= 2 && Math.floor(m.z) >= 2",
+  l: "(m) => Math.floor(m.x) >= 3 && Math.floor(m.z) >= 2",
   t: "(m) => Math.floor(m.z) === 2 && (Math.floor(m.x) === 0 || Math.floor(m.x) === 2)",
   cross: "(m) => ['1,3', '0,1', '2,1'].includes(Math.floor(m.x) + ',' + Math.floor(m.z))",
   zigzag: "(m) => Math.floor(m.x) >= 2 && Math.floor(m.z) >= 4",
   deadend: null,
+  straight2: "(m) => Math.floor(m.z) >= 7",
+  l2: "(m) => Math.floor(m.x) >= 5",
+  funnel21: "(m) => Math.floor(m.z) >= 6",
+  doorway: "(m) => m.z >= 4.5",
+  t2: "(m) => (Math.floor(m.x) <= -1 || Math.floor(m.x) >= 3) && (Math.floor(m.z) === 2 || Math.floor(m.z) === 3)",
 };
 
 const server = spawn("python3", ["-m", "http.server", "8383"], { cwd: new URL(".", import.meta.url).pathname + "../.." });
@@ -111,8 +108,47 @@ try {
     assert.deepEqual(exits, new Set(["1,3", "0,1", "2,1"]), `${kind}/cross: all exits`);
     console.log(`PASS ${kind}/cross branches`);
   }
+  for (const kind of ["muret", "trench"]) {
+    const t = await expectReach(kind, "straight2", {});
+    const tail = t.slice(Math.floor(t.length * 0.66));
+    assert.ok(Math.max(...tail.map((p) => Math.abs(p.x - 0.75))) < 0.2, `${kind}/straight2: wall offset`);
+    assert.ok(tail.every((p) => Math.abs(p.x - 1.0) > 0.08), `${kind}/straight2: never mid-space`);
+    console.log(`PASS ${kind}/straight2`);
+  }
+  for (const kind of ["muret", "trench"]) {
+    const t = await expectReach(kind, "l2", {});
+    assert.ok(speeds(t).slice(15).filter((v) => v < 0.8).length <= 12, `${kind}/L2: fluid`);
+    console.log(`PASS ${kind}/L2`);
+  }
+  for (const kind of ["muret", "trench"]) {
+    await expectReach(kind, "funnel21", {});
+    console.log(`PASS ${kind}/funnel21`);
+  }
+  {
+    const r = await walk("muret", "doorway", {
+      walls: { auto: false, extra: [[-1, 3], [2, 3], [3, 3], [-1, 6], [0, 6], [1, 6], [2, 6], [3, 6], [-1, 4], [-1, 5], [3, 4], [3, 5]] },
+      maxTicks: 1500, goal: GOALS.doorway,
+    });
+    assert.ok(r.ok && r.trace.length < 1500, "doorway: entered the room");
+    console.log("PASS doorway");
+  }
+  for (const kind of ["muret", "trench"]) {
+    const arms = new Set();
+    for (let s = 0; s < 16; s++) {
+      const t = await expectReach(kind, "t2", { seed: 500 + s, maxTicks: 1500 });
+      assert.ok(t.every((p) => p.z > -0.2), `${kind}/T2: never back down the stem`);
+      arms.add(t.at(-1).x < 1.5 ? "W" : "E");
+    }
+    assert.ok(arms.has("W") && arms.has("E"), `${kind}/T2: both arms`);
+    console.log(`PASS ${kind}/T2 branches`);
+  }
+  {
+    const r = await walk("muret", "mouth", { walls: { skip: [[0, 4]] }, maxTicks: 1200 });
+    assert.ok(Math.max(...r.trace.map((p) => p.z)) >= 4.0, "mouth: walked out");
+    console.log("PASS mouth");
+  }
   // Equivalence: same seed, same rig => identical traces.
-  for (const name of ["straight", "l", "zigzag"]) {
+  for (const name of ["straight", "l", "zigzag", "straight2", "l2", "funnel21"]) {
     const a = await walk("muret", name, { seed: 7, maxTicks: 1200, goal: GOALS[name] });
     const b = await walk("trench", name, { seed: 7, maxTicks: 1200, goal: GOALS[name] });
     assert.equal(a.trace.length, b.trace.length, `${name}: same length`);

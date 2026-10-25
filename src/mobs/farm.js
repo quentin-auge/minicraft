@@ -98,7 +98,8 @@ function makeFarmMob(kind, { x, z, y, dim, yaw, rand = Math.random }) {
     yaw, yawTarget: yaw, target: null, wanderT: 1 + rand() * 3,
     legPhase: rand() * Math.PI * 2, speed: FARM_WALK, rand,
     stuckT: 0, lastX: x, lastZ: z, fallFrom: y, lane: null, servoStall: 0,
-    blendFrom: null, blendT: 0,
+    blendFrom: null, blendT: 0, roam: null, followLine: null, followCool: 0,
+    funnelT: 0, funnelCool: 0,
   };
   mob.target = pickTarget(mob, rand);
   return mob;

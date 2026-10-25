@@ -19,9 +19,30 @@ export const LAYOUTS = {
   cross: [[1, -1], [1, 0], [1, 1], [1, 2], [1, 3], [0, 1], [2, 1]],
   zigzag: [[0, 0], [0, 1], [1, 1], [1, 2], [2, 2], [2, 3], [2, 4]],
   deadend: [[0, 0], [0, 1], [0, 2]],
+  straight2: (() => { const c = []; for (let z = 0; z <= 7; z++) { c.push([0, z], [1, z]); } return c; })(),
+  l2: (() => {
+    const c = [];
+    for (let z = 0; z <= 3; z++) { c.push([0, z], [1, z]); }
+    for (let x = 0; x <= 5; x++) { c.push([x, 2], [x, 3]); }
+    return [...new Map(c.map((p) => [`${p[0]},${p[1]}`, p])).values()];
+  })(),
+  funnel21: [[0, 0], [1, 0], [0, 1], [1, 1], [0, 2], [1, 2], [1, 3], [1, 4], [1, 5], [1, 6]],
+  doorway: [[2, 0], [2, 1], [2, 2]],
+  t2: [[1, 0], [1, 1], [-1, 2], [0, 2], [1, 2], [2, 2], [3, 2], [-1, 3], [0, 3], [1, 3], [2, 3], [3, 3]],
+  mouth: [[0, 0], [0, 1], [0, 2], [0, 3]],
 };
 
-export const STARTS = { straight: [0, 0], l: [0, 0], t: [1, 0], cross: [1, -1], zigzag: [0, 0], deadend: [0, 0] };
+export const DOOR_WALLS = [
+  [-1, 3], [2, 3], [3, 3],
+  [-1, 6], [0, 6], [1, 6], [2, 6], [3, 6],
+  [-1, 4], [-1, 5], [3, 4], [3, 5],
+];
+
+export const STARTS = {
+  straight: [0, 0], l: [0, 0], t: [1, 0], cross: [1, -1], zigzag: [0, 0], deadend: [0, 0],
+  straight2: [0, 0], l2: [0, 0], funnel21: [0, 0], doorway: [2, 0], t2: [1, 0], mouth: [0, 0],
+};
+export const START_OFF = { straight2: [-0.15, 0], l2: [0.5, 0], funnel21: [0.5, 0] };
 
 // Flat, far from the pen and spawn so pen mobs never interact.
 const OX = 40, OZ = 40;
@@ -37,13 +58,18 @@ function mulberry32(a) {
 
 let sceneRef = null;
 
-function buildRig(kind, name) {
+function buildRig(kind, name, { auto = true, skip = [], extra = [] } = {}) {
   resetWorld("over");
   setDimension("over");
   clearFarmMobs();
   const layout = LAYOUTS[name].map(([x, z]) => [x + OX, z + OZ]);
+  const off = (dx, dz) => [dx + OX, dz + OZ];
+  const extraW = extra.map(([x, z]) => off(x, z));
+  const skipW = skip.map(([x, z]) => off(x, z));
   const ps = new Set(layout.map(([x, z]) => `${x},${z}`));
-  const xs = layout.map((c) => c[0]), zs = layout.map((c) => c[1]);
+  const skipSet = new Set(skipW.map(([x, z]) => `${x},${z}`));
+  const all = [...layout, ...extraW, ...skipW];
+  const xs = all.map((c) => c[0]), zs = all.map((c) => c[1]);
   const x0 = Math.min(...xs) - 3, x1 = Math.max(...xs) + 3;
   const z0 = Math.min(...zs) - 3, z1 = Math.max(...zs) + 3;
   const touched = [];
@@ -51,14 +77,17 @@ function buildRig(kind, name) {
   const adj = [[1, 0], [-1, 0], [0, 1], [0, -1]];
   if (kind === "muret") {
     for (let x = x0; x <= x1; x++) for (let z = z0; z <= z1; z++) put(x, 0, z, STONE);
-    for (const cell of ps) {
-      const [x, z] = cell.split(",").map(Number);
-      for (const [dx, dz] of adj) {
-        if (ps.has(`${x + dx},${z + dz}`)) continue;
-        put(x + dx, 1, z + dz, STONE);
-        put(x + dx, 2, z + dz, STONE);
+    if (auto) {
+      for (const cell of ps) {
+        const [x, z] = cell.split(",").map(Number);
+        for (const [dx, dz] of adj) {
+          if (ps.has(`${x + dx},${z + dz}`) || skipSet.has(`${x + dx},${z + dz}`)) continue;
+          put(x + dx, 1, z + dz, STONE);
+          put(x + dx, 2, z + dz, STONE);
+        }
       }
     }
+    for (const [x, z] of extraW) { put(x, 1, z, STONE); put(x, 2, z, STONE); }
   } else {
     for (let x = x0; x <= x1; x++) for (let z = z0; z <= z1; z++) {
       put(x, 0, z, STONE);
@@ -71,13 +100,14 @@ function buildRig(kind, name) {
   }
   refreshBlocks(touched);
   const [sx, sz] = STARTS[name];
-  return { x: sx + OX + 0.5, z: sz + OZ + 0.5 };
+  const [ox, oz] = START_OFF[name] ?? [0, 0];
+  return { x: sx + OX + 0.5 + ox, z: sz + OZ + 0.5 + oz };
 }
 
 // One deterministic trial: fixed far target along the start heading, seeded
 // RNG behind the stepping (spawn draw, junction picks). Returns plain JSON.
-function walk(kind, name, { seed = 1, maxTicks = 1500, goal = null, yaw = 0 } = {}) {
-  const start = buildRig(kind, name);
+function walk(kind, name, { seed = 1, maxTicks = 1500, goal = null, yaw = 0, walls = null } = {}) {
+  const start = buildRig(kind, name, walls ?? {});
   const mob = spawnFarmMobAt(sceneRef, start.x, start.z, FEET);
   if (!mob) return { ok: false, reason: "no-spawn" };
   mob.pos.set(start.x, FEET, start.z);
@@ -91,7 +121,7 @@ function walk(kind, name, { seed = 1, maxTicks = 1500, goal = null, yaw = 0 } = 
   try {
     for (let t = 0; t < maxTicks; t++) {
       tickFarmMobs(DT, "over");
-      trace.push({ x: mob.pos.x, y: mob.pos.y, z: mob.pos.z, yaw: mob.yaw, lane: mob.lane != null });
+      trace.push({ x: mob.pos.x, y: mob.pos.y, z: mob.pos.z, yaw: mob.yaw, lane: mob.lane != null, fl: mob.followLine ? mob.followLine.line : null });
       if (goal && goal(mob)) break;
     }
   } finally {
