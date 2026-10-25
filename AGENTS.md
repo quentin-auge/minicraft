@@ -51,4 +51,5 @@ MiniCraft — a Minecraft-style game that runs in the browser.
 - If the change is an obvious quickfix/iteration of the last commit in the current session, amend with `git commit --amend`; ask the user if it is okay, unless the user already specified it.
 - Keep ARCHITECTURE.md up to date as the rewrite grows
 - After changing JS, syntax-check it (`node --check`, on a `.mjs` copy when the file uses ESM `import`) and verify in the browser before committing.
-- Do not run instrumentation (puppeteer), verification scripts, or tests unless explicitly requested by the user.
+- Run the headless suites (`node tests/headless/mobs/*.test.mjs`) systematically as non-regression after every change under `src/`; they are fast and instant by design (see the Tests section in @ARCHITECTURE.md) — keep them that way.
+- Run instrumentation (puppeteer, the `?test=1` hook) only when the user explicitly requests it; its purpose is to enrich the existing headless suite with cases it does not cover yet.

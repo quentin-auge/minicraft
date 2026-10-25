@@ -1,0 +1,533 @@
+// Farm-mob kinematics: collision probes, the unified blocked predicate,
+// the 1-wide corridor servo, stepping, falling, and separation.
+// Three-free and headless-testable: positions are plain {x, y, z} writes,
+// visuals are guarded behind `mob.root` (null headless). farm.js owns the
+// meshes, spawning, and lifecycle; the policy lives in corridor.js.
+import { BLOCK_INFO, isLiquid } from "../core/blocks.js";
+import { getBlock } from "../core/store.js";
+import {
+  dropAllowed, floatTargetY, FARM_WALK_DIVISOR,
+} from "./livestock.js";
+import {
+  normYaw, dirVec, cellCenter, oppositeYaw,
+  classifyExits, updateLane,
+} from "./corridor.js";
+
+// Base stride speed straight from master's pig/cow walk; the divisor slows
+// it to a farm amble.
+const MASTER_WALK = 4.3;
+export const FARM_WALK = MASTER_WALK / FARM_WALK_DIVISOR;
+export const GRAVITY = 22;
+export const TURN_RATE = 3;
+// 1-wide servo tuning: tighter yaw for clean corner arcs. The servo drive
+// senses with the body box + body column only (nose 0, footNose 0): the
+// body (hw 0.32) is already the widest lateral part, and any forward nose
+// reach rakes the inner corner of every chicane into micro-stops. Core
+// footing + body box keep every drop illegal exactly as elsewhere.
+// Yaw tracks the corner blend fast (tight arcs at full stride: a 90° swing
+// covers ~0.4 m, inside one cell) — slowing down is never how a turn fits.
+export const SERVO_TURN = 7;
+// Rotate-in-place past this yaw error (U-turn starts, corner entries); below
+// it forward speed scales with cos(error) for arc-while-moving fluidity.
+export const SERVO_SPIN = 1.2;
+// Corner swing duration: the junction blend turns entry→exit over this
+// time, tracked by the fast servo yaw above so the drive never stops.
+export const BLEND_T = 0.3;
+// Free wander step: heading + distance from the current position, never
+// anchored anywhere. The pen holds mobs by physics (fence collision), not
+// by steering — there is no wander center.
+export const WANDER_MIN = 4;
+export const WANDER_MAX = 10;
+// Pushing against a wall toward an unreachable target re-picks this fast
+// instead of waiting out wanderT, so a breach gets used instead of missed.
+export const STUCK_T = 1.5;
+// Separation gap added to every circle-pair need, and vertical gate:
+// mobs more than this far apart in Y never interact.
+export const SEP_GAP = 0.1;
+export const SEP_Y = 1.2;
+
+const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
+
+export const isSolidCell = (x, y, z) => !!BLOCK_INFO[getBlock(x, y, z)]?.solid;
+
+export function aabbIntersectsSolid(px, py, pz, hw, h) {
+  const x0 = Math.floor(px - hw), x1 = Math.floor(px + hw);
+  const z0 = Math.floor(pz - hw), z1 = Math.floor(pz + hw);
+  const y0 = Math.floor(py), y1 = Math.floor(py + h - 1e-4);
+  for (let by = y0; by <= y1; by++)
+    for (let bx = x0; bx <= x1; bx++)
+      for (let bz = z0; bz <= z1; bz++) {
+        if (bx + 1 <= px - hw || bx >= px + hw) continue;
+        if (bz + 1 <= pz - hw || bz >= pz + hw) continue;
+        if (by + 1 <= py || by >= py + h) continue;
+        if (isSolidCell(bx, by, bz)) return true;
+      }
+  return false;
+}
+
+// Destination headroom on the center column only: catches a wall standing
+// on the lower ground ahead without overlapping the step being descended
+// (a full body box at the lower level always would, rejecting all drops).
+export function centerHeadroom(px, feetY, pz, h) {
+  const bx = Math.floor(px), bz = Math.floor(pz);
+  for (let by = Math.floor(feetY); by <= Math.floor(feetY + h - 1e-4); by++) {
+    if (isSolidCell(bx, by, bz)) return false;
+  }
+  return true;
+}
+
+export function hasSupport(px, py, pz, hw) {
+  // Touch rule: support counts only when a solid top touches the feet.
+  // Reading a single layer below would report support while hovering up
+  // to a full block above it (floor(py) - 1 is still the ground block),
+  // freezing falls mid-air and poisoning every later drop read.
+  // Footprint rule (any touching column holds): the mob walks clear of
+  // a descent lip while still held, then falls it with gravity instead
+  // of dropping straight onto the step's flank.
+  const x0 = Math.floor(px - hw), x1 = Math.floor(px + hw);
+  const z0 = Math.floor(pz - hw), z1 = Math.floor(pz + hw);
+  for (let bx = x0; bx <= x1; bx++)
+    for (let bz = z0; bz <= z1; bz++) {
+      if (bx + 1 <= px - hw || bx >= px + hw) continue;
+      if (bz + 1 <= pz - hw || bz >= pz + hw) continue;
+      for (let by = Math.floor(py + 1e-3); by >= 0; by--) {
+        if (isSolidCell(bx, by, bz)) {
+          if (by + 1 >= py - 1e-3) return true;
+          break;
+        }
+      }
+    }
+  return false;
+}
+
+// Highest liquid surface overlapping the body, or null when dry.
+export function liquidSurface(px, py, pz, hw, h) {
+  let top = null;
+  const x0 = Math.floor(px - hw), x1 = Math.floor(px + hw);
+  const z0 = Math.floor(pz - hw), z1 = Math.floor(pz + hw);
+  const y0 = Math.floor(py), y1 = Math.floor(py + h);
+  for (let by = y0; by <= y1; by++)
+    for (let bx = x0; bx <= x1; bx++)
+      for (let bz = z0; bz <= z1; bz++)
+        if (isLiquid(getBlock(bx, by, bz))) top = top == null ? by + 1 : Math.max(top, by + 1);
+  return top;
+}
+
+export function groundBelow(px, py, pz) {
+  const bx = Math.floor(px), bz = Math.floor(pz);
+  for (let y = Math.floor(py); y > Math.floor(py) - 8 && y >= 0; y--) {
+    if (isSolidCell(bx, y, bz)) return y + 1;
+  }
+  return null;
+}
+
+// Uniform void rule — the air-wall hitbox: the core + nose columns (the
+// body and the leading head) must stand over legal ground (drop within
+// maxDrop of refY). The decorative tail never leads a step — mobs turn,
+// never reverse — so it stays out of the void probes: otherwise a tail
+// overhanging a dead-end back wall would veto the very steps that walk
+// out of it. yaw is injectable so corridor probes can test directions
+// other than the current facing.
+export function footingOkAt(mob, x, z, refY, yaw, noseAlong = null) {
+  const nose = noseAlong ?? mob.nose.along;
+  for (let i = 0; i < 2; i++) {
+    const along = i === 0 ? 0 : nose;
+    const g = groundBelow(x + Math.sin(yaw) * along, refY + 1, z + Math.cos(yaw) * along);
+    if (g == null || !dropAllowed(refY, g, mob.maxDrop)) return false;
+  }
+  return true;
+}
+
+export function footingOk(mob, x, z, refY) {
+  return footingOkAt(mob, x, z, refY, mob.yaw);
+}
+
+// Headroom over the core + nose columns at their own ground (tail excluded
+// like above): a narrow pillar under the nose on the lower step blocks the
+// descent like a wall.
+export function headroomOkAt(mob, x, z, refY, yaw, noseAlong = null) {
+  const nose = noseAlong ?? mob.nose.along;
+  for (let i = 0; i < 2; i++) {
+    const along = i === 0 ? 0 : nose;
+    const cx = x + Math.sin(yaw) * along, cz = z + Math.cos(yaw) * along;
+    if (!centerHeadroom(cx, groundBelow(cx, refY + 1, cz), cz, mob.h)) return false;
+  }
+  return true;
+}
+
+export function headroomOk(mob, x, z, refY) {
+  return headroomOkAt(mob, x, z, refY, mob.yaw);
+}
+
+// One unified blocked predicate: solid overlap OR illegal ground under the
+// body circles OR missing headroom. Corridor probes and the stepper share
+// it, so air walls (drop > maxDrop) and physical walls read identically.
+// footNose overrides the circle offset for the void probes: the corridor
+// classifier passes 0 (body-only direction sensing, so 1-cell arms ending
+// in a wall still read open), the drive passes the real nose reach.
+export function makeStepOk(mob, supported, floating, noseAlong, yaw, footNose = null) {
+  const foot = footNose ?? noseAlong;
+  return (nx, nz) => {
+    if (aabbIntersectsSolid(nx, mob.pos.y, nz, mob.hw, mob.h)) return false;
+    const gx = nx + Math.sin(yaw) * noseAlong, gz = nz + Math.cos(yaw) * noseAlong;
+    if (aabbIntersectsSolid(gx, mob.pos.y, gz, mob.nose.r, mob.h)) return false;
+    if (floating) return true;
+    // Bounded drift, gated on the takeoff level: legal descents keep
+    // their glide, falls over void drop straight from the first tick.
+    if (!supported) {
+      return mob.fallFrom - mob.pos.y <= mob.maxDrop + 1e-3 && footingOkAt(mob, nx, nz, mob.fallFrom, yaw, foot);
+    }
+    if (!footingOkAt(mob, nx, nz, mob.pos.y, yaw, foot)) return false;
+    return headroomOkAt(mob, nx, nz, mob.pos.y, yaw, foot);
+  };
+}
+
+export function turnTo(mob, dt, rate = TURN_RATE) {
+  const d = normYaw(mob.yawTarget - mob.yaw);
+  mob.yaw += clamp(d, -rate * dt, rate * dt);
+}
+
+// Facing-first search for a free landing spot at level g: forward steps
+// first (the descent direction), then diagonals, sides, back. Supported
+// spots win; a merely-free spot still beats hovering (the fall resumes
+// next tick). Rare path — only runs when the straight snap below would
+// bury the body.
+export function landUnwedged(mob, g) {
+  const fx = Math.sin(mob.yaw), fz = Math.cos(mob.yaw);
+  const dirs = [
+    [fx, fz],
+    [fx * 0.7 + fz * 0.7, fz * 0.7 - fx * 0.7], [fx * 0.7 - fz * 0.7, fz * 0.7 + fx * 0.7],
+    [fz, -fx], [-fz, fx], [-fx, -fz],
+  ];
+  for (let pass = 0; pass < 2; pass++) {
+    for (const [dx, dz] of dirs) {
+      for (const d of [0.15, 0.3, 0.45]) {
+        const cx = mob.pos.x + dx * d, cz = mob.pos.z + dz * d;
+        if (aabbIntersectsSolid(cx, g, cz, mob.hw, mob.h)) continue;
+        if (pass === 1 || (hasSupport(cx, g, cz, mob.hw) && footingOk(mob, cx, cz, g))) {
+          mob.pos.x = cx;
+          mob.pos.z = cz;
+          if (pass === 0) mob.pos.y = g;
+          return;
+        }
+      }
+    }
+  }
+}
+
+// Axis-separated clamped move: each axis takes the full step when legal,
+// else halves toward the blocker. Free moves cost one predicate call;
+// only refused steps pay the extra probes.
+export function moveClamped(mob, nx, nz, stepOk) {
+  let dx = nx - mob.pos.x;
+  for (let i = 0; i < 4; i++) {
+    const t = mob.pos.x + dx;
+    if (stepOk(t, mob.pos.z)) { mob.pos.x = t; break; }
+    dx /= 2;
+  }
+  let dz = nz - mob.pos.z;
+  for (let i = 0; i < 4; i++) {
+    const t = mob.pos.z + dz;
+    if (stepOk(mob.pos.x, t)) { mob.pos.z = t; break; }
+    dz /= 2;
+  }
+}
+
+// Vector clamped move for the corridor servo: the full step is tested as
+// one vector, then halved toward the blocker. Unlike the axis-separated
+// wander move this never stair-steps around L corners.
+export function moveVector(mob, nx, nz, stepOk) {
+  const dx = nx - mob.pos.x, dz = nz - mob.pos.z;
+  for (let i = 0; i < 5; i++) {
+    const s = 1 / 2 ** i;
+    const tx = mob.pos.x + dx * s, tz = mob.pos.z + dz * s;
+    if (stepOk(tx, tz)) { mob.pos.x = tx; mob.pos.z = tz; return s; }
+  }
+  return 0;
+}
+
+// 1-wide servo tick: corridor-centre cruise, fluid junction turns, in-place
+// U-turns. Runs only grounded and dry; returns true when it owns this tick
+// (lane engaged), false in the open so the wander takes over. The wander
+// target is left untouched behind it, so leaving a path resumes cleanly.
+export function servoTick(mob, dt, supported, floating, rand = Math.random) {
+  if (!supported || floating) { mob.lane = null; return false; }
+  // Body-only direction sensing (footNose 0, no nose disc): the classifier
+  // asks which cells fit the body, so 1-cell arms ending in a wall still
+  // read open. The drive below keeps the real nose reach.
+  const probeBlocked = (nx, nz, dirYaw) =>
+    !makeStepOk(mob, true, false, 0, dirYaw, 0)(nx, nz);
+  const opens = classifyExits(mob.pos.x, mob.pos.z, probeBlocked);
+  const cx = Math.floor(mob.pos.x), cz = Math.floor(mob.pos.z);
+  const res = updateLane(mob.lane, cx, cz, mob.yaw, opens, rand);
+  if (!res.lane) { mob.lane = null; return false; }
+  mob.lane = res.lane;
+  // Dead-end seek: the classifier reads a wall 1.3 m out, but up to 0.6 m
+  // of corridor may remain. Walk nose-to-the-end first, flip only when the
+  // drive itself refuses — the mob touches the back wall, then U-turns.
+  if (res.event === "uturn") {
+    const forward = mob.lane.entry; // pre-flip axis: updateLane already swapped
+    mob.yawTarget = forward;
+    turnTo(mob, dt, SERVO_TURN);
+    const serr = Math.abs(normYaw(mob.yawTarget - mob.yaw));
+    const sstride = mob.speed * Math.max(0, Math.cos(Math.min(serr, Math.PI / 2))) * dt;
+    const sdrive = makeStepOk(mob, supported, floating, 0, mob.yaw, 0);
+    let sscale = 0;
+    if (serr < SERVO_SPIN && sstride > 1e-6) {
+      sscale = moveVector(
+        mob,
+        mob.pos.x + Math.sin(mob.yaw) * sstride,
+        mob.pos.z + Math.cos(mob.yaw) * sstride,
+        sdrive,
+      );
+    }
+    if (sscale > 0) {
+      // Still advancing: keep seeking with the forward axis restored.
+      mob.lane = { axis: forward, entry: oppositeYaw(forward), lockX: -1, lockZ: -1, wide: 0 };
+      mob.stuckT = 0;
+      return true;
+    }
+    // Nose contact: keep the flipped lane, rotate in place below.
+    mob.yawTarget = mob.lane.axis;
+    turnTo(mob, dt, SERVO_TURN);
+    mob.stuckT = 0;
+    return true;
+  }
+  if (res.event === "junction" || res.event === "lock-turn") {
+    // Timed blend: swing from the entry heading toward the exit axis over
+    // BLEND_T, starting exactly at the current yaw — never a snap, so the
+    // drive never spins in place. Distance-based blending deadlocks (the
+    // target converges only as the mob nears the cell centre, but the
+    // nose-footing probe can refuse that very approach); time converges
+    // regardless of position, and the drive probes keep every arc honest.
+    if (res.event === "junction") { mob.blendFrom = mob.yaw; mob.blendT = 0; }
+    const from = mob.blendFrom ?? mob.yaw;
+    const t = Math.min(1, (mob.blendT ?? 0) + dt / BLEND_T);
+    mob.blendT = t;
+    const s = t * t * (3 - 2 * t);
+    mob.yawTarget = from + normYaw(mob.lane.axis - from) * s;
+  } else {
+    mob.blendFrom = null;
+    mob.blendT = 0;
+    mob.yawTarget = mob.lane.axis;
+  }
+  turnTo(mob, dt, SERVO_TURN);
+  const err = Math.abs(normYaw(mob.yawTarget - mob.yaw));
+  const stride = mob.speed * Math.max(0, Math.cos(Math.min(err, Math.PI / 2))) * dt;
+  const driveOk = makeStepOk(mob, supported, floating, 0, mob.yaw, 0);
+  let scale = 1;
+  if (err < SERVO_SPIN && stride > 1e-6) {
+    scale = moveVector(
+      mob,
+      mob.pos.x + Math.sin(mob.yaw) * stride,
+      mob.pos.z + Math.cos(mob.yaw) * stride,
+      driveOk,
+    );
+  }
+  // Stall guard: a latched lane that cannot advance (nose wedged where the
+  // body fits) releases to the wander instead of freezing in place.
+  if (scale === 0 && err < SERVO_SPIN) mob.servoStall = (mob.servoStall ?? 0) + dt;
+  else mob.servoStall = 0;
+  if (mob.servoStall > 0.75) { mob.lane = null; mob.servoStall = 0; return false; }
+  // Lateral centering on straights only: yaw stays locked on the corridor
+  // axis (no hunting), the body slides toward the cell centre when free.
+  if (res.event === "cruise") {
+    const [ax, az] = dirVec(mob.lane.axis);
+    const ccx = cellCenter(mob.pos.x), ccz = cellCenter(mob.pos.z);
+    const e = (ccx - mob.pos.x) * -az + (ccz - mob.pos.z) * ax;
+    const cap = mob.speed * dt * 0.9;
+    const c = Math.max(-cap, Math.min(cap, e));
+    if (Math.abs(c) > 1e-4) {
+      const axisOk = makeStepOk(mob, supported, floating, 0, mob.lane.axis, 0);
+      const tx = mob.pos.x + -az * c, tz = mob.pos.z + az * c;
+      if (axisOk(tx, tz)) { mob.pos.x = tx; mob.pos.z = tz; }
+    }
+  }
+  mob.stuckT = 0;
+  return true;
+}
+
+// Full per-mob tick: stuck detection, target refresh, servo-then-wander
+// planes, gravity/float vertical, cosmetic gait (scene only). pickTarget is
+// injected (farm.js: pen-bounded or free wander) so this stays world-free.
+export function tickFarmMob(mob, dt, pickTarget, rand = mob.rand ?? Math.random) {
+  mob.wanderT -= dt;
+  const dx = mob.target ? mob.target.x - mob.pos.x : 0;
+  const dz = mob.target ? mob.target.z - mob.pos.z : 0;
+  // Stuck pushing a wall (e.g. fence between us and an outside target):
+  // re-pick instead of grinding until wanderT runs out. Stillness is
+  // relative to a normal step (speed*dt), not an absolute distance.
+  if (mob.target) {
+    const stepped = Math.hypot(mob.pos.x - mob.lastX, mob.pos.z - mob.lastZ);
+    if (stepped < mob.speed * dt * 0.2) mob.stuckT += dt;
+    else mob.stuckT = 0;
+    if (mob.stuckT >= STUCK_T) {
+      mob.target = pickTarget(mob, rand);
+      mob.wanderT = 3 + rand() * 4;
+      mob.stuckT = 0;
+    }
+  } else {
+    mob.stuckT = 0;
+  }
+  mob.lastX = mob.pos.x;
+  mob.lastZ = mob.pos.z;
+  if (!mob.target || Math.hypot(dx, dz) < 0.6 || mob.wanderT <= 0) {
+    mob.target = pickTarget(mob, rand);
+    mob.wanderT = 3 + rand() * 4;
+  }
+  // Support state drives both planes: floating bodies are carried by
+  // water (drop gate bypassed); airborne bodies keep walking while the
+  // fall stays within maxDrop (spawn drops and void edges still make
+  // progress instead of freezing mid-air), then fall straight and
+  // resume walking on landing; grounded bodies obey the legal-step
+  // gate below.
+  const surface = liquidSurface(mob.pos.x, mob.pos.y, mob.pos.z, mob.hw, mob.h);
+  const floating = surface != null;
+  const supported = floating || hasSupport(mob.pos.x, mob.pos.y, mob.pos.z, mob.hw);
+  if (supported) mob.fallFrom = mob.pos.y;
+  // 1-wide servo first: grounded dry mobs on walled paths cruise their
+  // corridor instead of chasing the wander target through walls.
+  const servoed = servoTick(mob, dt, supported, floating);
+  if (mob.target && !servoed) {
+    mob.yawTarget = Math.atan2(mob.target.x - mob.pos.x, mob.target.z - mob.pos.z);
+    turnTo(mob, dt);
+    const fx = Math.sin(mob.yaw) * mob.speed * dt;
+    const fz = Math.cos(mob.yaw) * mob.speed * dt;
+    // Legal-step gate (non-jumping walkers): never up, down at most
+    // maxDrop. A deeper drop is a vertical air wall — rejected exactly
+    // like solid, so the stuck detector re-picks instead of cliff walking.
+    // The destination test is passage-at-current-height plus headroom on
+    // the center column: a full body box posed at the lower level would
+    // overlap the very step being descended and reject every descent.
+    // Plus a nose-circle probe ahead along the facing: the visual head
+    // sticks out past hw, so the body test alone would let it grind
+    // into walls.
+    const stepOk = makeStepOk(mob, supported, floating, mob.nose.along, mob.yaw);
+    const nx = mob.pos.x + fx;
+    const nz = mob.pos.z + fz;
+    // Clamp by halving: a refused step retries at half distance, so the
+    // mob slides up against the blocker (wall or nose contact) instead
+    // of stopping a full step away or grinding from afar.
+    // (Mob-vs-mob distance is a post-tick pass, not a steering push.)
+    moveClamped(mob, nx, nz, stepOk);
+  }
+  // Vertical: float on liquids (2/3 out), stand when supported, otherwise
+  // gravity — every descent falls, including legal 1-block steps. Landing
+  // snaps to the support top so feet stay exact: without it mobs would
+  // hover after a fall and every later drop would read too deep.
+  // (surface/supported computed above drive the planes; reused here.)
+  if (surface != null) {
+    const ty = floatTargetY(surface, mob.h);
+    mob.pos.y += (ty - mob.pos.y) * Math.min(1, dt * 4);
+    mob.vel.y = 0;
+  } else if (hasSupport(mob.pos.x, mob.pos.y, mob.pos.z, mob.hw)) {
+    mob.vel.y = 0;
+  } else {
+    mob.vel.y = Math.max(-30, mob.vel.y - GRAVITY * dt);
+    const ny = mob.pos.y + mob.vel.y * dt;
+    if (!aabbIntersectsSolid(mob.pos.x, ny, mob.pos.z, mob.hw, mob.h)) {
+      mob.pos.y = ny;
+    } else {
+      mob.vel.y = 0;
+      // Landing contact: refused moves hover, so settle onto the support
+      // top — landing only, never lifting (embedded spawns are the debug
+      // spawner's own guard, not the mover's). Snap only onto a free
+      // spot: snapping into the step's flank is exactly how mobs get
+      // buried in the block they descend from.
+      const g = groundBelow(mob.pos.x, mob.pos.y, mob.pos.z);
+      if (g != null && g <= mob.pos.y + 1e-3) {
+        if (!aabbIntersectsSolid(mob.pos.x, g, mob.pos.z, mob.hw, mob.h)) {
+          mob.pos.y = g;
+        } else {
+          landUnwedged(mob, g);
+        }
+      }
+    }
+  }
+  // Cosmetic: alternating leg swing + tail sway while walking (scene only).
+  mob.legPhase += dt * mob.speed * 4;
+  if (mob.root) {
+    const legs = mob.root.userData.legs;
+    for (let i = 0; i < legs.length; i++) {
+      legs[i].pivot.rotation.x = Math.sin(mob.legPhase + (i % 2 ? Math.PI : 0) + (i > 1 ? 0.6 : 0)) * 0.5;
+    }
+    mob.root.userData.tailGroup.rotation.y = Math.sin(mob.legPhase * 0.5) * 0.3;
+    mob.root.rotation.y = mob.yaw;
+  }
+}
+
+// Separation destination veto: a side moves only onto a free body with
+// supported feet (nose circle included, so pushes never park a head in
+// a wall), legal ground under every body circle, and headroom over
+// each: drops deeper than maxDrop are air walls for pushes exactly as
+// for steps, so herds never shove each other off cliffs.
+export function sepSpotFree(mob, x, z) {
+  if (aabbIntersectsSolid(x, mob.pos.y, z, mob.hw, mob.h)) return false;
+  const gx = x + Math.sin(mob.yaw) * mob.nose.along, gz = z + Math.cos(mob.yaw) * mob.nose.along;
+  if (aabbIntersectsSolid(gx, mob.pos.y, gz, mob.nose.r, mob.h)) return false;
+  if (!hasSupport(x, mob.pos.y, z, mob.hw)) return false;
+  if (!footingOk(mob, x, z, mob.pos.y)) return false;
+  return headroomOk(mob, x, z, mob.pos.y);
+}
+
+// Hard separation pass over one dimension's mobs: positional
+// depenetration on the yaw-oriented body circles (core + nose + tail),
+// worst circle pair first, 3 iterations. A vetoed side stays put and
+// the other side takes the full correction; both vetoed keeps the
+// overlap for this tick (rare — wall sandwich — and retried next tick).
+// Y-gated so a faller never shoves a walker below. Alloc-free: circle
+// centers stay in locals, pairs share one scratch-free loop.
+export function separateFarmMobs(list) {
+  for (let iter = 0; iter < 3; iter++) {
+    let moved = false;
+    for (let i = 0; i < list.length; i++) {
+      const a = list[i];
+      if (!a.alive) continue;
+      const asx = Math.sin(a.yaw), asz = Math.cos(a.yaw);
+      for (let j = i + 1; j < list.length; j++) {
+        const b = list[j];
+        if (!b.alive) continue;
+        if (Math.abs(a.pos.y - b.pos.y) > SEP_Y) continue;
+        const bsx = Math.sin(b.yaw), bsz = Math.cos(b.yaw);
+        let wPen = 0, wNx = 0, wNz = 0;
+        for (let ai = 0; ai < 3; ai++) {
+          const aa = ai === 0 ? 0 : ai === 1 ? a.nose.along : a.tail.along;
+          const ar = ai === 0 ? a.hw : ai === 1 ? a.nose.r : a.tail.r;
+          const ax = a.pos.x + asx * aa, az = a.pos.z + asz * aa;
+          for (let bi = 0; bi < 3; bi++) {
+            const ba = bi === 0 ? 0 : bi === 1 ? b.nose.along : b.tail.along;
+            const br = bi === 0 ? b.hw : bi === 1 ? b.nose.r : b.tail.r;
+            const ox = ax - (b.pos.x + bsx * ba), oz = az - (b.pos.z + bsz * ba);
+            const need = ar + br + SEP_GAP;
+            const d2 = ox * ox + oz * oz;
+            if (d2 >= need * need) continue;
+            // Coincident centers have no normal: deterministic fallback
+            // direction from the pair indices (recomputed next tick, so
+            // any axis unstacks exact overlaps instead of skipping them).
+            if (d2 < 1e-8) {
+              const fa = (i * 2.39996 + j * 1.2345) % (Math.PI * 2);
+              const pen = need;
+              if (pen > wPen) { wPen = pen; wNx = Math.sin(fa); wNz = Math.cos(fa); }
+              continue;
+            }
+            const d = Math.sqrt(d2), pen = need - d;
+            if (pen > wPen) { wPen = pen; wNx = ox / d; wNz = oz / d; }
+          }
+        }
+        if (wPen <= 0) continue;
+        let da = wPen / 2, db = wPen / 2;
+        if (!sepSpotFree(a, a.pos.x + wNx * da, a.pos.z + wNz * da)) { da = 0; db = wPen; }
+        if (!sepSpotFree(b, b.pos.x - wNx * db, b.pos.z - wNz * db)) {
+          db = 0;
+          if (da === 0) continue;
+        }
+        a.pos.x += wNx * da;
+        a.pos.z += wNz * da;
+        b.pos.x -= wNx * db;
+        b.pos.z -= wNz * db;
+        moved = true;
+      }
+    }
+    if (!moved) break;
+  }
+}
