@@ -72,7 +72,7 @@ import { dimEnv, dimSpec, dimHasMoon, dimHotbar } from "./src/world/dimensions.j
 import { EYE, setFlyStepAllow, updateFreeSwim } from "./src/player/physics.js";
 import { initHomingTnt, fireHomingTnt, tickHomingTnt, clearHomingTnt } from "./src/mobs/homing.js";
 import { enterEndMobs, clearEndMobs, tickEndMobs, notifyEndermanVoxelChange, dragonHealth, setDragonVictoryHook, setMobSeed } from "./src/mobs/end.js";
-import { enterFarmMobs, clearFarmMobs, tickFarmMobs, handleFarmTravel, setFarmSeed } from "./src/mobs/farm.js";
+import { enterFarmMobs, clearFarmMobs, tickFarmMobs, handleFarmTravel, setFarmSeed, spawnFarmMobAt } from "./src/mobs/farm.js";
 import { endPortalFrameKeys, resetEndDimension, setEndCleared } from "./src/world/end.js";
 import { resetTntUnlocks } from "./src/world/tntunlock.js";
 import { isCheat } from "./src/core/cheat.js";
@@ -145,6 +145,7 @@ highlight.visible = false;
 highlight.renderOrder = 999;
 scene.add(highlight);
 const _hookDir = new THREE.Vector3();
+const _spawnDir = new THREE.Vector3();
 const bossBarEl = document.getElementById("bossbar");
 const bossFillEl = document.getElementById("bossfill");
 function updateBossBar() {
@@ -887,6 +888,24 @@ document.addEventListener("keydown", (e) => {
   if (e.code === "KeyV" && !e.repeat && started && !isHelpOpen() && isLocked() && isCheat()) {
     gameSpeed = GAME_SPEEDS[(GAME_SPEEDS.indexOf(gameSpeed) + 1) % GAME_SPEEDS.length];
     toast(`Speed ×${gameSpeed}`);
+    e.preventDefault();
+    return;
+  }
+  // Debug spawn (requires ?cheat=1): B drops a random pig/cow where the
+  // crosshair points — on top of the aimed block when its top face is
+  // aimed at, else 3 above the faced cell with gravity landing it. Any
+  // dimension: the spawn and tick read the active world's voxels, and
+  // debug mobs roam free until the persistence rule clears them.
+  if (e.code === "KeyB" && !e.repeat && started && !isHelpOpen() && isLocked() && isCheat()) {
+    camera.getWorldDirection(_spawnDir);
+    const hit = pickBlock(camera.position, _spawnDir, true);
+    let mob = null;
+    if (hit) {
+      const px = hit.x + hit.face[0] + 0.5, pz = hit.z + hit.face[2] + 0.5;
+      const py = hit.face[1] === 1 ? hit.y + 1 : hit.y + 3;
+      mob = spawnFarmMobAt(scene, px, pz, py);
+    }
+    toast(mob ? `${mob.type === "pig" ? "Pig" : "Cow"} spawned${dim === "over" ? "" : ` (${dim})`}` : "No spot");
     e.preventDefault();
     return;
   }

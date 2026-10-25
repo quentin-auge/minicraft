@@ -545,6 +545,35 @@ function spotFree(x, y, z, yaw, hw, h, nose) {
   return !aabbIntersectsSolid(gx, y, gz, nose.r, h);
 }
 
+// Debug spawn (cheat only, B key): drops a random pig/cow at an arbitrary
+// point in the active dimension. Free-roaming — no pen attachment exists
+// anywhere in this system — under the standard persistence rule.
+export function spawnFarmMobAt(scene, x, z, y, rand = Math.random) {
+  sceneRef = scene;
+  const kind = rand() < 0.5 ? "pig" : "cow";
+  const spec = LIVESTOCK_SPECS[kind];
+  const shape = specCircles(spec);
+  const hw = shape.hw, h = shape.h;
+  const baseYaw = rand() * Math.PI * 2;
+  let sy = y, yaw = baseYaw;
+  for (let t = 0; t < 5; t++) {
+    let placed = false;
+    for (let k = 0; k < 4 && !placed; k++) {
+      yaw = baseYaw + k * Math.PI / 2;
+      placed = spotFree(x, sy, z, yaw, hw, h, shape.nose);
+    }
+    if (placed) break;
+    sy++;
+  }
+  if (!spotFree(x, sy, z, yaw, hw, h, shape.nose)) return null;
+  const mob = createMob(kind, { x, z, y: sy, dim: activeDim, yaw });
+  if (mob) {
+    mobs.add(mob);
+    syncVisibility();
+  }
+  return mob;
+}
+
 export function clearFarmDim(name) {
   for (const mob of [...mobs]) if (mob.dim === name) disposeFarmMob(mob);
 }
