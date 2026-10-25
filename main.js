@@ -1216,3 +1216,11 @@ function loop(now) {
 
 updateCamera();
 requestAnimationFrame(loop);
+
+// ?test=1 instrumentation hook (tests/browser/hook.js + mob-paths.mjs):
+// 1-wide path rigs + deterministic mob traces. Dynamic import, inert unless
+// the param is set — no game behavior changes.
+if (new URLSearchParams(location.search).get("test") === "1") {
+  import("./tests/browser/mobs/hook.js").then((m) =>
+    m.initTest({ scene, worldReady: () => worldReady }));
+}
