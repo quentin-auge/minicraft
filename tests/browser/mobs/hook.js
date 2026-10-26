@@ -7,6 +7,7 @@
 import { AIR, STONE } from "../../../src/core/blocks.js";
 import { setDimension, resetWorld, setBlock } from "../../../src/core/store.js";
 import { spawnFarmMobAt, clearFarmMobs, tickFarmMobs } from "../../../src/mobs/farm.js";
+import { NO_EXPIRY } from "../../../src/mobs/step.js";
 import { refreshBlocks } from "../../../src/render/mesher.js";
 import { village } from "../../../src/world/village.js";
 
@@ -134,7 +135,7 @@ function walkFence(dir, { seed = 1, maxTicks = 1200 } = {}) {
   mob.yaw = yaw; mob.yawTarget = yaw;
   mob.fallFrom = FEET;
   mob.target = { x: tx + OX, z: 0.5 + OZ };
-  mob.wanderT = 1e9;
+  mob.wanderT = NO_EXPIRY;
   const realRandom = Math.random;
   Math.random = mulberry32(seed);
   const trace = [];
@@ -161,7 +162,7 @@ function walk(kind, name, { seed = 1, maxTicks = 1500, goal = null, yaw = 0, wal
   mob.yaw = yaw; mob.yawTarget = yaw;
   mob.fallFrom = FEET;
   mob.target = { x: start.x + Math.sin(yaw) * 30, z: start.z + Math.cos(yaw) * 30 };
-  mob.wanderT = 1e9;
+  mob.wanderT = NO_EXPIRY;
   const realRandom = Math.random;
   Math.random = mulberry32(seed);
   const trace = [];
@@ -201,7 +202,7 @@ function walkVillageDoor(dir, { seed = 7, maxTicks = 1500 } = {}) {
   mob.yawTarget = mob.yaw;
   mob.fallFrom = vy + 1;
   mob.target = { x: tx, z: tz };
-  mob.wanderT = 1e9;
+  mob.wanderT = NO_EXPIRY;
   const realRandom = Math.random;
   Math.random = mulberry32(seed);
   const trace = [];

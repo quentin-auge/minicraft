@@ -7,6 +7,7 @@ import { AIR, STONE } from "../../../src/core/blocks.js";
 import { setDimension, resetWorld, setBlock, getBlock } from "../../../src/core/store.js";
 import { LIVESTOCK_SPECS, specCircles } from "../../../src/mobs/livestock.js";
 import { FARM_WALK, tickFarmMob, aabbIntersectsSolid, segmentWalkable } from "../../../src/mobs/mover.js";
+import { NO_EXPIRY } from "../../../src/mobs/step.js";
 import { village, computeLayout, placeVillage } from "../../../src/world/village.js";
 
 const FEET = 1;
@@ -106,11 +107,12 @@ function makeTestMob(kind, x, y, z, yaw) {
     type: kind, dim: "over", pos: { x, y, z }, vel: { y: 0 },
     hw: shape.hw, h: shape.h, nose: shape.nose, tail: shape.tail,
     maxDrop: spec.drop ?? 1, alive: true, root: null,
-    yaw, yawTarget: yaw, target: null, wanderT: 1e9,
+    yaw, yawTarget: yaw, target: null, wanderT: NO_EXPIRY,
     legPhase: 0, speed: FARM_WALK,
     stuckT: 0, lastX: x, lastZ: z, fallFrom: y, lane: null, servoStall: 0,
     blendFrom: null, blendT: 0, roam: null, followLine: null, followCool: 0,
-    funnelT: 0, funnelCool: 0,
+    followSession: false, followT: 0, followSpan: 0, followLost: 0,
+    funnelT: 0, funnelCool: 0, redecide: false, jrng: null,
   };
 }
 
@@ -227,13 +229,15 @@ for (const kind of ["muret", "trench"]) {
 console.log("PASS straightE (muret + trench)");
 
 // --- straight2: 2-wide hugs a wall at virtual-lane offset, never glides
-// to the middle. Spawn hugging the west wall: settled |x - 0.75| band plus
-// an explicit anti-middle assert.
+// to the middle. Spawn hugging the west wall; the spawn cell reads as a
+// junction (side nook), so the explored side is seed luck — the band assert
+// accepts either wall (0.75 west / 1.25 east) plus an explicit anti-middle
+// assert.
 for (const kind of ["muret", "trench"]) {
   const trace = runTrial(kind, "straight2", { off: [-0.15, 0], goal: (m) => Math.floor(m.pos.z) >= 7 });
   assert.ok(trace.length < 1500, `${kind}/straight2: reached the end`);
   const tail = trace.slice(Math.floor(trace.length * 0.66));
-  assert.ok(Math.max(...tail.map((p) => Math.abs(p.x - 0.75))) < 0.2, `${kind}/straight2: wall offset held`);
+  assert.ok(Math.max(...tail.map((p) => Math.min(Math.abs(p.x - 0.75), Math.abs(p.x - 1.25)))) < 0.2, `${kind}/straight2: wall offset held`);
   assert.ok(tail.every((p) => Math.abs(p.x - 1.0) > 0.08), `${kind}/straight2: never mid-space`);
   assertFluid(trace, `${kind}/straight2`, 1.0, 6);
   assertClean(trace, `${kind}/straight2`);
@@ -435,11 +439,12 @@ function makeElevMob(x, y, z, yaw) {
     type: "pig", dim: "over", pos: { x, y, z }, vel: { y: 0 },
     hw: shape.hw, h: shape.h, nose: shape.nose, tail: shape.tail,
     maxDrop: 1, alive: true, root: null,
-    yaw, yawTarget: yaw, target: null, wanderT: 1e9,
+    yaw, yawTarget: yaw, target: null, wanderT: NO_EXPIRY,
     legPhase: 0, speed: FARM_WALK,
     stuckT: 0, lastX: x, lastZ: z, fallFrom: y, lane: null, servoStall: 0,
     blendFrom: null, blendT: 0, roam: null, followLine: null, followCool: 0,
-    funnelT: 0, funnelCool: 0,
+    followSession: false, followT: 0, followSpan: 0, followLost: 0,
+    funnelT: 0, funnelCool: 0, redecide: false, jrng: null,
   };
 }
 // visit(m) latches once (e.g. lip reached), goal(m) ends the run after that.
