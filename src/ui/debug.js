@@ -14,7 +14,7 @@ export function toggleDebug() {
   if (!debugHud) el().style.display = "none";
 }
 
-export function tickDebug(dt, x, y, z) {
+export function tickDebug(dt, x, y, z, extra) {
   if (dt > 0) fpsEMA += (1 / dt - fpsEMA) * 0.05;
   if (!debugHud || !started) {
     if (el().style.display !== "none") el().style.display = "none";
@@ -27,6 +27,7 @@ export function tickDebug(dt, x, y, z) {
   if (x !== undefined && y !== undefined && z !== undefined) {
     text += " | x " + Math.floor(x) + "  y " + Math.floor(y) + "  z " + Math.floor(z);
   }
+  if (extra) text += " | " + extra;
   el().textContent = text;
   el().style.display = "block";
 }

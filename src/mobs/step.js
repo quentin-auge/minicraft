@@ -12,9 +12,10 @@ import { BLOCK_INFO, isLiquid } from "../core/blocks.js";
 import { getBlock } from "../core/store.js";
 import { dropAllowed, floatTargetY } from "./livestock.js";
 import { normYaw } from "./corridor.js";
+import { noseOn, strideMargin } from "./collide.js";
 
-// Base stride speed straight from master's pig/cow walk; the divisor slows
-// it to a farm amble (FARM_WALK lives in mover.js beside its tuning).
+// Turn rate: how fast mobs re-face. Shipped at 3 (measured: calm turns,
+// few re-aims in the pen); faster turns cut spin-stall but read twitchy.
 export const TURN_RATE = 3;
 // Rotate-in-place past this yaw error; below it forward speed scales with
 // cos(error) for arc-while-moving fluidity. Shared by the servo and roam.
@@ -25,8 +26,13 @@ export const VIRTUAL_W = 1.5;
 // Free wander stride: heading + distance from the current position, never
 // anchored anywhere. The pen holds mobs by physics (fence collision), not
 // by steering — there is no wander center.
-export const WANDER_MIN = 4;
 export const WANDER_MAX = 10;
+// Stride floor: shortest committed stride (pen scale). Reach extends up to
+// the measured clearance along the heading, so open ground keeps long
+// strides while small enclosures get short fitting ones — no pen fork.
+export const STRIDE_FLOOR = 0.8;
+// Destination margin lives in the collide.js mode table (A may end at
+// nose contact, B stops a body margin short of the first blocking cell).
 // Latched targets never expire on their own (refresh comes from arrival,
 // stuck, re-decide, or span timeout — never from this clock).
 export const NO_EXPIRY = 1e9;
@@ -204,6 +210,17 @@ export function makeCellFree(mob) {
   };
 }
 
+// THE point predicate: the mob can occupy (x, z) facing yaw — body box,
+// support, footing, headroom, plus the nose circle when noseOn (footing
+// and headroom then cover the nose column too, exactly like the drives).
+// noseOn=false is the legacy body-only probe, bit-identical; noseOn=true
+// is the drive predicate exactly. Use this for every yes/no occupancy
+// question; distances raycast it.
+export function fitsAt(mob, supported, floating, yaw, noseOn, x, z) {
+  const along = noseOn ? mob.nose.along : 0;
+  const foot = noseOn ? mob.nose.along : 0;
+  return makeStepOk(mob, supported, floating, along, yaw, foot)(x, z);
+}
 // One unified blocked predicate: solid overlap OR illegal ground under the
 // body circles OR missing headroom. Corridor probes and the stepper share
 // it, so air walls (drop > maxDrop) and physical walls read identically.
@@ -341,21 +358,45 @@ export function segmentWalkable(mob, x0, z0, x1, z1) {
   return true;
 }
 
-// Shared stride target: random heading (or the given one) + 4–10 m, first
-// validating (destination rules plus the whole segment). Single pick path
-// for the farm picker and roam commits.
-export function strideTarget(mob, heading = null, rand = Math.random) {
+// Shared stride target: random heading (or the given one) + stride length,
+// first validating (destination rules plus the whole segment). Single pick
+// path for the farm picker and roam commits. Reach follows the measured
+// body clearance along the heading (short in pens, long in open ground),
+// so targets fit the enclosure instead of overshooting its walls.
+// Optional blocked(x, z) vetoes strides ending on another mob's body
+// exactly like walls (mob-aware picks); passing near peers stays legal,
+// only the destination cell is refused. Null keeps voxel-only validation.
+export function strideTarget(mob, heading = null, rand = Math.random, blocked = null) {
   for (let t = 0; t < 12; t++) {
     const h = heading ?? rand() * Math.PI * 2;
-    const dist = WANDER_MIN + rand() * (WANDER_MAX - WANDER_MIN);
-    const sx = Math.floor(mob.pos.x + Math.sin(h) * dist) + 0.5;
-    const sz = Math.floor(mob.pos.z + Math.cos(h) * dist) + 0.5;
+    // Clearance probe: body box along the heading in 0.5 m steps (cheap
+    // overlap checks only — the full voxel/drop/headroom validation runs
+    // once below on the chosen target).
+    const shx = Math.sin(h), shz = Math.cos(h);
+    let clear = 0;
+    for (let d = 0.5; d <= WANDER_MAX + 1e-9; d += 0.5) {
+      if (aabbIntersectsSolid(mob.pos.x + shx * d, mob.pos.y, mob.pos.z + shz * d, mob.hw, mob.h)) break;
+      clear = d;
+    }
+    const reach = Math.min(clear - strideMargin(), WANDER_MAX);
+    if (reach < STRIDE_FLOOR) continue;
+    const dist = STRIDE_FLOOR + rand() * (reach - STRIDE_FLOOR);
+    const sx = Math.floor(mob.pos.x + shx * dist) + 0.5;
+    const sz = Math.floor(mob.pos.z + shz * dist) + 0.5;
     const gy = groundBelow(sx, mob.pos.y + 1, sz);
     if (gy == null) continue;
     if (!dropAllowed(mob.pos.y, gy, mob.maxDrop ?? 1)) continue;
     if (isLiquid(getBlock(Math.floor(sx), gy, Math.floor(sz)))) continue;
     if (!centerHeadroom(sx, gy, sz, mob.h)) continue;
     if (!segmentWalkable(mob, mob.pos.x, mob.pos.z, sx, sz)) continue;
+    // Mode A: the destination must take the nose too — strides may end at
+    // nose contact but never past it. Mode B keeps the body-only
+    // destination with the table margin above.
+    if (noseOn()) {
+      const nx = sx + Math.sin(h) * mob.nose.along, nz = sz + Math.cos(h) * mob.nose.along;
+      if (aabbIntersectsSolid(nx, mob.pos.y, nz, mob.nose.r, mob.h)) continue;
+    }
+    if (blocked && blocked(sx, sz)) continue;
     return { x: sx, z: sz };
   }
   return null;

@@ -38,6 +38,20 @@ export function snapCardinal(yaw) {
   return best;
 }
 
+// 8-wind compass (cardinals plus diagonals): every lane-less heading and
+// drive snaps to one of these, so open-field motion is exactly 8-way and
+// meetings read off a discrete set. The corridor servo stays cardinal-only
+// (dirVec below); roam/step/gaps import this, never redefine it.
+export const WINDS8 = [
+  0, Math.PI / 4, Math.PI / 2, (3 * Math.PI) / 4,
+  Math.PI, (5 * Math.PI) / 4, (3 * Math.PI) / 2, (7 * Math.PI) / 4,
+];
+
+// Nearest 8-wind of any yaw, normalized to (-π, π].
+export function snap8(yaw) {
+  return normYaw(Math.round(yaw / (Math.PI / 4)) * (Math.PI / 4));
+}
+
 // Exact integer step for a cardinal yaw (never trig drift).
 export function dirVec(yaw) {
   const s = snapCardinal(yaw);

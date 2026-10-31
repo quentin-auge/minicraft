@@ -7,7 +7,8 @@ import { AIR, STONE } from "../../../src/core/blocks.js";
 import { setDimension, resetWorld, setBlock, getBlock } from "../../../src/core/store.js";
 import { LIVESTOCK_SPECS, specCircles } from "../../../src/mobs/livestock.js";
 import { FARM_WALK, tickFarmMob, aabbIntersectsSolid, segmentWalkable } from "../../../src/mobs/mover.js";
-import { NO_EXPIRY } from "../../../src/mobs/step.js";
+import { NO_EXPIRY, strideTarget } from "../../../src/mobs/step.js";
+import { setCollide } from "../../../src/mobs/collide.js";
 import { village, computeLayout, placeVillage } from "../../../src/world/village.js";
 
 const FEET = 1;
@@ -724,7 +725,10 @@ for (const seed of [7, 99]) {
 }
 console.log("PASS village-door");
 
-// --- open field: straight runs stay bounded, headings keep turning ---
+// --- open field: free way ahead keeps its heading, turns need an obstacle ---
+// The old run budget forced a real turn every 8 s of straight walking;
+// that turn-without-obstacle is gone on purpose: commits hold their line
+// until something (here: the slab edge) actually blocks the way.
 {
   resetWorld("over");
   setDimension("over");
@@ -733,13 +737,11 @@ console.log("PASS village-door");
   mob.target = null;
   const realRandom = Math.random;
   Math.random = mulberry32(2026);
-  const yaws = [];
   const trace = [];
   let pathLen = 0, px = 0.5, pz = 0.5;
   try {
     for (let t = 0; t < 3600; t++) {
       tickFarmMob(mob, DT, () => mob.target);
-      if (t % 10 === 0) yaws.push(mob.yaw);
       trace.push({ x: mob.pos.x, y: mob.pos.y, z: mob.pos.z, yaw: mob.yaw });
       pathLen += Math.hypot(mob.pos.x - px, mob.pos.z - pz);
       px = mob.pos.x; pz = mob.pos.z;
@@ -747,28 +749,67 @@ console.log("PASS village-door");
   } finally {
     Math.random = realRandom;
   }
-  // Split into runs: a new run starts past 30° from the run start heading.
-  let runs = 1, runStart = yaws[0], maxRun = 0, cur = 0;
-  for (const y of yaws) {
-    let d = y - runStart;
+  const norm = (d) => {
     while (d > Math.PI) d -= Math.PI * 2;
     while (d < -Math.PI) d += Math.PI * 2;
-    if (Math.abs(d) > Math.PI / 6) { runs++; maxRun = Math.max(maxRun, cur); cur = 0; runStart = y; }
-    else cur++;
-  }
-  maxRun = Math.max(maxRun, cur);
-  assert.ok(runs >= 3, `open-field: keeps turning (runs=${runs})`);
-  assert.ok(maxRun * 10 < 900 + 300, `open-field: no endless straight (max run ${(maxRun * 10) / 60}s)`);
-  assert.ok(pathLen > 40, `open-field: keeps covering ground (${pathLen.toFixed(1)}m)`);
-  const offCard = (y) => {
-    const k = Math.round(y / (Math.PI / 2));
-    return Math.abs(y - k * Math.PI / 2);
+    return d;
   };
-  const oblique = yaws.filter((y) => offCard(y) > Math.PI / 12);
-  assert.ok(oblique.length / yaws.length > 0.25,
-    `open-field: walks oblique lines (${(100 * oblique.length / yaws.length).toFixed(0)}%)`);
+  // Turn events: cumulative yaw past 45° off the run start heading starts
+  // a new run. Every new run must start at the slab edge (the only
+  // obstacle here) — mid-slab run starts are the removed behavior.
+  // (Per-sample deltas stay small: drive turns at rate, never snaps.)
+  let runs = [{ i: 0, x: trace[0].x, z: trace[0].z }];
+  let runStart = trace[0].yaw;
+  for (let i = 0; i < trace.length; i++) {
+    if (Math.abs(norm(trace[i].yaw - runStart)) > Math.PI / 4) {
+      runs.push({ i, x: trace[i].x, z: trace[i].z });
+      runStart = trace[i].yaw;
+    }
+  }
+  assert.ok(runs.length >= 2, "open-field: reaches the edge and turns around");
+  for (const r of runs.slice(1)) {
+    const edge = 40 - Math.max(Math.abs(r.x), Math.abs(r.z));
+    assert.ok(edge < 5, `open-field: mid-slab turn @${r.i} (${edge.toFixed(1)}m from the edge)`);
+  }
+  assert.ok(pathLen > 40, `open-field: keeps covering ground (${pathLen.toFixed(1)}m)`);
   assertClean(trace, "open-field");
 }
-console.log("PASS open-field-turns");
+console.log("PASS open-field-heading");
+
+// --- walled room: mobs use the whole room up to the walls ---
+// Per unification mode: B (body rule) must come within half a block over
+// a minute — the old 1+ block standoff is gone; A (nose in every
+// decision) rests at snout contact by design (~0.7 m body-edge plus the
+// arrival radius), so its bound is looser. Clean body throughout.
+{
+  for (const [mode, cap] of [[1, 0.5], [0, 1.2]]) {
+    setCollide(mode);
+    resetWorld("over");
+    setDimension("over");
+    for (let x = -11; x <= 11; x++) for (let z = -11; z <= 11; z++) setBlock(x, 0, z, STONE);
+    for (let z = -10; z <= 10; z++) for (const x of [-10, 10]) { setBlock(x, 1, z, STONE); setBlock(x, 2, z, STONE); }
+    for (let x = -10; x <= 10; x++) for (const z of [-10, 10]) { setBlock(x, 1, z, STONE); setBlock(x, 2, z, STONE); }
+    const mob = makeTestMob("pig", 0.5, FEET, 0.5, 0);
+    mob.target = null;
+    const realRandom = Math.random;
+    Math.random = mulberry32(3773);
+    const trace = [];
+    let minGap = Infinity;
+    try {
+      for (let t = 0; t < 3600; t++) {
+        tickFarmMob(mob, DT, (m, r) => strideTarget(m, null, r));
+        const g = Math.min(10 - Math.abs(mob.pos.x), 10 - Math.abs(mob.pos.z)) - mob.hw;
+        if (g < minGap) minGap = g;
+        trace.push({ x: mob.pos.x, y: mob.pos.y, z: mob.pos.z, yaw: mob.yaw });
+      }
+    } finally {
+      Math.random = realRandom;
+    }
+    assert.ok(minGap <= cap, `walled-room mode ${mode}: closest body-edge approach ${minGap.toFixed(2)}m, want <= ${cap}`);
+    assertClean(trace, `walled-room mode ${mode}`);
+    console.log(`PASS walled-room mode ${mode} (min gap ${minGap.toFixed(2)}m)`);
+  }
+  setCollide(1);
+}
 
 console.log("mob-paths.test.mjs: ALL PASS");

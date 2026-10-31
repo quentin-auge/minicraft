@@ -11,17 +11,24 @@ import {
   dirVec, snapCardinal, normYaw, yawDiff, rayDist, PROBE_DIST,
 } from "./corridor.js";
 import {
-  makeStepOk, makeCellFree, turnTo, moveClamped, driveToward, dropLane, strideTarget,
-  TURN_RATE, VIRTUAL_W, NO_EXPIRY,
+  makeCellFree, turnTo, moveClamped, driveToward, dropLane, strideTarget,
+  fitsAt, TURN_RATE, VIRTUAL_W, NO_EXPIRY,
 } from "./step.js";
+import { noseOn } from "./collide.js";
 import { scanGap } from "./gaps.js";
 
 // Wall face within this engages following; the followed wall counts lost
 // past it. Sessions are time-boxed so parades end.
 export const FOLLOW_RANGE = 1.2;
 export const LOST_TICKS = 15;
-export const ARRIVE_D = 0.6;
+export const ARRIVE_D = 0.2;
 export const FOLLOW_COOL = 2.0;
+export const PASS_LAT = 0.8;
+// Lateral pass band (m): a commit whose line carried the mob past the
+// target within this reads as arrived — overshooting then U-turning back
+// onto a stale point is the classic wobble. Covers the worst
+// quantization offset (half cell diagonal ~0.71) with margin, so every
+// free cruise arrives instead of timing out on a parallel line.
 // Every latched decision (commit or wall ride) runs 2–8 s, then re-decides.
 export const SPAN_MIN = 2;
 export const SPAN_MAX = 8;
@@ -36,22 +43,31 @@ export const WINDS8 = [
   Math.PI, (5 * Math.PI) / 4, (3 * Math.PI) / 2, (7 * Math.PI) / 4,
 ];
 
-// Body fits at (x, z) in the caller's grounded dry context.
+// Body fits at (x, z) in the caller's grounded dry context, nose included
+// in mode A (the O-cycled unification): every decision then sees what the
+// drive refuses, so wall approaches turn before the snout touches.
 function bodyFits(mob, supported, floating, yaw, x, z) {
-  return makeStepOk(mob, supported, floating, 0, yaw, 0)(x, z);
+  return fitsAt(mob, supported, floating, yaw, noseOn(), x, z);
 }
 
-// First candidate heading with 3+ blocks free, else the roomiest.
+// Free body distance along a heading (voxel + footing + headroom).
+function headingClearance(mob, supported, floating, h) {
+  const dx = Math.sin(h), dz = Math.cos(h);
+  const fit = (x, z) => !bodyFits(mob, supported, floating, h, x, z);
+  return rayDist(mob.pos.x, mob.pos.z, dx, dz, fit, 3.0, 0.1);
+}
+
+// First candidate heading with body clearance (0.5 m), else the
+// roomiest. Commits hug walls instead of demanding ballroom space, so
+// mobs use the edges of small enclosures as well as the middle.
 function openHeading(mob, supported, floating, cands, rand = Math.random) {
   let roomiest = null, roomiestD = -1;
   for (const h of cands) {
-    const dx = Math.sin(h), dz = Math.cos(h);
-    const fit = (x, z) => !bodyFits(mob, supported, floating, h, x, z);
-    const d = rayDist(mob.pos.x, mob.pos.z, dx, dz, fit, 3.0, 0.1);
-    if (d >= 2.9) return h;
+    const d = headingClearance(mob, supported, floating, h);
+    if (d >= 0.5) return h;
     if (d > roomiestD || (d === roomiestD && rand() < 0.5)) { roomiest = h; roomiestD = d; }
   }
-  return roomiestD > 0.5 ? roomiest : null;
+  return roomiestD > 0.3 ? roomiest : null;
 }
 
 function shuffled(arr, rand = Math.random) {
@@ -187,7 +203,7 @@ export function upkeepFollowLine(mob, dt) {
   const [wax] = dirVec(vw.axis);
   const sdx = wax === 0 ? -vw.side : 0;
   const sdz = wax === 0 ? 0 : -vw.side;
-  const fitS = (x, z) => !makeStepOk(mob, true, false, 0, vw.axis, 0)(x, z);
+  const fitS = (x, z) => !fitsAt(mob, true, false, vw.axis, noseOn(), x, z);
   const d = rayDist(mob.pos.x, mob.pos.z, sdx, sdz, fitS, FOLLOW_RANGE + 0.05, 0.1);
   mob.followT = (mob.followT ?? 0) + dt;
   if (d > FOLLOW_RANGE) mob.followLost = (mob.followLost ?? 0) + 1;
@@ -197,50 +213,61 @@ export function upkeepFollowLine(mob, dt) {
   }
 }
 
+// Passed the latched target along the committed heading? (pos - target)
+// projects ahead of the heading with a small lateral offset: the line did
+// its job, re-decide fresh instead of spinning back onto the point.
+function passedTarget(mob, r) {
+  if (r.heading == null || !r.target) return false;
+  const rx = mob.pos.x - r.target.x, rz = mob.pos.z - r.target.z;
+  const sh = Math.sin(r.heading), ch = Math.cos(r.heading);
+  if (rx * sh + rz * ch <= 0) return false;
+  return Math.abs(rx * ch - rz * sh) < PASS_LAT;
+}
+
 // Decision + stepping when the servo owns nothing. Returns handled.
-export function roamStep(mob, dt, supported, floating, rand = Math.random, pickTarget) {
+// blocked vetoes steps through other mobs (same gate as the wander
+// fallback); forceHeading overrides the commit aim while a group plan
+// holds (planned headings are already 8-wind snapped). Free commits
+// cruise the latched heading open-loop, never the point.
+export function roamStep(mob, dt, supported, floating, rand = Math.random, pickTarget, blocked = null, forceHeading = null) {
   if (mob.lane) return false;
   const r = mob.roam;
   const broken = r && r.mode && mob.target !== r.tgt;
   const arrived = r && r.mode === "commit" && mob.target &&
-    Math.hypot(r.target.x - mob.pos.x, r.target.z - mob.pos.z) < ARRIVE_D;
+    (Math.hypot(r.target.x - mob.pos.x, r.target.z - mob.pos.z) < ARRIVE_D || passedTarget(mob, r));
   const expired = r && r.mode && mob.wanderT <= 0;
   const timedOut = r && r.mode && (r.t ?? 0) > (r.span ?? SPAN_MAX);
   if (!r || !r.mode || broken || arrived || expired || timedOut || !mob.target) {
     decide(mob, dt, supported, floating, rand, pickTarget);
     if (!mob.roam?.mode) return false;
   }
-  // Commit step toward the latched target.
+  // Commit step: cruise the latched heading open-loop, never the point.
+  // Re-aiming at the point every tick makes the yaw chase micro-moves
+  // (separation pushes, clamp slides, cell-center quantization) into orbit
+  // wobbles, 180° overshoot spins, and late terminal nudges that read as
+  // mid-slab turns — the heading is fixed, so the cruise walks straight
+  // and arrival (or the pass band) catches the crossing. A forced plan
+  // heading (evasion) overrides the cruise for the tick — the avoidance
+  // keeps its immediate effect without the per-tick aim chase.
   const c = mob.roam;
-  const makeCommit = () => makeStepOk(mob, supported, floating, mob.nose.along, mob.yaw);
+  const makeCommit = () => {
+    const base = (nx, nz) => fitsAt(mob, supported, floating, mob.yaw, true, nx, nz);
+    return blocked ? (nx, nz) => base(nx, nz) && !blocked(nx, nz) : base;
+  };
   driveToward(mob, dt,
-    Math.atan2(c.target.x - mob.pos.x, c.target.z - mob.pos.z),
+    forceHeading ?? c.heading ?? Math.atan2(c.target.x - mob.pos.x, c.target.z - mob.pos.z),
     makeCommit, moveClamped);
   c.t = (c.t ?? 0) + dt;
   return true;
 }
 
-// Same-heading run budget: chained commits within RUN_ALIGN of the
-// previous one accumulate their spans; past RUN_MAX the next commit turns
-// for real instead of chaining straight forever in the open. One rule
-// (cumulative time) subsumes count- and time-based caps alike.
-export const RUN_ALIGN = Math.PI / 6;
-export const RUN_MAX = 8;
-
-function latchCommit(mob, heading, target, rand = Math.random, prev = null) {
-  // A continuing run accrues the previous span; anything else (arrival,
-  // break, release, forced turn) restarts the budget.
-  let runT = 0;
-  if (prev && prev.heading != null && yawDiff(heading, prev.heading) < RUN_ALIGN) {
-    runT = (prev.runT ?? 0) + (prev.t ?? 0);
-  }
+function latchCommit(mob, heading, target, rand = Math.random) {
   mob.target = target;
   mob.wanderT = NO_EXPIRY;
-  mob.roam = { mode: "commit", heading, target, tgt: target, t: 0, span: roamSpan(rand), runT };
+  mob.roam = { mode: "commit", heading, target, tgt: target, t: 0, span: roamSpan(rand) };
 }
 
 function decide(mob, dt, supported, floating, rand = Math.random, pickTarget) {
-  const prev = mob.roam;
   mob.roam = null;
   const yaw = snapCardinal(mob.yaw);
   const [fx, fz] = dirVec(yaw);
@@ -251,9 +278,9 @@ function decide(mob, dt, supported, floating, rand = Math.random, pickTarget) {
   if (fwdBlocked) {
     const gap = scanGap(mob, yaw)?.heading ?? null;
     if (gap != null) {
-      const target = strideTarget(mob, gap) ?? pickTarget(mob);
+      const target = strideTarget(mob, gap, rand) ?? pickTarget(mob, rand);
       if (target) {
-        latchCommit(mob, gap, target, rand, prev);
+        latchCommit(mob, gap, target, rand);
         return;
       }
     }
@@ -263,27 +290,30 @@ function decide(mob, dt, supported, floating, rand = Math.random, pickTarget) {
   // session release turns away at the span so parades end.
   if (!fwdBlocked && (mob.followCool ?? 0) <= 0 && erectForAxis(mob, dt, yaw, true, rand)) {
     latchCommit(mob, yaw,
-      { x: mob.pos.x + fx * 5, z: mob.pos.z + fz * 5 }, rand, prev);
+      { x: mob.pos.x + fx * 5, z: mob.pos.z + fz * 5 }, rand);
     return;
   }
-  // R3/R4 commit: current raw heading first (continuity bias, oblique
-  // included), then the shuffled 8-wind — first with 3+ blocks free wins.
-  // Past the run budget the commit turns for real (near-prev winds excluded)
-  // instead of chaining straight.
+  // R3/R4 commit: raw continuity heading first, then the shuffled 8-wind
+  // — first with 0.5 m free wins. Free way ahead keeps the heading:
+  // nothing here turns without an obstacle (gap, wall, and plan/stuck
+  // maneuvers own their own turns elsewhere). When the winning heading
+  // takes no stride (no ground along it), the siblings are tried in order
+  // before the picker — the commit stays obstacle-driven instead of
+  // random, and a null picker can never freeze the mob in place.
   const cands = [mob.yaw, ...shuffled(
     WINDS8.filter((dd) => yawDiff(dd, mob.yaw) > 1e-6), rand)];
-  const heading = openHeading(mob, supported, floating, cands, rand);
+  let heading = openHeading(mob, supported, floating, cands, rand);
   if (heading == null) return;
-  if (prev?.heading != null && yawDiff(heading, prev.heading) < RUN_ALIGN &&
-      (prev.runT ?? 0) + (prev.t ?? 0) >= RUN_MAX) {
-    const turned = openHeading(mob, supported, floating, shuffled(
-      WINDS8.filter((dd) => yawDiff(dd, prev.heading) > RUN_ALIGN), rand), rand);
-    if (turned != null) {
-      const turnTarget = strideTarget(mob, turned) ?? pickTarget(mob);
-      if (turnTarget) { latchCommit(mob, turned, turnTarget, rand); return; }
+  let target = strideTarget(mob, heading, rand);
+  if (!target) {
+    for (const h of cands) {
+      if (h === heading) continue;
+      if (headingClearance(mob, supported, floating, h) < 0.5) continue;
+      target = strideTarget(mob, h, rand);
+      if (target) { heading = h; break; }
     }
   }
-  const target = strideTarget(mob, heading) ?? pickTarget(mob);
+  target ??= pickTarget(mob, rand);
   if (!target) return;
-  latchCommit(mob, heading, target, rand, prev);
+  latchCommit(mob, heading, target, rand);
 }

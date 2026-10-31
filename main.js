@@ -885,6 +885,9 @@ document.addEventListener("keydown", (e) => {
     e.preventDefault();
     return;
   }
+  // Mob behavior is fully baked in (balanced pen setup, no tuning keys):
+  // the only key here is V (cheat only) for sim speed, plus B (cheat)
+  // for debug spawns. See ARCHITECTURE.md for the shipped constants.
   if (e.code === "KeyV" && !e.repeat && started && !isHelpOpen() && isLocked() && isCheat()) {
     gameSpeed = GAME_SPEEDS[(GAME_SPEEDS.indexOf(gameSpeed) + 1) % GAME_SPEEDS.length];
     toast(`Speed ×${gameSpeed}`);
@@ -963,7 +966,7 @@ function loop(now) {
     renderer.render(scene, camera);
     return;
   }
-  tickDebug(dt, pos.x, pos.y, pos.z);
+  tickDebug(dt, pos.x, pos.y, pos.z, "");
   if (simActive) {
     simTime += sdt;
     tickFx(sdt);

@@ -10,7 +10,8 @@
 // dist, heading} for roam. Give-up + cooldown bound any wedge; the normal
 // flow resumes past the constriction.
 import { dirVec } from "./corridor.js";
-import { makeStepOk, makeCellFree, descendOk } from "./step.js";
+import { fitsAt, makeCellFree, descendOk } from "./step.js";
+import { noseOn } from "./collide.js";
 
 // Forward scan distances, lateral half-width/step. Minimum run width reads
 // a single body-fit offset (1-wide mouths align to exactly one).
@@ -26,7 +27,7 @@ export function scanGap(mob, axisYaw) {
   const latx = -fz, latz = fx;
   const cellFree = makeCellFree(mob);
   const fitBody = (yaw) => {
-    const base = makeStepOk(mob, true, false, 0, yaw, 0);
+    const base = (nx, nz) => fitsAt(mob, true, false, yaw, noseOn(), nx, nz);
     return (nx, nz) => base(nx, nz) && descendOk(mob, nx, nz);
   };
   const blockAt = (x, z) => !fitBody(axisYaw)(x, z);
