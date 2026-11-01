@@ -32,6 +32,11 @@ export const WANDER_MAX = 10;
 export const NO_EXPIRY = 1e9;
 // Gravity for the vertical plane (farm-mob fall speed).
 export const GRAVITY = 22;
+// Base sim step: the mob tick integrates in exact SERVO_STEP slices, so
+// behaviour never depends on the frame's dt (V speed scales dt, never the
+// step count) — probes, corner arcs and tick-counted holds read the same
+// at any speed. Tall frames recurse (bounded by the 0.05 s dt clamp).
+export const SERVO_STEP = 1 / 60;
 
 const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
 

@@ -14,6 +14,7 @@ import {
   liquidSurface, footingOk, headroomOk,
   makeCellFree, makeStepOk, descendOk, turnTo,
   moveClamped, moveVector, driveToward, dropLane, spawnRng, stepVertical,
+  SERVO_STEP,
 } from "./step.js";
 import { scanGap, FUNNEL_GIVEUP, FUNNEL_COOL } from "./gaps.js";
 import { upkeepFollowLine, roamStep, roamSpan, ARRIVE_D, FOLLOW_COOL } from "./roam.js";
@@ -296,6 +297,15 @@ function cruiseLane(mob, dt, supported, floating, res) {
 // injected (farm.js) so this stays world-free; it now validates whole
 // strides, so pen fence and house walls bound it emergently (no pen fork).
 export function tickFarmMob(mob, dt, pickTarget, rand = mob.rand ?? Math.random) {
+  // Fixed-step integration: tall frames (V speed) run exact SERVO_STEP
+  // slices plus one tail below 1.5 steps, so probes, arcs, holds and
+  // random draws read identically per sim-second at any speed. Plain
+  // recursion, no body re-indent (keeps later diffs clean).
+  if (dt > SERVO_STEP * 1.5) {
+    tickFarmMob(mob, SERVO_STEP, pickTarget, rand);
+    tickFarmMob(mob, dt - SERVO_STEP, pickTarget, rand);
+    return;
+  }
   mob.wanderT -= dt;
   const dx = mob.target ? mob.target.x - mob.pos.x : 0;
   const dz = mob.target ? mob.target.z - mob.pos.z : 0;
