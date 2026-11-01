@@ -771,4 +771,51 @@ console.log("PASS village-door");
 }
 console.log("PASS open-field-turns");
 
+// --- V-invariance: the same seed run at ×1 and ×8 sim speeds replays the
+// same corridor ride (fixed-step integration: exact SERVO_STEP slices, draws
+// aligned per sim-second). Engage frame, sampled states and final spot
+// match at both speeds.
+{
+  const ride = (stepMul, frames) => {
+    resetWorld("over");
+    setDimension("over");
+    for (let x = -4; x <= 4; x++) for (let z = -4; z <= 24; z++) setBlock(x, 0, z, STONE);
+    for (let z = -1; z <= 21; z++) {
+      setBlock(-1, 1, z, STONE); setBlock(-1, 2, z, STONE);
+      setBlock(1, 1, z, STONE); setBlock(1, 2, z, STONE);
+    }
+    const mob = makeTestMob("pig", 0.5, FEET, 0.5, 0);
+    const target = { x: 0.5, z: 30 };
+    const realRandom = Math.random;
+    Math.random = mulberry32(41);
+    const trace = [];
+    try {
+      for (let t = 0; t < frames; t++) {
+        tickFarmMob(mob, DT * stepMul, () => target, mob.rand ?? Math.random);
+        trace.push({ x: mob.pos.x, z: mob.pos.z, yaw: mob.yaw, lane: mob.lane ? mob.lane.axis : null });
+      }
+    } finally {
+      Math.random = realRandom;
+    }
+    return trace;
+  };
+  const SIM_S = 8, A = ride(1, SIM_S * 60), B = ride(8, SIM_S * 60 / 8);
+  assert.ok(A.some((p) => p.lane !== null) && B.some((p) => p.lane !== null),
+    `vinv: engaged at both speeds`);
+  assert.ok(Math.floor(A.findIndex((p) => p.lane !== null) / 8) === B.findIndex((p) => p.lane !== null),
+    `vinv: same engage tick (×1 ${A.findIndex((p) => p.lane !== null)}, ×8 ${B.findIndex((p) => p.lane !== null)})`);
+  for (let j = 0; j < B.length; j++) {
+    const a = A[j * 8 + 7], b = B[j]; // same substep count: 8(j+1)
+    assert.ok(Math.abs(a.x - b.x) < 1e-9 && Math.abs(a.z - b.z) < 1e-9 &&
+      Math.abs(a.yaw - b.yaw) < 1e-9 && a.lane === b.lane,
+      `vinv: same state @sim-tick ${j * 8}`);
+  }
+  const endA = A[A.length - 1], endB = B[B.length - 1];
+  assert.ok(Math.abs(endA.x - endB.x) < 1e-9 && Math.abs(endA.z - endB.z) < 1e-9,
+    `vinv: same final spot`);
+  assertClean(A.map((p) => ({ ...p, y: FEET })), "vinv-×1");
+  assertClean(B.map((p) => ({ ...p, y: FEET })), "vinv-×8");
+}
+console.log("PASS v-invariance");
+
 console.log("mob-paths.test.mjs: ALL PASS");
