@@ -132,7 +132,7 @@ function runTrial(kind, name, { seed = 1, maxTicks = 1500, goal = null, yaw = nu
   try {
     for (let t = 0; t < maxTicks; t++) {
       tickFarmMob(mob, DT, () => fixed);
-      trace.push({ x: mob.pos.x, y: mob.pos.y, z: mob.pos.z, yaw: mob.yaw, lane: mob.lane != null, fl: mob.followLine ? mob.followLine.line : null });
+      trace.push({ x: mob.pos.x, y: mob.pos.y, z: mob.pos.z, yaw: mob.yaw, lane: mob.lane != null, fl: mob.followLine ? mob.followLine.line : null, wf: mob.wallFollow === true, ow: mob.oneWide === true });
       if (goal && goal(mob)) break;
     }
   } finally {
@@ -817,5 +817,73 @@ console.log("PASS open-field-turns");
   assertClean(B.map((p) => ({ ...p, y: FEET })), "vinv-×8");
 }
 console.log("PASS v-invariance");
+
+// --- displacement-mode flags (the ?color=1 tint reads these: blue rides
+// a follow line, red runs a true 1-wide lane, neither walks open roam) ---
+{
+  // Red: true 1-wide straight cruise — lane held, never a line.
+  const trace = runTrial("muret", "straight", { seed: 3, maxTicks: 600 });
+  const cruise = trace.slice(30, 300);
+  assert.ok(cruise.length > 200, `modes-red: cruise sampled`);
+  assert.ok(cruise.every((p) => p.lane), `modes-red: lane held`);
+  assert.ok(cruise.every((p) => p.ow && !p.wf), `modes-red: oneWide, never wallFollow`);
+}
+console.log("PASS modes-red");
+{
+  // Blue: lane with a wall alongside — the upkeep latches a follow line
+  // (the far west bank breaks the branch read without walling the mouth).
+  resetWorld("over");
+  setDimension("over");
+  for (let x = -4; x <= 6; x++) for (let z = -6; z <= 16; z++) setBlock(x, 0, z, STONE);
+  for (let z = -6; z <= 16; z++) {
+    setBlock(2, 1, z, STONE); setBlock(2, 2, z, STONE);
+    setBlock(-1, 1, z, STONE); setBlock(-1, 2, z, STONE);
+  }
+  const mob = makeTestMob("pig", 1.5, FEET, 0.5, 0);
+  const fixed = { x: 1.5, z: 30 };
+  mob.target = fixed;
+  const realRandom = Math.random;
+  Math.random = mulberry32(9);
+  const trace = [];
+  try {
+    for (let t = 0; t < 400; t++) {
+      tickFarmMob(mob, DT, () => fixed);
+      trace.push({ x: mob.pos.x, z: mob.pos.z, lane: mob.lane != null, wf: mob.wallFollow === true, ow: mob.oneWide === true });
+    }
+  } finally {
+    Math.random = realRandom;
+  }
+  const ride = trace.slice(30);
+  assert.ok(ride.every((p) => p.lane), `modes-blue: lane held`);
+  assert.ok(ride.every((p) => p.wf && !p.ow), `modes-blue: wallFollow, never oneWide`);
+  // Glued VIRTUAL_W/2 off the face (face x=2, line x=1.25 at this stage).
+  assert.ok(ride.every((p) => Math.abs(p.x - 1.25) < 0.2), `modes-blue: glued off the face`);
+  assert.ok(mob.pos.z > 4, `modes-blue: cruised along the wall (z=${mob.pos.z.toFixed(2)})`);
+  assertClean(trace.map((p) => ({ ...p, y: FEET })), "modes-blue");
+}
+console.log("PASS modes-blue");
+{
+  // Neither: open-field commit — no lane, no line, no flag.
+  resetWorld("over");
+  setDimension("over");
+  for (let x = -12; x <= 12; x++) for (let z = -12; z <= 24; z++) setBlock(x, 0, z, STONE);
+  const mob = makeTestMob("pig", 0.5, FEET, 0.5, Math.PI / 4);
+  const fixed = { x: 20, z: 30 };
+  mob.target = fixed;
+  const realRandom = Math.random;
+  Math.random = mulberry32(5);
+  const trace = [];
+  try {
+    for (let t = 0; t < 400; t++) {
+      tickFarmMob(mob, DT, () => fixed);
+      trace.push({ lane: mob.lane != null, wf: mob.wallFollow === true, ow: mob.oneWide === true });
+    }
+  } finally {
+    Math.random = realRandom;
+  }
+  assert.ok(trace.every((p) => !p.lane), `modes-open: never a lane`);
+  assert.ok(trace.every((p) => !p.wf && !p.ow), `modes-open: neither flag`);
+}
+console.log("PASS modes-open");
 
 console.log("mob-paths.test.mjs: ALL PASS");

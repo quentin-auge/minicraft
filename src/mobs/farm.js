@@ -20,6 +20,7 @@ import { getBlockIn } from "../core/store.js";
 import { village } from "../world/village.js";
 import { dimSpec } from "../world/dimensions.js";
 import { hash2 } from "../core/noise.js";
+import { applyDisplacementColor, initPaintState } from "./displacement-color.js";
 
 let sceneRef = null;
 let activeDim = "over";
@@ -36,6 +37,8 @@ const bodyMat = (color) => {
   return m;
 };
 
+// Displacement-mode tint lives in displacement-color.js (debug paint only,
+// deletable per its header); headless rigs assert the mover flags.
 function part(parent, material, size, at) {
   if (!boxGeo) boxGeo = new THREE.BoxGeometry(1, 1, 1);
   const mesh = new THREE.Mesh(boxGeo, material);
@@ -52,10 +55,16 @@ function buildQuadruped(kind) {
   const g = new THREE.Group();
   const bodyM = bodyMat(spec.colors.body);
   const legM = bodyMat(spec.colors.leg);
-  part(g, bodyM, spec.body.size, spec.body.at);
-  for (const s of spec.spots ?? []) part(g, bodyMat(spec.colors.spot), s.size, s.at);
-  part(g, bodyM, spec.head.size, spec.head.at);
-  part(g, bodyMat(spec.colors.snout), spec.snout.size, spec.snout.at);
+  const paintables = [];
+  const paint = (parent, material, size, at) => {
+    const mesh = part(parent, material, size, at);
+    paintables.push(mesh);
+    return mesh;
+  };
+  paint(g, bodyM, spec.body.size, spec.body.at);
+  for (const s of spec.spots ?? []) paint(g, bodyMat(spec.colors.spot), s.size, s.at);
+  paint(g, bodyM, spec.head.size, spec.head.at);
+  paint(g, bodyMat(spec.colors.snout), spec.snout.size, spec.snout.at);
   for (const at of spec.nostrils?.at ?? []) part(g, nostrilMat, spec.nostrils.size, at);
   for (const at of spec.horns?.at ?? []) part(g, hornMat, spec.horns.size, at);
   for (const at of spec.eyes.at) part(g, eyeMat, spec.eyes.size, at);
@@ -63,7 +72,7 @@ function buildQuadruped(kind) {
     const pivot = new THREE.Group();
     pivot.position.set(lx, ly + spec.legs.size[1] / 2, lz);
     g.add(pivot);
-    const mesh = part(pivot, legM, spec.legs.size, [0, -spec.legs.size[1] / 2, 0]);
+    const mesh = paint(pivot, legM, spec.legs.size, [0, -spec.legs.size[1] / 2, 0]);
     return { pivot, mesh };
   });
   const tailGroup = new THREE.Group();
@@ -72,14 +81,14 @@ function buildQuadruped(kind) {
   if (spec.tail.kind === "coil") {
     for (let ti = 0; ti < spec.tail.segs; ti++) {
       const ta = ti * 2.4;
-      part(tailGroup, bodyM, [0.08, 0.08, 0.08],
+      paint(tailGroup, bodyM, [0.08, 0.08, 0.08],
         [Math.cos(ta) * 0.045, Math.sin(ta) * 0.045, -0.02 - ti * 0.055]);
     }
   } else {
-    part(tailGroup, bodyM, [0.09, 0.55, 0.09], [0, -0.27, -0.03]);
-    part(tailGroup, legM, [0.13, 0.13, 0.13], [0, -0.58, -0.03]);
+    paint(tailGroup, bodyM, [0.09, 0.55, 0.09], [0, -0.27, -0.03]);
+    paint(tailGroup, legM, [0.13, 0.13, 0.13], [0, -0.58, -0.03]);
   }
-  g.userData = { kind, legs, tailGroup };
+  g.userData = { kind, legs, tailGroup, ...initPaintState(), paintables };
   return g;
 }
 
@@ -100,6 +109,7 @@ function makeFarmMob(kind, { x, z, y, dim, yaw, rand = Math.random }) {
     blendFrom: null, blendT: 0, roam: null, followLine: null, followCool: 0,
     followSession: false, followT: 0, followSpan: 0, followLost: 0,
     funnelT: 0, funnelCool: 0, redecide: false, jrng: null,
+    wallFollow: false, oneWide: false,
   };
   mob.target = pickTarget(mob, rand);
   return mob;
@@ -126,7 +136,10 @@ for (const kind of ["pig", "cow"]) {
     key: kind,
     capabilities: { walk: true, float: true },
     create: (ctx) => makeFarmMob(kind, ctx),
-    tick: (mob, dt) => tickFarmMob(mob, dt, pickTarget),
+    tick: (mob, dt) => {
+      tickFarmMob(mob, dt, pickTarget);
+      applyDisplacementColor(mob);
+    },
     dispose: disposeFarmMob,
   });
 }
@@ -220,6 +233,7 @@ export function tickFarmMobs(dt, dimName) {
     mob.root.visible = mob.dim === dimName;
     if (mob.dim !== dimName) continue;
     tickFarmMob(mob, dt, pickTarget);
+    applyDisplacementColor(mob);
     sepBuf.push(mob);
   }
   if (sepBuf.length > 1) separateFarmMobs(sepBuf);
