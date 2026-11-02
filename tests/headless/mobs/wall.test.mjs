@@ -1,15 +1,18 @@
 // Touch wall-following: the REAL mover on REAL voxels, headless.
 // A wall touch latches a virtual 1-wide corridor (real wall + invisible
-// complementary wall) with 100% probability — no random, no rebound — and
-// the unchanged servo walks it parallel and glued: yaw locked on the
+// complementary wall) with 50/50 probability — admit or keep roaming —
+// and the unchanged servo walks it parallel and glued: yaw locked on the
 // cardinal lane axis (never diagonal), lateral glued at 0.5 from the face.
-// Junctions keep the same physical wall (forced, straights first);
-// wall ends round the corner (inner and outer, all four directions) or
-// U-turn in place. A ride never switches walls (same face plane on
-// straights, tip-connected takes on turns — refused takes U-turn, never a
-// stranger wall) and never drops to open roam (mined walls U-turn, pockets
-// pace); new walls only latch from open motion. Only a genuinely
-// continuing 1-wide corridor hands over to the rail.
+// Rides run on a roam-clock budget (uniform 2–8 s, like roam commits),
+// then quit to roam at a deflected heading (or keep riding when boxed in).
+// The legacy rigs below pin the pre-budget ride (mob.pinWallRide: always
+// latch, never expire) so they assert geometry, not probability; the
+// entry/budget/keep-riding rigs at the end run unpinned. Junctions keep
+// the same physical wall (forced, straights first); wall ends round the
+// corner (inner and outer, all four directions) or U-turn in place. A ride
+// never switches walls (same face plane on straights, tip-connected takes
+// on turns — refused takes U-turn, never a stranger wall) and only a
+// genuinely continuing 1-wide corridor hands over to the rail.
 // Blue = touch ride (wallFollow).
 import assert from "node:assert/strict";
 import { AIR, STONE } from "../../../src/core/blocks.js";
@@ -18,7 +21,7 @@ import { LIVESTOCK_SPECS, specCircles } from "../../../src/mobs/livestock.js";
 import { FARM_WALK, tickFarmMob, aabbIntersectsSolid } from "../../../src/mobs/mover.js";
 import { NO_EXPIRY } from "../../../src/mobs/step.js";
 import { makeCellFree } from "../../../src/mobs/step.js";
-import { FOLLOW_RANGE } from "../../../src/mobs/roam.js";
+import { FOLLOW_RANGE, SPAN_MIN, SPAN_MAX, latchTouchWall, latchFlankTouch, wallQuitHeading } from "../../../src/mobs/roam.js";
 
 const FEET = 1;
 const DT = 1 / 60;
@@ -56,6 +59,7 @@ function makeMob(x, z, yaw, rand) {
     blendFrom: null, blendT: 0, roam: null, followLine: null, followCool: 0,
     turnHold: 0,
     funnelT: 0, funnelCool: 0, jrng: null, wallFollow: false, oneWide: false,
+    pinWallRide: true, // legacy rigs: always latch, never expire
   };
 }
 
@@ -114,11 +118,12 @@ function steadyBlue(trace) {
   });
 }
 
-// --- touch latches every time: 100%, no random, glued line, blue flag.
+// --- touch latches every time when pinned (legacy 100%: no gate draw,
+// no budget — geometry asserts below run unpinned in the entry rigs).
 // Straight-on touches (heading within HEADON_TOL of the wall normal)
 // draw lots between both parallels; oblique touches keep their sense
 // (target side, else the yaw tiebreak). Either way the ride is
-// permanent: still blue at the end. ---
+// permanent while pinned: still blue at the end. ---
 for (let seed = 1; seed <= 6; seed++) {
   flat(-8, 8, -4, 8);
   for (let x = -4; x <= 4; x++) wall(x, 2);
@@ -139,7 +144,7 @@ for (let seed = 1; seed <= 6; seed++) {
   assert.ok(fl.touch === true, `seed${seed}: permanent touch ride`);
   assert.ok(trace[trace.length - 1].blue, `seed${seed}: still glued at the end (no clock expiry)`);
 }
-console.log("PASS touch-latch-100");
+console.log("PASS touch-latch-pinned");
 
 // --- straight-on draws lots: both parallels come out across seeds ---
 {
@@ -595,6 +600,294 @@ console.log("PASS pocket-pace");
     `doorway: funneled through the hole`);
 }
 console.log("PASS doorway");
+
+// --- entry gate: oblique frontal contact admits or refuses on one draw
+// (stub rand), refusals hold the next latch off; admits sample the
+// roam-clock budget ---
+{
+  flat(-8, 8, -4, 8);
+  for (let x = -4; x <= 4; x++) wall(x, 2);
+  const refused = makeMob(-3.5, 1.0, 0.5, mulberry32(7));
+  refused.pinWallRide = false;
+  assert.ok(latchTouchWall(refused, DT, 0, null, () => 0.9) === null, `gate: stub 0.9 refuses`);
+  assert.ok(refused.followLine == null, `gate: no line on refusal`);
+  assert.ok(refused.followCool > 0, `gate: refusal holds the next latch off`);
+  const admitted = makeMob(-3.5, 1.0, 0.5, mulberry32(7));
+  admitted.pinWallRide = false;
+  const axis = latchTouchWall(admitted, DT, 0, null, () => 0.1);
+  assert.ok(axis === Math.PI / 2, `gate: stub 0.1 admits, oblique keeps its sense`);
+  assert.ok(admitted.followLine.touch === true, `gate: touch ride on admit`);
+  assert.ok(admitted.followLine.wallSpan >= SPAN_MIN &&
+    admitted.followLine.wallSpan <= SPAN_MAX,
+    `gate: budget samples the roam clock (${admitted.followLine.wallSpan})`);
+  assert.ok(admitted.followLine.t === 0, `gate: ride clock starts at zero`);
+}
+console.log("PASS entry-gate-unit");
+
+// --- entry rate: first-contact oblique latches land near half over seeds ---
+{
+  let firstTry = 0;
+  for (let seed = 1; seed <= 40; seed++) {
+    flat(-8, 8, -4, 8);
+    for (let x = -4; x <= 4; x++) wall(x, 2);
+    const mob = makeMob(-3.5, 1.0, 0.5, mulberry32(seed));
+    mob.pinWallRide = false;
+    tickFarmMob(mob, DT, () => ({ x: -3.5, z: 30 }), mob.rand);
+    if (mob.followLine) firstTry++;
+  }
+  assert.ok(firstTry >= 12 && firstTry <= 28, `gate: first-contact admits near half (${firstTry}/40)`);
+}
+console.log("PASS entry-gate-rate");
+
+// --- flank gate: a parallel graze admits or refuses the same way ---
+{
+  flat(-10, 10, -4, 8);
+  for (let x = -6; x <= 6; x++) wall(x, 2);
+  const refused = makeMob(-5.5, 1.6, Math.PI / 2, mulberry32(31));
+  refused.pinWallRide = false;
+  assert.ok(latchFlankTouch(refused, DT, Math.PI / 2, () => 0.9) === null, `flank-gate: stub 0.9 refuses`);
+  assert.ok(refused.followLine == null && refused.followCool > 0, `flank-gate: refusal holds latch off`);
+  const admitted = makeMob(-5.5, 1.6, Math.PI / 2, mulberry32(31));
+  admitted.pinWallRide = false;
+  assert.ok(latchFlankTouch(admitted, DT, Math.PI / 2, () => 0.1) === Math.PI / 2, `flank-gate: stub 0.1 admits`);
+  assert.ok(admitted.followLine.touch === true, `flank-gate: touch ride on admit`);
+}
+console.log("PASS flank-gate");
+
+// --- corner rounding unpinned: same wall and seed as the pinned
+// outer-corner rig, but the ride may expire — the mob rounds the tip
+// onto the column (still blue), rides it, then quits on its budget ---
+{
+  flat(-8, 10, -4, 10);
+  for (let x = -4; x <= 2; x++) wall(x, 2); // row ends at x=2
+  for (let z = 2; z <= 6; z++) wall(2, z); // column rising north from the tip
+  const mob = makeMob(-3.5, 1.0, 0.5, mulberry32(7));
+  mob.pinWallRide = false;
+  const target = { x: -3.5, z: 30 };
+  let latchTick = -1, span = 0, quitTick = -1;
+  let rounded = false, northLeg = 0;
+  for (let t = 0; t < 1200; t++) {
+    tickFarmMob(mob, DT, () => target, mob.rand);
+    assert.ok(!aabbIntersectsSolid(mob.pos.x, mob.pos.y, mob.pos.z, 0.32, 1.3),
+      `corner-unpinned: body in wall @tick${t}`);
+    if (latchTick < 0 && mob.followLine) { latchTick = t; span = mob.followLine.wallSpan; }
+    if (latchTick >= 0 && mob.wallFollow && mob.followLine &&
+        mob.followLine.axis === 0 && Math.abs(mob.followLine.line - 3.5) < 1e-9 && mob.pos.z > 2) {
+      rounded = true;
+      if (Math.abs(mob.pos.x - 3.5) < 0.15) northLeg++;
+    }
+    if (latchTick >= 0 && quitTick < 0 && !mob.lane && mob.roam?.mode === "commit") quitTick = t;
+    if (quitTick >= 0 && t > quitTick + 30) break;
+  }
+  assert.ok(latchTick >= 0 && latchTick < 120, `corner-unpinned: latched (tick ${latchTick})`);
+  assert.ok(rounded, `corner-unpinned: rounded the tip onto the column face`);
+  assert.ok(northLeg > 30, `corner-unpinned: glued north along the column (${northLeg} ticks)`);
+  assert.ok(quitTick > latchTick, `corner-unpinned: budget ended the ride (latch ${latchTick}, quit ${quitTick})`);
+  assert.ok(quitTick - latchTick === Math.ceil(span * 60),
+    `corner-unpinned: quit delay matches the span (${quitTick - latchTick} ticks for ${span.toFixed(2)} s)`);
+  assert.ok(mob.followCool > 0, `corner-unpinned: quit holds the next latch off`);
+}
+console.log("PASS corner-rounding-unpinned");
+
+// --- outer-turn lottery: seed 17 exits straight at the tip (no rounding
+// at all), same geometry pinned rounds — one draw decides, both pinned ---
+{
+  flat(-8, 10, -4, 10);
+  for (let x = -4; x <= 2; x++) wall(x, 2); // row ends at x=2
+  for (let z = 2; z <= 6; z++) wall(2, z); // column
+  const mob = makeMob(-3.5, 1.0, 0.5, mulberry32(17));
+  mob.pinWallRide = false;
+  const target = { x: -3.5, z: 30 };
+  let latchTick = -1, quitTick = -1, quitYaw = 0, qx = 0, rounded = false;
+  for (let t = 0; t < 1200; t++) {
+    tickFarmMob(mob, DT, () => target, mob.rand);
+    assert.ok(!aabbIntersectsSolid(mob.pos.x, mob.pos.y, mob.pos.z, 0.32, 1.3),
+      `lottery: body in wall @tick${t}`);
+    if (latchTick < 0 && mob.followLine) latchTick = t;
+    if (latchTick >= 0 && mob.wallFollow && mob.followLine &&
+        Math.abs(mob.followLine.axis) < 1e-9) rounded = true;
+    if (latchTick >= 0 && quitTick < 0 && !mob.lane && mob.roam?.mode === "commit") {
+      quitTick = t; quitYaw = mob.roam.heading; qx = mob.pos.x;
+    }
+    if (quitTick >= 0 && t > quitTick + 30) break;
+  }
+  assert.ok(latchTick >= 0 && latchTick < 120, `lottery: latched (tick ${latchTick})`);
+  assert.ok(!rounded, `lottery: never rounded (seed 17 exits)`);
+  assert.ok(quitTick > latchTick, `lottery: left the wall (latch ${latchTick}, quit ${quitTick})`);
+  assert.ok(yawDiff(quitYaw, Math.PI / 2) < 0.05, `lottery: straight on the pre-turn axis (qyaw=${quitYaw.toFixed(2)})`);
+  assert.ok(qx > 2.2, `lottery: past the tip (x=${qx.toFixed(1)})`);
+  assert.ok(mob.followCool > 0, `lottery: quit holds the next latch off`);
+  // Same seed pinned: the lottery never fires, the tip rounds.
+  flat(-8, 10, -4, 10);
+  for (let x = -4; x <= 2; x++) wall(x, 2);
+  for (let z = 2; z <= 6; z++) wall(2, z);
+  const pinned = makeMob(-3.5, 1.0, 0.5, mulberry32(17));
+  let pinnedRound = false;
+  for (let t = 0; t < 1200 && !pinnedRound; t++) {
+    tickFarmMob(pinned, DT, () => target, pinned.rand);
+    if (pinned.wallFollow && pinned.followLine && Math.abs(pinned.followLine.axis) < 1e-9) pinnedRound = true;
+  }
+  assert.ok(pinnedRound, `lottery: pinned seed 17 rounds`);
+}
+console.log("PASS outer-turn-lottery");
+
+// --- long straight wall unpinned: the ride parades to the tip, U-turns
+// in place and paces back (legacy geometry), until the budget quits it ---
+{
+  flat(-10, 24, -4, 8);
+  for (let x = -6; x <= 6; x++) wall(x, 2);
+  const mob = makeMob(-5.5, 1.0, 0.5, mulberry32(7));
+  mob.pinWallRide = false;
+  const target = { x: -5.5, z: 30 };
+  let latchTick = -1, quitTick = -1, span = 0;
+  let flipped = false, maxX = -1e9, blueUntilQuit = true;
+  for (let t = 0; t < 900; t++) {
+    tickFarmMob(mob, DT, () => target, mob.rand);
+    assert.ok(!aabbIntersectsSolid(mob.pos.x, mob.pos.y, mob.pos.z, 0.32, 1.3),
+      `tip-pace: body in wall @tick${t}`);
+    if (latchTick < 0 && mob.followLine) { latchTick = t; span = mob.followLine.wallSpan; }
+    if (latchTick >= 0 && quitTick < 0) {
+      if (!mob.lane && mob.roam?.mode === "commit") quitTick = t;
+      else {
+        if (!mob.wallFollow) blueUntilQuit = false;
+        if (mob.lane && mob.lane.axis === -Math.PI / 2) flipped = true;
+        maxX = Math.max(maxX, mob.pos.x);
+      }
+    }
+    if (latchTick >= 0 && t === latchTick + 100) {
+      assert.ok(mob.wallFollow, `tip-pace: no quit before any exit (still blue @+100 ticks)`);
+    }
+    if (quitTick >= 0 && t > quitTick + 30) break;
+  }
+  assert.ok(latchTick >= 0 && latchTick < 120, `tip-pace: latched (tick ${latchTick})`);
+  assert.ok(maxX > 6.2, `tip-pace: reached the tip (maxX=${maxX.toFixed(1)})`);
+  assert.ok(flipped, `tip-pace: U-turned at the tip instead of leaving`);
+  assert.ok(blueUntilQuit, `tip-pace: blue unbroken until the budget`);
+  assert.ok(quitTick > latchTick, `tip-pace: budget ended the ride (latch ${latchTick}, quit ${quitTick})`);
+  assert.ok(quitTick - latchTick === Math.ceil(span * 60),
+    `tip-pace: quit delay matches the span (${quitTick - latchTick} ticks for ${span.toFixed(2)} s)`);
+  assert.ok(mob.followCool > 0, `tip-pace: quit holds the next latch off`);
+}
+console.log("PASS tip-pace-unpinned");
+
+// --- budget exit: an expired ride leaves 45 degrees away from the wall
+// (hand-set short span on a straight ride, so the budget fires) ---
+{
+  flat(-10, 24, -4, 8);
+  for (let x = -6; x <= 6; x++) wall(x, 2);
+  const mob = makeMob(-5.5, 1.0, 0.5, mulberry32(1));
+  mob.pinWallRide = false;
+  const target = { x: -5.5, z: 30 };
+  let latchTick = -1, quitTick = -1, quitYaw = 0, axis = 0;
+  for (let t = 0; t < 400 && quitTick < 0; t++) {
+    tickFarmMob(mob, DT, () => target, mob.rand);
+    assert.ok(!aabbIntersectsSolid(mob.pos.x, mob.pos.y, mob.pos.z, 0.32, 1.3),
+      `budget: body in wall @tick${t}`);
+    if (latchTick < 0 && mob.followLine) {
+      latchTick = t; axis = mob.lane.axis;
+      mob.followLine.wallSpan = 0.2; // fire the budget on the straight, now
+    }
+    if (latchTick >= 0 && !mob.lane && mob.roam?.mode === "commit") {
+      quitTick = t; quitYaw = mob.roam.heading;
+    }
+  }
+  assert.ok(latchTick >= 0, `budget: latched`);
+  assert.ok(quitTick > latchTick, `budget: quit after expiry`);
+  assert.ok(quitTick - latchTick < 120, `budget: quit follows the span promptly (${quitTick - latchTick} ticks)`);
+  assert.ok(yawDiff(quitYaw, axis + Math.PI / 4) < 0.05,
+    `budget: quits 45 degrees away from the wall (qyaw=${quitYaw.toFixed(2)})`);
+  assert.ok(mob.followCool > 0, `budget: quit holds the next latch off`);
+}
+console.log("PASS ride-budget-quit");
+
+// --- pocket visit: an unpinned ride paces the U briefly, then leaves
+// (no eternal pacing) and ends outside roaming ---
+{
+  flat(-6, 6, -4, 10);
+  for (let x = -2; x <= 2; x++) wall(x, 4);
+  for (let z = 0; z <= 4; z++) { wall(-2, z); wall(2, z); }
+  const mob = makeMob(0.5, 0.5, 0, mulberry32(23));
+  mob.pinWallRide = false;
+  let latchTick = -1, quitTick = -1;
+  for (let t = 0; t < 2500; t++) {
+    tickFarmMob(mob, DT, () => ({ x: 0.5, z: 30 }), mob.rand);
+    assert.ok(!aabbIntersectsSolid(mob.pos.x, mob.pos.y, mob.pos.z, 0.32, 1.3),
+      `pocket-visit: body in wall @tick${t}`);
+    if (latchTick < 0 && mob.followLine) latchTick = t;
+    if (latchTick >= 0 && quitTick < 0 && !mob.lane) quitTick = t;
+    if (quitTick >= 0 && t > quitTick + 30) break;
+  }
+  assert.ok(latchTick >= 0, `pocket-visit: ride latched on the back wall`);
+  assert.ok(quitTick > latchTick, `pocket-visit: ride left (latch ${latchTick}, quit ${quitTick})`);
+  assert.ok(Math.abs(mob.pos.x) > 4 || mob.pos.z < 0 || mob.pos.z > 7,
+    `pocket-visit: outside roaming ((${mob.pos.x.toFixed(1)},${mob.pos.z.toFixed(1)}))`);
+  assert.ok(mob.roam?.mode === "commit", `pocket-visit: roam owns the mob after`);
+}
+console.log("PASS pocket-visit");
+
+// --- keep riding when boxed: both quit headings (45° away, perpendicular)
+// blocked extends the short retry clock instead of quitting (hand-set
+// expired ride over a stub wall whose cell is the only walled flank
+// ahead-cell gap) ---
+{
+  flat(-4, 4, -4, 4);
+  for (let x = -2; x <= 2; x++) wall(x, 2); // followed row, south face z=2
+  wall(0, 0); // single stub cell south of the ride line
+  const mob = makeMob(0.2, 1.5, Math.PI / 2, mulberry32(3));
+  mob.pinWallRide = false;
+  mob.lane = { axis: Math.PI / 2, entry: -Math.PI / 2, lockX: 0, lockZ: 1 };
+  mob.followLine = {
+    axis: Math.PI / 2, line: 1.5, side: -1, rel: 1,
+    virtual: true, touch: true, fresh: 0, face: 2, t: 999, wallSpan: 1,
+  };
+  mob.yawTarget = Math.PI / 2;
+  assert.ok(wallQuitHeading(mob, true, false) === null, `boxed: no quit heading with the stub near`);
+  // Same ride without the stub quits 45° away.
+  const open = makeMob(0.2, 1.5, Math.PI / 2, mulberry32(3));
+  open.pinWallRide = false;
+  open.lane = { axis: Math.PI / 2, entry: -Math.PI / 2, lockX: 0, lockZ: 1 };
+  open.followLine = {
+    axis: Math.PI / 2, line: 1.5, side: -1, rel: 1,
+    virtual: true, touch: true, fresh: 0, face: 2, t: 0, wallSpan: 99,
+  };
+  setBlock(0, 1, 0, AIR); setBlock(0, 2, 0, AIR);
+  assert.ok(Math.abs(wallQuitHeading(open, true, false) - (Math.PI / 2 + Math.PI / 4)) < 1e-9,
+    `boxed: open ground quits 45° away`);
+  setBlock(0, 1, 0, STONE); setBlock(0, 2, 0, STONE);
+  tickFarmMob(mob, DT, () => ({ x: 30, z: 1.5 }), mob.rand);
+  assert.ok(mob.wallFollow && mob.lane != null, `boxed: ride holds past expiry`);
+  assert.ok(mob.followLine.wallSpan === 2, `boxed: short retry clock, not quit (${mob.followLine.wallSpan})`);
+  assert.ok(mob.roam == null, `boxed: no roam commit while boxed`);
+  for (let t = 0; t < 4; t++) {
+    tickFarmMob(mob, DT, () => ({ x: 30, z: 1.5 }), mob.rand);
+    assert.ok(!aabbIntersectsSolid(mob.pos.x, mob.pos.y, mob.pos.z, 0.32, 1.3),
+      `boxed: clean @${t}`);
+  }
+  assert.ok(mob.wallFollow, `boxed: still riding, never quit into the stub`);
+}
+console.log("PASS keep-riding-boxed");
+
+// --- budget picks the roomiest of 45° and 90° away (never straight):
+// a stub clipping the diagonal leaves the perpendicular, open field
+// ties to the 45° (first max wins) ---
+{
+  const rig = (stub) => {
+    flat(-4, 4, -4, 4);
+    for (let x = -2; x <= 2; x++) wall(x, 2); // followed row, south face z=2
+    if (stub) wall(...stub);
+    const mob = makeMob(0.2, 1.5, Math.PI / 2, mulberry32(3));
+    mob.pinWallRide = false;
+    mob.lane = { axis: Math.PI / 2, entry: -Math.PI / 2, lockX: 0, lockZ: 1 };
+    mob.followLine = {
+      axis: Math.PI / 2, line: 1.5, side: -1, rel: 1,
+      virtual: true, touch: true, fresh: 0, face: 2, t: 0, wallSpan: 99,
+    };
+    return wallQuitHeading(mob, true, false);
+  };
+  assert.ok(Math.abs(rig([1, 0]) - Math.PI) < 1e-9, `roomiest: stubbed diagonal quits perpendicular`);
+  assert.ok(Math.abs(rig(null) - (Math.PI / 2 + Math.PI / 4)) < 1e-9, `roomiest: open field quits 45°`);
+}
+console.log("PASS budget-roomiest");
 
 // --- same seed, identical ride ---
 {

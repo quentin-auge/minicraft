@@ -19,7 +19,7 @@ import {
 import {
   upkeepFollowLine, roamStep, roamSpan, ARRIVE_D, FOLLOW_COOL,
   latchTouchWall, latchFlankTouch, measureWallTake, cornerTurn,
-  sameWallFace, connectedTake,
+  sameWallFace, connectedTake, wallQuitHeading, wallQuitCommit, WALL_TURN_EXIT_P,
 } from "./roam.js";
 // Re-exports: the headless rigs read shared physics through this module.
 export { aabbIntersectsSolid, segmentWalkable } from "./step.js";
@@ -191,7 +191,7 @@ function wrapStepOk(mob, stepOk) {
 // probes below; motion itself is the unchanged 1-wide servo (engage,
 // cruise, junction blend, dead-end seek). Sense, engage, and the lane
 // drives run in order; each drive owns its motion.
-export function servoTick(mob, dt, supported, floating, rand = Math.random) {
+export function servoTick(mob, dt, supported, floating, rand = Math.random, pickTarget = null) {
   if (!supported || floating) { mob.lane = null; return false; }
   // R2 upkeep first: the latched line below biases this very tick's slide.
   upkeepFollowLine(mob, dt);
@@ -211,6 +211,17 @@ export function servoTick(mob, dt, supported, floating, rand = Math.random) {
   if (!res.lane) { dropLane(mob); return false; }
   mob.lane = res.lane;
   const touchRide = mob.followLine?.virtual === true && mob.followLine.touch === true && prevAxis != null;
+  // Pinned rigs (tests) ride forever: always latch, never expire. The game
+  // budget below only runs unpinned.
+  const rideExits = touchRide && mob.pinWallRide !== true;
+  // Ride budget expiry (game only; pinned rigs ride forever): the
+  // roam-clock span ran out — leave 45° away from the wall, or keep
+  // riding with a short extension when boxed in (never quit into a wall).
+  if (rideExits && (mob.followLine.t ?? 0) >= (mob.followLine.wallSpan ?? Infinity)) {
+    const h = wallQuitHeading(mob, supported, floating);
+    if (h != null && wallQuitCommit(mob, h, rand, pickTarget)) return false;
+    mob.followLine.t = 0; mob.followLine.wallSpan = 2;
+  }
   // Single tunnel rule behind every non-touch lane: engage and cruise hold
   // both flanks walled (block or drop, virtual wall included); junction
   // and lock-turn exits hold their arm tunneled instead (exitTunneled) —
@@ -238,7 +249,7 @@ export function servoTick(mob, dt, supported, floating, rand = Math.random) {
     }
   }
   if (res.event === "uturn") {
-    // Inner corner on a touch ride: the nose met the perpendicular arm of
+    // Inner corner: the nose met the perpendicular arm of
     // the same wall — the phantom-masked side mouth reads shut, so the
     // classifier reports a dead end. Turn into the arm (same wall, same
     // relative side, blue stays on) instead of flipping; true dead ends
@@ -271,8 +282,8 @@ export function servoTick(mob, dt, supported, floating, rand = Math.random) {
     // corner onto a carried line (same hold as inner corners) and keep
     // following — dropping to a blind roam commit here arcs away from the
     // face and wedges the nose on the tip instead of hugging it. Blocked
-    // nose means a corridor situation (jog, notch): drop instead and let
-    // the 1-wide logic own it.
+    // nose means a corridor situation (jog, notch), so a tunneled lane
+    // keeps driving; anything else releases to roam now.
     const keep = followExit(mob, prevAxis);
     if (!keep) {
       let corner = sense.fwdOpen ? cornerTurn(mob, prevAxis) : null;
@@ -281,12 +292,18 @@ export function servoTick(mob, dt, supported, floating, rand = Math.random) {
       // in-place U-turn below keep the ride on its own wall instead.
       if (corner != null && !connectedTake(mob, prevAxis, corner.cell)) corner = null;
       if (corner != null) {
+        // Outer-turn lottery: one time in five the ride exits straight on
+        // the pre-turn axis instead of rounding (game only — pinned rigs
+        // always round; commit failure rounds too).
+        if (mob.pinWallRide !== true && rand() < WALL_TURN_EXIT_P &&
+            wallQuitCommit(mob, prevAxis, rand, pickTarget)) return false;
         const { axis, face, dirSign, sideDir } = corner;
         const rel = yawDiff(sideDir, normYaw(axis - Math.PI / 2)) < 1e-9 ? 1 : -1;
         mob.lane = { axis, entry: oppositeYaw(axis), lockX: cx, lockZ: cz };
         mob.followLine = {
           axis, line: face - dirSign * (VIRTUAL_W / 2), side: -dirSign,
           rel, virtual: true, touch: true, fresh: TURN_HOLD_TICKS, face,
+          t: mob.followLine.t ?? 0, wallSpan: mob.followLine.wallSpan,
         };
         mob.stuckT = 0;
         mob.turnHold = TURN_HOLD_TICKS;
@@ -317,6 +334,10 @@ export function servoTick(mob, dt, supported, floating, rand = Math.random) {
         }
       }
     } else {
+      // Same lottery on a measured turn take with open front: exit straight
+      // one time in five instead of taking the turn.
+      if (mob.pinWallRide !== true && sense.fwdOpen && yawDiff(keep.axis, prevAxis) > 1e-6 &&
+          rand() < WALL_TURN_EXIT_P && wallQuitCommit(mob, prevAxis, rand, pickTarget)) return false;
       mob.lane = { axis: keep.axis, entry: oppositeYaw(keep.axis), lockX: cx, lockZ: cz };
       mob.followLine = keep.followLine;
     }
@@ -361,16 +382,17 @@ function senseLane(mob) {
 // Pre-lane flow: gap funnel when free walking is impossible with no lane
 // (facing a wall with a through gap: offset narrowing mouth, house door,
 // pen breach — mid-corridor turns stay blended, dead ends funnel inside
-// the seek below), else 100% touch latch on a plain wall (contact always
-// sticks; straight-on draws lots 50/50, oblique keeps its direction),
-// else flank-touch latch when a wall rubs the side while the way ahead
-// runs free (parallel graze, diagonal slide: contact is contact,
-// whatever the angle). Then open-space release (forward open and both
-// flanks truly open — field, room middle, wide hall — or a tunnel mouth
+// the seek below), else a 50/50 touch latch on a plain wall (contact may
+// stick or keep roaming — straight-on draws lots 50/50, oblique keeps its
+// direction; refusals hold the next latch off), else a 50/50 flank-touch
+// latch when a wall rubs the side while the way ahead runs free
+// (parallel graze, diagonal slide: contact is contact, whatever the
+// angle). Then open-space release (forward open and both flanks truly open — field, room middle, wide hall — or a tunnel mouth
 // opening onto a field: commit straight out with the current heading
 // bias instead of random spins, roam owns the next tick) — never while a
 // touch ride holds (the ride only ends at a true wall end via corner
-// rounding, U-turn pacing, or 1-wide handover). Returns true/false when
+// rounding, U-turn pacing, or 1-wide handover — or on its roam-clock budget
+// via the expiry above). Returns true/false when
 // it handles the tick, "touch" when a contact latch erected the lane
 // (sense again along it), undefined when a lane update is due.
 function tryPreLane(mob, dt, supported, floating, sense, rand = Math.random) {
@@ -388,7 +410,7 @@ function tryPreLane(mob, dt, supported, floating, sense, rand = Math.random) {
         return "touch";
       }
     } else {
-      const axis = latchFlankTouch(mob, dt, sense.axisProbe);
+      const axis = latchFlankTouch(mob, dt, sense.axisProbe, rand);
       if (axis != null) {
         mob.lane = { axis, entry: oppositeYaw(axis), lockX: -1, lockZ: -1 };
         mob.stuckT = 0;
@@ -436,6 +458,7 @@ function innerTurn(mob, prevAxis) {
       followLine: {
         axis: Q, line: m.face - m.dirSign * (VIRTUAL_W / 2), side: -m.dirSign,
         rel, virtual: true, touch: true, fresh: TURN_HOLD_TICKS, face: m.face,
+        t: mob.followLine.t ?? 0, wallSpan: mob.followLine.wallSpan,
       },
     };
   }
@@ -494,6 +517,7 @@ function followExit(mob, prevAxis) {
         touch: mob.followLine.touch === true,
         fresh: TURN_HOLD_TICKS,
         face: win.m.face,
+        t: mob.followLine.t ?? 0, wallSpan: mob.followLine.wallSpan,
       },
     };
   }
@@ -670,7 +694,7 @@ export function tickFarmMob(mob, dt, pickTarget, rand = mob.rand ?? Math.random)
   if (supported) mob.fallFrom = mob.pos.y;
   // Roam stepping owns lane-less ticks the servo declines (the R2 upkeep
   // above already ran inside the servo tick).
-  const servoed = servoTick(mob, dt, supported, floating, rand);
+  const servoed = servoTick(mob, dt, supported, floating, rand, pickTarget);
   let roamed = false;
   if (!servoed && supported && !floating) roamed = roamStep(mob, dt, supported, floating, rand, pickTarget);
   if (mob.target && !servoed && !roamed) {
