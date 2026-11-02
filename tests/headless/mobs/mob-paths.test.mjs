@@ -782,6 +782,7 @@ console.log("PASS modes-red");
   for (let x = -24; x <= 24; x++) for (let z = -8; z <= 8; z++) setBlock(x, 0, z, STONE);
   for (let x = -20; x <= 20; x++) { setBlock(x, 1, 2, STONE); setBlock(x, 2, 2, STONE); }
   const mob = makeTestMob("pig", 0.5, FEET, -2.5, 0);
+  mob.pinWallRide = true; // legacy permanent ride: latch on contact, never expire
   const fixed = { x: 0.5, z: 30 };
   mob.target = fixed;
   const realRandom = Math.random;

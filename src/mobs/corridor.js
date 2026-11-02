@@ -53,10 +53,6 @@ export function oppositeYaw(yaw) {
   return normYaw(snapCardinal(yaw) + Math.PI);
 }
 
-export function cellOf(v) {
-  return Math.floor(v);
-}
-
 export function cellCenter(v) {
   return Math.floor(v) + 0.5;
 }

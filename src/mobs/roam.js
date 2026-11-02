@@ -2,12 +2,17 @@
 // fields, pen, open ground). No positional servo anywhere here — only two
 // decisions: a committed heading + validated stride target (R3/R4), or a
 // gap override when the way is blocked (R5, shared scan in corridor.js).
-// The wall rule also lives here: contact latches a permanent virtual
-// touch line (100% frontal or flank graze), biasing the servo's lateral
-// slide — the probes stay real, so branch visibility never degrades.
-// A touch ride never leaves its wall for open roam: same wall end to end,
-// inner and outer corners taken, true ends U-turned in place; only a
-// genuinely continuing 1-wide corridor hands over to the rail.
+// The wall rule also lives here: contact latches a virtual touch line
+// (50/50 entry on frontal or flank graze — WALL_ENTRY_P), biasing the
+// servo's lateral slide — the probes stay real, so branch visibility
+// never degrades.
+// A touch ride leaves its wall two ways: one time in five it exits straight
+// on an outer turn instead of rounding it; otherwise it keeps the same wall
+// end to end (same wall, inner and outer corners taken, true ends U-turned
+// in place) until its roam-clock budget (wallSpan, 2–8 s) runs out — then it
+// quits to roam in the roomiest of 45° or 90° away from the wall, or keeps
+// riding when boxed in; only a genuinely continuing 1-wide corridor hands
+// over to the rail.
 // Progress is one watchdog (R6, in the mover): no per-mode counters here.
 // Three-free: physics come from step.js, the gap scan from corridor.js.
 import {
@@ -19,11 +24,19 @@ import {
 } from "./step.js";
 
 // Wall face within this engages following.
-// Touch rides never expire — only the servo releases them (corner
-// rounding, in-place U-turn, pocket pace, 1-wide handover).
+// Touch rides run on a roam-clock budget (wallSpan, sampled per latch),
+// then quit to roam — pinned test rigs (mob.pinWallRide) ride forever.
 export const FOLLOW_RANGE = 1.2;
 export const ARRIVE_D = 0.6;
 export const FOLLOW_COOL = 2.0;
+// Wall-follow entry: half of all wall contacts (frontal or flank) latch
+// a ride; the rest keep roaming. A refusal holds the next latch off for
+// FOLLOW_COOL, so each wall visit is one coin flip, not a per-tick flip.
+export const WALL_ENTRY_P = 0.5;
+// Outer-turn lottery: a ride rounding an outer corner with open front
+// exits straight instead, one time in five. Blocked noses always turn;
+// pinned rigs always round (no draw).
+export const WALL_TURN_EXIT_P = 0.2;
 // Every latched decision (commit or wall ride) runs 2–8 s, then re-decides.
 export const SPAN_MIN = 2;
 export const SPAN_MAX = 8;
@@ -93,14 +106,17 @@ export function measureWallTake(mob, axis, sideDir, origin = null, range = FOLLO
   return null;
 }
 
-// Latch a virtual follow lane: {axis, line, side, rel, virtual, face} with
-// the lane middle at the adjacent cell centre (0.5 from the face) and
-// side = ±1 toward the invisible complementary wall. face records the
-// followed physical face plane (world lateral coord) so ride re-decisions
-// keep the same wall (see sameWallFace/connectedTake below). rel records
-// the physical side (+1 wall on the left of travel, -1 on the right) so
-// junction choices keep the same wall. Only contact latches (frontal or
-// flank): every line is a touch ride, and only the servo releases it.
+// Latch a virtual follow lane: {axis, line, side, rel, virtual, face,
+// t, wallSpan} with the lane middle at the adjacent cell centre (0.5
+// from the face) and side = ±1 toward the invisible complementary wall.
+// face records the followed physical face plane (world lateral coord) so
+// ride re-decisions keep the same wall (see sameWallFace/connectedTake
+// below). rel records the physical side (+1 wall on the left of travel,
+// -1 on the right) so junction choices keep the same wall. Only contact
+// latches (frontal or flank): every line is a touch ride, and the servo
+// releases it (corner, U-turn, pocket pace, 1-wide handover, or the
+// roam-clock budget below). t is seconds ridden, wallSpan the sampled
+// budget (game only; pinned rigs leave it unset and ride forever).
 // Returns false when no wall runs near along axis, or when the mob stands
 // in a true 1-wide corridor (both side mouths walled): the corridor rail
 // owns it alone — latching a line there would ping-pong the lateral
@@ -131,16 +147,21 @@ export const LATCH_FRESH_TICKS = 30;
 // past it the touch counts as oblique (<90°) and keeps its direction.
 // One place to tune both behaviours.
 export const HEADON_TOL = 0.26; // ~15 degrees
-// Touch latch (100%, no random on the latch itself): the way ahead is
-// blocked and the contacted wall is latched as a virtual corridor.
+// Touch latch (50/50 entry — WALL_ENTRY_P — on real contact, no random
+// before the measure, so open-field and true 1-wide ticks draw nothing):
+// the way ahead is blocked and the contacted wall is latched as a
+// virtual corridor.
 // axisProbe is the snapped facing (into the wall); the lane runs along
 // one of its two parallels, on the contacted side. Straight-on touches
 // (heading within HEADON_TOL of the wall normal) draw lots 50/50 between
 // the two parallels — even with a target to one side; oblique touches
 // keep their direction (target side first, else the current sense).
-// Deterministic per rand stream: same seed, same side. Pre-aligns the
-// yaw. Returns the lane axis or null (stub end, graze past reach — the
-// caller declines to roam).
+// A refused contact holds the next latch off (FOLLOW_COOL) and declines
+// to roam. Pinned rigs (mob.pinWallRide) keep the legacy 100% latch with
+// no draw, so their streams stay bit-identical. Deterministic per rand
+// stream: same seed, same side. Pre-aligns the
+// yaw. Returns the lane axis or null (stub end, graze past reach, or a
+// refused contact — the caller declines to roam).
 export function latchTouchWall(mob, dt, axisProbe, targetHeading = null, rand = Math.random) {
   const opts = [normYaw(axisProbe + Math.PI / 2), normYaw(axisProbe - Math.PI / 2)];
   let axis;
@@ -156,6 +177,16 @@ export function latchTouchWall(mob, dt, axisProbe, targetHeading = null, rand = 
     if (!latchVirtual(mob, other, axisProbe)) return null;
     axis = other;
   }
+  // Probabilistic entry + ride budget (game only — pinned rigs skip both
+  // with no draw). The gate rolls only on real contact, so refusals are
+  // the only new draw on this path. The budget samples the roam clock
+  // (uniform 2–8 s): expiry quits on the same distribution as a roam
+  // commit.
+  mob.followLine.t = 0;
+  if (mob.pinWallRide !== true) {
+    if (rand() >= WALL_ENTRY_P) { mob.followLine = null; mob.followCool = FOLLOW_COOL; return null; }
+    mob.followLine.wallSpan = roamSpan(rand);
+  }
   // Touch rides (and only they) get forced junction exits + corner
   // rounding in the servo: without forced exits a ride would orbit its
   // wall instead of taking arms and rounding tips.
@@ -168,13 +199,15 @@ export function latchTouchWall(mob, dt, axisProbe, targetHeading = null, rand = 
 }
 
 // Flank touch: walking along an axis with a wall rubbing the flank
-// (face within half a block) latches the same permanent touch ride as a
-// frontal hit, on the current axis — no direction choice, the mob simply
-// keeps going, now glued. Returns the lane axis or null (no wall rubbing
-// either flank). Deterministic: the nearer flank wins, ties keep the
+// (face within half a block) latches the same touch ride as a frontal
+// hit, on the current axis — no direction choice, the mob simply keeps
+// going, now glued. Same 50/50 entry gate as frontal contact (refusals
+// hold the next latch off; pinned rigs keep 100% with no draw).
+// Returns the lane axis or null (no wall rubbing either flank, or a
+// refused contact). Deterministic: the nearer flank wins, ties keep the
 // current sense.
 export const FLANK_TOUCH_D = 0.55;
-export function latchFlankTouch(mob, dt, axis) {
+export function latchFlankTouch(mob, dt, axis, rand = Math.random) {
   const latA = normYaw(axis + Math.PI / 2), latB = normYaw(axis - Math.PI / 2);
   const ma = measureWallTake(mob, axis, latA, null, FLANK_TOUCH_D + 0.05);
   const mb = measureWallTake(mob, axis, latB, null, FLANK_TOUCH_D + 0.05);
@@ -195,6 +228,11 @@ export function latchFlankTouch(mob, dt, axis) {
     } else sideDir = ga < gb ? latA : latB;
   } else sideDir = ma ? latA : latB;
   if (!latchVirtual(mob, axis, sideDir, FLANK_TOUCH_D + 0.05)) return null;
+  mob.followLine.t = 0;
+  if (mob.pinWallRide !== true) {
+    if (rand() >= WALL_ENTRY_P) { mob.followLine = null; mob.followCool = FOLLOW_COOL; return null; }
+    mob.followLine.wallSpan = roamSpan(rand);
+  }
   mob.followLine.touch = true;
   mob.followLine.fresh = LATCH_FRESH_TICKS;
   mob.yawTarget = axis;
@@ -306,10 +344,11 @@ function wallTip(mob, travelAxis) {
 // Follow-line upkeep: the servo owns motion while a lane holds, this
 // pass only maintains the lateral bias. Latches when a wall runs near,
 // drops on axis turns, hands true 1-wide corridors to the rail, and drops
-// past lost walls. Touch rides are permanent: the servo owns their release
-// (corner rounding, in-place U-turn, pocket pace) — this pass only mirrors
-// the line on U-turn flips, ticks the corner freshness down, and hands
-// over where a corridor genuinely continues. Owned by the servo tick
+// past lost walls. Touch rides persist until released: the servo owns
+// their release (corner rounding, in-place U-turn, pocket pace) plus the
+// roam-clock budget (the mover quits expired rides) — this pass only
+// mirrors the line on U-turn flips, ticks the corner freshness and the
+// ride clock down, and hands over where a corridor genuinely continues. Owned by the servo tick
 // (called at its top): roam.js keeps the follow-line mechanics that decide
 // shares, the servo owns the per-tick orchestration.
 export function upkeepFollowLine(mob, dt) {
@@ -335,14 +374,16 @@ export function upkeepFollowLine(mob, dt) {
     mob.followCool = FOLLOW_COOL;
     return;
   }
-  // Touch rides are permanent: the servo owns their release (corner
-  // rounding, pocket pace). Only mirror the line on U-turn flips and tick
-  // the corner freshness down. Every line is a touch line (contact is the
-  // only latch left), so no other case remains below.
+  // Touch rides persist until released: the servo owns their release
+  // (corner rounding, pocket pace, roam-clock budget). Only mirror the
+  // line on U-turn flips and tick the corner freshness down. Every line
+  // is a touch line (contact is the only latch left), so no other case
+  // remains below.
   // Both sides really walled hands over to the 1-wide rail — unless the
   // corridor doesn't continue (a 1-cell slit is still the wall ride, and
   // dropping there strands the exit on a random draw instead of the wall).
   if ((vw.fresh ?? 0) > 0) vw.fresh--;
+  if (vw.touch === true) vw.t = (vw.t ?? 0) + dt;
   const [bax, baz] = dirVec(mob.lane.axis); const cellFree = makeCellFree(mob);
   const bcx = Math.floor(mob.pos.x), bcz = Math.floor(mob.pos.z);
   if (!cellFree(bcx - baz, bcz + bax) && !cellFree(bcx + baz, bcz - bax)) {
@@ -393,6 +434,37 @@ function latchCommit(mob, heading, target, rand = Math.random, prev = null) {
   mob.target = target;
   mob.wanderT = NO_EXPIRY;
   mob.roam = { mode: "commit", heading, target, tgt: target, t: 0, span: roamSpan(rand), runT };
+}
+
+// Wall-ride budget exit: leave the wall in the roomiest of 45° or 90°
+// away from the travel heading — never straight along it (straight exits
+// go through the outer-turn lottery). Null when both headings are boxed
+// in under a metre: the caller keeps riding and retries later.
+// The wall sits toward axis−rel·π/2 (rel = +1 wall left of travel), so
+// away is the +rel side. Ties keep the 45° (first max wins).
+export function wallQuitHeading(mob, supported, floating) {
+  const axis = mob.lane ? mob.lane.axis : snapCardinal(mob.yaw);
+  const away = mob.followLine?.rel ?? 1;
+  const cands = [normYaw(axis + away * Math.PI / 4), normYaw(axis + away * Math.PI / 2)];
+  let best = null, bestD = 1.0;
+  for (const h of cands) {
+    const dx = Math.sin(h), dz = Math.cos(h);
+    const blockedAt = (x, z) => !bodyFits(mob, supported, floating, h, x, z);
+    const d = rayDist(mob.pos.x, mob.pos.z, dx, dz, blockedAt, 6.0, 0.1);
+    if (d > bestD) { best = h; bestD = d; }
+  }
+  return best;
+}
+
+// Commit the budget exit to roam: drop lane + line, hold the next latch
+// off, and install an open commit on the heading (same shape as decide).
+export function wallQuitCommit(mob, heading, rand = Math.random, pickTarget) {
+  const target = strideTarget(mob, heading) ?? (pickTarget ? pickTarget(mob) : null);
+  if (!target) return false;
+  mob.lane = null; mob.followLine = null; mob.turnHold = 0;
+  mob.followCool = FOLLOW_COOL; mob.stuckT = 0; mob.servoStall = 0;
+  latchCommit(mob, heading, target, rand, mob.roam);
+  return true;
 }
 
 function decide(mob, dt, supported, floating, rand = Math.random, pickTarget) {
