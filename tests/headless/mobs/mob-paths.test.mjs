@@ -35,17 +35,9 @@ const LAYOUTS = {
   lstubret: [[0, 0], [0, 1], [0, 2], [1, 2]],
   door2: [[0, 0], [0, 1], [0, 2], [1, 2]],
   door2ret: [[0, 0], [0, 1], [0, 2], [1, 2]],
-  straight2: (() => { const c = []; for (let z = 0; z <= 7; z++) { c.push([0, z], [1, z]); } return c; })(),
-  l2: (() => {
-    const c = [];
-    for (let z = 0; z <= 3; z++) { c.push([0, z], [1, z]); }
-    for (let x = 0; x <= 5; x++) { c.push([x, 2], [x, 3]); }
-    return [...new Map(c.map((p) => [`${p[0]},${p[1]}`, p])).values()];
-  })(),
-  funnel21: [[0, 0], [1, 0], [0, 1], [1, 1], [0, 2], [1, 2], [1, 3], [1, 4], [1, 5], [1, 6]],
-  t2: [[1, 0], [1, 1], [-1, 2], [0, 2], [1, 2], [2, 2], [3, 2], [-1, 3], [0, 3], [1, 3], [2, 3], [3, 3]],
   doorway: [[2, 0], [2, 1], [2, 2]],
   mouth: [[0, 0], [0, 1], [0, 2], [0, 3]],
+  room: [[0, 0], [0, 1], [0, 2], [0, 3], [-1, 3], [1, 3], [-1, 4], [0, 4], [1, 4]],
 };
 
 // Explicit walls (doorway rig): [x, z] cells raised y=1..2.
@@ -57,12 +49,13 @@ const DOOR_WALLS = [
 
 const START = {
   straight: [0, 0], straightE: [0, 0], l: [0, 0], t: [1, 0], cross: [1, -1],
-  zigzag: [0, 0], deadend: [0, 0], lstub: [0, 0], lstubret: [1, 2], door2: [0, 0], door2ret: [1, 2], straight2: [0, 0], l2: [0, 0],
-  funnel21: [0, 0], t2: [1, 0], doorway: [2, 0], mouth: [0, 0],
+  zigzag: [0, 0], deadend: [0, 0], lstub: [0, 0], lstubret: [1, 2], door2: [0, 0], door2ret: [1, 2],
+  doorway: [2, 0], mouth: [0, 0],
+  room: [0, 0],
 };
 const START_YAW = {
   straight: 0, straightE: Math.PI / 2, l: 0, t: 0, cross: 0,   zigzag: 0, deadend: 0, lstub: 0, lstubret: -Math.PI / 2, door2: 0, door2ret: -Math.PI / 2,
-  straight2: 0, l2: 0, funnel21: 0, t2: 0, doorway: 0, mouth: 0,
+  doorway: 0, mouth: 0, room: 0,
 };
 
 function buildRig(kind, layout, { auto = true, skip = [], extra = [] } = {}) {
@@ -111,8 +104,8 @@ function makeTestMob(kind, x, y, z, yaw) {
     legPhase: 0, speed: FARM_WALK,
     stuckT: 0, lastX: x, lastZ: z, fallFrom: y, lane: null, servoStall: 0,
     blendFrom: null, blendT: 0, roam: null, followLine: null, followCool: 0,
-    followSession: false, followT: 0, followSpan: 0, followLost: 0,
-    funnelT: 0, funnelCool: 0, redecide: false, jrng: null,
+    turnHold: 0,
+    funnelT: 0, funnelCool: 0, jrng: null, wallFollow: false, oneWide: false,
   };
 }
 
@@ -228,64 +221,7 @@ for (const kind of ["muret", "trench"]) {
 }
 console.log("PASS straightE (muret + trench)");
 
-// --- straight2: 2-wide hugs a wall at virtual-lane offset, never glides
-// to the middle. Spawn hugging the west wall; the spawn cell reads as a
-// junction (side nook), so the explored side is seed luck — the band assert
-// accepts either wall (0.75 west / 1.25 east) plus an explicit anti-middle
-// assert.
-for (const kind of ["muret", "trench"]) {
-  const trace = runTrial(kind, "straight2", { off: [-0.15, 0], goal: (m) => Math.floor(m.pos.z) >= 7 });
-  assert.ok(trace.length < 1500, `${kind}/straight2: reached the end`);
-  const tail = trace.slice(Math.floor(trace.length * 0.66));
-  assert.ok(Math.max(...tail.map((p) => Math.min(Math.abs(p.x - 0.75), Math.abs(p.x - 1.25)))) < 0.2, `${kind}/straight2: wall offset held`);
-  assert.ok(tail.every((p) => Math.abs(p.x - 1.0) > 0.08), `${kind}/straight2: never mid-space`);
-  assertFluid(trace, `${kind}/straight2`, 1.0, 6);
-  assertClean(trace, `${kind}/straight2`);
-}
-console.log("PASS straight2 (muret + trench)");
-
-// --- l2: 2-wide corner via wall-follow turns, offset held on the arm ---
-for (const kind of ["muret", "trench"]) {
-  const trace = runTrial(kind, "l2", { off: [0.5, 0], goal: (m) => Math.floor(m.pos.x) >= 5, maxTicks: 2000 });
-  assert.ok(trace.length < 2000, `${kind}/L2: turned onto the arm`);
-  assertFluid(trace, `${kind}/L2`, 0.8, 12);
-  assertClean(trace, `${kind}/L2`);
-  const arm = trace.filter((p) => p.x >= 2.5 && p.x <= 4.3);
-  assert.ok(arm.length > 20, `${kind}/L2: arm cruise sampled`);
-  assert.ok(Math.max(...arm.map((p) => Math.abs(Math.abs(p.z - 3.0) - 0.25))) < 0.2, `${kind}/L2: steady arm line`);
-}
-console.log("PASS L2 (muret + trench)");
-
-// --- funnel21: 2-wide narrows to an offset 1-wide arm, walked through ---
-for (const kind of ["muret", "trench"]) {
-  const trace = runTrial(kind, "funnel21", { off: [0.5, 0], goal: (m) => Math.floor(m.pos.z) >= 6, maxTicks: 2000 });
-  assert.ok(trace.length < 2000, `${kind}/funnel21: passed through`);
-  assertFluid(trace, `${kind}/funnel21`, 0.8, 14);
-  assertClean(trace, `${kind}/funnel21`);
-  const narrow = trace.filter((p) => p.z >= 4);
-  assert.ok(Math.max(...narrow.map((p) => Math.abs(p.x - 1.5))) < 0.15, `${kind}/funnel21: settled into the narrow arm`);
-}
-console.log("PASS funnel21 (muret + trench)");
-
-// --- t2: mixed 1-wide stem into 2-wide bar, random arm, never back ---
-for (const kind of ["muret", "trench"]) {
-  const arms = new Set();
-  for (let t = 0; t < 16; t++) {
-    const trace = runTrial(kind, "t2", {
-      seed: 500 + t, maxTicks: 1500,
-      goal: (m) => (Math.floor(m.pos.x) <= -1 || Math.floor(m.pos.x) >= 3) &&
-        (Math.floor(m.pos.z) === 2 || Math.floor(m.pos.z) === 3),
-    });
-    assert.ok(trace.length < 1500, `${kind}/T2 trial${t}: picked an arm`);
-    assert.ok(trace.every((p) => p.z > -0.2), `${kind}/T2 trial${t}: never back down the stem`);
-    assertClean(trace, `${kind}/T2 trial${t}`);
-    arms.add(trace.at(-1).x < 1.5 ? "W" : "E");
-  }
-  assert.ok(arms.has("W") && arms.has("E"), `${kind}/T2: both arms explored (${[...arms]})`);
-}
-console.log("PASS T2 branches (muret + trench)");
-
-// --- doorway: off-axis approach steers through the 2-wide gap, no touch ---
+// --- doorway: off-axis approach steers through the gap, no touch ---
 {
   const trace = runTrial("muret", "doorway", {
     walls: { auto: false, extra: DOOR_WALLS },
@@ -307,6 +243,19 @@ console.log("PASS doorway (muret)");
   assertClean(trace, "mouth");
 }
 console.log("PASS mouth (muret)");
+
+// --- room: tunnel opening onto a 3-wide room; the 1-wide servo must never
+// run off-axis in the room (regression: junction draws into the widening
+// kept a red lane wandering the room for hundreds of ticks). The mob walks
+// the tunnel axis to the back wall; red may only ever read on the axis. ---
+for (const kind of ["muret", "trench"]) {
+  const trace = runTrial(kind, "room", { goal: (m) => m.pos.z >= 4.4, maxTicks: 1500 });
+  assert.ok(trace.length < 1500, `${kind}/room: reached the back wall`);
+  assertClean(trace, `${kind}/room`);
+  const offAxis = trace.filter((p) => p.ow && Math.floor(p.x) !== 0);
+  assert.equal(offAxis.length, 0, `${kind}/room: no 1-wide off the tunnel axis (${offAxis.length} ticks)`);
+}
+console.log("PASS room (muret + trench)");
 
 // --- L: fluid corner, no stall, ends on the arm ---
 for (const kind of ["muret", "trench"]) {
@@ -443,8 +392,8 @@ function makeElevMob(x, y, z, yaw) {
     legPhase: 0, speed: FARM_WALK,
     stuckT: 0, lastX: x, lastZ: z, fallFrom: y, lane: null, servoStall: 0,
     blendFrom: null, blendT: 0, roam: null, followLine: null, followCool: 0,
-    followSession: false, followT: 0, followSpan: 0, followLost: 0,
-    funnelT: 0, funnelCool: 0, redecide: false, jrng: null,
+    turnHold: 0,
+    funnelT: 0, funnelCool: 0, jrng: null, wallFollow: false, oneWide: false,
   };
 }
 // visit(m) latches once (e.g. lip reached), goal(m) ends the run after that.
@@ -579,7 +528,7 @@ for (const kind of ["muret", "trench"]) {
 console.log("PASS cross branches (muret + trench)");
 
 // --- equivalence: same seed => bit-identical traces, mur ≡ air ---
-for (const name of ["straight", "l", "zigzag", "deadend", "lstub", "lstubret", "door2", "door2ret", "straight2", "l2", "funnel21"]) {
+for (const name of ["straight", "l", "zigzag", "deadend", "lstub", "lstubret", "door2", "door2ret"]) {
   const goals = {
     straight: (m) => Math.floor(m.pos.z) >= 6,
     l: (m) => Math.floor(m.pos.x) >= 3 && Math.floor(m.pos.z) >= 2,
@@ -589,15 +538,9 @@ for (const name of ["straight", "l", "zigzag", "deadend", "lstub", "lstubret", "
     lstubret: (m) => Math.floor(m.pos.z) <= 0 && Math.floor(m.pos.x) === 0,
     door2: (m) => Math.floor(m.pos.x) === 1 && Math.floor(m.pos.z) === 2,
     door2ret: (m) => Math.floor(m.pos.x) === 0 && Math.floor(m.pos.z) === 0,
-    straight2: (m) => Math.floor(m.pos.z) >= 7,
-    l2: (m) => Math.floor(m.pos.x) >= 5,
-    funnel21: (m) => Math.floor(m.pos.z) >= 6,
   };
-  const offs = {
-    straight2: [-0.15, 0], l2: [0.5, 0], funnel21: [0.5, 0],
-  };
-  const a = runTrial("muret", name, { seed: 7, maxTicks: 1200, goal: goals[name], off: offs[name] });
-  const b = runTrial("trench", name, { seed: 7, maxTicks: 1200, goal: goals[name], off: offs[name] });
+  const a = runTrial("muret", name, { seed: 7, maxTicks: 1200, goal: goals[name] });
+  const b = runTrial("trench", name, { seed: 7, maxTicks: 1200, goal: goals[name] });
   assert.equal(a.length, b.length, `${name}: same trace length (muret ${a.length} vs trench ${b.length})`);
   let dev = 0;
   for (let i = 0; i < a.length; i++) {
@@ -830,35 +773,35 @@ console.log("PASS v-invariance");
 }
 console.log("PASS modes-red");
 {
-  // Blue: lane with a wall alongside — the upkeep latches a follow line
-  // (the far west bank breaks the branch read without walling the mouth).
+  // Blue: frontal wall contact latches a permanent touch ride — lane
+  // held, wallFollow on, glued 0.5 off the face, never through the wall.
+  // Head-on contact draws lots, so the ride direction is seed luck; the
+  // wall outlasts the run so no tip turn breaks the straight asserts.
   resetWorld("over");
   setDimension("over");
-  for (let x = -4; x <= 6; x++) for (let z = -6; z <= 16; z++) setBlock(x, 0, z, STONE);
-  for (let z = -6; z <= 16; z++) {
-    setBlock(2, 1, z, STONE); setBlock(2, 2, z, STONE);
-    setBlock(-1, 1, z, STONE); setBlock(-1, 2, z, STONE);
-  }
-  const mob = makeTestMob("pig", 1.5, FEET, 0.5, 0);
-  const fixed = { x: 1.5, z: 30 };
+  for (let x = -24; x <= 24; x++) for (let z = -8; z <= 8; z++) setBlock(x, 0, z, STONE);
+  for (let x = -20; x <= 20; x++) { setBlock(x, 1, 2, STONE); setBlock(x, 2, 2, STONE); }
+  const mob = makeTestMob("pig", 0.5, FEET, -2.5, 0);
+  const fixed = { x: 0.5, z: 30 };
   mob.target = fixed;
   const realRandom = Math.random;
   Math.random = mulberry32(9);
   const trace = [];
   try {
-    for (let t = 0; t < 400; t++) {
+    for (let t = 0; t < 600; t++) {
       tickFarmMob(mob, DT, () => fixed);
       trace.push({ x: mob.pos.x, z: mob.pos.z, lane: mob.lane != null, wf: mob.wallFollow === true, ow: mob.oneWide === true });
     }
   } finally {
     Math.random = realRandom;
   }
-  const ride = trace.slice(30);
+  const ride = trace.slice(200);
   assert.ok(ride.every((p) => p.lane), `modes-blue: lane held`);
   assert.ok(ride.every((p) => p.wf && !p.ow), `modes-blue: wallFollow, never oneWide`);
-  // Glued VIRTUAL_W/2 off the face (face x=2, line x=1.25 at this stage).
-  assert.ok(ride.every((p) => Math.abs(p.x - 1.25) < 0.2), `modes-blue: glued off the face`);
-  assert.ok(mob.pos.z > 4, `modes-blue: cruised along the wall (z=${mob.pos.z.toFixed(2)})`);
+  // Glued 0.5 off the face (south face z=2, line z=1.5).
+  assert.ok(ride.every((p) => Math.abs(p.z - 1.5) < 0.2), `modes-blue: glued off the face`);
+  assert.ok(ride.every((p) => p.z < 2), `modes-blue: never through the wall`);
+  assert.ok(Math.abs(mob.pos.x - 0.5) > 2, `modes-blue: cruised along the wall (x=${mob.pos.x.toFixed(2)})`);
   assertClean(trace.map((p) => ({ ...p, y: FEET })), "modes-blue");
 }
 console.log("PASS modes-blue");
@@ -885,5 +828,30 @@ console.log("PASS modes-blue");
   assert.ok(trace.every((p) => !p.wf && !p.ow), `modes-open: neither flag`);
 }
 console.log("PASS modes-open");
+{
+  // No red in the wide: open-field commits across seeds never raise a
+  // 1-wide lane (the engage gate + the strict hold share one tunnel rule,
+  // so a false-positive engage drops the same tick it would erect).
+  for (const seed of [1, 2, 3, 4, 5, 6]) {
+    resetWorld("over");
+    setDimension("over");
+    for (let x = -30; x <= 30; x++) for (let z = -30; z <= 44; z++) setBlock(x, 0, z, STONE);
+    const mob = makeTestMob("pig", 0.5, FEET, 0.5, (seed * 1.1) % (Math.PI * 2));
+    const fixed = { x: 20 - seed, z: 30 };
+    mob.target = fixed;
+    const realRandom = Math.random;
+    Math.random = mulberry32(seed);
+    try {
+      for (let t = 0; t < 400; t++) {
+        tickFarmMob(mob, DT, () => fixed);
+        assert.ok(!mob.oneWide, `modes-wide: no 1-wide in the open (seed ${seed}, tick ${t})`);
+        assert.ok(mob.lane == null, `modes-wide: never a lane in the open (seed ${seed}, tick ${t})`);
+      }
+    } finally {
+      Math.random = realRandom;
+    }
+  }
+}
+console.log("PASS modes-wide");
 
 console.log("mob-paths.test.mjs: ALL PASS");

@@ -1,7 +1,7 @@
-// Displacement-mode tint (?color=1 only): blue rides a follow line, red
-// runs a true 1-wide lane, natural coats otherwise. Debug paint only —
-// steering never reads it; headless rigs assert the mover flags
-// (`wallFollow`/`oneWide`), never the paint.
+// Displacement-mode tint (?color=1 only): blue touch rides, red true
+// 1-wide lanes, natural coats otherwise. Debug paint only — steering never
+// reads it; headless rigs assert the mover flags (`wallFollow`/`oneWide`),
+// never the paint.
 //
 // DELETION RECIPE (no other file holds tint state): delete this file, drop
 // the `applyDisplacementColor` import + its calls in `farm.js`, revert the
