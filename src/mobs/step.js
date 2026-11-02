@@ -19,9 +19,12 @@ export const TURN_RATE = 3;
 // Rotate-in-place past this yaw error; below it forward speed scales with
 // cos(error) for arc-while-moving fluidity. Shared by the servo and roam.
 export const SPIN = 1.2;
-// Virtual-lane half width: wall-following frames a lane this wide against
-// the real wall (clearance ~0.43 at the middle, no graze).
-export const VIRTUAL_W = 1.5;
+// Virtual-lane width: wall-following frames a lane exactly one cell wide
+// against the real wall — the lane middle is the adjacent cell centre,
+// 0.5 from the face — with an invisible complementary wall on the far
+// side, so the servo walks it like a true 1-wide corridor (parallel and
+// glued, never diagonal, never drifting off).
+export const VIRTUAL_W = 1.0;
 // Free wander stride: heading + distance from the current position, never
 // anchored anywhere. The pen holds mobs by physics (fence collision), not
 // by steering — there is no wander center.

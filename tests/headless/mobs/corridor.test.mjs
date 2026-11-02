@@ -3,7 +3,7 @@
 import assert from "node:assert/strict";
 import {
   normYaw, yawDiff, snapCardinal, oppositeYaw, dirVec,
-  rayDist, sideBranch, classifyExits, flanksOpen,
+  rayDist, sideBranch, classifyExits, flanksOpen, mouthOpen, exitTunneled,
   junctionOptions, pickExit, updateLane,
 } from "../../../src/mobs/corridor.js";
 
@@ -84,17 +84,61 @@ console.log("PASS no-pinball-2wide");
 }
 console.log("PASS flanksOpen");
 
+// --- mouthOpen: tunnel mouth onto a field, never a true junction ---
+{
+  // Mouth at (0,4): corridor walls (±1,0..3), open field past z=4.
+  const bank = new Set(["1,0", "-1,0", "1,1", "-1,1", "1,2", "-1,2", "1,3", "-1,3"]);
+  const cellFree = (bx, bz) => !bank.has(`${bx},${bz}`);
+  assert.equal(mouthOpen(0.5, 4.5, N, cellFree), true);
+  // Mid-corridor: mouths walled.
+  assert.equal(mouthOpen(0.5, 1.5, N, cellFree), false);
+  // Cross center (backward rows walk): a decision, not an exit.
+  assert.equal(mouthOpen(1.5, 1.5, N, () => true), false);
+  // Turn into an arm (tunnel ahead): no exit.
+  const armAhead = new Set(["2,0", "0,0", "2,2", "0,2", "3,1", "-1,1"]);
+  const armFree = (bx, bz) => !armAhead.has(`${bx},${bz}`);
+  assert.equal(mouthOpen(1.5, 1.5, E, armFree), false);
+}
+console.log("PASS mouthOpen");
+
+// --- exitTunneled: a junction/lock-turn exit must keep the 1-wide rail ---
+// A step C→A is tunneled unless a whole side of the segment stands open.
+// 1-cell jogs pass (the bend walls the other half of the segment); room,
+// widening, field, and 2-wide steps fail a side and release to roam.
+{
+  // Zigzag jog east from (0,1) to (1,1): north walled on the ahead half
+  // ([1,0]), south walled on the current half ([0,2]) — the bend counts.
+  const jog = new Set(["1,0", "0,2", "-1,1", "0,0", "2,1"]);
+  const jogFree = (bx, bz) => !jog.has(`${bx},${bz}`);
+  assert.equal(exitTunneled(0.5, 1.5, E, jogFree), true);
+  // T arm east from (1,2) to (2,2): both halves walled per side.
+  const tee = new Set(["2,1", "2,3", "1,3", "0,2"]);
+  const teeFree = (bx, bz) => !tee.has(`${bx},${bz}`);
+  assert.equal(exitTunneled(1.5, 2.5, E, teeFree), true);
+  // Room step west from (0,4) to (-1,4): north side fully open.
+  const room = new Set(["-2,4", "2,4", "-2,5", "2,5", "-1,6", "0,6", "1,6"]);
+  const roomFree = (bx, bz) => !room.has(`${bx},${bz}`);
+  assert.equal(exitTunneled(0.5, 4.5, W, roomFree), false);
+  // Field step north from (0,4) to (0,5): west side fully open.
+  assert.equal(exitTunneled(0.5, 4.5, N, () => true), false);
+  // 2-wide step north with the parallel lane open both halves: not 1-wide.
+  const wide2 = new Set(["-1,2", "-1,3", "2,2", "2,3"]);
+  const wide2Free = (bx, bz) => !wide2.has(`${bx},${bz}`);
+  assert.equal(exitTunneled(0.5, 2.5, N, wide2Free), false);
+}
+console.log("PASS exitTunneled");
+
 // --- junctionOptions excludes the entry way (no U-turn at junctions) ---
 assert.deepEqual(new Set(junctionOptions([N, S, E, W], S)), new Set([N, E, W]));
 assert.deepEqual(junctionOptions([N, S], S), [N]);
 assert.deepEqual(junctionOptions([S], S), []);
 console.log("PASS junctionOptions");
 
-// --- straight walk: engage once, cruise forever, never uturn/release ---
+// --- straight walk: engage once (tunneled), cruise forever, never uturn/release ---
 {
   let lane = null, events = [];
   for (let c = 0; c < 6; c++) {
-    const r = updateLane(lane, 0, c, N, [N, S]);
+    const r = updateLane(lane, 0, c, N, [N, S], [E, W]);
     lane = r.lane; events.push(r.event);
   }
   assert.equal(events[0], "engage");
@@ -103,10 +147,26 @@ console.log("PASS junctionOptions");
 }
 console.log("PASS straight");
 
+// --- tunnel gate: no engage unless both laterals read blocked ---
+{
+  // Single wall alongside (east open): the walk stays roam.
+  assert.equal(updateLane(null, 0, 0, N, [N, S], [W]).lane, null);
+  // L-entry (adjacent opens): never engages, whatever the yaw.
+  assert.equal(updateLane(null, 0, 0, N, [N, E], [S, W]).lane, null);
+  assert.equal(updateLane(null, 0, 0, E, [N, E], [S, W]).lane, null);
+  // Dead-end mouth (flanks walled, single opening): still engages.
+  const r = updateLane(null, 0, 0, S, [S], [E, W]);
+  assert.equal(r.event, "engage");
+  assert.equal(r.lane.axis, S);
+  // Single opening with the back open (side corridor): roam turns in.
+  assert.equal(updateLane(null, 0, 0, E, [E], [N]).lane, null);
+}
+console.log("PASS tunnel-gate");
+
 // --- L turn: one forced junction, axis flips, entry follows ---
 {
   let lane = null;
-  let r = updateLane(lane, 0, 0, N, [N, S]); lane = r.lane;
+  let r = updateLane(lane, 0, 0, N, [N, S], [E, W]); lane = r.lane;
   assert.equal(r.event, "engage");
   r = updateLane(lane, 0, 2, N, [S, E]); lane = r.lane; // corner cell
   assert.equal(r.event, "junction");
