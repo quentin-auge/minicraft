@@ -368,6 +368,12 @@ export function tickFarmMob(mob, dt, pickTarget, rand = mob.rand ?? Math.random)
       Math.atan2(mob.target.x - mob.pos.x, mob.target.z - mob.pos.z),
       makeWander, moveClamped, { gated: false });
   }
+  // Displacement-mode flags for the ?color=1 tint (farm.js paints,
+  // headless rigs assert): derived every tick, never branched on by
+  // steering. A lane with a follow line rides a wall (blue), a lane
+  // alone runs a true 1-wide corridor (red).
+  mob.wallFollow = mob.lane != null && mob.followLine != null;
+  mob.oneWide = mob.lane != null && mob.followLine == null;
   // Vertical plane (support state computed above, pre-move).
   stepVertical(mob, dt, surface, floating, supported);
   // Cosmetic: alternating leg swing + tail sway while walking (scene only).
