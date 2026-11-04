@@ -1,12 +1,12 @@
-// Corridor policy: 1-wide servo decisions plus width-aware branch and
-// release rules for everything else (2-wide lanes, rooms, fields). Three-
-// free and store-free: the mover injects `pointFree(nx, nz, dirYaw)` (the
-// body fits at a point) and `cellFree(bx, bz)` (a whole cell walks) — one
-// unified solid/air-wall predicate behind both — this module only decides.
-// Straights cruise, L/T/cross pick a random exit excluding the entry way,
-// zigzags are chained L turns, dead ends U-turn. No global precompute:
-// every decision is local, so player edits just work.
-import { makeStepOk, makeCellFree, descendOk } from "./step.js";
+// Corridor policy: 1-wide servo decisions plus proximity entry detection
+// for tunnel mouths (1-wide and 2-wide). Three-free and store-free: the
+// mover injects `pointFree(nx, nz, dirYaw)` (the body fits at a point) and
+// `cellFree(bx, bz)` (a whole cell walks) — one unified solid/air-wall
+// predicate behind both — this module only decides. Straights cruise,
+// L/T/cross pick a random exit excluding the entry way, zigzags are
+// chained L turns, dead ends U-turn. Tunnel entries attract from the open
+// (see findEntries): no funnel, no gap scan. No global precompute: every
+// decision is local, so player edits just work.
 export const PROBE_DIST = 1.0;
 // Free-distance raycast: first t where blockedAt fails, else max. Used for
 // wall-face measurement (virtual-lane latching) and open-heading checks.
@@ -59,8 +59,7 @@ export function cellCenter(v) {
 
 // A side opening is a branch choice iff its mouth cell walks and it either
 // runs on (far cell walks: long arm, wide arm, room) or breaks the corridor
-// wall (mouth doesn't continue along the axis: 1-cell arm, doorway,
-// breach). The corridor's own neighbour lane continues alongside with a
+// wall (mouth doesn't continue along the axis: 1-cell arm, doorway). The corridor's own neighbour lane continues alongside with a
 // wall beyond, so 2-wide straights never read as junctions.
 export function sideBranch(mouthFree, farFree, contFree) {
   return mouthFree && (farFree || !contFree);
@@ -90,44 +89,207 @@ export function classifyExits(px, pz, axis, pointFree, cellFree) {
   return opens;
 }
 
-// True open space on both flanks of an axis: near AND far cells walk and
-// the mouth row continues both ways (field, room middle, wide hall —
-// never a corridor, whose far wall or broken continuity fails some clause).
-// The mover releases the lane on this (commit straight out, no random
-// spins); 1-wide and 2-wide corridors never match it.
-export function flanksOpen(px, pz, axis, cellFree) {
-  const [fx, fz] = dirVec(axis);
-  for (const s of [1, -1]) {
-    const mx = Math.floor(px) + fz * s, mz = Math.floor(pz) - fx * s;
-    if (!cellFree(mx, mz)) return false;
-    if (!cellFree(mx + fz * s, mz - fx * s)) return false;
-    if (!cellFree(mx + fx, mz + fz) || !cellFree(mx - fx, mz - fz)) return false;
-  }
-  return true;
+// Proximity entry detection: tunnel mouths attracting mobs from the open.
+// One rule, two widths, orientation-free (all four cardinals scanned):
+//
+// A mouth is a hole of width 1 (one cell) or 2 (two laterally adjacent
+// cells) with 3 blocks of free depth of the same width, entry included:
+// the mouth row plus the two rows behind it all walk. One rule for both
+// widths: the mouth row reads walled on its outer flanks (solid or drop
+// through the injected cellFree), each flank backed by a walled run of at
+// least MIN_FLANK cells (an ended wall tip, a bank, or both — so a lone
+// pillar never counts, while the opening stays held by the other side),
+// and the row in front walks with at least one open side. A wall running
+// on past the mouth on one side is still a mouth (one edge starts, the
+// other may run longer) — so a field, room, or open ground, never
+// mid-corridor (approach walled both sides), which is what makes this a
+// boundary detector: cells deep inside a corridor never match, so a
+// cruising mob never re-detects its own lane.
+//
+// Only mouths whose target point (mouth centre, passage midpoint) reads
+// within range (Euclidean) of the mob are returned, nearest first.
+// 1-wide holes read closer than 2-wide
+// passages: mobs notice a person-sized gap later than a wide one.
+// Distance is tested before any voxel read and every cell evaluates once
+// per scan (lazy memo below), so the cost is one small grid, never
+// motifs × probes. The attraction draw (ENTRY_P) repeats every scan until
+// one accepts; this module only lists candidates. Pure and headless-tested.
+export const ENTRY_R_1W = 3.0;
+export const ENTRY_R_2W = 4.0;
+export const ENTRY_P = 0.5;
+// Flank support: each outer mouth flank must read walled on the mouth row
+// and be backed by a run of at least MIN_FLANK cells — down its depth file
+// or along the mouth row. See flanksWalled.
+export const MIN_FLANK = 2;
+// Scan throttle: the area scan below runs at most this often per mob
+// (sim-time). The per-slice mover calls entryTick every 1/60 slice —
+// dozens of slices per frame at high V speed — but a mouth a few blocks
+// away never needs a 60 Hz refresh; the in-flight entry commit and the
+// refusal cooldown already bridge the gaps.
+export const ENTRY_SCAN_T = 0.25;
+// Centering stall: an entry walk that pushes aligned-but-blocked (nose
+// wedged on the hole edge) touches the blocking wall past this many
+// sim-seconds and follows it toward the hole with the existing ride
+// machinery instead of grinding — six fully-stuck 1/60 slices read as
+// stuck, brief grazes never accrue that long.
+export const ENTRY_STALL_T = 0.1;
+// Entry backstop: a commit that never arrives (hole sealed mid-walk by a
+// player edit) releases to a forward exit past this many sim-seconds —
+// never a backward decide. Genuine walks convert to a guided ride within
+// ENTRY_STALL_T, so only sealed holes ever reach it.
+export const ENTRY_TIMEOUT = 15;
+// Violet hold: after an arrival closes the entry commit, the pass tint
+// stays on until the mob walks this far past the aimed slot (mouth
+// half-width plus body plus margin — about one block past the mouth), so
+// the physical threading reads violet, not just the approach.
+// Entry cooldown: once the hold clears (mob out of the mouth), no new
+// entry draw for this many sim-seconds — arrivals walk away instead of
+// instantly re-drawing the mouth they just threaded.
+export const VIOLET_HOLD_D = 1.0;
+export const ENTRY_COOL_T = 5;
+
+function entryDist(px, pz, x, z) {
+  return Math.hypot(x - px, z - pz);
 }
 
-// Mouth opening onto a field: both flanks open wide (mouth + far cells
-// walk) with the corridor bank still behind (mouth row broken backward),
-// and no tunnel continuing ahead (the forward cell's own flanks are not
-// both walled). True junctions (bars, crosses: arms continue, backward
-// rows walk) never match it: their backward continuity holds, and a turn
-// into an arm keeps a tunnel ahead. The mover exits to roam on this
-// instead of junction-picking an arm into the field.
-export function mouthOpen(px, pz, axis, cellFree) {
-  const [fx, fz] = dirVec(axis);
+// Lazy memoized cell reader for one scan: every pattern probes the same
+// cells over and over (mouth, flanks, depth, approach, pair rows), so each
+// (bx, bz) evaluates cellFree once and later probes read the cache. Cells
+// outside the covered square fall through to the live predicate (patterns
+// only reach two cells past an in-range mouth, always inside).
+// Sized by the widest radius (2-wide).
+const CACHE_R = Math.ceil(ENTRY_R_2W) + 3;
+function makeCache(cellFree, cx, cz) {
+  const W = CACHE_R * 2 + 1;
+  const m = new Map();
+  return (bx, bz) => {
+    const ox = bx - cx + CACHE_R, oz = bz - cz + CACHE_R;
+    if (ox < 0 || oz < 0 || ox >= W || oz >= W) return cellFree(bx, bz);
+    const k = ox * W + oz;
+    let v = m.get(k);
+    if (v === undefined) {
+      v = cellFree(bx, bz) ? 1 : 0;
+      m.set(k, v);
+    }
+    return v === 1;
+  };
+}
+
+export function findEntries(px, pz, cellFree) {
+  const out = [];
+  const seen = new Set();
+  const cf = makeCache(cellFree, Math.floor(px), Math.floor(pz));
   const cx = Math.floor(px), cz = Math.floor(pz);
-  for (const s of [1, -1]) {
-    const mx = cx + fz * s, mz = cz - fx * s;
-    if (!cellFree(mx, mz)) return false;
-    if (!cellFree(mx + fz * s, mz - fx * s)) return false;
-    if (cellFree(mx - fx, mz - fz)) return false;
+  const R = Math.ceil(ENTRY_R_2W) + 1;
+  // Prefilter on the widest radius plus the pair half-step: a 2-wide
+  // midpoint can read in range while its cells sit up to half a cell past
+  // it. Per-motif rechecks below apply the exact radii.
+  const R2 = (ENTRY_R_2W + 0.5 + 1e-9) * (ENTRY_R_2W + 0.5 + 1e-9);
+  // One mouth rule for both widths, parametrized by the cell span: outer
+  // flanks of the mouth row blocked and held (MIN_FLANK support each
+  // side); approach row free with at least one open side (a wall running
+  // on past the mouth on one side is still a mouth — one edge starts, the
+  // other may run longer).
+  const pairSign = (bx, bz, qx, qz, lx, lz) => (qx === bx + lx && qz === bz + lz) ? 1 : -1;
+  // Span cells: the mouth row as a list (single cell or lateral pair), so
+  // the row/depth/approach checks below never branch on the width.
+  const spanCells = (bx, bz, w, qx, qz) => (w === 1 ? [[bx, bz]] : [[bx, bz], [qx, qz]]);
+  // Outer flank cells of the span: the two cells past each end of the
+  // mouth row (single cell: both laterals; pair: one past each end).
+  const outerCells = (bx, bz, lx, lz, w, qx, qz) => {
+    if (w === 1) return [[bx + lx, bz + lz], [bx - lx, bz - lz]];
+    const s = pairSign(bx, bz, qx, qz, lx, lz);
+    return [[bx - lx * s, bz - lz * s], [qx + lx * s, qz + lz * s]];
+  };
+  // Flank support: each outer mouth flank must read walled on the mouth
+  // row and be backed by a walled run of at least MIN_FLANK cells — either
+  // down its depth file (a bank, notches tolerated) or along the mouth row
+  // (an ended wall tip: the setback gap). A lone pillar is neither and
+  // never holds an opening.
+  const flanksWalled = (bx, bz, fx, fz, lx, lz, w, qx, qz) => {
+    for (const [ox, oz] of outerCells(bx, bz, lx, lz, w, qx, qz)) {
+      if (cf(ox, oz)) return false;
+      let file = 0;
+      for (let k = 0; k <= 2; k++) {
+        if (!cf(ox + fx * k, oz + fz * k)) file++;
+      }
+      let row = 1;
+      for (const s of [1, -1]) {
+        for (let k = 1; row < MIN_FLANK && !cf(ox + lx * k * s, oz + lz * k * s); k++) row++;
+      }
+      if (file < MIN_FLANK && row < MIN_FLANK) return false;
+    }
+    return true;
+  };
+  const approachOpen = (bx, bz, fx, fz, lx, lz, w, qx, qz) => {
+    // Every approach cell walks, with at least one outer side open. The
+    // outer sides are the span's outer flanks shifted one row forward, so
+    // the 1-wide and 2-wide clauses are the same test.
+    for (const [cx, cz] of spanCells(bx, bz, w, qx, qz)) {
+      if (!cf(cx - fx, cz - fz)) return false;
+    }
+    return outerCells(bx, bz, lx, lz, w, qx, qz)
+      .some(([ox, oz]) => cf(ox - fx, oz - fz));
+  };
+  const mouthMatch = (bx, bz, fx, fz, lx, lz, w, qx, qz) => {
+    const cells = spanCells(bx, bz, w, qx, qz);
+    // Mouth row.
+    for (const [cx, cz] of cells) if (!cf(cx, cz)) return false;
+    if (!flanksWalled(bx, bz, fx, fz, lx, lz, w, qx, qz)) return false;
+    // Two depth rows behind the mouth, same width, just free.
+    for (let k = 1; k <= 2; k++) {
+      for (const [cx, cz] of cells) if (!cf(cx + fx * k, cz + fz * k)) return false;
+    }
+    // Open approach: the row in front walks with at least one open side.
+    return approachOpen(bx, bz, fx, fz, lx, lz, w, qx, qz);
+  };
+  for (let bx = cx - R; bx <= cx + R; bx++) {
+    for (let bz = cz - R; bz <= cz + R; bz++) {
+      // Distance first: voxel reads only happen for in-range mouths.
+      const mx = bx + 0.5 - px, mz = bz + 0.5 - pz;
+      if (mx * mx + mz * mz > R2) continue;
+      for (const axis of CARDINALS) {
+        const [fx, fz] = dirVec(axis);
+        const lx = -fz, lz = fx;
+        // --- 1-wide mouth at (bx, bz), corridor toward +axis ---
+        {
+          const key = `1:${bx},${bz},${axis}`;
+          if (!seen.has(key) && mouthMatch(bx, bz, fx, fz, lx, lz, 1)) {
+            const x = bx + 0.5, z = bz + 0.5;
+            const dist = entryDist(px, pz, x, z);
+            if (dist <= ENTRY_R_1W + 1e-9) {
+              seen.add(key);
+              out.push({ kind: "one", bx, bz, x, z, axis, dist });
+            }
+          }
+        }
+        // --- 2-wide passage: pair (bx, bz) + lateral neighbour ---
+        for (const s of [1, -1]) {
+          const qx = bx + lx * s, qz = bz + lz * s;
+          const lox = Math.min(bx, qx), loz = Math.min(bz, qz);
+          const hix = Math.max(bx, qx), hiz = Math.max(bz, qz);
+          // One key per pair + travel line (both approach sides attract).
+          const lineAxis = fx === 0 ? "ns" : "ew";
+          const key = `2:${lox},${loz}|${hix},${hiz}|${lineAxis}`;
+          if (seen.has(key)) continue;
+          if (!mouthMatch(bx, bz, fx, fz, lx, lz, 2, qx, qz)) continue;
+          const x = (bx + 0.5 + qx + 0.5) / 2, z = (bz + 0.5 + qz + 0.5) / 2;
+          const dist = entryDist(px, pz, x, z);
+          if (dist > ENTRY_R_2W + 1e-9) continue;
+          seen.add(key);
+          out.push({
+            kind: "two", bx, bz, qx, qz, x, z, axis, dist,
+            ax: bx + 0.5, az: bz + 0.5, bx2: qx + 0.5, bz2: qz + 0.5,
+          });
+        }
+      }
+    }
   }
-  const nx = cx + fx, nz = cz + fz;
-  if (!cellFree(nx + fz, nz - fx) && !cellFree(nx - fz, nz + fx)) return false;
-  return true;
+  out.sort((a, b) => a.dist - b.dist);
+  return out;
 }
 
-// Exit-tunnel gate: a non-touch lane may only turn onto an exit whose first
+// Turn-tunnel gate: a non-touch lane may only turn onto an exit whose first
 // step stays tunneled — neither side of the C→A segment fully open (on each
 // side at least one of the two segment-flanking cells, current or ahead, is
 // unwalkable). True 1-wide arms pass, including 1-cell jogs whose bend opens
@@ -138,7 +300,7 @@ export function mouthOpen(px, pz, axis, cellFree) {
 // into a wide space would servo for hundreds of ticks outside any tunnel.
 // Solid and drop walls read alike through the injected cellFree.
 // Pure and headless-tested.
-export function exitTunneled(px, pz, exitAxis, cellFree) {
+export function segmentTunneled(px, pz, exitAxis, cellFree) {
   const [fx, fz] = dirVec(exitAxis);
   const cx = Math.floor(px), cz = Math.floor(pz);
   const nx = cx + fx, nz = cz + fz;
@@ -148,6 +310,36 @@ export function exitTunneled(px, pz, exitAxis, cellFree) {
   return true;
 }
 
+// Single tunnel rule behind every non-touch lane: straights hold both
+// flanks walled here (block or drop, virtual wall included); junction and
+// lock-turn exits hold the first step's segment tunneled instead.
+export function laneTunneled(event, axis, walled, px, pz, cellFree) {
+  if (event === "junction" || event === "lock-turn") {
+    return segmentTunneled(px, pz, axis, cellFree);
+  }
+  const walledDir = (d) => walled.some((w) => yawDiff(w, d) < 1e-6);
+  return walledDir(normYaw(axis + Math.PI / 2)) && walledDir(normYaw(axis - Math.PI / 2));
+}
+
+// 2-wide lane motif (XOOX around the mob cell): the travel run reads free
+// fore and aft, exactly one adjacent lateral cell stands blocked (the near
+// edge), and the cell two over past the open side stands blocked (the far
+// edge). The mob threads a 2-wide passage and must walk it straight —
+// flank grazes inside one are passage, never contact, so the flank latch
+// declines them instead of yanking the mob onto an edge line. Lone walls
+// (far side open), L corners (run blocked) and true 1-wide cells (both
+// flanks blocked) all fail the motif and latch normally. Pure.
+export function isTwoWideLane(bcx, bcz, axis, cellFree) {
+  const [fx, fz] = dirVec(axis);
+  const [lx, lz] = dirVec(normYaw(axis + Math.PI / 2));
+  if (!cellFree(bcx + fx, bcz + fz) || !cellFree(bcx - fx, bcz - fz)) return false;
+  const leftBlocked = !cellFree(bcx + lx, bcz + lz);
+  const rightBlocked = !cellFree(bcx - lx, bcz - lz);
+  if (leftBlocked === rightBlocked) return false;
+  const open = leftBlocked ? -1 : 1;
+  return !cellFree(bcx + lx * 2 * open, bcz + lz * 2 * open);
+}
+
 export function closestDir(yaw, dirs) {
   let best = dirs[0], bd = yawDiff(yaw, dirs[0]);
   for (let i = 1; i < dirs.length; i++) {
@@ -155,85 +347,6 @@ export function closestDir(yaw, dirs) {
     if (d < bd) { bd = d; best = dirs[i]; }
   }
   return best;
-}
-
-// Bounded-hole scan (R5): the single scan behind the servo funnel and
-// the roam gap override. A run counts only when walled on both flanks
-// (a true hole, never an open edge), its middle cell runs on along the
-// axis (a through route, never a side alcove), and the lateral transit
-// from the axis is itself walkable. Side mouths never qualify, so
-// junction corners stay blended and parallel corridors never read as
-// gaps. Returns {axis, line} for the funnel drive plus {center, dist,
-// heading} for roam. Give-up + cooldown bound any wedge; the normal
-// flow resumes past the constriction.
-// Forward scan distances, lateral half-width/step. Minimum run width reads
-// a single body-fit offset (1-wide mouths align to exactly one).
-export const FUNNEL_DISTS = [1.0, 1.6];
-export const FUNNEL_LAT = 2.5;
-export const FUNNEL_STEP = 0.25;
-export const FUNNEL_MINW = 0.25;
-export const FUNNEL_GIVEUP = 1.0;
-export const FUNNEL_COOL = 2.0;
-
-export function scanGap(mob, axisYaw) {
-  const [fx, fz] = dirVec(axisYaw);
-  const latx = -fz, latz = fx;
-  const cellFree = makeCellFree(mob);
-  const fitBody = (yaw) => {
-    const base = makeStepOk(mob, true, false, 0, yaw, 0);
-    return (nx, nz) => base(nx, nz) && descendOk(mob, nx, nz);
-  };
-  const blockAt = (x, z) => !fitBody(axisYaw)(x, z);
-  const at = (dist, o) => blockAt(
-    mob.pos.x + fx * dist + latx * o, mob.pos.z + fz * dist + latz * o);
-  for (const dist of FUNNEL_DISTS) {
-    let best = null, runStart = null, prev = 0;
-    const close = () => {
-      if (runStart == null) return;
-      const width = prev - runStart + FUNNEL_STEP;
-      const boundedL = runStart > -FUNNEL_LAT + 1e-9 || at(dist, runStart - FUNNEL_STEP);
-      const boundedR = prev < FUNNEL_LAT - 1e-9 || at(dist, prev + FUNNEL_STEP);
-      const center = (runStart + prev) / 2;
-      const mcx = Math.floor(mob.pos.x + fx * dist + latx * center);
-      const mcz = Math.floor(mob.pos.z + fz * dist + latz * center);
-      // Through route + lateral transit: the mob must be able to slide to
-      // the mouth and walk on past it — a parallel corridor past solid
-      // rock reads as a gap otherwise (mouth walks, through route holds
-      // beyond the walls) and the funnel grinds along the wall toward an
-      // unreachable line, gives up, and drops the lane. Runs straddling
-      // the axis always pass transit.
-      let ok = cellFree(mcx + fx, mcz + fz) && cellFree(mcx - fx, mcz - fz);
-      const step = center > 0 ? FUNNEL_STEP : -FUNNEL_STEP;
-      for (let o = 0; ok && Math.abs(o) <= Math.abs(center) + 1e-9; o += step) {
-        if (at(0, o)) ok = false;
-      }
-      if (width >= FUNNEL_MINW && boundedL && boundedR && ok &&
-          (!best || width > best.width ||
-            (width === best.width && Math.abs(center) < Math.abs(best.center)))) {
-        best = { width, center, mcx, mcz };
-      }
-      runStart = null;
-    };
-    for (let o = -FUNNEL_LAT; o <= FUNNEL_LAT + 1e-9; o += FUNNEL_STEP) {
-      if (!at(dist, o)) { if (runStart == null) runStart = o; prev = o; }
-      else close();
-    }
-    close();
-    if (best) {
-      const narrow = best.width < 1.0;
-      const line = (fx === 0)
-        ? (narrow ? best.mcx + 0.5 : mob.pos.x + latx * best.center)
-        : (narrow ? best.mcz + 0.5 : mob.pos.z + latz * best.center);
-      const gx = mob.pos.x + fx * (dist + 1.0) + latx * best.center;
-      const gz = mob.pos.z + fz * (dist + 1.0) + latz * best.center;
-      return {
-        axis: axisYaw, line,
-        center: best.center, dist,
-        heading: Math.atan2(gx - mob.pos.x, gz - mob.pos.z),
-      };
-    }
-  }
-  return null;
 }
 
 // Every open direction except the way we came from (no U-turn at junctions).
@@ -248,9 +361,9 @@ export function pickExit(options, rand = Math.random) {
 
 // Lane state: null in the open, else {axis, entry, lockX, lockZ}.
 // axis = forward cardinal heading, entry = backward cardinal heading,
-// lock = junction cell already decided (no re-pick inside it). Open-space
-// release is decided in the mover via flanksOpen (both flanks truly open),
-// and the mover drops any non-touch lane cruising untunneled — never
+// lock = junction cell already decided (no re-pick inside it). A lane
+// cruising where neither flank reads blocked (single-wall walks,
+// widenings, room crossings) drops to roam in the mover — never counted
 // counted here: consecutive junctions (bars, cross mazes) keep picking,
 // which is correct exploration.
 // Engagement is tunnel-gated: the engaged axis must read blocked on both

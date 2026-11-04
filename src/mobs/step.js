@@ -4,8 +4,8 @@
 // OR missing headroom — air walls and physical walls read identically), the
 // pit guard (descendOk: a descent with no same-level continuation is a wall),
 // stride validation, the two gated moves (vector for the servo, axis-
-// separated for the wander), the unified drive (driveToward) behind the
-// funnel, the roam commit, and the wander fallback, the vertical plane
+// separated for the wander), the unified drive (driveToward) behind entry
+// commits, the roam commit, and the wander fallback, the vertical plane
 // (stepVertical), and the shared lane teardown (dropLane). Three-free;
 // positions are plain {x, y, z}.
 import { BLOCK_INFO, isLiquid } from "../core/blocks.js";
@@ -43,7 +43,7 @@ export const SERVO_STEP = 1 / 60;
 
 const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
 
-// One gated drive behind the funnel, the roam commit, and the wander
+// One gated drive behind entry commits, the roam commit, and the wander
 // fallback: face yawTarget at rate, then advance speed·cos(err) through
 // the given clamped move (moveVector for the servo — it never stair-steps
 // around L corners — moveClamped elsewhere, which slides along walls).
@@ -62,6 +62,31 @@ export function driveToward(mob, dt, yawTarget, makeStep, move, opts = {}) {
   const bx = mob.pos.x, bz = mob.pos.z;
   move(mob, bx + Math.sin(mob.yaw) * stride, bz + Math.cos(mob.yaw) * stride, stepOk);
   return { err, dist: Math.hypot(mob.pos.x - bx, mob.pos.z - bz) };
+}
+
+// Wall-slide deflection for lanelless drives: a direct heading whose full
+// stride is nose-blocked but whose single-axis projection walks is re-faced
+// along the free axis instead of grinding nose-first with halving
+// micro-steps (the 45° scrape stutter: the nose disc vetoes the slide the
+// body could take). Both-free (diagonal clip) and both-blocked keep the
+// direct goal — moveClamped slides the former, the stall path owns the
+// latter. Entry commits skip it (they wedge, stall, and convert to a
+// hole-ward guided ride instead). Returns the goal to drive.
+export function slideDeflect(mob, dt, yawGoal, supported, floating) {
+  const stride = mob.speed * dt;
+  if (!(stride > 1e-9)) return yawGoal;
+  const dx = Math.sin(yawGoal) * stride, dz = Math.cos(yawGoal) * stride;
+  const probeAs = (yaw) => makeStepOk(mob, supported, floating, mob.nose.along, yaw);
+  if (probeAs(yawGoal)(mob.pos.x + dx, mob.pos.z + dz)) return yawGoal;
+  // Each projection is probed facing along its own axis: the slide turns
+  // the head out of the wall, so the diagonal nose reach must not veto the
+  // axis the body walks.
+  const xYaw = Math.atan2(dx, 0), zYaw = Math.atan2(0, dz);
+  const xOk = probeAs(xYaw)(mob.pos.x + dx, mob.pos.z);
+  const zOk = probeAs(zYaw)(mob.pos.x, mob.pos.z + dz);
+  if (xOk && !zOk) return xYaw;
+  if (zOk && !xOk) return zYaw;
+  return yawGoal;
 }
 
 // Tiny deterministic PRNG (mulberry32): junction randomness gets its own
@@ -349,13 +374,15 @@ export function segmentWalkable(mob, x0, z0, x1, z1) {
   return true;
 }
 
-// Shared stride target: random heading (or the given one) + 4–10 m, first
-// validating (destination rules plus the whole segment). Single pick path
-// for the farm picker and roam commits.
-export function strideTarget(mob, heading = null, rand = Math.random) {
+// Shared stride target: random heading (or the given one) + stride length,
+// first validating (destination rules plus the whole segment). Single pick
+// path for the farm picker and roam commits. The range defaults to the
+// wander stride (4–10 m); lane-drop follow-throughs pass a shorter one so
+// a mob can commit a step or two out of a mouth instead of re-deciding.
+export function strideTarget(mob, heading = null, rand = Math.random, minD = WANDER_MIN, maxD = WANDER_MAX) {
   for (let t = 0; t < 12; t++) {
     const h = heading ?? rand() * Math.PI * 2;
-    const dist = WANDER_MIN + rand() * (WANDER_MAX - WANDER_MIN);
+    const dist = minD + rand() * (maxD - minD);
     const sx = Math.floor(mob.pos.x + Math.sin(h) * dist) + 0.5;
     const sz = Math.floor(mob.pos.z + Math.cos(h) * dist) + 0.5;
     const gy = groundBelow(sx, mob.pos.y + 1, sz);

@@ -28,7 +28,7 @@ export const LAYOUTS = {
     for (let x = 0; x <= 5; x++) { c.push([x, 2], [x, 3]); }
     return [...new Map(c.map((p) => [`${p[0]},${p[1]}`, p])).values()];
   })(),
-  funnel21: [[0, 0], [1, 0], [0, 1], [1, 1], [0, 2], [1, 2], [1, 3], [1, 4], [1, 5], [1, 6]],
+  narrow21: [[0, 0], [1, 0], [0, 1], [1, 1], [0, 2], [1, 2], [1, 3], [1, 4], [1, 5], [1, 6]], // 2-wide narrowing to 1-wide
   doorway: [[2, 0], [2, 1], [2, 2]],
   t2: [[1, 0], [1, 1], [-1, 2], [0, 2], [1, 2], [2, 2], [3, 2], [-1, 3], [0, 3], [1, 3], [2, 3], [3, 3]],
   mouth: [[0, 0], [0, 1], [0, 2], [0, 3]],
@@ -42,10 +42,10 @@ export const DOOR_WALLS = [
 
 export const STARTS = {
   straight: [0, 0], l: [0, 0], t: [1, 0], cross: [1, -1], zigzag: [0, 0], deadend: [0, 0],
-  straight2: [0, 0], l2: [0, 0], funnel21: [0, 0], doorway: [2, 0], t2: [1, 0], mouth: [0, 0],
+  straight2: [0, 0], l2: [0, 0], narrow21: [0, 0], doorway: [2, 0], t2: [1, 0], mouth: [0, 0],
   fencering: [4, 0],
 };
-export const START_OFF = { straight2: [-0.15, 0], l2: [0.5, 0], funnel21: [0.5, 0] };
+export const START_OFF = { straight2: [-0.15, 0], l2: [0.5, 0], narrow21: [0.5, 0] };
 
 // Flat, far from the pen and spawn so pen mobs never interact.
 const OX = 40, OZ = 40;

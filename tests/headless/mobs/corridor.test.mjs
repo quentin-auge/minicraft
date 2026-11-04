@@ -1,9 +1,11 @@
 // Pure corridor-policy tests: no voxels, no store, scripted open sets.
-// The kinematic proof (real mover + real voxels) is mob-paths.test.mjs.
+// Entry detection (findEntries) is pure here; the kinematic proof (real
+// mover + real voxels, attraction draws, cooldowns) is mob-paths.test.mjs.
 import assert from "node:assert/strict";
 import {
   normYaw, yawDiff, snapCardinal, oppositeYaw, dirVec,
-  rayDist, sideBranch, classifyExits, flanksOpen, mouthOpen, exitTunneled,
+  rayDist, sideBranch, classifyExits, segmentTunneled, isTwoWideLane, findEntries,
+  ENTRY_R_1W, ENTRY_R_2W, ENTRY_P, MIN_FLANK,
   junctionOptions, pickExit, updateLane,
 } from "../../../src/mobs/corridor.js";
 
@@ -70,38 +72,7 @@ console.log("PASS rayDist");
 }
 console.log("PASS no-pinball-2wide");
 
-// --- flanksOpen: true open on both sides, never a corridor ---
-{
-  // Open field: everything walks.
-  const field = () => true;
-  assert.equal(flanksOpen(0.5, 0.5, N, field), true);
-  // 1-wide corridor: mouths blocked.
-  const corr1 = (bx) => bx === 0;
-  assert.equal(flanksOpen(0.5, 0.5, N, (bx, bz) => corr1(bx)), false);
-  // 2-wide corridor (cells 0,1): far cells blocked.
-  const corr2 = (bx) => bx === 0 || bx === 1;
-  assert.equal(flanksOpen(1.0, 2.5, N, (bx) => corr2(bx)), false);
-}
-console.log("PASS flanksOpen");
-
-// --- mouthOpen: tunnel mouth onto a field, never a true junction ---
-{
-  // Mouth at (0,4): corridor walls (±1,0..3), open field past z=4.
-  const bank = new Set(["1,0", "-1,0", "1,1", "-1,1", "1,2", "-1,2", "1,3", "-1,3"]);
-  const cellFree = (bx, bz) => !bank.has(`${bx},${bz}`);
-  assert.equal(mouthOpen(0.5, 4.5, N, cellFree), true);
-  // Mid-corridor: mouths walled.
-  assert.equal(mouthOpen(0.5, 1.5, N, cellFree), false);
-  // Cross center (backward rows walk): a decision, not an exit.
-  assert.equal(mouthOpen(1.5, 1.5, N, () => true), false);
-  // Turn into an arm (tunnel ahead): no exit.
-  const armAhead = new Set(["2,0", "0,0", "2,2", "0,2", "3,1", "-1,1"]);
-  const armFree = (bx, bz) => !armAhead.has(`${bx},${bz}`);
-  assert.equal(mouthOpen(1.5, 1.5, E, armFree), false);
-}
-console.log("PASS mouthOpen");
-
-// --- exitTunneled: a junction/lock-turn exit must keep the 1-wide rail ---
+// --- segmentTunneled: a junction/lock-turn exit must keep the 1-wide rail ---
 // A step C→A is tunneled unless a whole side of the segment stands open.
 // 1-cell jogs pass (the bend walls the other half of the segment); room,
 // widening, field, and 2-wide steps fail a side and release to roam.
@@ -110,23 +81,187 @@ console.log("PASS mouthOpen");
   // ([1,0]), south walled on the current half ([0,2]) — the bend counts.
   const jog = new Set(["1,0", "0,2", "-1,1", "0,0", "2,1"]);
   const jogFree = (bx, bz) => !jog.has(`${bx},${bz}`);
-  assert.equal(exitTunneled(0.5, 1.5, E, jogFree), true);
+  assert.equal(segmentTunneled(0.5, 1.5, E, jogFree), true);
   // T arm east from (1,2) to (2,2): both halves walled per side.
   const tee = new Set(["2,1", "2,3", "1,3", "0,2"]);
   const teeFree = (bx, bz) => !tee.has(`${bx},${bz}`);
-  assert.equal(exitTunneled(1.5, 2.5, E, teeFree), true);
+  assert.equal(segmentTunneled(1.5, 2.5, E, teeFree), true);
   // Room step west from (0,4) to (-1,4): north side fully open.
   const room = new Set(["-2,4", "2,4", "-2,5", "2,5", "-1,6", "0,6", "1,6"]);
   const roomFree = (bx, bz) => !room.has(`${bx},${bz}`);
-  assert.equal(exitTunneled(0.5, 4.5, W, roomFree), false);
+  assert.equal(segmentTunneled(0.5, 4.5, W, roomFree), false);
   // Field step north from (0,4) to (0,5): west side fully open.
-  assert.equal(exitTunneled(0.5, 4.5, N, () => true), false);
+  assert.equal(segmentTunneled(0.5, 4.5, N, () => true), false);
   // 2-wide step north with the parallel lane open both halves: not 1-wide.
   const wide2 = new Set(["-1,2", "-1,3", "2,2", "2,3"]);
   const wide2Free = (bx, bz) => !wide2.has(`${bx},${bz}`);
-  assert.equal(exitTunneled(0.5, 2.5, N, wide2Free), false);
+  assert.equal(segmentTunneled(0.5, 2.5, N, wide2Free), false);
 }
-console.log("PASS exitTunneled");
+console.log("PASS segmentTunneled");
+
+// --- isTwoWideLane: XOOX motif around the mob cell, travel along N ---
+// Lane cells x=0,1 at row z=2 (walls x=-1,2), run free north+south.
+// The mover's engage veto and the flank-latch guard dispatch through this;
+// the kinematic proof (off-centre straight walks hold their line, contact
+// exit rides glue gently) is wide-straight / exit-gentle in mob-paths.
+{
+  const lane = new Set(["-1,2", "2,2"]);
+  const laneFree = (bx, bz) => !lane.has(`${bx},${bz}`);
+  assert.equal(isTwoWideLane(0, 2, N, laneFree), true); // left cell, edge west
+  assert.equal(isTwoWideLane(1, 2, N, laneFree), true); // right cell, edge east
+  // Lone wall west, open field east: wall-following latches normally.
+  const lone = new Set(["-1,2"]);
+  assert.equal(isTwoWideLane(0, 2, N, (bx, bz) => !lone.has(`${bx},${bz}`)), false);
+  // L corner: run blocked south.
+  const corner = new Set(["-1,2", "2,2", "0,1", "1,1"]);
+  assert.equal(isTwoWideLane(0, 2, N, (bx, bz) => !corner.has(`${bx},${bz}`)), false);
+  // True 1-wide: both flanks blocked.
+  const one = new Set(["-1,2", "1,2"]);
+  assert.equal(isTwoWideLane(0, 2, N, (bx, bz) => !one.has(`${bx},${bz}`)), false);
+  // Open field: nothing blocked.
+  assert.equal(isTwoWideLane(0, 2, N, () => true), false);
+}
+console.log("PASS isTwoWideLane");
+
+// --- entry tuning constants ---
+assert.equal(ENTRY_R_1W, 3.0);
+assert.equal(ENTRY_R_2W, 4.0);
+assert.equal(ENTRY_P, 0.5);
+assert.equal(MIN_FLANK, 2);
+console.log("PASS entry-tuning");
+
+// --- findEntries 1-wide: mouth + 2 depth free (entry included), open approach ---
+// Corridor (0,2..4) with banks at x=±1 (z=2..4), open field elsewhere.
+{
+  const bank = new Set(["1,2", "-1,2", "1,3", "-1,3", "1,4", "-1,4"]);
+  const cellFree = (bx, bz) => !bank.has(`${bx},${bz}`);
+  const found = findEntries(0.5, 5.5, cellFree);
+  assert.equal(found.length, 2);
+  assert.equal(found[0].kind, "one");
+  assert.deepEqual([found[0].bx, found[0].bz], [0, 4]);
+  assert.ok(Math.abs(found[0].dist - 1.0) < 1e-9);
+  assert.deepEqual([found[0].x, found[0].z], [0.5, 4.5]);
+  // Far mouth still in range (dist exactly ENTRY_R_1W = 3.0), sorted second.
+  assert.deepEqual([found[1].bx, found[1].bz], [0, 2]);
+  // Past it reads out.
+  assert.ok(!findEntries(0.5, 5.6, cellFree).some((e) => e.bx === 0 && e.bz === 2));
+  // Past 1-wide range the far mouth drops (near one stays).
+  assert.ok(!findEntries(0.5, 6.5, cellFree).some((e) => e.bx === 0 && e.bz === 2));
+  assert.ok(findEntries(0.5, 6.5, cellFree).some((e) => e.bx === 0 && e.bz === 4));
+  // Mouth flank opening kills the mouth (the far one is out of 1-wide range).
+  const opened = new Set([...bank].filter((k) => k !== "1,4"));
+  const openedFree = (bx, bz) => !opened.has(`${bx},${bz}`);
+  assert.ok(!findEntries(0.5, 6.5, openedFree).some((e) => e.bx === 0 && e.bz === 4));
+  // Walled-shut depth kills it: behind2 blocked, no run to walk.
+  const shallow = new Set([...bank, "0,2"]);
+  const shallowFree = (bx, bz) => !shallow.has(`${bx},${bz}`);
+  assert.ok(!findEntries(0.5, 6.5, shallowFree).some((e) => e.bx === 0 && e.bz === 4));
+  // Depth flanks are NOT required: opening a depth flank keeps the mouth.
+  const openDepth = new Set([...bank].filter((k) => k !== "1,3"));
+  assert.ok(findEntries(0.5, 6.5, (bx, bz) => !openDepth.has(`${bx},${bz}`))
+    .some((e) => e.kind === "one" && e.bx === 0 && e.bz === 4),
+    "open depth flank: mouth still lists");
+  // Lone pillar flank never holds a mouth: stripping a whole flank file
+  // down to the mouth row alone (held 1 < MIN_FLANK) kills it, while a
+  // single open depth cell keeps it (held 2).
+  const pillar = new Set([...bank].filter((k) => k !== "1,3" && k !== "1,2"));
+  assert.ok(!findEntries(0.5, 6.5, (bx, bz) => !pillar.has(`${bx},${bz}`))
+    .some((e) => e.kind === "one" && e.bx === 0 && e.bz === 4),
+    "pillar flank: no mouth");
+  // 1-wide keeps the single-side approach clause: walling one approach
+  // flank (corner-door shape) keeps the mouth.
+  const oneSide = new Set([...bank, "1,5"]);
+  assert.ok(findEntries(0.5, 6.5, (bx, bz) => !oneSide.has(`${bx},${bz}`))
+    .some((e) => e.kind === "one" && e.bx === 0 && e.bz === 4),
+    "single-open approach: 1-wide still lists");
+  // Mid-corridor cells never match (approach itself walled both sides):
+  // only the two true mouths list, even standing inside.
+  const inside = findEntries(0.5, 3.5, cellFree);
+  assert.ok(inside.every((e) => (e.bx === 0 && e.bz === 4) || (e.bx === 0 && e.bz === 2)),
+    `only mouths, got ${JSON.stringify(inside)}`);
+}
+console.log("PASS findEntries-one");
+
+// --- findEntries 2-wide: pair with 2x3 free (entry included), unified rule ---
+// Same structural rule as 1-wide: mouth flanks walled and held (MIN_FLANK
+// each side), approach free with at least one open side — one edge may
+// start while the other runs longer.
+{
+  // Passage (0,0)+(1,0), banks (-1,0..1),(2,0..1), open field around.
+  const wall = new Set(["-1,0", "2,0", "-1,1", "2,1"]);
+  const cellFree = (bx, bz) => !wall.has(`${bx},${bz}`);
+  const found = findEntries(0.5, -3, cellFree);
+  assert.equal(found.length, 1);
+  assert.equal(found[0].kind, "two");
+  assert.deepEqual([found[0].x, found[0].z], [1.0, 0.5]);
+  assert.ok(Math.abs(found[0].dist - Math.hypot(0.5, 3.5)) < 1e-9);
+  assert.deepEqual([found[0].ax, found[0].az], [0.5, 0.5]);
+  assert.deepEqual([found[0].bx2, found[0].bz2], [1.5, 0.5]);
+  // Out of range: nothing.
+  // Range edge: midpoint dist exactly ENTRY_R_2W reads in, past it out.
+  // (Other stacked pairs may list too — assert on the (0,0) pair itself.)
+  const edgeIn = findEntries(1.0, 4.5, cellFree).filter((e) => e.kind === "two");
+  assert.ok(edgeIn.some((e) => e.bx === 0 && e.bz === 0), "edge pair still lists at exactly ENTRY_R_2W");
+  assert.ok(!findEntries(1.0, 4.6, cellFree).some((e) => e.kind === "two" && e.bx === 0 && e.bz === 0));
+  assert.equal(findEntries(0.5, -4.5, cellFree).length, 0);
+  // Missing outer mouth wall: not a passage.
+  assert.equal(findEntries(0.5, -3, (bx, bz) => (bx === 2 && bz === 0) || !wall.has(`${bx},${bz}`)).length, 0);
+  // Blocked depth row: no 2x3 run.
+  const holed = new Set([...wall, "1,1"]);
+  assert.equal(findEntries(0.5, -3, (bx, bz) => !holed.has(`${bx},${bz}`)).length, 0);
+  // Depth flanks may read walled (unified rule): walls tight on both
+  // depth rows still list.
+  const tight = new Set([...wall, "-1,2", "2,2"]);
+  assert.equal(findEntries(0.5, -3, (bx, bz) => !tight.has(`${bx},${bz}`)).filter((e) => e.kind === "two").length, 1);
+  // Walled-shut run kills it: both neighbouring rows blocked, so the pair
+  // has neither depth nor approach in either direction.
+  const shut = new Set([...wall, "0,-1", "1,-1", "0,1", "1,1"]);
+  assert.equal(findEntries(0.5, -3, (bx, bz) => !shut.has(`${bx},${bz}`)).filter((e) => e.kind === "two").length, 0);
+  // Long-flank approach: a wall running on past the mouth on one side is
+  // still a mouth (one edge starts, the other runs longer) — the 2-wide
+  // shares the 1-wide at-least-one-open-side clause. The funneled
+  // direction lists like the open side.
+  for (const [wx, label] of [["-1,-1", "west"], ["2,-1", "east"]]) {
+    const funnel = new Set([...wall, wx]);
+    const ff = findEntries(0.5, -3, (bx, bz) => !funnel.has(`${bx},${bz}`)).filter((e) => e.kind === "two");
+    assert.ok(ff.length >= 1, `long flank ${label}: mouth still lists`);
+    assert.ok(ff.some((e) => e.axis === 0), `long flank ${label}: funneled direction lists`);
+  }
+  // Pillar flanks never hold a 2-wide mouth: stripping both flank files
+  // down to the mouth row alone kills it.
+  const stubs = new Set(["-1,0", "2,0"]);
+  assert.equal(findEntries(0.5, -3, (bx, bz) => !stubs.has(`${bx},${bz}`)).filter((e) => e.kind === "two").length, 0);
+  // Rotated 90°: pair (0,0)+(0,1), banks (0,-1..0),(0,2..3) along +x.
+  // (Held banks stack: the run behind reads as a second mouth facing back;
+  // assert on the front pair itself.)
+  const vwall = new Set(["0,-1", "0,2", "1,-1", "1,2"]);
+  const vfree = (bx, bz) => !vwall.has(`${bx},${bz}`);
+  const vfound = findEntries(3.5, 1.0, vfree).filter((e) => e.kind === "two");
+  assert.ok(vfound.some((e) => e.bx === 0 && e.bz === 0), "rotated pair lists");
+  const vfront = vfound.find((e) => e.bx === 0 && e.bz === 0);
+  assert.deepEqual([vfront.x, vfront.z], [0.5, 1.0]);
+}
+console.log("PASS findEntries-two");
+
+// --- findEntries: no thin-wall motif — a 1-thick hole without 3-depth never lists ---
+// Wall x=2 (z=-2..2) with the cell (2,0) knocked out, but the run behind
+// walled shut at (1,0): no mouth + 2 depth, so nothing lists from either
+// side. A mid-corridor cell never reads as a mouth either (approach walled
+// both sides on the banks rig).
+{
+  const wall = new Set(["2,-2", "2,-1", "1,0", "2,1", "2,2"]);
+  const free = (bx, bz) => !wall.has(`${bx},${bz}`);
+  assert.ok(!findEntries(4.5, 0.5, free).some((e) => e.bx === 2 && e.bz === 0),
+    `shut depth: no mouth, got ${JSON.stringify(findEntries(4.5, 0.5, free))}`);
+  assert.ok(!findEntries(0.5, 0.5, free).some((e) => e.bx === 2 && e.bz === 0),
+    "shut depth: no mouth from inside");
+  // Mid-corridor cell (banks rig): approach walled both ways, never a mouth.
+  const bank = new Set(["1,2", "-1,2", "1,3", "-1,3", "1,4", "-1,4"]);
+  const bankFree = (bx, bz) => !bank.has(`${bx},${bz}`);
+  assert.ok(!findEntries(0.5, 3.5, bankFree).some((e) => e.bx === 0 && e.bz === 3),
+    "mid-corridor: no mouth");
+}
+console.log("PASS findEntries-no-thin-hole");
 
 // --- junctionOptions excludes the entry way (no U-turn at junctions) ---
 assert.deepEqual(new Set(junctionOptions([N, S, E, W], S)), new Set([N, E, W]));
@@ -227,7 +362,7 @@ console.log("PASS cruise-heals-entry");
 console.log("PASS t-junction-branches");
 
 // --- consecutive junctions keep picking (bars, cross mazes): open-space
-// release lives in the mover's flanksOpen guard, never here ---
+// release lives in the mover's tunnel hold, never here ---
 {
   let lane = { axis: N, entry: S, lockX: -1, lockZ: -1 };
   let r = updateLane(lane, 0, 0, N, [N, S, E], mulberry32(7));
