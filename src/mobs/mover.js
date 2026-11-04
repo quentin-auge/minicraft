@@ -7,19 +7,23 @@
 import { FARM_WALK_DIVISOR } from "./livestock.js";
 import {
   PROBE_DIST, normYaw, yawDiff, dirVec, cellCenter, oppositeYaw, snapCardinal,
-  CARDINALS,   classifyExits, updateLane, flanksOpen, mouthOpen, exitTunneled, scanGap, FUNNEL_GIVEUP, FUNNEL_COOL,
+  CARDINALS, classifyExits, updateLane, laneTunneled,
+  VIOLET_HOLD_D, ENTRY_COOL_T,
 } from "./corridor.js";
+import { entryTick } from "./entry.js";
 import {
   aabbIntersectsSolid, hasSupport,
   liquidSurface, footingOk, headroomOk,
   makeCellFree, makeStepOk, descendOk, turnTo,
   moveClamped, moveVector, driveToward, dropLane, spawnRng, stepVertical,
-  SERVO_STEP, VIRTUAL_W,
+  SERVO_STEP, VIRTUAL_W, slideDeflect,
 } from "./step.js";
 import {
   upkeepFollowLine, roamStep, roamSpan, ARRIVE_D, FOLLOW_COOL,
   latchTouchWall, latchFlankTouch, measureWallTake, cornerTurn,
   sameWallFace, connectedTake, wallQuitHeading, wallQuitCommit, WALL_TURN_EXIT_P,
+  exitTunnel, exitRideOut, tryGuidedErect, guidedDock, entryStallLatch,
+  GENTLE_RATE, GENTLE_FRESH_TICKS,
 } from "./roam.js";
 // Re-exports: the headless rigs read shared physics through this module.
 export { aabbIntersectsSolid, segmentWalkable } from "./step.js";
@@ -47,63 +51,17 @@ export const BLEND_T = 0.3;
 // onto the new line), so it never re-decides mid-arc.
 export const TURN_HOLD_TICKS = 30;
 // Pushing against a wall toward an unreachable target re-picks this fast
-// instead of waiting out wanderT, so a breach gets used instead of missed.
+// instead of waiting out wanderT, so a hole gets used instead of missed.
 export const STUCK_T = 0.5;
 // Separation gap added to every circle-pair need, and vertical gate:
 // mobs more than this far apart in Y never interact.
 export const SEP_GAP = 0.1;
 export const SEP_Y = 1.2;
 
-// R0b pit guard (imported from step.js): a descent the mob can never climb
-// back out of reads as a wall; ramps and liquid entries pass through.
-// Doorway scan: facing a wall, look for a contiguous free run across the
-// forward distances. A run counts only when walled on both flanks — a true
-// hole, never an open edge — and when its middle cell runs on along the
-// Funnel drive toward the committed lateral line: face the axis, advance
-// forward and slide sideways as two independently gated moves (never one
-// diagonal — diagonals wedge into step-wall pockets). Give-up + cooldown
-// bound any wedge; the normal flow resumes past the constriction.
-export function funnelDrive(mob, dt, funnel, supported, floating) {
-  const { axis, line } = funnel;
-  const [ax, az] = dirVec(axis);
-  // Level routes only (see descendOk): a funnel that descends into a pit
-  // strands the mob below with no way back up.
-  const makeDrive = () => {
-    const baseOk = makeStepOk(mob, supported, floating, 0, mob.yaw, 0);
-    return (nx, nz) => baseOk(nx, nz) && descendOk(mob, nx, nz);
-  };
-  const fwd = driveToward(mob, dt, axis, makeDrive, moveVector, { rate: SERVO_TURN });
-  let moved = fwd.dist > 1e-6;
-  if (fwd.err < SERVO_SPIN) {
-    const cur = ax === 0 ? mob.pos.x : mob.pos.z;
-    const e = line - cur;
-    const cap = mob.speed * dt * 0.9;
-    const c = Math.max(-cap, Math.min(cap, e));
-    if (Math.abs(c) > 1e-4) {
-      const baseOk = makeStepOk(mob, supported, floating, 0, axis, 0);
-      const axisOk = (nx, nz) => baseOk(nx, nz) && descendOk(mob, nx, nz);
-      const tx = ax === 0 ? mob.pos.x + c : mob.pos.x;
-      const tz = ax === 0 ? mob.pos.z : mob.pos.z + c;
-      if (axisOk(tx, tz)) {
-        moved = moved || Math.abs(c) > 1e-6;
-        mob.pos.x = tx; mob.pos.z = tz;
-      }
-    }
-  }
-  if (!moved && fwd.err < SERVO_SPIN) mob.funnelT = (mob.funnelT ?? 0) + dt;
-  else if (moved) mob.funnelT = 0;
-  if ((mob.funnelT ?? 0) > FUNNEL_GIVEUP) {
-    mob.funnelT = 0; mob.funnelCool = FUNNEL_COOL;
-    return false;
-  }
-  mob.stuckT = 0;
-  return true;
-}
-
 // Stride validation (imported from step.js): destination rules plus the
 // whole segment, so fences, house walls, and troughs bound targets
 // emergently — no pen fork.
-// Permanent 1-path centering: the single lateral slide behind every lane
+// Permanent 1-path centering: the single lateral pull behind every lane
 // event (engage/junction/lock-turn, dead-end seek) and every cruise tick —
 // so blend arcs exit centered and turns never slide sideways. Same target
 // in both cases (follow-line middle while wall-following, with opposite
@@ -114,7 +72,7 @@ export function funnelDrive(mob, dt, funnel, supported, floating) {
 // it was latched against); cruise holds the latched line unconditionally.
 // Returns the applied slide (0 when refused) so the stall guard can credit
 // it as progress.
-function slideLateral(mob, dt, supported, floating, holdLine) {
+function centerPull(mob, dt, supported, floating, holdLine) {
   const [ax, az] = dirVec(mob.lane.axis);
   let ccx = cellCenter(mob.pos.x), ccz = cellCenter(mob.pos.z);
   const vw = mob.followLine;
@@ -133,7 +91,9 @@ function slideLateral(mob, dt, supported, floating, holdLine) {
     }
   }
   const e = (ccx - mob.pos.x) * -az + (ccz - mob.pos.z) * ax;
-  const cap = mob.speed * dt * 0.9;
+  // Gentle exit rides converge instead of yanking: same line target, a
+  // fraction of the stride per tick (see GENTLE_RATE in roam.js).
+  const cap = mob.speed * dt * (vw?.gentle === true ? GENTLE_RATE : 0.9);
   const c = Math.max(-cap, Math.min(cap, e));
   if (Math.abs(c) <= 1e-4) return 0;
   const centerBase = makeStepOk(mob, supported, floating, 0, mob.lane.axis, 0);
@@ -142,6 +102,15 @@ function slideLateral(mob, dt, supported, floating, holdLine) {
   if (!axisOk(tx, tz)) return 0;
   mob.pos.x = tx; mob.pos.z = tz;
   return Math.abs(c);
+}
+
+// Active guidance: an entry commit riding its own hole-ward line (guide
+// key stamped). Pending entries (commit waiting under a plain ride for the
+// nose to meet the wall) keep the legacy ride behavior — blue held until
+// the guided erect — so only active guides take the never-U-turn paths.
+function guidedActive(mob) {
+  return mob.roam?.entry === true &&
+    (mob.followLine?.guideKey ?? null) === mob.roam.passageKey;
 }
 
 // Invisible complementary wall: while a virtual follow line rides a real
@@ -178,7 +147,7 @@ function virtualWall(mob) {
 // Strictly-past only (no body margin): the wrap applies solely while the
 // mob stands inside its own corridor, so the probes at its own lateral
 // always read free — a margin would blind the forward probe from inside
-// the lane. Lane discipline comes from the slide pulling to the middle
+// the lane. Lane discipline comes from the pull toward the middle
 // (0.5 from the face, past body reach), never from the probes.
 function wrapStepOk(mob, stepOk) {
   const v = virtualWall(mob);
@@ -193,9 +162,12 @@ function wrapStepOk(mob, stepOk) {
 // drives run in order; each drive owns its motion.
 export function servoTick(mob, dt, supported, floating, rand = Math.random, pickTarget = null) {
   if (!supported || floating) { mob.lane = null; return false; }
-  // R2 upkeep first: the latched line below biases this very tick's slide.
+  // R2 upkeep first: the latched line below biases this very tick's pull.
   upkeepFollowLine(mob, dt);
-  if ((mob.funnelCool ?? 0) > 0) mob.funnelCool -= dt;
+  // Pending guided slide: an entry commit riding its touch line erects the
+  // hole-ward touch as soon as the nose meets the wall — no drop to a free
+  // commit, no pivot toward the mouth.
+  if (mob.lane && mob.roam?.entry) tryGuidedErect(mob, dt, supported, floating, rand);
   let sense = senseLane(mob);
   const pre = tryPreLane(mob, dt, supported, floating, sense, rand);
   if (pre === "touch") {
@@ -210,6 +182,30 @@ export function servoTick(mob, dt, supported, floating, rand = Math.random, pick
   const res = updateLane(mob.lane, cx, cz, mob.yaw, sense.opens, sense.walled, jrng);
   if (!res.lane) { dropLane(mob); return false; }
   mob.lane = res.lane;
+  // Engagement needs true flanks: both adjacent lateral cells blocked.
+  // Fat body probes clipping opposite corners (door-jamb corners, terrain
+  // slopes, junction mouths) read walled without any flanking wall — an
+  // engage there erects a false rail that drops a tick later into an
+  // exit-tunnel parade. True 1-wide cells (solid or drop both sides) and
+  // dead-end mouths pass unchanged; lone walls and open corners never did.
+  if (res.event === "engage") {
+    const [gax, gaz] = dirVec(res.lane.axis);
+    if (sense.cellFree(cx + gaz, cz - gax) || sense.cellFree(cx - gaz, cz + gax)) {
+      dropLane(mob);
+      return false;
+    }
+  }
+  // A committed (violet) mob never engages backward: a nose wedged on a
+  // hole edge can read forward-blocked with walled flanks, and the raw
+  // engage would point the lane back out — a demi-tour while violet. The
+  // direct walk (stall → hole-ward ride) owns the mouth instead.
+  if (res.event === "engage" && mob.roam?.entry && mob.target) {
+    const [gax, gaz] = dirVec(res.lane.axis);
+    if (gax * (mob.target.x - mob.pos.x) + gaz * (mob.target.z - mob.pos.z) <= 0) {
+      dropLane(mob);
+      return false;
+    }
+  }
   const touchRide = mob.followLine?.virtual === true && mob.followLine.touch === true && prevAxis != null;
   // Pinned rigs (tests) ride forever: always latch, never expire. The game
   // budget below only runs unpinned.
@@ -217,38 +213,82 @@ export function servoTick(mob, dt, supported, floating, rand = Math.random, pick
   // Ride budget expiry (game only; pinned rigs ride forever): the
   // roam-clock span ran out — leave 45° away from the wall, or keep
   // riding with a short extension when boxed in (never quit into a wall).
+  // A guided (violet) ride never quits away from its hole: release to the
+  // direct entry walk (re-armed) and re-approach instead.
   if (rideExits && (mob.followLine.t ?? 0) >= (mob.followLine.wallSpan ?? Infinity)) {
-    const h = wallQuitHeading(mob, supported, floating);
+    if (guidedActive(mob)) {
+      dropFollowLine(mob);
+      dropLane(mob);
+      mob.followCool = FOLLOW_COOL;
+      mob.roam.stallT = 0;
+      mob.roam.latchTried = false;
+      return false;
+    }
+    let h = wallQuitHeading(mob, supported, floating);
+    // Exit rides never turn back: a backward quit heading keeps riding
+    // instead (the wall-end outward quit handles the ending).
+    const ex = mob.followLine.exitRide;
+    if (ex != null && h != null) {
+      const [hx, hz] = dirVec(h), [exx, exz] = dirVec(ex);
+      if (hx * exx + hz * exz < -1e-9) h = null;
+    }
     if (h != null && wallQuitCommit(mob, h, rand, pickTarget)) return false;
     mob.followLine.t = 0; mob.followLine.wallSpan = 2;
   }
-  // Single tunnel rule behind every non-touch lane: engage and cruise hold
-  // both flanks walled (block or drop, virtual wall included); junction
-  // and lock-turn exits hold their arm tunneled instead (exitTunneled) —
+  // Single tunnel rule behind every non-touch lane (see laneTunneled):
   // a draw into a room, widening, or field releases to roam instead of
   // locking a red lane into the open. Dead-end seeks and touch rides keep
   // their own hold rules below.
-  const tunneledFor = (event, axis) => {
-    if (event === "junction" || event === "lock-turn") {
-      return exitTunneled(mob.pos.x, mob.pos.z, axis, sense.cellFree);
-    }
-    const latA = normYaw(axis + Math.PI / 2), latB = normYaw(axis - Math.PI / 2);
-    const walledDir = (d) => sense.walled.some((w) => yawDiff(w, d) < 1e-6);
-    return walledDir(latA) && walledDir(latB);
-  };
+  const tunneledFor = (event, axis) =>
+    laneTunneled(event, axis, sense.walled, mob.pos.x, mob.pos.z, sense.cellFree);
   if (!touchRide && (res.event === "engage" || res.event === "cruise" || res.event === "junction" || res.event === "lock-turn")) {
     // Strict 1-wide hold (see above): a lane cruising where neither flank
     // reads blocked (single-wall walks, widenings, room crossings) drops
     // to roam instead of persisting.
     if (!tunneledFor(res.event, res.lane.axis)) {
       dropLane(mob);
-      // Hold the next latch off so the commit walks clear of the wall
+      mob.followLine = null;
+      // Hold the next latch off so the exit walks clear of the wall
       // ends instead of flank-grazing straight back (mouth oscillation).
       mob.followCool = FOLLOW_COOL;
-      return false;
+      // Rail released at a tunnel mouth: 50/50 wall-follow vs free roam,
+      // never back inside — unless an entry commit owns the mob (its
+      // goal-directed walk survives over the exit draw). The exit runs
+      // along the incoming travel (a junction arm points back into the
+      // mouth complex — straightening it exits the tunnel instead of
+      // shuttling its arms); engages with no incoming lane keep the arm.
+      if (mob.roam?.entry) {
+        // The stall may re-accrue from the new spot (the hole can be
+        // latchable from there), so re-arm the directed touch.
+        mob.roam.stallT = 0;
+        mob.roam.latchTried = false;
+        return false;
+      }
+      return exitTunnel(mob, prevAxis ?? res.lane.axis, sense, dt, supported, floating, rand, pickTarget);
     }
   }
   if (res.event === "uturn") {
+    // A committed mob never flips 180°: convert to a hole-ward guided
+    // ride (violet survives on the guide key), else release to the direct
+    // walk and keep pushing — the stall path converts it next, the
+    // backstop exits forward. Only a boxed mob with no latchable wall
+    // falls through to the seek below.
+    if (guidedActive(mob)) {
+      if (entryStallLatch(mob, dt, supported, floating, rand)) {
+        res.lane = mob.lane;
+        res.event = "lock-turn";
+      } else {
+        dropFollowLine(mob);
+        dropLane(mob);
+        mob.followCool = FOLLOW_COOL;
+        mob.roam.stallT = 0;
+        mob.roam.latchTried = false;
+        return false;
+      }
+    } else {
+    // Exit rides never turn back into the mouth: quit outward instead of
+    // seeking the dead end (boxed falls back to the seek below).
+    if (touchRide && exitRideOut(mob, rand)) return false;
     // Inner corner: the nose met the perpendicular arm of
     // the same wall — the phantom-masked side mouth reads shut, so the
     // classifier reports a dead end. Turn into the arm (same wall, same
@@ -262,6 +302,7 @@ export function servoTick(mob, dt, supported, floating, rand = Math.random, pick
     mob.turnHold = TURN_HOLD_TICKS;
     res.event = "junction";
     res.lane = mob.lane;
+    }
   } else if (mob.turnHold > 0 && mob.followLine?.virtual === true && mob.followLine.touch === true) {
     // Fresh touch-ride turn: hold the new lane while the blend arc
     // completes — the router would otherwise re-decide mid-arc and flip
@@ -285,41 +326,69 @@ export function servoTick(mob, dt, supported, floating, rand = Math.random, pick
     // nose means a corridor situation (jog, notch), so a tunneled lane
     // keeps driving; anything else releases to roam now.
     const keep = followExit(mob, prevAxis);
-    if (!keep) {
-      let corner = sense.fwdOpen ? cornerTurn(mob, prevAxis) : null;
+  if (!keep) {
+    // Exit rides skip corner rounding (see followExit): a wall end quits
+    // outward at the U-turn site below instead of hooking the mouth tip.
+    let corner = sense.fwdOpen && mob.followLine?.exitRide == null ? cornerTurn(mob, prevAxis) : null;
       // Same wall only: corner rounding onto a disconnected wall (past
       // the tip, across open field) is a switch — refuse it and let the
       // in-place U-turn below keep the ride on its own wall instead.
       if (corner != null && !connectedTake(mob, prevAxis, corner.cell)) corner = null;
-      if (corner != null) {
-        // Outer-turn lottery: one time in five the ride exits straight on
-        // the pre-turn axis instead of rounding (game only — pinned rigs
-        // always round; commit failure rounds too).
-        if (mob.pinWallRide !== true && rand() < WALL_TURN_EXIT_P &&
-            wallQuitCommit(mob, prevAxis, rand, pickTarget)) return false;
+        if (corner != null) {
+          // Outer-turn lottery: one time in five the ride exits straight on
+          // the pre-turn axis instead of rounding (game only — pinned rigs
+          // always round; commit failure rounds too). A guided slide never
+          // lotteries out: rounding keeps it hole-ward.
+          if (mob.pinWallRide !== true && mob.followLine.guideKey == null &&
+              rand() < WALL_TURN_EXIT_P &&
+              wallQuitCommit(mob, prevAxis, rand, pickTarget)) return false;
         const { axis, face, dirSign, sideDir } = corner;
         const rel = yawDiff(sideDir, normYaw(axis - Math.PI / 2)) < 1e-9 ? 1 : -1;
         mob.lane = { axis, entry: oppositeYaw(axis), lockX: cx, lockZ: cz };
+        // Gentle rides stay gentle across the rounding (a full fresh here
+        // would reintroduce mid-ride the yank the latch softened).
+        const cornerGentle = mob.followLine.gentle === true;
         mob.followLine = {
           axis, line: face - dirSign * (VIRTUAL_W / 2), side: -dirSign,
-          rel, virtual: true, touch: true, fresh: TURN_HOLD_TICKS, face,
-          t: mob.followLine.t ?? 0, wallSpan: mob.followLine.wallSpan,
+          rel, virtual: true, touch: true,
+          fresh: cornerGentle ? GENTLE_FRESH_TICKS : TURN_HOLD_TICKS, face,
+          ...carriedRide(mob),
+          gentle: cornerGentle,
         };
         mob.stuckT = 0;
         mob.turnHold = TURN_HOLD_TICKS;
         res.event = "junction";
         res.lane = mob.lane;
       } else if (sense.fwdOpen) {
+        // A guided (violet) ride that lost its wall never U-turns in
+        // place. Rides can never turn into a hole (no wall to hug past the
+        // jamb), so a hole within stride reach on a walkable segment docks:
+        // drop the ride and finish on the direct walk. Otherwise the hole
+        // is still a walk off the line — hold straight along it (the stale
+        // face only biases the pull, the virtual wall only applies inside
+        // the corridor) until the segment walks or the wall resumes. The
+        // direct walk stays out of it until then: releasing early would
+        // wedge the nose on the jamb the ride is still aligning past.
+        if (guidedActive(mob)) {
+          if (guidedDock(mob)) return false;
+          mob.lane = { axis: prevAxis, entry: oppositeYaw(prevAxis), lockX: cx, lockZ: cz };
+          mob.stuckT = 0;
+          res.event = "lock-turn";
+          res.lane = mob.lane;
+        } else {
         // No solution with the way ahead open: U-turn in place and keep
         // the line (never drop) — the way back re-measures every tick, so
         // a face back in range turns the ride around again instead of
-        // pacing or leaving.
+        // pacing or leaving. Exit rides never turn back: quit outward
+        // instead (boxed falls back to the U-turn below).
         // The cell lock forces at least one cell of travel before the next
         // decision (no same-tick flip-flop).
+        if (mob.followLine?.exitRide != null && exitRideOut(mob, rand)) return false;
         mob.lane = { axis: oppositeYaw(prevAxis), entry: prevAxis, lockX: cx, lockZ: cz };
         mob.stuckT = 0;
         res.event = "uturn";
         res.lane = mob.lane;
+        }
       } else {
         dropFollowLine(mob);
         // Handing the corridor back to the rail: the kept lane must itself
@@ -327,7 +396,10 @@ export function servoTick(mob, dt, supported, floating, rand = Math.random, pick
         // cruises one tick in the wide before the next tick's hold drops
         // it. Blocked nose means a corridor situation (jog, notch), so a
         // tunneled lane keeps driving; anything else releases to roam now.
+        // Exit rides never turn back: quit outward first (boxed falls back
+        // to the release below).
         if (!tunneledFor(res.event, mob.lane.axis)) {
+          if (exitRideOut(mob, rand)) return false;
           dropLane(mob);
           mob.followCool = FOLLOW_COOL;
           return false;
@@ -335,15 +407,16 @@ export function servoTick(mob, dt, supported, floating, rand = Math.random, pick
       }
     } else {
       // Same lottery on a measured turn take with open front: exit straight
-      // one time in five instead of taking the turn.
-      if (mob.pinWallRide !== true && sense.fwdOpen && yawDiff(keep.axis, prevAxis) > 1e-6 &&
+      // one time in five instead of taking the turn. Guided slides skip it.
+      if (mob.pinWallRide !== true && mob.followLine.guideKey == null &&
+          sense.fwdOpen && yawDiff(keep.axis, prevAxis) > 1e-6 &&
           rand() < WALL_TURN_EXIT_P && wallQuitCommit(mob, prevAxis, rand, pickTarget)) return false;
       mob.lane = { axis: keep.axis, entry: oppositeYaw(keep.axis), lockX: cx, lockZ: cz };
       mob.followLine = keep.followLine;
     }
   }
   blendTurn(mob, dt, res);
-  return cruiseLane(mob, dt, supported, floating, res);
+  return cruiseLane(mob, dt, supported, floating, res, rand);
 }
 
 // Lane sensing: body-only direction probes (footNose 0, no nose disc — the
@@ -353,7 +426,7 @@ export function servoTick(mob, dt, supported, floating, rand = Math.random, pick
 // an open wall reads exactly like a 1-wide corridor.
 // descendOk gates pit mouths: a legal drop into a local minimum reads as a
 // wall (the drives below refuse it too), so the lane U-turns at the lip
-// instead of funneling or cruising in. The drives keep the real nose reach.
+// instead of cruising in. The drives keep the real nose reach.
 function senseLane(mob) {
   const axisProbe = mob.lane ? mob.lane.axis : snapCardinal(mob.yaw);
   const fitBody = (yaw) => {
@@ -379,29 +452,21 @@ function senseLane(mob) {
   return { axisProbe, cellFree, opens, fwdOpen, walled };
 }
 
-// Pre-lane flow: gap funnel when free walking is impossible with no lane
-// (facing a wall with a through gap: offset narrowing mouth, house door,
-// pen breach — mid-corridor turns stay blended, dead ends funnel inside
-// the seek below), else a 50/50 touch latch on a plain wall (contact may
-// stick or keep roaming — straight-on draws lots 50/50, oblique keeps its
-// direction; refusals hold the next latch off), else a 50/50 flank-touch
-// latch when a wall rubs the side while the way ahead runs free
-// (parallel graze, diagonal slide: contact is contact, whatever the
-// angle). Then open-space release (forward open and both flanks truly open — field, room middle, wide hall — or a tunnel mouth
-// opening onto a field: commit straight out with the current heading
-// bias instead of random spins, roam owns the next tick) — never while a
-// touch ride holds (the ride only ends at a true wall end via corner
-// rounding, U-turn pacing, or 1-wide handover — or on its roam-clock budget
-// via the expiry above). Returns true/false when
-// it handles the tick, "touch" when a contact latch erected the lane
-// (sense again along it), undefined when a lane update is due.
+// Pre-lane flow: a 50/50 touch latch on a plain wall when the way ahead is
+// blocked (contact may stick or keep roaming — straight-on draws lots 50/50,
+// oblique keeps its direction; refusals hold the next latch off), else a
+// 50/50 flank-touch latch when a wall rubs the side while the way ahead
+// runs free (parallel graze, diagonal contact: contact is contact, whatever
+// the angle). Entry commits walk undisturbed (no latch steals them) until
+// they stall: a wedged entry touches the blocking wall through the directed
+// latch in roamStep instead, reusing this same machinery hole-ward.
+// Returns true/false when it handles the tick, "touch" when a contact latch
+// erected the lane (sense again along it), undefined when a lane update
+// is due.
 function tryPreLane(mob, dt, supported, floating, sense, rand = Math.random) {
+  if (mob.roam?.entry) return undefined;
   if (!mob.lane && (mob.followCool ?? 0) <= 0) {
     if (!sense.fwdOpen) {
-      if ((mob.funnelCool ?? 0) <= 0) {
-        const gap = scanGap(mob, sense.axisProbe);
-        if (gap) return funnelDrive(mob, dt, gap, supported, floating);
-      }
       const th = mob.target ? Math.atan2(mob.target.x - mob.pos.x, mob.target.z - mob.pos.z) : null;
       const axis = latchTouchWall(mob, dt, sense.axisProbe, th, rand);
       if (axis != null) {
@@ -417,17 +482,6 @@ function tryPreLane(mob, dt, supported, floating, sense, rand = Math.random) {
         return "touch";
       }
     }
-  }
-  // Open-field exits (never while a touch ride holds): true fields via
-  // flanksOpen, tunnel mouths via mouthOpen (the mouth reads as a
-  // junction — exiting here beats randomizing an arm into the field).
-  // Both hold the next latch off so the commit walks clear of the wall
-  // ends instead of grazing straight back.
-  if (mob.lane && mob.followLine?.touch !== true && sense.fwdOpen &&
-      (flanksOpen(mob.pos.x, mob.pos.z, mob.lane.axis, sense.cellFree) ||
-       mouthOpen(mob.pos.x, mob.pos.z, mob.lane.axis, sense.cellFree))) {
-    dropLane(mob); mob.stuckT = 0; mob.followCool = FOLLOW_COOL;
-    return false;
   }
   return undefined;
 }
@@ -453,12 +507,16 @@ function innerTurn(mob, prevAxis) {
     const [qx, qz] = dirVec(Q);
     const nx = mob.pos.x + qx * 1.0, nz = mob.pos.z + qz * 1.0;
     if (!makeStepOk(mob, true, false, 0, Q, 0)(nx, nz) || !descendOk(mob, nx, nz)) continue;
+    const gentle = mob.followLine.gentle === true;
     return {
       axis: Q,
       followLine: {
         axis: Q, line: m.face - m.dirSign * (VIRTUAL_W / 2), side: -m.dirSign,
-        rel, virtual: true, touch: true, fresh: TURN_HOLD_TICKS, face: m.face,
+        rel, virtual: true, touch: true,
+        fresh: gentle ? GENTLE_FRESH_TICKS : TURN_HOLD_TICKS, face: m.face,
         t: mob.followLine.t ?? 0, wallSpan: mob.followLine.wallSpan,
+        exitRide: mob.followLine.exitRide,
+        gentle,
       },
     };
   }
@@ -501,12 +559,37 @@ function followExit(mob, prevAxis) {
   };
   const straight = [], turns = [];
   for (const E of options) (E === prevAxis ? straight : turns).push(E);
+  // A guided stall slide prefers the hole-ward take among the legal ones
+  // (same-wall/connected gates still apply — it never jumps walls, it
+  // just picks the side the hole is on). Plain rides keep straight-first.
+  const gl0 = mob.followLine;
+  const ggx = gl0?.guideTx, ggz = gl0?.guideTz;
+  const guidedTake = gl0?.guideKey != null && ggx != null && ggz != null;
+  const takes = [];
   for (const E of [...straight, ...turns]) {
+    // Exit rides never turn at the mouth: straight out along the wall, and
+    // the wall-end U-turn site below quits outward instead of rounding
+    // the mouth tip into a hook.
+    if (E !== prevAxis && mob.followLine?.exitRide != null) continue;
     const win = measure(E, null) ?? measure(E, ahead(E));
     if (!win || !walkable(E)) continue;
     if (E === prevAxis) {
       if (!sameWallFace(mob, win.m)) continue;
     } else if (!connectedTake(mob, prevAxis, win.m.cell)) continue;
+    takes.push({ E, win });
+  }
+  if (guidedTake && takes.length > 1) {
+    const gx = ggx - mob.pos.x, gz = ggz - mob.pos.z;
+    const gh = Math.hypot(gx, gz) || 1;
+    takes.sort((a, b) => {
+      const [aax, aaz] = dirVec(a.E), [bbx, bbz] = dirVec(b.E);
+      return ((bbx * gx + bbz * gz) - (aax * gx + aaz * gz)) / gh;
+    });
+  }
+  for (const { E, win } of takes) {
+    // Gentle exit rides stay gentle across takes (a full fresh window here
+    // would reintroduce the yank mid-ride the exit softened at the latch).
+    const gentle = mob.followLine.gentle === true;
     return {
       axis: E,
       followLine: {
@@ -515,13 +598,26 @@ function followExit(mob, prevAxis) {
         side: -win.m.dirSign,
         rel, virtual: true,
         touch: mob.followLine.touch === true,
-        fresh: TURN_HOLD_TICKS,
+        fresh: gentle ? GENTLE_FRESH_TICKS : TURN_HOLD_TICKS,
         face: win.m.face,
-        t: mob.followLine.t ?? 0, wallSpan: mob.followLine.wallSpan,
+        ...carriedRide(mob),
+        gentle,
       },
     };
   }
   return null;
+}
+
+// Fields a rebuilt touch line carries over: ride clock, budgets, claims,
+// guides, and exit marks. Freshness and geometry are re-measured per take.
+function carriedRide(mob) {
+  const vw = mob.followLine ?? {};
+  return {
+    t: vw.t ?? 0, wallSpan: vw.wallSpan,
+    claimKey: vw.claimKey,
+    guideKey: vw.guideKey, guideTx: vw.guideTx, guideTz: vw.guideTz,
+    exitRide: vw.exitRide,
+  };
 }
 
 // Release the virtual wall, keep the real lane: the ride is over (wall
@@ -534,25 +630,13 @@ function dropFollowLine(mob) {
 // Dead-end seek: the classifier reads a wall 1.3 m out, but up to 0.6 m
 // of corridor may remain. Walk nose-to-the-end first, flip only when the
 // drive itself refuses — the mob touches the back wall, then U-turns.
-// A dead end facing a through gap (offset narrowing mouth, door in the end
-// wall) funnels into it instead, dropping the flipped lane so the funnel
-// re-fires every tick until through (a kept flip would cruise back). Side
-// mouths never qualify (no through route along the axis), so junction
-// corners stay blended.
 function seekDeadEnd(mob, dt, supported, floating) {
   const forward = mob.lane.entry; // pre-flip axis: updateLane already swapped
-  if ((mob.funnelCool ?? 0) <= 0) {
-    const gap = scanGap(mob, forward);
-    if (gap) {
-      dropLane(mob);
-      return funnelDrive(mob, dt, gap, supported, floating);
-    }
-  }
   // Recentre first (no corridor gate: a corner wedge is never a true
   // 1-wide cell, and that is exactly when the seek needs centring —
   // the axisOk probe below refuses any slide into a wall, and a stale
   // flipped follow line still pins the lateral via modulo-π).
-  slideLateral(mob, dt, supported, floating, true);
+  centerPull(mob, dt, supported, floating, true);
   // Dead-end seek refuses pit descents (see descendOk): the pit lip is
   // the end of the line — touch it, turn, leave.
   const makeSeek = () => {
@@ -600,7 +684,7 @@ function blendTurn(mob, dt, res) {
 // the stall guard (a latched lane that cannot advance — nose wedged where
 // the body fits — releases to the wander instead of freezing in place; a
 // successful 1-wide recentre counts as progress, not a stall).
-function cruiseLane(mob, dt, supported, floating, res) {
+function cruiseLane(mob, dt, supported, floating, res, rand = Math.random) {
   // Cruise never descends into a pit (see descendOk): ramps with a
   // walkable continuation pass through, local minima read as walls. The
   // probe below captures the pre-turn facing exactly like the inline drive
@@ -613,10 +697,10 @@ function cruiseLane(mob, dt, supported, floating, res) {
   // Lateral centering on straights: yaw stays locked on the corridor
   // axis (no hunting), the body slides toward the lane middle when free —
   // the cell centre in a true 1-wide corridor, the virtual-lane middle
-  // while wall-following. Turns and seeks centre through slideLateral above.
+  // while wall-following. Turns and seeks centre through centerPull above.
   const recentered = res.event === "cruise"
     ? 0
-    : slideLateral(mob, dt, supported, floating, true);
+    : centerPull(mob, dt, supported, floating, true);
   if (dist === 0 && recentered === 0 && err < SERVO_SPIN) mob.servoStall = (mob.servoStall ?? 0) + dt;
   else mob.servoStall = 0;
   // A fully stalled lane (wedged nose, refused slide, aligned yaw) always
@@ -626,8 +710,22 @@ function cruiseLane(mob, dt, supported, floating, res) {
   // forever. The in-place U-turn pace keeps moving, so it never trips it.
   if (mob.servoStall > 0.75) {
     if (mob.followLine?.touch === true && mob.lane) {
+      // A guided (violet) ride never U-turns in place: release to the
+      // direct entry walk (re-armed — dock, stall latch, or hold take it
+      // from the new spot).
+      if (guidedActive(mob)) {
+        mob.servoStall = 0;
+        mob.roam.stallT = 0;
+        mob.roam.latchTried = false;
+        dropFollowLine(mob);
+        dropLane(mob);
+        mob.followCool = FOLLOW_COOL;
+        return false;
+      }
       // Stalled touch ride: U-turn in place and keep the line (never
-      // drop) — same rule as the no-solution U-turn above.
+      // drop) — same rule as the no-solution U-turn above. Exit rides
+      // never turn back: quit outward instead (boxed keeps the U-turn).
+      if (mob.followLine.exitRide != null && exitRideOut(mob, rand)) return false;
       mob.lane = { axis: oppositeYaw(mob.lane.axis), entry: mob.lane.axis, lockX: -1, lockZ: -1 };
       mob.servoStall = 0;
       mob.stuckT = 0;
@@ -635,17 +733,20 @@ function cruiseLane(mob, dt, supported, floating, res) {
     }
     mob.lane = null; mob.servoStall = 0; mob.followCool = FOLLOW_COOL;
     mob.turnHold = 0;
+    // A released entry re-arms its directed touch from the new spot.
+    if (mob.roam?.entry) { mob.roam.stallT = 0; mob.roam.latchTried = false; }
     return false;
   }
-  if (res.event === "cruise") slideLateral(mob, dt, supported, floating, false);
+  if (res.event === "cruise") centerPull(mob, dt, supported, floating, false);
   mob.stuckT = 0;
   return true;
 }
 
-// Full per-mob tick: stuck detection, target refresh, servo/roam/wander
-// planes, gravity/float vertical, cosmetic gait (scene only). pickTarget is
-// injected (farm.js) so this stays world-free; it now validates whole
-// strides, so pen fence and house walls bound it emergently (no pen fork).
+// Full per-mob tick: entry attraction, stuck detection, target refresh,
+// servo/roam/wander planes, gravity/float vertical, cosmetic gait (scene
+// only). pickTarget is injected (farm.js) so this stays world-free; it now
+// validates whole strides, so pen fence and house walls bound it emergently
+// (no pen fork).
 export function tickFarmMob(mob, dt, pickTarget, rand = mob.rand ?? Math.random) {
   // Fixed-step integration: tall frames (V speed) run exact SERVO_STEP
   // slices plus one tail below 1.5 steps, so probes, arcs, holds and
@@ -656,42 +757,50 @@ export function tickFarmMob(mob, dt, pickTarget, rand = mob.rand ?? Math.random)
     tickFarmMob(mob, dt - SERVO_STEP, pickTarget, rand);
     return;
   }
-  mob.wanderT -= dt;
-  const dx = mob.target ? mob.target.x - mob.pos.x : 0;
-  const dz = mob.target ? mob.target.z - mob.pos.z : 0;
-  // Stuck pushing a wall (e.g. fence between us and an outside target):
-  // re-pick instead of grinding until wanderT runs out. Stillness is
-  // relative to a normal step (speed*dt), not an absolute distance.
-  if (mob.target) {
-    const stepped = Math.hypot(mob.pos.x - mob.lastX, mob.pos.z - mob.lastZ);
-    if (stepped < mob.speed * dt * 0.2) mob.stuckT += dt;
-    else mob.stuckT = 0;
-    if (mob.stuckT >= STUCK_T) {
-      mob.target = pickTarget(mob, rand);
-      mob.wanderT = roamSpan(rand);
-      mob.stuckT = 0;
-    }
-  } else {
-    mob.stuckT = 0;
-  }
-  mob.lastX = mob.pos.x;
-  mob.lastZ = mob.pos.z;
-  // Target refresh on arrival or span expiry — wanderT never doubles as
-  // another signal.
-  if (!mob.target || Math.hypot(dx, dz) < ARRIVE_D || mob.wanderT <= 0) {
-    mob.target = pickTarget(mob, rand);
-    mob.wanderT = roamSpan(rand);
-  }
-  // Support state drives both planes: floating bodies are carried by
-  // water (drop gate bypassed); airborne bodies keep walking while the
-  // fall stays within maxDrop (spawn drops and void edges still make
-  // progress instead of freezing mid-air), then fall straight and
-  // resume walking on landing; grounded bodies obey the legal-step
-  // gate below.
+  // Support state first: entry attraction only walks on dry ground.
   const surface = liquidSurface(mob.pos.x, mob.pos.y, mob.pos.z, mob.hw, mob.h);
   const floating = surface != null;
   const supported = floating || hasSupport(mob.pos.x, mob.pos.y, mob.pos.z, mob.hw);
   if (supported) mob.fallFrom = mob.pos.y;
+  // Tunnel-entry attraction primes over everything (open roam, wall rides,
+  // wander picks): draws repeat every scan until one accepts, steered as a
+  // plain roam commit. While one runs, the picks below pause (stuck/refresh
+  // would steal its target).
+  mob.entryScanT = Math.max(0, (mob.entryScanT ?? 0) - dt);
+  mob.entryCoolT = Math.max(0, (mob.entryCoolT ?? 0) - dt);
+  const entryHold = supported && !floating ? entryTick(mob, dt, rand, { supported, floating, pickTarget }) : false;
+  if (!entryHold) {
+    mob.wanderT -= dt;
+    const dx = mob.target ? mob.target.x - mob.pos.x : 0;
+    const dz = mob.target ? mob.target.z - mob.pos.z : 0;
+    // Stuck pushing a wall (e.g. fence between us and an outside target):
+    // re-pick instead of grinding until wanderT runs out. Stillness is
+    // relative to a normal step (speed*dt), not an absolute distance.
+    if (mob.target) {
+      const stepped = Math.hypot(mob.pos.x - mob.lastX, mob.pos.z - mob.lastZ);
+      if (stepped < mob.speed * dt * 0.2) mob.stuckT += dt;
+      else mob.stuckT = 0;
+      if (mob.stuckT >= STUCK_T) {
+        mob.target = pickTarget(mob, rand);
+        mob.wanderT = roamSpan(rand);
+        mob.stuckT = 0;
+      }
+    } else {
+      mob.stuckT = 0;
+    }
+    mob.lastX = mob.pos.x;
+    mob.lastZ = mob.pos.z;
+    // Target refresh on arrival or span expiry — wanderT never doubles as
+    // another signal.
+    if (!mob.target || Math.hypot(dx, dz) < ARRIVE_D || mob.wanderT <= 0) {
+      mob.target = pickTarget(mob, rand);
+      mob.wanderT = roamSpan(rand);
+    }
+  } else {
+    mob.lastX = mob.pos.x;
+    mob.lastZ = mob.pos.z;
+    mob.stuckT = 0;
+  }
   // Roam stepping owns lane-less ticks the servo declines (the R2 upkeep
   // above already ran inside the servo tick).
   const servoed = servoTick(mob, dt, supported, floating, rand, pickTarget);
@@ -713,16 +822,31 @@ export function tickFarmMob(mob, dt, pickTarget, rand = mob.rand ?? Math.random)
     // of stopping a full step away or grinding from afar.
     // (Mob-vs-mob distance is a post-tick pass, not a steering push.)
     const makeWander = () => makeStepOk(mob, supported, floating, mob.nose.along, mob.yaw);
-    driveToward(mob, dt,
-      Math.atan2(mob.target.x - mob.pos.x, mob.target.z - mob.pos.z),
+    // Last-resort chase slides along walls instead of grinding into them
+    // (same deflection as roam commits, full stride while turning).
+    const goal = Math.atan2(mob.target.x - mob.pos.x, mob.target.z - mob.pos.z);
+    driveToward(mob, dt, slideDeflect(mob, dt, goal, supported, floating),
       makeWander, moveClamped, { gated: false });
   }
   // Displacement-mode flags for the ?color=1 tint (farm.js paints,
   // headless rigs assert): derived every tick, never branched on by
   // steering. A touch ride on a lane follows a wall (blue), a lane
-  // alone runs a true 1-wide corridor (red).
+  // alone runs a true 1-wide corridor (red), an entry commit passes a
+  // tunnel mouth (purple, reads over both while it runs) and the tint
+  // holds until the mob walks clear of the aimed slot past arrival
+  // (VIOLET_HOLD_D), then re-arms attraction only after ENTRY_COOL_T.
+  let holdViolet = false;
+  if (mob.tunnelHoldX != null && mob.tunnelHoldZ != null) {
+    const hd = Math.hypot(mob.pos.x - mob.tunnelHoldX, mob.pos.z - mob.tunnelHoldZ);
+    if (hd <= VIOLET_HOLD_D) holdViolet = true;
+    else {
+      mob.tunnelHoldX = null; mob.tunnelHoldZ = null;
+      mob.entryCoolT = ENTRY_COOL_T;
+    }
+  }
   mob.wallFollow = mob.followLine?.touch === true && mob.lane != null;
   mob.oneWide = mob.lane != null && mob.followLine?.touch !== true;
+  mob.tunnelPass = mob.roam?.entry === true || holdViolet;
   // Vertical plane (support state computed above, pre-move).
   stepVertical(mob, dt, surface, floating, supported);
   // Cosmetic: alternating leg swing + tail sway while walking (scene only).

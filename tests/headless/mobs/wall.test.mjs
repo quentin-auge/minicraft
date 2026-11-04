@@ -22,6 +22,7 @@ import { FARM_WALK, tickFarmMob, aabbIntersectsSolid } from "../../../src/mobs/m
 import { NO_EXPIRY } from "../../../src/mobs/step.js";
 import { makeCellFree } from "../../../src/mobs/step.js";
 import { FOLLOW_RANGE, SPAN_MIN, SPAN_MAX, latchTouchWall, latchFlankTouch, wallQuitHeading } from "../../../src/mobs/roam.js";
+import { clearEntryClaims } from "../../../src/mobs/entry.js";
 
 const FEET = 1;
 const DT = 1 / 60;
@@ -37,6 +38,7 @@ function mulberry32(a) {
 
 function flat(x0, x1, z0, z1) {
   resetWorld("over");
+  clearEntryClaims();
   setDimension("over");
   for (let x = x0; x <= x1; x++) for (let z = z0; z <= z1; z++) setBlock(x, 0, z, STONE);
 }
@@ -58,7 +60,7 @@ function makeMob(x, z, yaw, rand) {
     stuckT: 0, lastX: x, lastZ: z, fallFrom: FEET, lane: null, servoStall: 0,
     blendFrom: null, blendT: 0, roam: null, followLine: null, followCool: 0,
     turnHold: 0,
-    funnelT: 0, funnelCool: 0, jrng: null, wallFollow: false, oneWide: false,
+    entryScanT: 0, jrng: null, wallFollow: false, oneWide: false, tunnelPass: false,
     pinWallRide: true, // legacy rigs: always latch, never expire
   };
 }
@@ -73,6 +75,7 @@ function run(mob, target, ticks) {
       lane: mob.lane ? mob.lane.axis : null,
       fl: mob.followLine ? { ...mob.followLine } : null,
       blue: mob.wallFollow === true,
+      entry: mob.roam?.entry === true,
     });
     assert.ok(!aabbIntersectsSolid(mob.pos.x, mob.pos.y, mob.pos.z, 0.32, 1.3),
       `body in wall @tick${t} (${mob.pos.x.toFixed(2)},${mob.pos.z.toFixed(2)})`);
@@ -468,28 +471,48 @@ console.log("PASS stub-tip");
 }
 console.log("PASS corner-pocket");
 
-// --- setback arm: the wall ends, resumes one cell over — ride to the tip,
-// round onto the column, down the slit (kept: the slit is still the wall,
-// not a corridor), out and back along the row, blue end to end ---
+// --- setback gap: the wall ends, resumes one cell over — the ride meets
+// the 1-cell gap head-on, so it turns INTO the hole (travel line across
+// the ride), runs red through the gap (a tunneled cell belongs to the
+// rail), and passes through instead of rounding the tip; blue breaks on
+// the entry commit. The trace stops at the through-point: post-gap open
+// wandering is out of scope ---
 {
   flat(-12, 14, -8, 14);
   for (let x = -4; x <= 2; x++) wall(x, 2);
   for (let z = 2; z <= 6; z++) wall(4, z);
   const mob = makeMob(-3.5, 1.0, 0.5, mulberry32(41));
-  const trace = run(mob, { x: -3.5, z: 30 }, 1500);
-  assert.ok(trace.every((p) => p.blue), `setback: blue never breaks`);
-  assert.ok(trace.some((p) => p.blue && p.fl && Math.abs(p.fl.line - 5.5) < 1e-9),
-    `setback: rounded onto the column face`);
+  const target = { x: -3.5, z: 30 };
+  const trace = [];
+  let t = 0;
+  for (; t < 1500 && mob.pos.z < 2.5; t++) {
+    tickFarmMob(mob, DT, () => target, mob.rand);
+    trace.push({
+      x: mob.pos.x, z: mob.pos.z, yaw: mob.yaw,
+      blue: mob.wallFollow === true,
+      entry: mob.roam?.entry === true,
+      red: mob.oneWide === true,
+    });
+    assert.ok(!aabbIntersectsSolid(mob.pos.x, mob.pos.y, mob.pos.z, 0.32, 1.3),
+      `setback: body in wall @tick${t}`);
+  }
+  assert.ok(trace.some((p) => p.blue), `setback: follow engaged`);
+  assert.ok(trace.some((p) => p.entry), `setback: turned into the gap`);
+  assert.ok(trace.some((p) => p.red), `setback: red through the gap`);
+  assert.ok(mob.pos.z >= 2.5 && mob.pos.x > 2,
+    `setback: passed through the gap (x=${mob.pos.x.toFixed(1)},z=${mob.pos.z.toFixed(1)})`);
 }
 console.log("PASS setback-arm");
 
 // --- no switch: a decoy wall past the tip never captures the ride —
 // the mob U-turns at the decoy tip and paces its own wall (never the
-// decoy face) instead of rounding onto the stranger ---
+// decoy face) instead of rounding onto the stranger. The decoy stops
+// short of the wall row on purpose: a full-height column would wall the
+// tip gap into a 2-wide mouth (entry attraction, not face capture) ---
 {
   flat(-10, 24, -4, 8);
   for (let x = -6; x <= 2; x++) wall(x, 2); // followed row, tip x=2
-  for (let z = 0; z <= 4; z++) wall(5, z); // decoy column, 2 cells past the tip
+  for (let z = 0; z <= 1; z++) wall(5, z); // decoy column, 2 cells past the tip
   const mob = makeMob(-5.5, 1.0, 0.5, mulberry32(7));
   const trace = run(mob, { x: -5.5, z: 30 }, 1500);
   assert.ok(trace.some((p) => p.blue), `noswitch: follow engaged`);
@@ -506,32 +529,31 @@ console.log("PASS setback-arm");
 }
 console.log("PASS no-switch-decoy");
 
-// --- doorway ride: a 1-cell hole in the followed wall shares its face
-// plane, so the ride crosses it (lookahead) without breaking or
-// switching — blue and face continuous across the hole ---
+// --- doorway ride: a 1-cell hole in the followed wall diverts the ride —
+// the mob turns into the hole (travel line across the ride) and passes
+// through to the other side instead of crossing past it ---
 {
   flat(-10, 24, -4, 8);
   for (let x = -6; x <= 6; x++) { if (x !== 0) wall(x, 2); } // hole at x=0
   const mob = makeMob(-5.5, 1.0, 0.5, mulberry32(7));
   const target = { x: -5.5, z: 30 };
   const trace = [];
-  for (let t = 0; t < 1200 && mob.pos.x < 1.5; t++) {
+  let t = 0;
+  for (; t < 1500 && mob.pos.z < 3; t++) {
     tickFarmMob(mob, DT, () => target, mob.rand);
     trace.push({
       x: mob.pos.x, z: mob.pos.z, yaw: mob.yaw,
       lane: mob.lane ? mob.lane.axis : null,
       fl: mob.followLine ? { ...mob.followLine } : null,
       blue: mob.wallFollow === true,
+      entry: mob.roam?.entry === true,
     });
     assert.ok(!aabbIntersectsSolid(mob.pos.x, mob.pos.y, mob.pos.z, 0.32, 1.3),
       `doorride: body in wall @tick${t}`);
   }
-  assert.ok(mob.pos.x >= 1.5, `doorride: crossed the hole (x=${mob.pos.x.toFixed(1)})`);
-  assert.ok(trace.every((p) => p.blue), `doorride: blue never breaks across the hole`);
-  for (const p of trace) {
-    assert.ok(Math.abs((p.fl?.face ?? -1) - 2) < 1e-9,
-      `doorride: same face across the hole (face=${p.fl?.face})`);
-  }
+  assert.ok(trace.some((p) => p.blue), `doorride: follow engaged`);
+  assert.ok(trace.some((p) => p.entry), `doorride: turned into the hole`);
+  assert.ok(mob.pos.z >= 3, `doorride: passed through the hole (z=${mob.pos.z.toFixed(1)})`);
 }
 console.log("PASS doorway-ride");
 
@@ -588,18 +610,6 @@ console.log("PASS mined-wall");
     `pocket: contained near the walls`);
 }
 console.log("PASS pocket-pace");
-
-// --- doorway: a through hole funnels past, no touch latch blocks it ---
-// Proved by a crossing inside the hole column (not around the wall ends).
-{
-  flat(-6, 6, -4, 8);
-  for (let x = -4; x <= 4; x++) { if (x !== 0) wall(x, 2); }
-  const mob = makeMob(0.5, 0.5, 0, mulberry32(21));
-  const trace = run(mob, { x: 0.5, z: 30 }, 600);
-  assert.ok(trace.some((p) => p.z > 2.2 && Math.abs(p.x - 0.5) < 0.6),
-    `doorway: funneled through the hole`);
-}
-console.log("PASS doorway");
 
 // --- entry gate: oblique frontal contact admits or refuses on one draw
 // (stub rand), refusals hold the next latch off; admits sample the
@@ -855,15 +865,18 @@ console.log("PASS pocket-visit");
     `boxed: open ground quits 45° away`);
   setBlock(0, 1, 0, STONE); setBlock(0, 2, 0, STONE);
   tickFarmMob(mob, DT, () => ({ x: 30, z: 1.5 }), mob.rand);
-  assert.ok(mob.wallFollow && mob.lane != null, `boxed: ride holds past expiry`);
-  assert.ok(mob.followLine.wallSpan === 2, `boxed: short retry clock, not quit (${mob.followLine.wallSpan})`);
-  assert.ok(mob.roam == null, `boxed: no roam commit while boxed`);
-  for (let t = 0; t < 4; t++) {
+  // Core rule: the cell is tunneled (row + stub), so the touch line drops
+  // and the rail takes over — red, never blue past the stub.
+  assert.ok(mob.oneWide && mob.lane != null, `boxed: handed over to the rail (red)`);
+  assert.ok(!mob.wallFollow, `boxed: touch line dropped in the tunnel`);
+  for (let t = 0; t < 120; t++) {
     tickFarmMob(mob, DT, () => ({ x: 30, z: 1.5 }), mob.rand);
     assert.ok(!aabbIntersectsSolid(mob.pos.x, mob.pos.y, mob.pos.z, 0.32, 1.3),
       `boxed: clean @${t}`);
+    assert.ok(!(mob.pos.x >= 0 && mob.pos.x < 1 && mob.pos.z >= 0 && mob.pos.z < 1),
+      `boxed: never into the stub cell @${t} (${mob.pos.x.toFixed(2)},${mob.pos.z.toFixed(2)})`);
   }
-  assert.ok(mob.wallFollow, `boxed: still riding, never quit into the stub`);
+  assert.ok(mob.pos.x > 1.0, `boxed: railed past the stub (x=${mob.pos.x.toFixed(1)})`);
 }
 console.log("PASS keep-riding-boxed");
 

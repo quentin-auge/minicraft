@@ -18,6 +18,7 @@ import {
 import { aabbIntersectsSolid, strideTarget } from "./step.js";
 import { getBlockIn } from "../core/store.js";
 import { applyDisplacementColor, initPaintState } from "./displacement-color.js";
+import { clearEntryClaims } from "./entry.js";
 import { village } from "../world/village.js";
 import { dimSpec } from "../world/dimensions.js";
 import { hash2 } from "../core/noise.js";
@@ -108,8 +109,9 @@ function makeFarmMob(kind, { x, z, y, dim, yaw, rand = Math.random }) {
     stuckT: 0, lastX: x, lastZ: z, fallFrom: y, lane: null, servoStall: 0,
     blendFrom: null, blendT: 0, roam: null, followLine: null, followCool: 0,
     turnHold: 0,
-    funnelT: 0, funnelCool: 0, jrng: null,
-    wallFollow: false, oneWide: false,
+    entryScanT: 0, jrng: null,
+    wallFollow: false, oneWide: false, tunnelPass: false,
+    tunnelHoldX: null, tunnelHoldZ: null, entryCoolT: 0,
   };
   mob.target = pickTarget(mob, rand);
   return mob;
@@ -202,10 +204,12 @@ export function spawnFarmMobAt(scene, x, z, y, rand = Math.random) {
 
 export function clearFarmDim(name) {
   for (const mob of [...mobs]) if (mob.dim === name) disposeFarmMob(mob);
+  clearEntryClaims();
 }
 
 export function clearFarmMobs() {
   for (const mob of [...mobs]) disposeFarmMob(mob);
+  clearEntryClaims();
 }
 
 function syncVisibility() {

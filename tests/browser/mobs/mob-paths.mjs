@@ -33,7 +33,7 @@ const GOALS = {
   deadend: null,
   straight2: "(m) => Math.floor(m.z) >= 7",
   l2: "(m) => Math.floor(m.x) >= 5",
-  funnel21: "(m) => Math.floor(m.z) >= 6",
+  narrow21: "(m) => Math.floor(m.z) >= 6",
   doorway: "(m) => m.z >= 4.5",
   t2: "(m) => (Math.floor(m.x) <= -1 || Math.floor(m.x) >= 3) && (Math.floor(m.z) === 2 || Math.floor(m.z) === 3)",
 };
@@ -121,8 +121,8 @@ try {
     console.log(`PASS ${kind}/L2`);
   }
   for (const kind of ["muret", "trench"]) {
-    await expectReach(kind, "funnel21", {});
-    console.log(`PASS ${kind}/funnel21`);
+    await expectReach(kind, "narrow21", {});
+    console.log(`PASS ${kind}/narrow21`);
   }
   {
     const r = await walk("muret", "doorway", {
@@ -164,7 +164,7 @@ try {
     console.log(`PASS village-door ${dir}`);
   }
   // Equivalence: same seed, same rig => identical traces.
-  for (const name of ["straight", "l", "zigzag", "straight2", "l2", "funnel21"]) {
+  for (const name of ["straight", "l", "zigzag", "straight2", "l2", "narrow21"]) {
     const a = await walk("muret", name, { seed: 7, maxTicks: 1200, goal: GOALS[name] });
     const b = await walk("trench", name, { seed: 7, maxTicks: 1200, goal: GOALS[name] });
     assert.equal(a.trace.length, b.trace.length, `${name}: same length`);
