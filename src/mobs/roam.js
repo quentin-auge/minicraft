@@ -59,8 +59,25 @@ function bodyFits(mob, supported, floating, yaw, x, z) {
 }
 
 // First candidate heading with 3+ blocks free, else the roomiest.
-function openHeading(mob, supported, floating, cands, rand = Math.random) {
+// blockedDir (optional peer gate) vetoes winds aimed into another mob:
+// the commit routes around the scrum instead of aiming through it and
+// grinding on the gate until the stuck detector fires. Null keeps the
+// legacy voxel-only behavior bit-identical (no extra rand draws).
+function openHeading(mob, supported, floating, cands, rand = Math.random, blockedDir = null) {
   let roomiest = null, roomiestD = -1;
+  for (const h of cands) {
+    if (blockedDir && blockedDir(h)) continue;
+    const dx = Math.sin(h), dz = Math.cos(h);
+    const fit = (x, z) => !bodyFits(mob, supported, floating, h, x, z);
+    const d = rayDist(mob.pos.x, mob.pos.z, dx, dz, fit, 3.0, 0.1);
+    if (d >= 2.9) return h;
+    if (d > roomiestD || (d === roomiestD && rand() < 0.5)) { roomiest = h; roomiestD = d; }
+  }
+  // Everything open is walled or peer-blocked: fall back to the roomiest
+  // wind regardless of peers (a vetoed step still stops at contact range
+  // via the commit gate; standing still is never an option).
+  if (roomiest != null) return roomiest;
+  if (!blockedDir) return null;
   for (const h of cands) {
     const dx = Math.sin(h), dz = Math.cos(h);
     const fit = (x, z) => !bodyFits(mob, supported, floating, h, x, z);
@@ -719,7 +736,7 @@ export function tryGuidedErect(mob, dt, supported, floating, rand = Math.random)
 }
 
 // Decision + stepping when the servo owns nothing. Returns handled.
-export function roamStep(mob, dt, supported, floating, rand = Math.random, pickTarget) {
+export function roamStep(mob, dt, supported, floating, rand = Math.random, pickTarget, blocked = null, forceHeading = null) {
   if (mob.lane) return false;
   const r = mob.roam;
   const broken = r && r.mode && mob.target !== r.tgt;
@@ -730,7 +747,7 @@ export function roamStep(mob, dt, supported, floating, rand = Math.random, pickT
   // mob): arrival or the ENTRY_TIMEOUT backstop in entryTick closes them.
   const timedOut = r && r.mode && !r.entry && (r.t ?? 0) > (r.span ?? SPAN_MAX);
   if (!r || !r.mode || broken || arrived || expired || timedOut || !mob.target) {
-    decide(mob, dt, supported, floating, rand, pickTarget);
+    decide(mob, dt, supported, floating, rand, pickTarget, blocked);
     if (!mob.roam?.mode) return false;
   }
   // Commit step toward the latched target. Entry commits drive straight at
@@ -745,7 +762,10 @@ export function roamStep(mob, dt, supported, floating, rand = Math.random, pickT
   // throughout, so every turn reads natural. Arrival still reads against
   // the mouth centre itself.
   const c = mob.roam;
-  const makeCommit = () => makeStepOk(mob, supported, floating, mob.nose.along, mob.yaw);
+  const makeCommit = () => {
+    const base = makeStepOk(mob, supported, floating, mob.nose.along, mob.yaw);
+    return blocked ? (nx, nz) => base(nx, nz) && !blocked(nx, nz) : base;
+  };
   // Detour arrival: reached the approach cell — drop the waypoint and push
   // frontal (re-armed, so a latch fires from the new spot if still wedged).
   if (c.entry && c.axis != null && c.detour) {
@@ -758,6 +778,11 @@ export function roamStep(mob, dt, supported, floating, rand = Math.random, pickT
   if (c.detour) {
     const [fax, faz] = dirVec(c.axis);
     yawGoal = Math.atan2(c.target.x - fax - mob.pos.x, c.target.z - faz - mob.pos.z);
+  } else if (forceHeading != null && !c.entry) {
+    // Group-plan override (forecast.js): the latched evasion heading wins
+    // over the point re-aim for the tick. Entry commits ignore it — guided
+    // hole-ward lines are never yanked.
+    yawGoal = forceHeading;
   } else {
     yawGoal = Math.atan2(c.target.x - mob.pos.x, c.target.z - mob.pos.z);
   }
@@ -768,7 +793,19 @@ export function roamStep(mob, dt, supported, floating, rand = Math.random, pickT
   // instead of grinding in place. Progress re-arms the latch, so
   // wall-following stays preferred wherever a wall exists.
   if (!c.entry || c.latchTried || c.detour) yawGoal = slideDeflect(mob, dt, yawGoal, supported, floating);
+  const yawBefore = mob.yaw;
   const { err, dist } = driveToward(mob, dt, yawGoal, makeCommit, moveClamped);
+  // Anti-orbit guard: a lane-less open commit that rotates past ~1.6 turns
+  // without arriving is lost (sidewalk-dance with a peer, orbit around a
+  // pushed-off line) — drop it so decide re-aims fresh instead of grinding
+  // out the pirouette. Entries exempt (their stall latch owns wedges);
+  // detours included (a lost sidestep re-decides too). Well under the
+  // headless pirouette bound, far above any frank turn (turnarounds,
+  // detour reversals).
+  if (!c.entry) {
+    c.rot = (c.rot ?? 0) + Math.abs(normYaw(mob.yaw - yawBefore));
+    if (c.rot > 5.0) { mob.roam = null; return true; }
+  }
   if (c.entry && c.axis != null) {
     // Spin-in-place ticks are turning, not stuck: only a gated-aligned
     // refusal accrues the stall. Past the threshold the stall turns into
@@ -846,10 +883,22 @@ export function wallQuitCommit(mob, heading, rand = Math.random, pickTarget) {
   return true;
 }
 
-function decide(mob, dt, supported, floating, rand = Math.random, pickTarget) {
+function decide(mob, dt, supported, floating, rand = Math.random, pickTarget, blocked = null) {
   const prev = mob.roam;
   mob.roam = null;
   const yaw = snapCardinal(mob.yaw);
+  // Peer-aware winds (optional): veto headings whose ray runs into another
+  // body, so the commit routes around the scrum instead of aiming through
+  // it. Sampled every metre out to the stride range with the comfort
+  // margin — passing near peers stays legal, only blocked winds are
+  // vetoed. Pure reads, no rand draws: null keeps solo replays
+  // bit-identical.
+  const blockedDir = blocked ? (h) => {
+    for (const d of [1.0, 2.0, 3.0]) {
+      if (blocked(mob.pos.x + Math.sin(h) * d, mob.pos.z + Math.cos(h) * d)) return true;
+    }
+    return false;
+  } : null;
   // Open commit: current raw heading first (continuity bias, oblique
   // included), then the shuffled 8-wind — first with 3+ blocks free wins.
   // Walls never latch here: contact alone (frontal or flank graze) enters
@@ -858,12 +907,12 @@ function decide(mob, dt, supported, floating, rand = Math.random, pickTarget) {
   // instead of chaining straight.
   const cands = [mob.yaw, ...shuffled(
     WINDS8.filter((dd) => yawDiff(dd, mob.yaw) > 1e-6), rand)];
-  const heading = openHeading(mob, supported, floating, cands, rand);
+  const heading = openHeading(mob, supported, floating, cands, rand, blockedDir);
   if (heading == null) return;
   if (prev?.heading != null && yawDiff(heading, prev.heading) < RUN_ALIGN &&
       (prev.runT ?? 0) + (prev.t ?? 0) >= RUN_MAX) {
     const turned = openHeading(mob, supported, floating, shuffled(
-      WINDS8.filter((dd) => yawDiff(dd, prev.heading) > RUN_ALIGN), rand), rand);
+      WINDS8.filter((dd) => yawDiff(dd, prev.heading) > RUN_ALIGN), rand), rand, blockedDir);
     if (turned != null) {
       const turnTarget = strideTarget(mob, turned, rand) ?? pickTarget(mob, rand);
       if (turnTarget) { latchCommit(mob, turned, turnTarget, rand); return; }

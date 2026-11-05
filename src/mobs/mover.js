@@ -6,17 +6,18 @@
 // and lifecycle. Headless rigs drive this module on live voxels.
 import { FARM_WALK_DIVISOR } from "./livestock.js";
 import {
-  PROBE_DIST, normYaw, yawDiff, dirVec, cellCenter, oppositeYaw, snapCardinal,
+  PROBE_DIST, normYaw, yawDiff, dirVec, cellCenter, oppositeYaw, snapCardinal, snap8,
   CARDINALS, classifyExits, updateLane, laneTunneled,
   VIOLET_HOLD_D, ENTRY_COOL_T,
 } from "./corridor.js";
 import { entryTick } from "./entry.js";
+import { queryMobGrid, buildMobGrid } from "./grid.js";
 import {
   aabbIntersectsSolid, hasSupport,
   liquidSurface, footingOk, headroomOk,
   makeCellFree, makeStepOk, descendOk, turnTo,
   moveClamped, moveVector, driveToward, dropLane, spawnRng, stepVertical,
-  SERVO_STEP, VIRTUAL_W, slideDeflect,
+  SERVO_STEP, VIRTUAL_W, slideDeflect, segmentWalkable,
 } from "./step.js";
 import {
   upkeepFollowLine, roamStep, roamSpan, ARRIVE_D, FOLLOW_COOL,
@@ -53,10 +54,242 @@ export const TURN_HOLD_TICKS = 30;
 // Pushing against a wall toward an unreachable target re-picks this fast
 // instead of waiting out wanderT, so a hole gets used instead of missed.
 export const STUCK_T = 0.5;
+// Push threshold (m): the backstop only corrects penetrations deeper
+// than this — a shallower brush is invisible at body scale and resolves
+// on its own as the mobs walk past each other. Correcting every
+// sub-centimetre touch is exactly what reads as shoving: the drive walks
+// in, the backstop shoves back out, every tick.
+export const PUSH_T = 0.07;
+// Per-side per-iteration correction cap (m): no single shove may move a
+// mob more than this in one tick, veto or not — deep overlaps converge
+// over a few ticks instead of teleporting once. Combined with the
+// threshold above, the backstop is invisible day-to-day and gentle when
+// it must work (wall sandwiches, debug spawns).
+export const PUSH_CAP = 0.025;
 // Separation gap added to every circle-pair need, and vertical gate:
 // mobs more than this far apart in Y never interact.
 export const SEP_GAP = 0.1;
 export const SEP_Y = 1.2;
+// Progress watchdog: a mob shuffling without closing on its target is
+// stuck even when its feet move — slides and separation shoves reset the
+// stillness clock below while the dance goes nowhere. Sample the target
+// distance twice a second: two consecutive samples without meaningful
+// closing escalate exactly like stillness. Suppressed while a maneuver
+// flies (sidesteps legitimately open distance) and without a target.
+export const PROG_T = 0.5;
+export const PROG_MIN = 0.15;
+export const PROG_STRIKES = 4;
+// A committed detour never runs longer than this: long enough to sidestep
+// one blocker — and to hold it instead of re-deciding every half second —
+// but short enough that a stale heading can't drag a mob across the map.
+export const DETOUR_SPAN = 1.5;
+// Step-gate overlap allowance (m): a step whose worst circle-pair
+// penetration stays within this brushes through instead of being refused.
+// Mobs hold committed headings through shallow contact instead of
+// stopping at nose range and re-picking every tick; the separation
+// backstop clears the residue every tick, so nothing ever wedges.
+// Picks, block detection, and pushes stay exact (see below).
+export const GATE_ALLOW = 0.05;
+// Crossing budget (m): how deep two bodies may overlap in passing before
+// the step gate refuses like a wall — read everywhere a meeting asks "can
+// we cross": the step gate, the detour probe, and the planner's cross test
+// (forecast.js). Shipped at 0.15: shoulders brush past, the backstop
+// clearing every residue.
+export const CROSS_BUDGET = 0.15;
+// Comfort margin (m) added to the picker's blocked check: aim with room
+// to spare since bodies keep moving after the pick. The step gate itself
+// stays exact — it refuses only true overlaps.
+export const PICK_COMFORT = 0.3;
+// Prediction horizon: ~3 s at farm stride (~6 m). Long enough to
+// sequence a pen crossing early, short enough that a latched roam heading
+// stays roughly valid.
+export const PREDICT_T = 3.0;
+// Scratch buffers for grid queries (single-threaded, never reentrant:
+// each call fully consumes its buffer before the next begins).
+const _blockNear = [];
+const _sepNear = [];
+
+// Intended heading: the latched roam commit when there is one (2–8 s of
+// known direction), else the current yaw. Peers expose the same fields,
+// so both sides predict off committed intent, not just nose direction.
+function intentHeading(mob) {
+  return mob.roam?.mode === "commit" && mob.roam.heading != null ? mob.roam.heading : mob.yaw;
+}
+
+// Closest point of approach between two mobs on intended headings at
+// current speeds: {t, miss} or null when diverging, near-static, or past
+// the horizon. Pure and headless-testable (kept for the unit rigs and as
+// the documented intent math; the tick no longer yields off it — speed
+// only ever takes the planner's two levels, never a continuous factor).
+export function predictCPA(a, b) {
+  const ah = intentHeading(a), bh = intentHeading(b);
+  const avx = a.speed * Math.sin(ah), avz = a.speed * Math.cos(ah);
+  const bvx = (b.speed ?? a.speed) * Math.sin(bh), bvz = (b.speed ?? a.speed) * Math.cos(bh);
+  const px = b.pos.x - a.pos.x, pz = b.pos.z - a.pos.z;
+  const vx = bvx - avx, vz = bvz - avz;
+  const vv = vx * vx + vz * vz;
+  if (vv < 1e-6) return null;
+  const t = -((px * vx + pz * vz) / vv);
+  if (t < 0 || t > PREDICT_T) return null;
+  const mx = px + vx * t, mz = pz + vz * t;
+  return { t, miss: Math.hypot(mx, mz) };
+}
+
+// File-following: a peer ahead in the corridor on the same heading sets
+// the pace — match its speed instead of tailgating into it, so files walk
+// parallel at constant spacing instead of grinding. Only slows (never
+// speeds up), lane-less only, same Y only. Asymmetric by geometry: the
+// leader sees the follower behind (outside its cone) and keeps full
+// stride. Deterministic, no rand stream. Internal to the tick (lane-less
+// slow factor only); no external callers.
+const _followNear = [];
+function followSlow(mob, peers, grid = null) {
+  let slow = 1;
+  const fx = Math.sin(mob.yaw), fz = Math.cos(mob.yaw);
+  const rx = -Math.cos(mob.yaw), rz = Math.sin(mob.yaw);
+  const list = grid ? queryMobGrid(grid, mob.pos.x, mob.pos.z, 3.0, _followNear) : peers;
+  for (let k = 0; k < list.length; k++) {
+    const o = list[k];
+    if (o === mob || !o.alive) continue;
+    if (Math.abs(o.pos.y - mob.pos.y) > SEP_Y) continue;
+    const ox = o.pos.x - mob.pos.x, oz = o.pos.z - mob.pos.z;
+    const d2 = ox * ox + oz * oz;
+    if (d2 > 3.0 * 3.0 || d2 < 1e-8) continue;
+    const d = Math.sqrt(d2);
+    if ((ox * fx + oz * fz) / d < 0.9) continue;
+    if (Math.abs(ox * rx + oz * rz) > mob.hw + o.hw + SEP_GAP + 0.3) continue;
+    const sameDir = Math.sin(mob.yaw) * Math.sin(o.yaw) + Math.cos(mob.yaw) * Math.cos(o.yaw);
+    if (sameDir < 0.7) continue;
+    if (mob.speed <= 1e-9) continue;
+    slow = Math.min(slow, (o.speed ?? mob.speed) / mob.speed);
+  }
+  return Math.min(slow, 1);
+}
+
+// Worst circle-pair penetration between a body posed at (ax, az) with the
+// given yaw-oriented circles and mob b's live body circles: null when
+// clear. Lets the step gate test a candidate position without moving
+// anything. Exported for the group planner (forecast.js), which poses
+// trajectory samples through the same math. i/j feed the deterministic
+// coincident-center fallback.
+export function worstPairPenAt(ax, az, asx, asz, ahw, anose, atail, b, i, j) {
+  const bsx = Math.sin(b.yaw), bsz = Math.cos(b.yaw);
+  let wPen = 0, wNx = 0, wNz = 0, wD = 0, wNeed = 0;
+  for (let ai = 0; ai < 3; ai++) {
+    const aa = ai === 0 ? 0 : ai === 1 ? anose.along : atail.along;
+    const ar = ai === 0 ? ahw : ai === 1 ? anose.r : atail.r;
+    const cx = ax + asx * aa, cz = az + asz * aa;
+    for (let bi = 0; bi < 3; bi++) {
+      const ba = bi === 0 ? 0 : bi === 1 ? b.nose.along : b.tail.along;
+      const br = bi === 0 ? b.hw : bi === 1 ? b.nose.r : b.tail.r;
+      const ox = cx - (b.pos.x + bsx * ba), oz = cz - (b.pos.z + bsz * ba);
+      const need = ar + br + SEP_GAP;
+      const d2 = ox * ox + oz * oz;
+      if (d2 >= need * need) continue;
+      // Coincident centers have no normal: deterministic fallback
+      // direction from the pair indices (recomputed next tick, so
+      // any axis unstacks exact overlaps instead of skipping them).
+      if (d2 < 1e-8) {
+        const fa = (i * 2.39996 + j * 1.2345) % (Math.PI * 2);
+        if (need > wPen) { wPen = need; wNx = Math.sin(fa); wNz = Math.cos(fa); wD = 0; wNeed = need; }
+        continue;
+      }
+      const d = Math.sqrt(d2), pen = need - d;
+      if (pen > wPen) { wPen = pen; wNx = ox / d; wNz = oz / d; wD = d; wNeed = need; }
+    }
+  }
+  return wPen <= 0 ? null : { pen: wPen, nx: wNx, nz: wNz, d: wD, need: wNeed };
+}
+export function worstPairPen(a, b, i = 0, j = 1) {
+  if (Math.abs(a.pos.y - b.pos.y) > SEP_Y) return null;
+  return worstPairPenAt(a.pos.x, a.pos.z, Math.sin(a.yaw), Math.cos(a.yaw),
+    a.hw, a.nose, a.tail, b, i, j);
+}
+
+// Would mob m occupying (x, z) overlap any peer's body circles past the
+// allowance? extra inflates m's own core half-width (comfort margin for
+// picks); allow is the step-gate brush budget (GATE_ALLOW on real steps,
+// 0 for exact detection). Pure: reads positions only.
+export function mobBlockedAt(mob, x, z, y, peers, extra = 0, grid = null, allow = 0) {
+  const sx = Math.sin(mob.yaw), sz = Math.cos(mob.yaw);
+  // 3.5 m query covers the 3 m skip below (steps move cm per tick), so the
+  // same peers are examined. Null grid = legacy scan.
+  const list = grid ? queryMobGrid(grid, x, z, 3.5, _blockNear) : peers;
+  for (const o of list) {
+    if (o === mob || !o.alive) continue;
+    if (Math.abs(o.pos.y - y) > SEP_Y) continue;
+    const ox = o.pos.x - x, oz = o.pos.z - z;
+    if (ox * ox + oz * oz > 3 * 3) continue;
+    const w = worstPairPenAt(x, z, sx, sz, mob.hw + extra, mob.nose, mob.tail, o, 0, 0);
+    // allow = 0 keeps the exact gate (any touch blocks); a brush
+    // budget only ever lets shallower penetrations through.
+    if (w != null && w.pen > allow) return true;
+  }
+  return false;
+}
+
+// Whether voxel walls stand within snout-sweep range in any direction:
+// nose-aware occupancy at the current spot, faced around the compass —
+// a wall the snout could sweep while turning in place. Near such walls
+// the classic stillness path owns escalation: a progress maneuver fired
+// here only rotates the snout along the rock. Open-field shuffles (peer
+// scrums) read clear and escalate frank pushes.
+function wallNear(mob, supported, floating) {
+  for (let k = 0; k < 8; k++) {
+    const yaw = (k * Math.PI) / 4;
+    if (!makeStepOk(mob, supported, floating, mob.nose.along, yaw)(mob.pos.x, mob.pos.z)) return true;
+  }
+  return false;
+}
+
+// Whether a live peer (not a wall) blocks the nose right now: probe two
+// short steps ahead along the current facing with the crossing budget (a
+// brush that would pass the gate must not count as blocked). Pure: reads
+// positions only.
+export function mobBlocksAhead(mob, peers, grid = null) {
+  const hx = Math.sin(mob.yaw), hz = Math.cos(mob.yaw);
+  for (const d of [0.25, 0.5]) {
+    if (mobBlockedAt(mob, mob.pos.x + hx * d, mob.pos.z + hz * d, mob.pos.y, peers, 0, grid, CROSS_BUDGET)) return true;
+  }
+  return false;
+}
+
+// Detour target that routes around a blocking peer: short goal-relative
+// sidesteps (1–2.4 m) on the 8-wind, narrow first, each validated
+// end-to-end against walls AND other mobs. Short on purpose: a detour only
+// needs to clear one body width — a full 4–10 m stride would drag the mob
+// metres off its line before the next decision. The first valid one wins.
+// Returns {target, heading} or null (caller falls back to a plain re-pick).
+export function pickDetourTarget(mob, rand, peers, grid = null) {
+  if (!peers || !mob.target) return null;
+  const base = snap8(Math.atan2(mob.target.x - mob.pos.x, mob.target.z - mob.pos.z));
+  const blocked = (x, z) => mobBlockedAt(mob, x, z, mob.pos.y, peers, PICK_COMFORT, grid);
+  const P = Math.PI;
+  for (const dh of [0, P / 4, -P / 4, P / 2, -P / 2, (3 * P) / 4, -(3 * P) / 4, P]) {
+    const heading = base + dh;
+    const sx = Math.sin(heading), cz = Math.cos(heading);
+    for (const dist of [1.0, 1.6, 2.4]) {
+      const tx = mob.pos.x + sx * dist, tz = mob.pos.z + cz * dist;
+      let bad = false;
+      const n = Math.max(1, Math.ceil(dist / 0.5));
+      for (let i = 1; i <= n; i++) {
+        const f = i / n;
+        if (blocked(mob.pos.x + (tx - mob.pos.x) * f, mob.pos.z + (tz - mob.pos.z) * f)) {
+          bad = true;
+          break;
+        }
+      }
+      if (bad) continue;
+      if (!segmentWalkable(mob, mob.pos.x, mob.pos.z, tx, tz)) continue;
+      // Nose-tip endpoint (see above): no doomed commits the drive
+      // would refuse to finish.
+      const nx = tx + sx * mob.nose.along, nz = tz + cz * mob.nose.along;
+      if (aabbIntersectsSolid(nx, mob.pos.y, nz, mob.nose.r, mob.h)) continue;
+      return { target: { x: tx, z: tz }, heading };
+    }
+  }
+  return null;
+}
 
 // Stride validation (imported from step.js): destination rules plus the
 // whole segment, so fences, house walls, and troughs bound targets
@@ -747,14 +980,16 @@ function cruiseLane(mob, dt, supported, floating, res, rand = Math.random) {
 // only). pickTarget is injected (farm.js) so this stays world-free; it now
 // validates whole strides, so pen fence and house walls bound it emergently
 // (no pen fork).
-export function tickFarmMob(mob, dt, pickTarget, rand = mob.rand ?? Math.random) {
+export function tickFarmMob(mob, dt, pickTarget, rand = mob.rand ?? Math.random, peers = null, grid = null, _top = true) {
   // Fixed-step integration: tall frames (V speed) run exact SERVO_STEP
   // slices plus one tail below 1.5 steps, so probes, arcs, holds and
   // random draws read identically per sim-second at any speed. Plain
-  // recursion, no body re-indent (keeps later diffs clean).
+  // recursion, no body re-indent (keeps later diffs clean). Sub-slices
+  // share the one-tick group plan; only the outer tick clears it.
   if (dt > SERVO_STEP * 1.5) {
-    tickFarmMob(mob, SERVO_STEP, pickTarget, rand);
-    tickFarmMob(mob, dt - SERVO_STEP, pickTarget, rand);
+    tickFarmMob(mob, SERVO_STEP, pickTarget, rand, peers, grid, false);
+    tickFarmMob(mob, dt - SERVO_STEP, pickTarget, rand, peers, grid, false);
+    if (_top) mob._plan = null;
     return;
   }
   // Support state first: entry attraction only walks on dry ground.
@@ -765,35 +1000,126 @@ export function tickFarmMob(mob, dt, pickTarget, rand = mob.rand ?? Math.random)
   // Tunnel-entry attraction primes over everything (open roam, wall rides,
   // wander picks): draws repeat every scan until one accepts, steered as a
   // plain roam commit. While one runs, the picks below pause (stuck/refresh
-  // would steal its target).
+  // would steal its target) and peer steering stands down (entries are
+  // short precise maneuvers; the backstop still separates).
   mob.entryScanT = Math.max(0, (mob.entryScanT ?? 0) - dt);
   mob.entryCoolT = Math.max(0, (mob.entryCoolT ?? 0) - dt);
   const entryHold = supported && !floating ? entryTick(mob, dt, rand, { supported, floating, pickTarget }) : false;
+  const peersEff = entryHold ? null : peers;
   if (!entryHold) {
     mob.wanderT -= dt;
     const dx = mob.target ? mob.target.x - mob.pos.x : 0;
     const dz = mob.target ? mob.target.z - mob.pos.z : 0;
-    // Stuck pushing a wall (e.g. fence between us and an outside target):
-    // re-pick instead of grinding until wanderT runs out. Stillness is
-    // relative to a normal step (speed*dt), not an absolute distance.
+    // Stuck pushing a wall (e.g. fence between us and an outside target)
+    // or blocked by another mob (the gate below refuses the step): re-pick
+    // instead of grinding until wanderT runs out. Stillness is relative to
+    // a normal step (speed*dt), not an absolute distance — and shuffling
+    // without closing trips the progress watchdog below, since slides and
+    // shoves move the feet while the dance goes nowhere. The re-pick
+    // commits to a full roam stride, so a detour around a mob (or wall)
+    // survives next tick's decide instead of dying after one step.
     if (mob.target) {
       const stepped = Math.hypot(mob.pos.x - mob.lastX, mob.pos.z - mob.lastZ);
       if (stepped < mob.speed * dt * 0.2) mob.stuckT += dt;
-      else mob.stuckT = 0;
-      if (mob.stuckT >= STUCK_T) {
-        mob.target = pickTarget(mob, rand);
-        mob.wanderT = roamSpan(rand);
-        mob.stuckT = 0;
+      else { mob.stuckT = 0; }
+      // Solo legacy path (peers == null: headless rigs, registry ticks):
+      // stillness-only re-pick, bit-identical draw stream to before the
+      // cooperation port. The watchdog + maneuvers below own the peer
+      // path only, so existing pinned seeds never shift.
+      if (peers == null) {
+        if (mob.stuckT >= STUCK_T) {
+          mob.target = pickTarget(mob, rand);
+          mob.wanderT = roamSpan(rand);
+          mob.stuckT = 0;
+        }
+      } else {
+      // Progress watchdog: sample the target distance twice a second; four
+      // samples without meaningful closing escalate like stillness (slow
+      // herds need patience — shuffling that still advances is not stuck).
+      // A fresh target re-stamps the reference; a flying maneuver
+      // suppresses the sampling outright (sidesteps legitimately open
+      // distance).
+      const distT = Math.hypot(dx, dz);
+      mob._progAge = (mob._progAge ?? 0) + dt;
+      if (mob.target !== mob._progTgt || mob._detour) {
+        mob._progTgt = mob.target; mob._progD = distT; mob._progAge = 0; mob._progBad = 0;
+      } else if (mob._progAge >= PROG_T) {
+        if (mob._progD - distT < PROG_MIN) mob._progBad = (mob._progBad ?? 0) + 1;
+        else mob._progBad = 0;
+        mob._progD = distT; mob._progAge = 0;
       }
+      const progStuck = (mob._progBad ?? 0) >= PROG_STRIKES;
+      if (mob.stuckT >= STUCK_T || progStuck) {
+        // Shuffle within snout-sweep range of walls: no forced maneuver —
+        // its turn would sweep the snout along the rock — hand decide a
+        // fresh wall-aware commit instead (open headings read clearance),
+        // like an early arrival. Open-field shuffles commit frank pushes.
+        if (progStuck && mob.stuckT < STUCK_T && wallNear(mob, supported, floating)) {
+          mob.target = null;
+          mob.stuckT = 0; mob._progBad = 0;
+        } else {
+          // Fallback detour (tard + franc): only when a live peer
+          // hard-blocks the nose right now (a wall never reads here) —
+          // otherwise a plain re-pick, no forced maneuver: slow herds
+          // that still advance must never earn sidesteps. The detour
+          // commits a short validated line that survives next tick's
+          // decide; plain re-picks hand decide a fresh commit instead.
+          // Lane mobs never commit maneuvers (the servo owns their
+          // heading): they fall through to a plain re-pick instead.
+          let t = null, heading = null;
+          const hardBlocked = !mob.lane && peersEff && mobBlocksAhead(mob, peersEff, grid);
+          const detour = hardBlocked ? pickDetourTarget(mob, rand, peersEff, grid) : null;
+          t = detour ? detour.target : pickTarget(mob, rand, peersEff, grid);
+          // The detour heading stays 8-wind so meetings read off a
+          // discrete set; a plain re-pick keeps the free-roam raw
+          // heading. t can still be null (wedged: nothing validates) —
+          // the else below then just waits out a fresh span instead of
+          // crashing on t.x.
+          if (t) {
+            heading = detour ? detour.heading
+              : Math.atan2(t.x - mob.pos.x, t.z - mob.pos.z);
+          }
+          // Identical re-pick: the picker returned the very target we are
+          // stuck on (pinned rig picker or repeated cell) — re-latching it
+          // spins forever, since the same step refusal re-fires. Drop it so
+          // the refresh below hands decide a fresh commit instead.
+          if (t && mob.target && t.x === mob.target.x && t.z === mob.target.z) t = null;
+          mob.target = t;
+          if (t && !mob.lane && detour) {
+            // Commit the detour like a roam stride: decide would otherwise
+            // overwrite the fresh heading on the very next tick. Spans stay
+            // short — a detour clears one blocker — and a stale heading is
+            // how mobs wander off instead of passing. A fresh maneuver
+            // voids any latched plan: the planner re-reads the new commit
+            // next tick instead of fighting it.
+            mob.roam = { mode: "commit", heading, target: t, tgt: t, t: 0, span: Math.min(roamSpan(rand), DETOUR_SPAN) };
+            mob.wanderT = mob.roam.span;
+            mob._detour = true;
+            mob._planHold = null;
+            mob._rebase = false;
+          } else {
+            // Plain re-pick: no commit, decide owns the next heading. The
+            // drive keeps the current line instead of jerking onto a fresh
+            // one mid-stride.
+            mob.wanderT = roamSpan(rand);
+          }
+          mob.stuckT = 0;
+        } // end maneuver branch (wall-near soft refresh above skips it)
+      }
+      } // end peer path (solo legacy above keeps the old draw stream)
     } else {
       mob.stuckT = 0;
+      mob._progTgt = null; mob._progBad = 0; mob._progAge = 0;
     }
     mob.lastX = mob.pos.x;
     mob.lastZ = mob.pos.z;
     // Target refresh on arrival or span expiry — wanderT never doubles as
     // another signal.
     if (!mob.target || Math.hypot(dx, dz) < ARRIVE_D || mob.wanderT <= 0) {
-      mob.target = pickTarget(mob, rand);
+      mob._detour = false;
+      mob._planHold = null;
+      mob._rebase = false;
+      mob.target = pickTarget(mob, rand, peersEff, grid);
       mob.wanderT = roamSpan(rand);
     }
   } else {
@@ -802,10 +1128,61 @@ export function tickFarmMob(mob, dt, pickTarget, rand = mob.rand ?? Math.random)
     mob.stuckT = 0;
   }
   // Roam stepping owns lane-less ticks the servo declines (the R2 upkeep
-  // above already ran inside the servo tick).
+  // above already ran inside the servo tick). Speed only ever takes the
+  // planner's two levels (full or PLAN_SLOW) — no continuous yield factor,
+  // so meets never judder. Lane mobs and entries run legacy full speed.
+  // Mob bodies count as obstacles for lane-less stepping (same Y level
+  // only): a refused step stops at contact range instead of overlapping
+  // past the brush budget, and the stuck re-pick below routes around true
+  // blockers. Picks and detection stay exact; only real steps may brush.
+  const blockedByMob = peersEff && !mob.lane
+    ? (nx, nz) => mobBlockedAt(mob, nx, nz, mob.pos.y, peersEff, 0, grid, CROSS_BUDGET)
+    : null;
+  // Group plan (forecast.js, latched): a forced heading overrides the
+  // commit target while the hold lasts — except on a committed detour,
+  // which flies its own validated line open-loop instead: re-aiming the
+  // point every tick would wobble the escape. Null plan (or lane motion)
+  // keeps legacy behavior; lanes never take a heading override.
+  const plan = peersEff && !mob.lane && mob._plan?.forced ? mob._plan : null;
+  const cruise = mob._detour && !plan && mob.roam?.heading != null ? mob.roam.heading : null;
+  // Line rebase (forecast.js flagged the stand-down): the sidestep episode
+  // adopted a parallel line — move the goal onto it instead of swinging
+  // back onto the old line. Validated end-to-end (falls back to the old
+  // goal if the new parallel doesn't walk); commit identity kept so the
+  // stride survives (tgt follows target). Free roam commits only: entries
+  // fly claimed slots, detours fly validated lines, lanes fly rails.
+  if (mob._rebase && !mob.lane && !mob._detour && mob.roam && !mob.roam.entry && mob.target) {
+    mob._rebase = false;
+    const dx = mob.target.x - mob.pos.x, dz = mob.target.z - mob.pos.z;
+    const d = Math.hypot(dx, dz);
+    if (d > 0.5) {
+      const gx = mob.pos.x + Math.sin(mob.yaw) * d, gz = mob.pos.z + Math.cos(mob.yaw) * d;
+      // Validate the new parallel against voxels AND peers: rebasing onto
+      // another mob just moves the meeting. Falls back to the old goal
+      // (the resume logic re-aims at it) when the parallel doesn't walk.
+      const voxOk = segmentWalkable(mob, mob.pos.x, mob.pos.z, gx, gz);
+      const peerOk = !blockedByMob || (!blockedByMob((mob.pos.x + gx) / 2, (mob.pos.z + gz) / 2) && !blockedByMob(gx, gz));
+      if (voxOk && peerOk) {
+        const g = { x: gx, z: gz };
+        mob.target = g;
+        mob.roam.tgt = g;
+        mob.roam.target = g;
+      }
+    }
+  }
+  let slow = plan ? plan.slow : 1;
+  // File discipline: match a same-direction peer's pace ahead in the
+  // corridor instead of tailgating into it — the file walks parallel at
+  // constant spacing instead of grinding. Slow-only, lane-less only.
+  if (peersEff && !mob.lane) slow = Math.min(slow, followSlow(mob, peersEff, grid));
+  let savedSpeed = 0;
+  if (slow !== 1) { savedSpeed = mob.speed; mob.speed *= slow; }
   const servoed = servoTick(mob, dt, supported, floating, rand, pickTarget);
   let roamed = false;
-  if (!servoed && supported && !floating) roamed = roamStep(mob, dt, supported, floating, rand, pickTarget);
+  if (!servoed && supported && !floating) {
+    roamed = roamStep(mob, dt, supported, floating, rand, pickTarget, blockedByMob,
+      plan ? plan.heading : cruise);
+  }
   if (mob.target && !servoed && !roamed) {
     // Legal-step gate (non-jumping walkers): never up, down at most
     // maxDrop. A deeper drop is a vertical air wall — rejected exactly
@@ -820,14 +1197,28 @@ export function tickFarmMob(mob, dt, pickTarget, rand = mob.rand ?? Math.random)
     // Clamp by halving: a refused step retries at half distance, so the
     // mob slides up against the blocker (wall or nose contact) instead
     // of stopping a full step away or grinding from afar.
-    // (Mob-vs-mob distance is a post-tick pass, not a steering push.)
-    const makeWander = () => makeStepOk(mob, supported, floating, mob.nose.along, mob.yaw);
-    // Last-resort chase slides along walls instead of grinding into them
-    // (same deflection as roam commits, full stride while turning).
-    const goal = Math.atan2(mob.target.x - mob.pos.x, mob.target.z - mob.pos.z);
+    // The gate refuses any step that would overlap another mob's body past
+    // the brush budget — walls stay exact, bodies may graze: mobs walk
+    // through shallow contact on the committed heading (the backstop clears
+    // the residue), and only true blockers earn a stuck re-pick below.
+    const makeWander = () => {
+      const base = makeStepOk(mob, supported, floating, mob.nose.along, mob.yaw);
+      return blockedByMob ? (nx, nz) => base(nx, nz) && !blockedByMob(nx, nz) : base;
+    };
+    // Forced headings cruise open-loop (plan or detour alike); free
+    // wander keeps the raw heading. Last-resort chase slides along walls
+    // instead of grinding into them (same deflection as roam commits,
+    // full stride while turning).
+    const goal = plan ? plan.heading : cruise ?? Math.atan2(mob.target.x - mob.pos.x, mob.target.z - mob.pos.z);
     driveToward(mob, dt, slideDeflect(mob, dt, goal, supported, floating),
       makeWander, moveClamped, { gated: false });
   }
+  // One-tick plan: consumed above (roam or wander) or ignored (servo) —
+  // never carried over, the planner re-runs (and re-latches holds) every
+  // tick off live positions. Sub-slices share it; only the outer tick
+  // clears it.
+  if (_top) mob._plan = null;
+  if (savedSpeed) mob.speed = savedSpeed;
   // Displacement-mode flags for the ?color=1 tint (farm.js paints,
   // headless rigs assert): derived every tick, never branched on by
   // steering. A touch ride on a lane follows a wall (blue), a lane
@@ -875,62 +1266,76 @@ export function sepSpotFree(mob, x, z) {
   return headroomOk(mob, x, z, mob.pos.y);
 }
 
-// Hard separation pass over one dimension's mobs: positional
+// Hard separation safety net over one dimension's mobs: positional
 // depenetration on the yaw-oriented body circles (core + nose + tail),
-// worst circle pair first, 3 iterations. A vetoed side stays put and
-// the other side takes the full correction; both vetoed keeps the
+// worst circle pair first, up to 8 iterations (dense pen pileups cascade:
+// clearing one pair can press another, so 3 iterations leave residue).
+// Shallow brushes at or under PUSH_T are left alone (invisible, and the
+// drives walk them out on their own) — correcting those is the visible
+// shove. Deeper overlaps correct fractionally, so a single tick never
+// teleports a mob: the residue converges over the following ticks, and
+// the veto still parks heads out of walls. A vetoed side stays put and
+// the other side takes the damped correction; both vetoed keeps the
 // overlap for this tick (rare — wall sandwich — and retried next tick).
-// Y-gated so a faller never shoves a walker below. Alloc-free: circle
-// centers stay in locals, pairs share one scratch-free loop.
-export function separateFarmMobs(list) {
-  for (let iter = 0; iter < 3; iter++) {
+// Y-gated so a faller never shoves a walker below.
+// Alloc-free: circle centers stay in locals, pairs share one loop.
+// grid (optional, same tick's buildMobGrid) restricts each mob to neighbors
+// within 2.5 m — a superset of every circle-pair reach — re-sorted to legacy
+// index order with the same i/j pair indices, so results are bit-identical.
+// The grid is rebuilt every iteration: depenetration moves bodies, and a
+// stale grid would miss pairs formed by an earlier cascade. Null grid =
+// legacy all-pairs scan.
+export function separateFarmMobs(list, grid = null) {
+  // Position index for legacy i/j order under the grid path (farm and rigs
+  // keep _peerIdx == position, but the index map is exact regardless).
+  let idx = null;
+  if (grid) { idx = new Map(); for (let k = 0; k < list.length; k++) idx.set(list[k], k); }
+  // Per-tick correction budget per mob: no mob ever moves more than
+  // PUSH_CAP in one tick, however many pairs and iterations touch it.
+  // Corrections past the budget wait for the next tick — a deep overlap
+  // resolves as a short glide, never a teleport.
+  const spent = new Map();
+  for (let iter = 0; iter < 8; iter++) {
     let moved = false;
+    const g = grid ? buildMobGrid(list, grid.cell) : null;
     for (let i = 0; i < list.length; i++) {
       const a = list[i];
       if (!a.alive) continue;
-      const asx = Math.sin(a.yaw), asz = Math.cos(a.yaw);
-      for (let j = i + 1; j < list.length; j++) {
-        const b = list[j];
+      let mates = null;
+      if (g) {
+        queryMobGrid(g, a.pos.x, a.pos.z, 2.5, _sepNear);
+        mates = _sepNear.filter((b) => b !== a && b.alive && (idx.get(b) ?? -1) > i);
+        mates.sort((p, q) => (idx.get(p) ?? 0) - (idx.get(q) ?? 0));
+      }
+      const inner = mates ?? null;
+      const n = inner ? inner.length : 0;
+      for (let k = 0; k < (inner ? n : list.length - i - 1); k++) {
+        const b = inner ? inner[k] : list[i + 1 + k];
         if (!b.alive) continue;
-        if (Math.abs(a.pos.y - b.pos.y) > SEP_Y) continue;
-        const bsx = Math.sin(b.yaw), bsz = Math.cos(b.yaw);
-        let wPen = 0, wNx = 0, wNz = 0;
-        for (let ai = 0; ai < 3; ai++) {
-          const aa = ai === 0 ? 0 : ai === 1 ? a.nose.along : a.tail.along;
-          const ar = ai === 0 ? a.hw : ai === 1 ? a.nose.r : a.tail.r;
-          const ax = a.pos.x + asx * aa, az = a.pos.z + asz * aa;
-          for (let bi = 0; bi < 3; bi++) {
-            const ba = bi === 0 ? 0 : bi === 1 ? b.nose.along : b.tail.along;
-            const br = bi === 0 ? b.hw : bi === 1 ? b.nose.r : b.tail.r;
-            const ox = ax - (b.pos.x + bsx * ba), oz = az - (b.pos.z + bsz * ba);
-            const need = ar + br + SEP_GAP;
-            const d2 = ox * ox + oz * oz;
-            if (d2 >= need * need) continue;
-            // Coincident centers have no normal: deterministic fallback
-            // direction from the pair indices (recomputed next tick, so
-            // any axis unstacks exact overlaps instead of skipping them).
-            if (d2 < 1e-8) {
-              const fa = (i * 2.39996 + j * 1.2345) % (Math.PI * 2);
-              const pen = need;
-              if (pen > wPen) { wPen = pen; wNx = Math.sin(fa); wNz = Math.cos(fa); }
-              continue;
-            }
-            const d = Math.sqrt(d2), pen = need - d;
-            if (pen > wPen) { wPen = pen; wNx = ox / d; wNz = oz / d; }
-          }
-        }
-        if (wPen <= 0) continue;
-        let da = wPen / 2, db = wPen / 2;
-        if (!sepSpotFree(a, a.pos.x + wNx * da, a.pos.z + wNz * da)) { da = 0; db = wPen; }
-        if (!sepSpotFree(b, b.pos.x - wNx * db, b.pos.z - wNz * db)) {
+        const w = worstPairPen(a, b, i, inner ? (idx.get(b) ?? 0) : i + 1 + k);
+        if (!w || w.pen <= PUSH_T) continue;
+        // Damped and capped: each side takes a quarter of the penetration
+        // per iteration, never more than PUSH_CAP per tick total — deep
+        // overlaps converge geometrically instead of teleporting, and a
+        // vetoed side never dumps its full share onto the other side
+        // (that full transfer is the visible directional shove: one mob
+        // shoved in the other's direction).
+        let da = Math.min(w.pen / 4, PUSH_CAP - (spent.get(a) ?? 0));
+        let db = Math.min(w.pen / 4, PUSH_CAP - (spent.get(b) ?? 0));
+        if (da < 0) da = 0;
+        if (db < 0) db = 0;
+        if (!sepSpotFree(a, a.pos.x + w.nx * da, a.pos.z + w.nz * da)) { da = 0; db = Math.min(w.pen / 4, PUSH_CAP - (spent.get(b) ?? 0)); if (db < 0) db = 0; }
+        if (!sepSpotFree(b, b.pos.x - w.nx * db, b.pos.z - w.nz * db)) {
           db = 0;
           if (da === 0) continue;
         }
-        a.pos.x += wNx * da;
-        a.pos.z += wNz * da;
-        b.pos.x -= wNx * db;
-        b.pos.z -= wNz * db;
-        moved = true;
+        a.pos.x += w.nx * da;
+        a.pos.z += w.nz * da;
+        b.pos.x -= w.nx * db;
+        b.pos.z -= w.nz * db;
+        if (da > 0) spent.set(a, (spent.get(a) ?? 0) + da);
+        if (db > 0) spent.set(b, (spent.get(b) ?? 0) + db);
+        if (da > 0 || db > 0) moved = true;
       }
     }
     if (!moved) break;
