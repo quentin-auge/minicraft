@@ -12,9 +12,11 @@ import {
   specCircles,
 } from "./livestock.js";
 import {
-  FARM_WALK,
-  tickFarmMob, separateFarmMobs,
+  FARM_WALK, PICK_COMFORT,
+  tickFarmMob, separateFarmMobs, mobBlockedAt,
 } from "./mover.js";
+import { planGroup } from "./forecast.js";
+import { buildMobGrid } from "./grid.js";
 import { aabbIntersectsSolid, strideTarget } from "./step.js";
 import { getBlockIn } from "../core/store.js";
 import { applyDisplacementColor, initPaintState } from "./displacement-color.js";
@@ -117,11 +119,26 @@ function makeFarmMob(kind, { x, z, y, dim, yaw, rand = Math.random }) {
   return mob;
 }
 
-function pickTarget(mob, rand = Math.random) {
+function pickTarget(mob, rand = Math.random, peers = null, grid = null) {
   // Single unified path: random stride validated end-to-end (destination
   // rules plus the whole segment via strideTarget). Pen fence, house walls,
   // and troughs bound targets emergently — no pen fork: a stride through a
   // wall simply fails validation, so only walkable targets come back.
+  // Mob-aware picking adds the blocked check: strides ending on another
+  // mob's body (with a comfort margin) are refused exactly like steps into
+  // walls; passing near peers stays legal. Deliberate routing around a
+  // blocker lives in pickDetourTarget (mover), used by the stuck path when
+  // random picks keep failing.
+  if (!peers) return strideTarget(mob, null, rand);
+  // Mob-aware retries: strides ending on another mob's body (with a
+  // comfort margin) are refused exactly like steps into walls; passing
+  // near peers stays legal, only the destination cell is vetoed.
+  const blocked = (x, z) => mobBlockedAt(mob, x, z, mob.pos.y, peers, PICK_COMFORT, grid);
+  for (let t = 0; t < 4; t++) {
+    const s = strideTarget(mob, null, rand);
+    if (!s) return null;
+    if (!blocked(s.x, s.z)) return s;
+  }
   return strideTarget(mob, null, rand);
 }
 
@@ -236,11 +253,20 @@ export function tickFarmMobs(dt, dimName) {
     if (!mob.alive) continue;
     mob.root.visible = mob.dim === dimName;
     if (mob.dim !== dimName) continue;
-    tickFarmMob(mob, dt, pickTarget);
-    applyDisplacementColor(mob);
+    mob._peerIdx = sepBuf.length;
     sepBuf.push(mob);
   }
-  if (sepBuf.length > 1) separateFarmMobs(sepBuf);
+  // Three-phase tick: group plan off live positions (most-blocked first),
+  // per-mob ticks consuming one-tick plans, then the hard separation
+  // backstop. One spatial hash per tick (cell 3 m) feeds every O(N^2) peer
+  // scan — same neighbor sets as a full scan, only faster (see grid.js).
+  const grid = buildMobGrid(sepBuf, 3);
+  planGroup(sepBuf, dt, grid);
+  for (const mob of sepBuf) {
+    tickFarmMob(mob, dt, pickTarget, mob.rand ?? Math.random, sepBuf, grid);
+    applyDisplacementColor(mob);
+  }
+  if (sepBuf.length > 1) separateFarmMobs(sepBuf, grid);
 }
 
 export { setFarmSeed };

@@ -39,6 +39,12 @@ export function snapCardinal(yaw) {
   return best;
 }
 
+// 8-wind snap for forced detours (mover): meetings read off a discrete
+// set, so crossings resolve instead of chasing raw headings.
+export function snap8(yaw) {
+  return Math.round(yaw / (Math.PI / 4)) * (Math.PI / 4);
+}
+
 // Exact integer step for a cardinal yaw (never trig drift).
 export function dirVec(yaw) {
   const s = snapCardinal(yaw);
