@@ -9,8 +9,10 @@
 // latch, never expire) so they assert geometry, not probability; the
 // entry/budget/keep-riding rigs at the end run unpinned. Junctions keep
 // the same physical wall (forced, straights first); wall ends round the
-// corner (inner and outer, all four directions) or U-turn in place. A ride
-// never switches walls (same face plane on straights, tip-connected takes
+// corner (inner and outer, all four directions, stepped 1-bloc zigzags
+// paraded) or U-turn in place. A ride
+// never switches walls (same face plane on straights — stepped ±1 treads
+// included when tip-connected — tip-connected takes
 // on turns — refused takes U-turn, never a stranger wall) and only a
 // genuinely continuing 1-wide corridor hands over to the rail.
 // Blue = touch ride (wallFollow).
@@ -700,8 +702,9 @@ console.log("PASS flank-gate");
 }
 console.log("PASS corner-rounding-unpinned");
 
-// --- outer-turn lottery: seed 17 exits straight at the tip (no rounding
-// at all), same geometry pinned rounds — one draw decides, both pinned ---
+// --- outer turn, no lottery: seed 17 (which used to exit straight one
+// time in five) now rounds the tip onto the column like the pinned rig —
+// rides only ever leave on the roam-clock budget, never mid-corner ---
 {
   flat(-8, 10, -4, 10);
   for (let x = -4; x <= 2; x++) wall(x, 2); // row ends at x=2
@@ -709,26 +712,26 @@ console.log("PASS corner-rounding-unpinned");
   const mob = makeMob(-3.5, 1.0, 0.5, mulberry32(17));
   mob.pinWallRide = false;
   const target = { x: -3.5, z: 30 };
-  let latchTick = -1, quitTick = -1, quitYaw = 0, qx = 0, rounded = false;
+  let latchTick = -1, quitTick = -1, rounded = false, northLeg = 0;
   for (let t = 0; t < 1200; t++) {
     tickFarmMob(mob, DT, () => target, mob.rand);
     assert.ok(!aabbIntersectsSolid(mob.pos.x, mob.pos.y, mob.pos.z, 0.32, 1.3),
-      `lottery: body in wall @tick${t}`);
+      `noround-lottery: body in wall @tick${t}`);
     if (latchTick < 0 && mob.followLine) latchTick = t;
     if (latchTick >= 0 && mob.wallFollow && mob.followLine &&
-        Math.abs(mob.followLine.axis) < 1e-9) rounded = true;
-    if (latchTick >= 0 && quitTick < 0 && !mob.lane && mob.roam?.mode === "commit") {
-      quitTick = t; quitYaw = mob.roam.heading; qx = mob.pos.x;
+        Math.abs(mob.followLine.axis) < 1e-9) {
+      rounded = true;
+      if (Math.abs(mob.pos.x - 3.5) < 0.15) northLeg++;
     }
+    if (latchTick >= 0 && quitTick < 0 && !mob.lane && mob.roam?.mode === "commit") quitTick = t;
     if (quitTick >= 0 && t > quitTick + 30) break;
   }
-  assert.ok(latchTick >= 0 && latchTick < 120, `lottery: latched (tick ${latchTick})`);
-  assert.ok(!rounded, `lottery: never rounded (seed 17 exits)`);
-  assert.ok(quitTick > latchTick, `lottery: left the wall (latch ${latchTick}, quit ${quitTick})`);
-  assert.ok(yawDiff(quitYaw, Math.PI / 2) < 0.05, `lottery: straight on the pre-turn axis (qyaw=${quitYaw.toFixed(2)})`);
-  assert.ok(qx > 2.2, `lottery: past the tip (x=${qx.toFixed(1)})`);
-  assert.ok(mob.followCool > 0, `lottery: quit holds the next latch off`);
-  // Same seed pinned: the lottery never fires, the tip rounds.
+  assert.ok(latchTick >= 0 && latchTick < 120, `noround-lottery: latched (tick ${latchTick})`);
+  assert.ok(rounded, `noround-lottery: rounded the tip onto the column face`);
+  assert.ok(northLeg > 30, `noround-lottery: glued north along the column (${northLeg} ticks)`);
+  assert.ok(quitTick > latchTick, `noround-lottery: budget ended the ride (latch ${latchTick}, quit ${quitTick})`);
+  assert.ok(mob.followCool > 0, `noround-lottery: quit holds the next latch off`);
+  // Same seed pinned: identical rounding, still glued at the end.
   flat(-8, 10, -4, 10);
   for (let x = -4; x <= 2; x++) wall(x, 2);
   for (let z = 2; z <= 6; z++) wall(2, z);
@@ -738,9 +741,9 @@ console.log("PASS corner-rounding-unpinned");
     tickFarmMob(pinned, DT, () => target, pinned.rand);
     if (pinned.wallFollow && pinned.followLine && Math.abs(pinned.followLine.axis) < 1e-9) pinnedRound = true;
   }
-  assert.ok(pinnedRound, `lottery: pinned seed 17 rounds`);
+  assert.ok(pinnedRound, `noround-lottery: pinned seed 17 rounds`);
 }
-console.log("PASS outer-turn-lottery");
+console.log("PASS outer-turn-no-lottery");
 
 // --- long straight wall unpinned: the ride parades to the tip, U-turns
 // in place and paces back (legacy geometry), until the budget quits it ---
@@ -902,6 +905,68 @@ console.log("PASS keep-riding-boxed");
   assert.ok(Math.abs(rig(null) - (Math.PI / 2 + Math.PI / 4)) < 1e-9, `roomiest: open field quits 45°`);
 }
 console.log("PASS budget-roomiest");
+
+// --- crenellated row: 1-bloc teeth jutting toward the ride every other
+// cell — the ride weaves around every tooth without a single drop, still
+// glued, never diagonal, never leaving for open field ---
+{
+  flat(-12, 16, -8, 14);
+  for (let x = -6; x <= 8; x++) { wall(x, 2); if ((x & 1) === 0) wall(x, 1); }
+  const mob = makeMob(-5.5, 0.5, 0.5, mulberry32(7));
+  const trace = run(mob, { x: -5.5, z: 30 }, 2400);
+  assert.ok(trace.every((p) => p.blue), `crenel: blue never breaks on 1-bloc teeth`);
+  assert.ok(Math.max(...trace.map((p) => p.x)) > 9, `crenel: weaved all the way to the east tip`);
+  const steady = steadyBlue(trace);
+  assert.ok(steady.length > 200, `crenel: glued ride holds (${steady.length} steady blue ticks)`);
+  for (const p of steady) {
+    const card = [0, Math.PI / 2, Math.PI, -Math.PI / 2]
+      .some((c) => yawDiff(p.yaw, c) < 0.06);
+    assert.ok(card, `crenel: never diagonal (yaw=${p.yaw.toFixed(2)})`);
+  }
+  assert.ok(trace.every((p) => p.x > -8 && p.x < 11 && p.z > -1 && p.z < 5),
+    `crenel: contained along the row, no runaway`);
+}
+console.log("PASS zigzag-crenel");
+
+// --- diagonal 1-step staircase: corner-touching cells parade end to end,
+// no drop, no diagonal cruise, no phantom march ---
+{
+  flat(-12, 16, -8, 16);
+  for (let i = 0; i < 10; i++) wall(-6 + i, 2 + i);
+  const mob = makeMob(-5.5, 1.0, 0.5, mulberry32(7));
+  const trace = run(mob, { x: -5.5, z: 30 }, 2000);
+  assert.ok(trace.every((p) => p.blue), `diagsteps: blue never breaks on corner-touching steps`);
+  assert.ok(trace.some((p) => p.blue && p.x > -2 && p.z > 6),
+    `diagsteps: climbed the staircase (end=(${mob.pos.x.toFixed(1)},${mob.pos.z.toFixed(1)}))`);
+  for (const p of steadyBlue(trace)) {
+    const card = [0, Math.PI / 2, Math.PI, -Math.PI / 2]
+      .some((c) => yawDiff(p.yaw, c) < 0.06);
+    assert.ok(card, `diagsteps: never diagonal (yaw=${p.yaw.toFixed(2)})`);
+  }
+}
+console.log("PASS zigzag-diagsteps");
+
+// --- sealed room: no door, the ride paces the interior perimeter forever —
+// blue unbroken after the latch, contained, turning the corners instead of
+// dropping mid-wall ---
+{
+  flat(-10, 10, -8, 10);
+  for (let x = -3; x <= 3; x++) { wall(x, 0); wall(x, 4); }
+  for (let z = 0; z <= 4; z++) { wall(-3, z); wall(3, z); }
+  const mob = makeMob(0.5, 2.5, 0.3, mulberry32(5));
+  const trace = run(mob, { x: 0.5, z: 30 }, 2000);
+  const firstBlue = trace.findIndex((p) => p.blue);
+  assert.ok(firstBlue >= 0 && firstBlue < 300, `sealed: ride latched (first ${firstBlue})`);
+  assert.ok(trace.slice(firstBlue).every((p) => p.blue), `sealed: blue never breaks after latch`);
+  let flips = 0;
+  for (let i = firstBlue + 1; i < trace.length; i++) {
+    if (trace[i].lane !== trace[i - 1].lane) flips++;
+  }
+  assert.ok(flips >= 4, `sealed: paces the room instead of leaving (${flips} lane turns)`);
+  assert.ok(trace.slice(firstBlue).every((p) => Math.abs(p.x) < 4 && p.z > -1 && p.z < 5),
+    `sealed: contained inside the room`);
+}
+console.log("PASS sealed-room");
 
 // --- same seed, identical ride ---
 {
