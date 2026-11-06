@@ -237,6 +237,19 @@ export function makeCellFree(mob) {
   };
 }
 
+// Solid-only wall test over the body column (no liquid/ground clauses): a
+// 1-high fence reads as a wall, water and drops never do. Feeds the 2-wide
+// mouth detector, whose flanks must be solid, never merely unwalkable.
+export function makeCellSolid(mob) {
+  return (bx, bz) => {
+    const refY = mob.pos.y;
+    for (let by = Math.floor(refY); by <= Math.floor(refY + mob.h - 1e-4); by++) {
+      if (isSolidCell(bx, by, bz)) return true;
+    }
+    return false;
+  };
+}
+
 // One unified blocked predicate: solid overlap OR illegal ground under the
 // body circles OR missing headroom. Corridor probes and the stepper share
 // it, so air walls (drop > maxDrop) and physical walls read identically.

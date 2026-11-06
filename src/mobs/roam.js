@@ -17,10 +17,10 @@
 // Three-free: physics come from step.js, the gap scan from corridor.js.
 import {
   dirVec, snapCardinal, normYaw, yawDiff, rayDist, PROBE_DIST, ENTRY_STALL_T,
-  oppositeYaw, isTwoWideLane,
+  oppositeYaw, isTwoWideMouth, ENTRY_COOL_T, mobHeadsToCooledMouth, insideCooledMouth,
 } from "./corridor.js";
 import {
-  makeStepOk, makeCellFree, turnTo, moveClamped, driveToward, strideTarget,
+  makeStepOk, makeCellFree, makeCellSolid, turnTo, moveClamped, driveToward, strideTarget,
   dropLane, TURN_RATE, VIRTUAL_W, NO_EXPIRY, SPIN, descendOk, slideDeflect,
   segmentWalkable,
 } from "./step.js";
@@ -242,11 +242,11 @@ export function latchFlankTouch(mob, dt, axis, rand = Math.random, o = {}) {
   const ma = measureWallTake(mob, axis, latA, null, FLANK_TOUCH_D + 0.05);
   const mb = measureWallTake(mob, axis, latB, null, FLANK_TOUCH_D + 0.05);
   if (!ma && !mb) return null;
-  // 2-wide passages thread straight: a flank graze inside one is passage,
+  // 2-wide mouths thread straight: a flank graze inside one is passage,
   // never contact — declining here instead of yanking the mob onto an edge
-  // line. Passage exits opt out (contact rides stay 50/50 there).
-  if (!o.ignorePassage && isTwoWideLane(
-    Math.floor(mob.pos.x), Math.floor(mob.pos.z), axis, makeCellFree(mob))) return null;
+  // line.
+  if (isTwoWideMouth(
+    Math.floor(mob.pos.x), Math.floor(mob.pos.z), axis, makeCellFree(mob), makeCellSolid(mob))) return null;
   // Nearest face wins; ties keep the flank the mob already leans toward.
   const [ax] = dirVec(axis);
   const latIsX = ax === 0;
@@ -277,103 +277,245 @@ export function latchFlankTouch(mob, dt, axis, rand = Math.random, o = {}) {
   return axis;
 }
 
-// Tunnel-mouth exit 50/50: a rail released into the open either latches a
-// touch ride on a flanking mouth wall or roams free — never back inside.
-// Left/right read off the exit axis (rel convention: +1 wall on the left
-// of travel), current cell OR the mouth cell behind (the drop fires one
-// cell past the mouth, where the flanks read open by definition — the
-// mouth flanks behind are the exit walls): both walls draw lots, a single
-// wall takes its side, no walls roam free directly. The ride hugs a real
-// continuing wall: straight out when the wall continues past the drop,
-// turned 90° onto the exterior face when only the mouth flank reads (pen
-// ring) — a lone stub with nothing to hug falls back to roam. Draw
-// already paid in both cases (forced axis, no entry draw, budget kept);
-// the free-roam commit runs straight 50% of the time, ±45° 25% each, each
-// requiring ~2 blocks of room (validated end-to-end anyway), falling back
-// to the roomiest non-backward heading and, boxed, to a plain decide.
-// Returns true when a lane erected (servo owns the tick), false on a roam
-// commit or nothing (roam steps).
-export function exitTunnel(mob, exitAxis, sense, dt, supported, floating, rand = Math.random, pickTarget) {
-  const latL = normYaw(exitAxis - Math.PI / 2), latR = normYaw(exitAxis + Math.PI / 2);
-  const hasNow = (d) => sense.walled.some((w) => yawDiff(w, d) < 1e-6);
-  // Mouth cell behind along the exit axis: its flanks are the exit walls.
-  const [eax, eaz] = dirVec(exitAxis);
-  const bcx = Math.floor(mob.pos.x), bcz = Math.floor(mob.pos.z);
-  const hasBack = (lat) => {
-    const [lx, lz] = dirVec(lat);
-    return !sense.cellFree(bcx - eax + lx, bcz - eaz + lz);
+// Unified mouth exit (exitMouth): 1-wide rail releases draw the five-arm
+// table (25% wall-follow left, 25% right, 25% straight, 12.5% ±45° — a drawn
+// side with no latchable wall takes the other side when it has one, else
+// free roam); kind-2 draws go through twoStageExit below (wall intent or
+// straight, never angles). Far from any wall a 1-wide exit roams free
+// (straight 50% / ±45° 25% each). Wall rides hug straight out along a
+// continuing wall, else turn 90° onto a validated continuing exterior face
+// (pen ring) — a lone stub with nothing to hug roams, so freestanding
+// mouths always roam out. An erected ride is an ordinary touch ride (roam
+// clock budget, junction takes, corner rounding, blue) — it keeps following
+// past the mouth like any wall contact. Every exit arms the global entry
+// cooldown (ENTRY_COOL_T), so arrivals walk away instead of re-drawing the
+// mouth. Returns true when a lane erected (servo owns the tick), false on a
+// roam commit (roam steps). Left/right read off the exit axis (rel
+// convention: +1 wall on the left of travel). opts carries the passage
+// kind (kind 1/2, defaulting to the mouth read) and noSlide (erected rides
+// travel parallel without converging onto their line).
+export const EXIT_WALL_MARGIN = 0.25;
+// Latch grace after an exit roam commit: contact latches stay off this long
+// so a drawn straight/diagonal actually walks (~1 m) before anything
+// converts it. Rides erecting on contact are unaffected.
+export const EXIT_ROAM_GRACE = 0.5;
+export function exitMouth(mob, exitAxis, dt, supported, floating, rand = Math.random, pickTarget, sense = null, opts = {}) {
+  exitAxis = snapCardinal(exitAxis);
+  const cellFree = sense?.cellFree ?? makeCellFree(mob);
+  const kind = opts.kind ?? (isTwoWideMouth(
+    Math.floor(mob.pos.x), Math.floor(mob.pos.z), exitAxis, cellFree, makeCellSolid(mob)) ? 2 : 1);
+  // Every exit arms the entry-cooldown timer. The key travels with it when
+  // the caller keys the mouth just left (opts.key, exact cell key from the
+  // thread close or the rail-release probe): timer+key together gate the
+  // same-mouth re-draw. Callers mid-thread pass no key so the gate of the
+  // mouth just left is never erased by the mouth underfoot.
+  const done = (v) => {
+    mob.entryCoolT = ENTRY_COOL_T;
+    if (opts.key != null) mob.entryCoolKey = opts.key;
+    return v;
   };
-  const left = hasNow(latL) || hasBack(latL), right = hasNow(latR) || hasBack(latR);
-  // Rails released inside a 2-wide thread free: hugging an edge here is the
-  // passage slide, never a mouth exit — mouths, rooms and lone stubs read
-  // no motif and keep the 50/50 below.
-  if ((left || right) && isTwoWideLane(bcx, bcz, exitAxis, sense.cellFree)) {
-    return exitFreeRoam(mob, exitAxis, supported, floating, rand, pickTarget);
+  // Kind 2 exits go through the two-stage rule below (never angles); 1-wide
+  // is always wall-close by construction and keeps the five-arm table.
+  if (kind === 2) {
+    return twoStageExit(mob, exitAxis, dt, supported, floating, rand, pickTarget, sense, cellFree, opts, done);
   }
-  if ((left || right) && rand() < 0.5) {
-    const pickLeft = left && right ? rand() < 0.5 : left;
-    const sideDir = pickLeft ? latL : latR;
-    // Straight out along a continuing wall: the only straight ride that
-    // can persist. A wall read only behind (mouth flank) never sustains
-    // one — the ride would release on the next tick.
-    if (hasNow(sideDir) && latchVirtual(mob, exitAxis, sideDir)) {
-      mob.lane = { axis: exitAxis, entry: oppositeYaw(exitAxis), lockX: -1, lockZ: -1 };
-      mob.followLine.t = 0;
-      if (mob.pinWallRide !== true) mob.followLine.wallSpan = roamSpan(rand);
-      mob.followLine.touch = true;
-      mob.followLine.fresh = LATCH_FRESH_TICKS;
-      // Exit ride: never U-turns back into the mouth (see exitRideOut and
-      // the U-turn/budget guards in the mover) — it quits outward instead.
-      mob.followLine.exitRide = exitAxis;
-      mob.yawTarget = exitAxis;
-      turnTo(mob, dt, TURN_RATE);
-      mob.stuckT = 0;
-      return true;
-    }
-    // Turned 90° onto the exterior face: the mouth flank alone never
-    // sustains a straight ride, but its wall may continue sideways (pen
-    // ring) — hug it there instead. Validated: a real face in latch range,
-    // the wall continuing one cell further along, and a walkable step.
-    // A lone stub falls through to free roam.
-    const newAxis = sideDir;
-    const wallDir = normYaw(newAxis + (pickLeft ? -Math.PI / 2 : Math.PI / 2));
-    const [nax, naz] = dirVec(newAxis);
-    const ox = mob.pos.x + nax * PROBE_DIST, oz = mob.pos.z + naz * PROBE_DIST;
-    const m = measureWallTake(mob, newAxis, wallDir, { x: ox, z: oz });
-    if (m) {
-      const [wx, wz] = dirVec(wallDir);
-      const aheadWalled = !sense.cellFree(Math.floor(ox + nax) + wx, Math.floor(oz + naz) + wz);
-      const stepX = mob.pos.x + nax * PROBE_DIST, stepZ = mob.pos.z + naz * PROBE_DIST;
-      const walkable = makeStepOk(mob, supported, floating, 0, newAxis, 0)(stepX, stepZ) &&
-        descendOk(mob, stepX, stepZ);
-      if (aheadWalled && walkable) {
-        const rel = pickLeft ? 1 : -1;
-        mob.followLine = {
-          axis: newAxis,
-          line: m.face - m.dirSign * (VIRTUAL_W / 2),
-          side: -m.dirSign,
-          rel, virtual: true, touch: true, fresh: LATCH_FRESH_TICKS, face: m.face,
-          t: 0, exitRide: exitAxis,
-        };
-        if (mob.pinWallRide !== true) mob.followLine.wallSpan = roamSpan(rand);
-        mob.lane = { axis: newAxis, entry: oppositeYaw(newAxis), lockX: -1, lockZ: -1 };
-        mob.yawTarget = newAxis;
-        turnTo(mob, dt, TURN_RATE);
-        mob.stuckT = 0;
-        return true;
+  {
+    const latL = normYaw(exitAxis - Math.PI / 2), latR = normYaw(exitAxis + Math.PI / 2);
+    const leftTake = exitArmTake(mob, exitAxis, latL, supported, floating, sense, cellFree);
+    const rightTake = exitArmTake(mob, exitAxis, latR, supported, floating, sense, cellFree);
+    const r = rand();
+    const arm = r < 0.25 ? "L" : r < 0.5 ? "R" : r < 0.75 ? "S" : r < 0.875 ? "D+" : "D-";
+    if (arm === "L" || arm === "R") {
+      // No wall on the drawn side: the other side when it has one, else
+      // free roam (a lone stub never earns a ride).
+      let side = arm === "L" ? latL : latR;
+      let take = arm === "L" ? leftTake : rightTake;
+      if (take == null) {
+        side = arm === "L" ? latR : latL;
+        take = arm === "L" ? rightTake : leftTake;
       }
+      if (take != null) {
+        if (erectExitRide(mob, exitAxis, side, take, dt, kind, cellFree, supported, floating, rand, opts)) return done(true);
+      }
+      return done(freeRoamExit(mob, exitAxis, supported, floating, rand, pickTarget));
     }
-    // No huggable wall: fall through to free roam.
+    // Roam arms (shared table, see roamTable below).
+    return roamTable(mob, exitAxis, arm, supported, floating, rand, pickTarget, done);
   }
-  return exitFreeRoam(mob, exitAxis, supported, floating, rand, pickTarget);
 }
 
-// Open-roam exit shared by the 1-wide rail release and the 2-wide passage
-// exit: straight 50% of the time, ±45° 25% each, each requiring ~2 blocks
-// of room (validated end-to-end anyway), falling back to the roomiest
-// non-backward heading and, boxed, to a plain decide — never back inside.
-// Returns false (roam steps).
-export function exitFreeRoam(mob, exitAxis, supported, floating, rand = Math.random, pickTarget) {
+// Strictly-close flank gap behind the kind-2 wall intent: face distance
+// within touch range plus the exit margin — a centered body never qualifies.
+function closeFlankGap(mob, exitAxis, side) {
+  const m = measureWallTake(mob, exitAxis, side, null, FLANK_TOUCH_D + 0.05 + EXIT_WALL_MARGIN);
+  if (!m) return null;
+  const [ax] = dirVec(exitAxis);
+  return Math.abs(m.face - (ax === 0 ? mob.pos.x : mob.pos.z));
+}
+
+// Two-stage exit behind every kind-2 draw, no angles: wall-follow intent
+// first (single rand below half → nearest strictly-close flank, restricted
+// to that wall's side), then straight.
+function twoStageExit(mob, exitAxis, dt, supported, floating, rand, pickTarget, sense, cellFree, opts, done) {
+  const latL = normYaw(exitAxis - Math.PI / 2), latR = normYaw(exitAxis + Math.PI / 2);
+  if (rand() < 0.5) {
+    // Nearest strictly-close flank wins (exact ties, unreachable in a
+    // 2-wide, flip a coin).
+    const gl = closeFlankGap(mob, exitAxis, latL), gr = closeFlankGap(mob, exitAxis, latR);
+    let side = null;
+    if (gl != null && gr != null) side = Math.abs(gl - gr) < 1e-9 ? (rand() < 0.5 ? latL : latR) : (gl < gr ? latL : latR);
+    else if (gl != null) side = latL;
+    else if (gr != null) side = latR;
+    if (side != null) {
+      const take = exitArmTake(mob, exitAxis, side, supported, floating, sense, cellFree);
+      if (take != null &&
+        erectExitRide(mob, exitAxis, side, take, dt, 2, cellFree, supported, floating, rand, opts)) {
+        return done(true);
+      }
+    }
+  }
+  // No close huggable wall, failed erect, or roam intent: straight, period.
+  return straightSmooth(mob, exitAxis, supported, floating, rand, done);
+}
+
+// Straight-smooth: the single roam shape behind kind-2 exits. A locked
+// straight commit (smooth marker, honored by roamStep and the mover: no
+// stuck re-pick, no contact-latch conversion, no group-plan override), so
+// the crossing reads as one line whatever the nose meets. Nose-blocked at
+// the draw holds a short straight stride in place (the step gate stops at
+// contact) instead of maneuvering; the span watchdog (roamStep timedOut →
+// decide) owns the only release, for liveness.
+function straightSmooth(mob, exitAxis, supported, floating, rand, done) {
+  if (exitRoamCommit(mob, exitAxis, supported, floating, rand)) {
+    mob.roam.smooth = true;
+    return done(false);
+  }
+  const [dx, dz] = dirVec(exitAxis);
+  installExitRoam(mob, exitAxis, { x: mob.pos.x + dx, z: mob.pos.z + dz }, rand);
+  mob.roam.smooth = true;
+  return done(false);
+}
+
+// Roam set behind one drawn arm: the arm's headings in priority order
+// (diagonals try each other before straight, so a drawn diagonal stays
+// diagonal whenever either fits), then the free table as a boxed safety net.
+function roamTable(mob, exitAxis, arm, supported, floating, rand, pickTarget, done) {
+  const diag = (s) => normYaw(exitAxis + s * Math.PI / 4);
+  const seq = arm === "S" ? [exitAxis]
+    : arm === "D+" ? [diag(1), diag(-1), exitAxis]
+    : [diag(-1), diag(1), exitAxis];
+  for (const h of seq) {
+    if (exitRoamCommit(mob, h, supported, floating, rand)) return done(false);
+  }
+  return done(freeRoamExit(mob, exitAxis, supported, floating, rand, pickTarget));
+}
+
+// Shared turned-arm geometry behind the precheck and the erect below:
+// 90° onto the exterior face when only a mouth flank reads behind but its
+// wall continues sideways (pen ring). Measured once, consumed twice.
+function turnedMeasure(mob, exitAxis, sideDir, supported, floating, cellFree) {
+  const pickLeft = yawDiff(sideDir, normYaw(exitAxis - Math.PI / 2)) < 1e-6;
+  const newAxis = sideDir;
+  const wallDir = normYaw(newAxis + (pickLeft ? -Math.PI / 2 : Math.PI / 2));
+  const [nax, naz] = dirVec(newAxis);
+  const ox = mob.pos.x + nax * PROBE_DIST, oz = mob.pos.z + naz * PROBE_DIST;
+  const m = measureWallTake(mob, newAxis, wallDir, { x: ox, z: oz });
+  if (!m) return null;
+  const [wx, wz] = dirVec(wallDir);
+  const aheadWalled = !cellFree(Math.floor(ox + nax) + wx, Math.floor(oz + naz) + wz);
+  const stepX = mob.pos.x + nax * PROBE_DIST, stepZ = mob.pos.z + naz * PROBE_DIST;
+  const walkable = makeStepOk(mob, supported, floating, 0, newAxis, 0)(stepX, stepZ) &&
+    descendOk(mob, stepX, stepZ);
+  if (!aheadWalled || !walkable) return null;
+  return { newAxis, wallDir, m, pickLeft };
+}
+
+// Pure precheck for one wall-follow arm: "straight" when the wall continues
+// past the drop (the only straight ride that can persist), "turned" with
+// its precomputed geometry when only a mouth flank reads behind but its
+// wall continues sideways (pen ring), null when nothing huggable stands
+// there. Reads only, latches nothing.
+function exitArmTake(mob, exitAxis, sideDir, supported, floating, sense, cellFree) {
+  if (sense) {
+    const hasNow = (d) => sense.walled.some((w) => yawDiff(w, d) < 1e-6);
+    if (hasNow(sideDir)) return { kind: "straight" };
+  } else if (measureWallTake(mob, exitAxis, sideDir)) {
+    return { kind: "straight" };
+  }
+  const t = turnedMeasure(mob, exitAxis, sideDir, supported, floating, cellFree);
+  return t ? { kind: "turned", ...t } : null;
+}
+
+// Erect the prechecked wall arm: straight hugs the continuing wall along the
+// exit axis, turned rounds 90° onto the exterior face. Gentle glue on 2-wide
+// exits (converge, no sideways yank), fresh latch otherwise. The erected
+// lane is an ordinary touch ride from here on (budget, takes, rounding) —
+// with opts.noSlide the ride travels parallel and never slides laterally
+// onto its line (mouth exits: no sideways step while threading).
+function erectExitRide(mob, exitAxis, sideDir, take, dt, kind, cellFree, supported, floating, rand, opts = {}) {
+  const gentle = kind === 2;
+  const kindTake = typeof take === "string" ? take : take?.kind;
+  if (kindTake === "straight") {
+    if (!latchVirtual(mob, exitAxis, sideDir)) return false;
+    mob.lane = { axis: exitAxis, entry: oppositeYaw(exitAxis), lockX: -1, lockZ: -1 };
+  } else {
+    const t = typeof take === "object" && take?.m ? take :
+      turnedMeasure(mob, exitAxis, sideDir, supported, floating, cellFree);
+    if (!t) return false;
+    const rel = t.pickLeft ? 1 : -1;
+    mob.followLine = {
+      axis: t.newAxis,
+      line: t.m.face - t.m.dirSign * (VIRTUAL_W / 2),
+      side: -t.m.dirSign,
+      rel, virtual: true, touch: true,
+      fresh: gentle ? GENTLE_FRESH_TICKS : LATCH_FRESH_TICKS, face: t.m.face,
+      t: 0,
+    };
+    mob.lane = { axis: t.newAxis, entry: oppositeYaw(t.newAxis), lockX: -1, lockZ: -1 };
+  }
+  mob.followLine.t = 0;
+  if (mob.pinWallRide !== true) mob.followLine.wallSpan = roamSpan(rand);
+  mob.followLine.touch = true;
+  mob.followLine.fresh = gentle ? GENTLE_FRESH_TICKS : LATCH_FRESH_TICKS;
+  if (gentle) mob.followLine.gentle = true;
+  if (opts.noSlide === true) mob.followLine.noSlide = true;
+  mob.yawTarget = mob.lane.axis;
+  turnTo(mob, dt, TURN_RATE);
+  mob.stuckT = 0;
+  return true;
+}
+
+// One roam arm of the exit table: commit along the heading when ~2 blocks of
+// room stand there. False when boxed (caller falls back to the free table).
+function exitRoamCommit(mob, h, supported, floating, rand) {
+  if (!exitRoom(mob, h, supported, floating)) return false;
+  const t = strideTarget(mob, h, rand, 1.0, 2.5);
+  if (!t) return false;
+  installExitRoam(mob, h, t, rand);
+  return true;
+}
+
+// Shared shape behind every exit roam commit: the latch grace walks with it,
+// so a drawn heading expresses itself (~1 m) before contact converts it.
+// Callers stamp roam.smooth for locked crossings (straight-smooth kind-2
+// exits): the mover and roamStep honor the marker (no stuck re-pick, no
+// contact latch, no plan override) until the span watchdog releases it.
+function installExitRoam(mob, heading, target, rand) {
+  mob.target = target;
+  mob.wanderT = NO_EXPIRY;
+  mob.roam = {
+    mode: "commit", heading, target, tgt: target,
+    t: 0, span: roamSpan(rand), runT: 0,
+  };
+  mob.stuckT = 0;
+  mob.followCool = Math.max(mob.followCool ?? 0, EXIT_ROAM_GRACE);
+}
+
+// Free-roam table shared by every exit without a wall to hug: straight 50%
+// of the time, ±45° 25% each, each requiring ~2 blocks of room (validated
+// end-to-end anyway), falling back to the roomiest non-backward heading and,
+// boxed, to a plain decide — never back inside. Returns false (roam steps).
+function freeRoamExit(mob, exitAxis, supported, floating, rand = Math.random, pickTarget) {
   const r = rand();
   const seq = r < 0.5 ? [0, 1, -1] : r < 0.75 ? [1, 0, -1] : [-1, 0, 1];
   for (const s of seq) {
@@ -381,13 +523,7 @@ export function exitFreeRoam(mob, exitAxis, supported, floating, rand = Math.ran
     if (!exitRoom(mob, h, supported, floating)) continue;
     const t = strideTarget(mob, h, rand, 1.0, 2.5);
     if (t) {
-      mob.target = t;
-      mob.wanderT = NO_EXPIRY;
-      mob.roam = {
-        mode: "commit", heading: h, target: t, tgt: t,
-        t: 0, span: roamSpan(rand), runT: 0,
-      };
-      mob.stuckT = 0;
+      installExitRoam(mob, h, t, rand);
       return false;
     }
   }
@@ -398,54 +534,12 @@ export function exitFreeRoam(mob, exitAxis, supported, floating, rand = Math.ran
   if (fb != null) {
     const t = strideTarget(mob, fb, rand, 1.0, 2.5);
     if (t) {
-      mob.target = t;
-      mob.wanderT = NO_EXPIRY;
-      mob.roam = {
-        mode: "commit", heading: fb, target: t, tgt: t,
-        t: 0, span: roamSpan(rand), runT: 0,
-      };
-      mob.stuckT = 0;
+      installExitRoam(mob, fb, t, rand);
       return false;
     }
   }
   decide(mob, 0, supported, floating, rand, pickTarget);
   return false;
-}
-
-// Wall contact at a mouth exit: frontal block (or pit lip) or a flank face
-// in touch range. One predicate behind the 2-wide passage exit below.
-export function exitContact(mob, exitAxis, supported, floating) {
-  const latA = normYaw(exitAxis + Math.PI / 2), latB = normYaw(exitAxis - Math.PI / 2);
-  const [eax, eaz] = dirVec(exitAxis);
-  const fit = makeStepOk(mob, supported, floating, 0, exitAxis, 0);
-  const ax = mob.pos.x + eax * PROBE_DIST, az = mob.pos.z + eaz * PROBE_DIST;
-  if (!fit(ax, az) || !descendOk(mob, ax, az)) return true;
-  return !!(measureWallTake(mob, exitAxis, latA, null, FLANK_TOUCH_D + 0.05) ||
-    measureWallTake(mob, exitAxis, latB, null, FLANK_TOUCH_D + 0.05));
-}
-
-// Passage exit (2-wide): no wall contact roams free with the shared table
-// above; wall contact (frontal block or a flank face in touch range)
-// draws 50/50 between a forced hole-side wall ride (draw already paid —
-// skipDraw, budget kept, exit-marked so it quits outward) and the same
-// free roam. Returns true when a lane erected (servo owns the tick).
-export function exitPassage(mob, exitAxis, dt, supported, floating, rand = Math.random, pickTarget) {
-  exitAxis = snapCardinal(exitAxis);
-  if (exitContact(mob, exitAxis, supported, floating) && rand() < WALL_ENTRY_P) {
-    const axis = latchFlankTouch(mob, dt, exitAxis, rand, { skipDraw: true, ignorePassage: true }) ??
-      latchTouchWall(mob, dt, exitAxis, null, rand, { skipDraw: true });
-    if (axis != null) {
-      mob.lane = { axis, entry: oppositeYaw(axis), lockX: -1, lockZ: -1 };
-      mob.followLine.exitRide = exitAxis;
-      // Gentle glue: converge onto the line over ~1.5 s instead of the
-      // fresh yank — same ride, no sideways jump at the mouth.
-      mob.followLine.gentle = true;
-      mob.followLine.fresh = GENTLE_FRESH_TICKS;
-      mob.stuckT = 0;
-      return true;
-    }
-  }
-  return exitFreeRoam(mob, exitAxis, supported, floating, rand, pickTarget);
 }
 
 // Docking take for a guided (violet) ride: the hole sits within stride
@@ -476,29 +570,6 @@ function exitRoom(mob, h, supported, floating) {
   const [dx, dz] = dirVec(h);
   const fit = (x, z) => !bodyFits(mob, supported, floating, h, x, z);
   return rayDist(mob.pos.x, mob.pos.z, dx, dz, fit, 2.5, 0.1) >= 1.9;
-}
-
-// Outward quit for an exit ride that must never U-turn back into the
-// mouth: drop the line and commit outward along the recorded exit axis.
-// True when the commit installed (the caller releases); false when boxed
-// (no outward stride — caller keeps its U-turn as the only move left).
-export function exitRideOut(mob, rand = Math.random) {
-  const ex = mob.followLine?.exitRide;
-  if (ex == null) return false;
-  const ahead = strideTarget(mob, ex, rand, 1.0, 2.5);
-  if (!ahead) return false;
-  dropLane(mob);
-  mob.followLine = null;
-  mob.turnHold = 0;
-  mob.followCool = FOLLOW_COOL;
-  mob.target = ahead;
-  mob.wanderT = NO_EXPIRY;
-  mob.roam = {
-    mode: "commit", heading: ex, target: ahead, tgt: ahead,
-    t: 0, span: roamSpan(rand), runT: 0,
-  };
-  mob.stuckT = 0;
-  return true;
 }
 
 // Corner rounding at a wall end: the ride found no keeping exit but the
@@ -778,10 +849,11 @@ export function roamStep(mob, dt, supported, floating, rand = Math.random, pickT
   if (c.detour) {
     const [fax, faz] = dirVec(c.axis);
     yawGoal = Math.atan2(c.target.x - fax - mob.pos.x, c.target.z - faz - mob.pos.z);
-  } else if (forceHeading != null && !c.entry) {
+  } else if (forceHeading != null && !c.entry && !c.smooth) {
     // Group-plan override (forecast.js): the latched evasion heading wins
     // over the point re-aim for the tick. Entry commits ignore it — guided
-    // hole-ward lines are never yanked.
+    // hole-ward lines are never yanked — and smooth crossings ignore it too
+    // (locked lines stay locked even in a crowd).
     yawGoal = forceHeading;
   } else {
     yawGoal = Math.atan2(c.target.x - mob.pos.x, c.target.z - mob.pos.z);
@@ -905,20 +977,37 @@ function decide(mob, dt, supported, floating, rand = Math.random, pickTarget, bl
   // wall-following through the servo, so open roam stays open.
   // Past the run budget the commit turns for real (near-prev winds excluded)
   // instead of chaining straight.
+  // Cooled-mouth veto (only while a per-mouth cooldown runs, so idle streams
+  // stay bit-identical): winds and targets running back into the mouth just
+  // left are skipped — the mob waits the cooldown out instead of ping-ponging
+  // straight back in (plain roam would otherwise bypass the entry-draw gate).
+  // Gated on being outside the mouth geometry: the way out always crosses the
+  // mouth center, so vetoing from inside would trap the exit walk itself.
+  const cooled = (mob.entryCoolT ?? 0) > 0 && mob.entryCoolKey != null &&
+    !insideCooledMouth(makeCellFree(mob), makeCellSolid(mob), mob.dim ?? "over",
+      Math.floor(mob.pos.x), Math.floor(mob.pos.z), mob.entryCoolKey);
+  const vetoDir = cooled ? (h) => mobHeadsToCooledMouth(
+    mob, mob.pos.x + Math.sin(h) * 2.5, mob.pos.z + Math.cos(h) * 2.5) : null;
+  const dirGate = (blockedDir || vetoDir) ? (h) =>
+    (blockedDir ? blockedDir(h) : false) || (vetoDir ? vetoDir(h) : false) : blockedDir;
   const cands = [mob.yaw, ...shuffled(
     WINDS8.filter((dd) => yawDiff(dd, mob.yaw) > 1e-6), rand)];
-  const heading = openHeading(mob, supported, floating, cands, rand, blockedDir);
+  const heading = openHeading(mob, supported, floating, cands, rand, dirGate);
   if (heading == null) return;
   if (prev?.heading != null && yawDiff(heading, prev.heading) < RUN_ALIGN &&
       (prev.runT ?? 0) + (prev.t ?? 0) >= RUN_MAX) {
     const turned = openHeading(mob, supported, floating, shuffled(
-      WINDS8.filter((dd) => yawDiff(dd, prev.heading) > RUN_ALIGN), rand), rand, blockedDir);
+      WINDS8.filter((dd) => yawDiff(dd, prev.heading) > RUN_ALIGN), rand), rand, dirGate);
     if (turned != null) {
       const turnTarget = strideTarget(mob, turned, rand) ?? pickTarget(mob, rand);
-      if (turnTarget) { latchCommit(mob, turned, turnTarget, rand); return; }
+      if (turnTarget) {
+        if (cooled && mobHeadsToCooledMouth(mob, turnTarget.x, turnTarget.z)) return;
+        latchCommit(mob, turned, turnTarget, rand); return;
+      }
     }
   }
   const target = strideTarget(mob, heading, rand) ?? pickTarget(mob, rand);
   if (!target) return;
+  if (cooled && mobHeadsToCooledMouth(mob, target.x, target.z)) return;
   latchCommit(mob, heading, target, rand, prev);
 }

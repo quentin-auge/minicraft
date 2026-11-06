@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import {
   normYaw, yawDiff, snapCardinal, oppositeYaw, dirVec,
-  rayDist, sideBranch, classifyExits, segmentTunneled, isTwoWideLane, findEntries,
+  rayDist, sideBranch, classifyExits, segmentTunneled, isTwoWideMouth, findEntries,
   ENTRY_R_1W, ENTRY_R_2W, ENTRY_P, MIN_FLANK,
   junctionOptions, pickExit, updateLane,
 } from "../../../src/mobs/corridor.js";
@@ -99,29 +99,54 @@ console.log("PASS no-pinball-2wide");
 }
 console.log("PASS segmentTunneled");
 
-// --- isTwoWideLane: XOOX motif around the mob cell, travel along N ---
-// Lane cells x=0,1 at row z=2 (walls x=-1,2), run free north+south.
-// The mover's engage veto and the flank-latch guard dispatch through this;
-// the kinematic proof (off-centre straight walks hold their line, contact
-// exit rides glue gently) is wide-straight / exit-gentle in mob-paths.
+// --- isTwoWideMouth: exit row + 2 free rows ahead, 2+1 solid flanks ---
+// Example pattern, travel along N: exit row z=2 (pair x=0,1, west 2-run at
+// x=-1,-2, east 1-run at x=2), rows z=3,4 free, behind (z=1) don't-care.
+// Free reads walkable, solid reads solid-only (water/drop rims never hold).
 {
-  const lane = new Set(["-1,2", "2,2"]);
-  const laneFree = (bx, bz) => !lane.has(`${bx},${bz}`);
-  assert.equal(isTwoWideLane(0, 2, N, laneFree), true); // left cell, edge west
-  assert.equal(isTwoWideLane(1, 2, N, laneFree), true); // right cell, edge east
+  const solids = new Set(["-1,2", "-2,2", "2,2"]);
+  const free = (bx, bz) => !solids.has(`${bx},${bz}`);
+  const solid = (bx, bz) => solids.has(`${bx},${bz}`);
+  assert.equal(isTwoWideMouth(0, 2, N, free, solid), true); // left pair cell
+  assert.equal(isTwoWideMouth(1, 2, N, free, solid), true); // right pair cell
+  // Mirror: run of 1 west, run of 2 east.
+  const mirror = new Set(["-1,2", "2,2", "3,2"]);
+  const mfree = (bx, bz) => !mirror.has(`${bx},${bz}`);
+  const msolid = (bx, bz) => mirror.has(`${bx},${bz}`);
+  assert.equal(isTwoWideMouth(0, 2, N, mfree, msolid), true);
+  assert.equal(isTwoWideMouth(1, 2, N, mfree, msolid), true);
+  // Walled behind: the exit doesn't care, still a mouth.
+  const backed = new Set(["-1,2", "-2,2", "2,2", "0,1", "1,1"]);
+  assert.equal(isTwoWideMouth(0, 2, N, (bx, bz) => !backed.has(`${bx},${bz}`), (bx, bz) => backed.has(`${bx},${bz}`)), true);
+  // Symmetric thin gap (XOOX both sides): not a mouth, plain roam.
+  const sym = new Set(["-1,2", "2,2"]);
+  assert.equal(isTwoWideMouth(0, 2, N, (bx, bz) => !sym.has(`${bx},${bz}`), (bx, bz) => sym.has(`${bx},${bz}`)), false);
+  assert.equal(isTwoWideMouth(1, 2, N, (bx, bz) => !sym.has(`${bx},${bz}`), (bx, bz) => sym.has(`${bx},${bz}`)), false);
+  // Broken long run (only 1 east): no mouth.
+  const stub = new Set(["-1,2", "-2,2"]);
+  assert.equal(isTwoWideMouth(0, 2, N, (bx, bz) => !stub.has(`${bx},${bz}`), (bx, bz) => stub.has(`${bx},${bz}`)), false);
   // Lone wall west, open field east: wall-following latches normally.
   const lone = new Set(["-1,2"]);
-  assert.equal(isTwoWideLane(0, 2, N, (bx, bz) => !lone.has(`${bx},${bz}`)), false);
-  // L corner: run blocked south.
-  const corner = new Set(["-1,2", "2,2", "0,1", "1,1"]);
-  assert.equal(isTwoWideLane(0, 2, N, (bx, bz) => !corner.has(`${bx},${bz}`)), false);
-  // True 1-wide: both flanks blocked.
-  const one = new Set(["-1,2", "1,2"]);
-  assert.equal(isTwoWideLane(0, 2, N, (bx, bz) => !one.has(`${bx},${bz}`)), false);
-  // Open field: nothing blocked.
-  assert.equal(isTwoWideLane(0, 2, N, () => true), false);
+  assert.equal(isTwoWideMouth(0, 2, N, (bx, bz) => !lone.has(`${bx},${bz}`), (bx, bz) => lone.has(`${bx},${bz}`)), false);
+  // Non-solid flanks (water/drop cells read free, never solid): no mouth.
+  const wet = new Set(["-1,2", "-2,2"]);
+  const wetFree = () => true;
+  assert.equal(isTwoWideMouth(0, 2, N, wetFree, (bx, bz) => wet.has(`${bx},${bz}`)), false);
+  // Second row ahead blocked.
+  const shut2 = new Set(["-1,2", "-2,2", "2,2", "0,4"]);
+  assert.equal(isTwoWideMouth(0, 2, N, (bx, bz) => !shut2.has(`${bx},${bz}`), (bx, bz) => shut2.has(`${bx},${bz}`)), false);
+  // First row ahead blocked.
+  const shut1 = new Set(["-1,2", "-2,2", "2,2", "1,3"]);
+  assert.equal(isTwoWideMouth(0, 2, N, (bx, bz) => !shut1.has(`${bx},${bz}`), (bx, bz) => shut1.has(`${bx},${bz}`)), false);
+  // Open field: nothing anywhere.
+  assert.equal(isTwoWideMouth(0, 2, N, () => true, () => false), false);
+  // Same pattern rotated: travel along E, exit col x=2, pair z=0,1, ahead
+  // cols x=3,4, south 1-run at (2,-1), north 2-run at (2,2),(2,3).
+  const erot = new Set(["2,-1", "2,2", "2,3"]);
+  assert.equal(isTwoWideMouth(2, 0, E, (bx, bz) => !erot.has(`${bx},${bz}`), (bx, bz) => erot.has(`${bx},${bz}`)), true);
+  assert.equal(isTwoWideMouth(2, 1, E, (bx, bz) => !erot.has(`${bx},${bz}`), (bx, bz) => erot.has(`${bx},${bz}`)), true);
 }
-console.log("PASS isTwoWideLane");
+console.log("PASS isTwoWideMouth");
 
 // --- entry tuning constants ---
 assert.equal(ENTRY_R_1W, 3.0);

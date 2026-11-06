@@ -1,7 +1,9 @@
-// Displacement-mode tint (?color=1 only): purple tunnel passing, blue
-// touch rides, red true 1-wide lanes, natural coats otherwise. Debug paint
-// only — steering never reads it; headless rigs assert the mover flags
-// (`tunnelPass`/`wallFollow`/`oneWide`), never the paint.
+// Displacement-mode tint (?color=1 only): purple entry approach, orange
+// while a live 2-wide passage holds (over any ride — the thread owns the
+// inside), blue touch rides, red true 1-wide lanes, natural coats
+// otherwise. Debug paint only — steering never reads it; headless rigs
+// assert the mover flags (`tunnelPass`/`wallFollow`/`oneWide`/`inPassage`),
+// never the paint.
 //
 // DELETION RECIPE (no other file holds tint state): delete this file, drop
 // the `applyDisplacementColor` import + its calls in `farm.js`, revert the
@@ -14,6 +16,7 @@ import * as THREE from "three";
 const wallBlueMat = new THREE.MeshStandardMaterial({ color: 0x2255ff, roughness: 0.9 });
 const laneRedMat = new THREE.MeshStandardMaterial({ color: 0xff3333, roughness: 0.9 });
 const tunnelPurpleMat = new THREE.MeshStandardMaterial({ color: 0x9933ff, roughness: 0.9 });
+const passageOrangeMat = new THREE.MeshStandardMaterial({ color: 0xff8800, roughness: 0.9 });
 
 // Cached ?color=1 read (this module never loads headless).
 let colorGate = null;
@@ -36,7 +39,7 @@ export function applyDisplacementColor(mob) {
   const root = mob.root;
   if (!root) return;
   const ud = root.userData;
-  const want = mob.tunnelPass ? tunnelPurpleMat : mob.wallFollow ? wallBlueMat : mob.oneWide ? laneRedMat : null;
+  const want = mob.tunnelPass ? tunnelPurpleMat : mob.inPassage ? passageOrangeMat : mob.wallFollow ? wallBlueMat : mob.oneWide ? laneRedMat : null;
   if (want && ud.paintMat !== want) {
     if (!ud.paintOn) {
       ud.origMats = ud.paintables.map((m) => m.material);
