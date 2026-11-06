@@ -6,13 +6,11 @@
 // (50/50 entry on frontal or flank graze — WALL_ENTRY_P), biasing the
 // servo's lateral pull — the probes stay real, so branch visibility
 // never degrades.
-// A touch ride leaves its wall two ways: one time in five it exits straight
-// on an outer turn instead of rounding it; otherwise it keeps the same wall
-// end to end (same wall, inner and outer corners taken, true ends U-turned
-// in place) until its roam-clock budget (wallSpan, 2–8 s) runs out — then it
-// quits to roam in the roomiest of 45° or 90° away from the wall, or keeps
-// riding when boxed in; only a genuinely continuing 1-wide corridor hands
-// over to the rail.
+// A touch ride keeps the same wall end to end (same wall, inner and
+// outer corners taken, true ends U-turned in place) until its roam-clock
+// budget (wallSpan, 2–8 s) runs out — then it quits to roam in the roomiest
+// of 45° or 90° away from the wall, or keeps riding when boxed in; only a
+// genuinely continuing 1-wide corridor hands over to the rail.
 // Progress is one watchdog (R6, in the mover): no per-mode counters here.
 // Three-free: physics come from step.js, the gap scan from corridor.js.
 import {
@@ -35,10 +33,6 @@ export const FOLLOW_COOL = 2.0;
 // a ride; the rest keep roaming. A refusal holds the next latch off for
 // FOLLOW_COOL, so each wall visit is one coin flip, not a per-tick flip.
 export const WALL_ENTRY_P = 0.5;
-// Outer-turn lottery: a ride rounding an outer corner with open front
-// exits straight instead, one time in five. Blocked noses always turn;
-// pinned rigs always round (no draw).
-export const WALL_TURN_EXIT_P = 0.2;
 // Every latched decision (commit or wall ride) runs 2–8 s, then re-decides.
 export const SPAN_MIN = 2;
 export const SPAN_MAX = 8;
@@ -600,8 +594,11 @@ export function cornerTurn(mob, prevAxis) {
 
 // Same-wall continuity for touch rides: a ride never switches walls.
 // Straights keep the same face plane (a hole shares the plane, so doors
-// and holes ride through; a parallel face further out is another
-// wall). Perpendicular takes (turns, corner roundings) must start where
+// and holes ride through); a 1-cell step onto a neighbouring plane still
+// counts when its cell starts where the old wall ends (staircase treads —
+// tip-connected, see connectedTake), so chained 1-bloc jogs parade instead
+// of U-turning. A parallel face further out is another wall.
+// Perpendicular takes (turns, corner roundings) must start where
 // the old wall ends: touching it (Chebyshev ≤ 1 — inner corners, tips,
 // steps), or continuing straight past at most a 1-cell slit on the same
 // travel line (setback). Anything lateral or diagonal past that is
@@ -610,7 +607,12 @@ export function cornerTurn(mob, prevAxis) {
 export const WALL_TAKE_DIST = 2;
 export function sameWallFace(mob, m) {
   const f = mob.followLine?.face;
-  return f == null || m.face === f;
+  if (f == null || m.face === f) return true;
+  // Stepped plane (±1 cell): same wall only when the new face's cell
+  // starts at the old wall's tip — a parallel face further out, or a
+  // disconnected one, stays another wall.
+  if (Math.abs(m.face - f) !== 1) return false;
+  return connectedTake(mob, mob.followLine.axis, m.cell);
 }
 export function connectedTake(mob, travelAxis, cell) {
   const vw = mob.followLine;
@@ -925,8 +927,8 @@ function latchCommit(mob, heading, target, rand = Math.random, prev = null) {
 }
 
 // Wall-ride budget exit: leave the wall in the roomiest of 45° or 90°
-// away from the travel heading — never straight along it (straight exits
-// go through the outer-turn lottery). Null when both headings are boxed
+// away from the travel heading — never straight along it (rides only ever
+// leave on the budget). Null when both headings are boxed
 // in under a metre: the caller keeps riding and retries later.
 // The wall sits toward axis−rel·π/2 (rel = +1 wall left of travel), so
 // away is the +rel side. Ties keep the 45° (first max wins).

@@ -22,7 +22,7 @@ import {
 import {
   upkeepFollowLine, roamStep, roamSpan, ARRIVE_D, FOLLOW_COOL,
   latchTouchWall, latchFlankTouch, measureWallTake, cornerTurn,
-  sameWallFace, connectedTake, wallQuitHeading, wallQuitCommit, WALL_TURN_EXIT_P,
+  sameWallFace, connectedTake, wallQuitHeading, wallQuitCommit,
   exitMouth, tryGuidedErect, guidedDock, entryStallLatch,
   GENTLE_RATE, GENTLE_FRESH_TICKS,
 } from "./roam.js";
@@ -628,13 +628,6 @@ export function servoTick(mob, dt, supported, floating, rand = Math.random, pick
       // in-place U-turn below keep the ride on its own wall instead.
       if (corner != null && !connectedTake(mob, prevAxis, corner.cell)) corner = null;
         if (corner != null) {
-          // Outer-turn lottery: one time in five the ride exits straight on
-          // the pre-turn axis instead of rounding (game only — pinned rigs
-          // always round; commit failure rounds too). A guided slide never
-          // lotteries out: rounding keeps it hole-ward.
-          if (mob.pinWallRide !== true && mob.followLine.guideKey == null &&
-              rand() < WALL_TURN_EXIT_P &&
-              wallQuitCommit(mob, prevAxis, rand, pickTarget)) return false;
         const { axis, face, dirSign, sideDir } = corner;
         const rel = yawDiff(sideDir, normYaw(axis - Math.PI / 2)) < 1e-9 ? 1 : -1;
         mob.lane = { axis, entry: oppositeYaw(axis), lockX: cx, lockZ: cz };
@@ -706,11 +699,6 @@ export function servoTick(mob, dt, supported, floating, rand = Math.random, pick
         }
       }
     } else {
-      // Same lottery on a measured turn take with open front: exit straight
-      // one time in five instead of taking the turn. Guided slides skip it.
-      if (mob.pinWallRide !== true && mob.followLine.guideKey == null &&
-          sense.fwdOpen && yawDiff(keep.axis, prevAxis) > 1e-6 &&
-          rand() < WALL_TURN_EXIT_P && wallQuitCommit(mob, prevAxis, rand, pickTarget)) return false;
       mob.lane = { axis: keep.axis, entry: oppositeYaw(keep.axis), lockX: cx, lockZ: cz };
       mob.followLine = keep.followLine;
     }
@@ -792,21 +780,27 @@ function tryPreLane(mob, dt, supported, floating, sense, rand = Math.random) {
 // perpendicular arm of the same wall (a phantom-masked side mouth fakes a
 // dead end). Probe both perpendiculars for a continuing face on the same
 // relative side — inner corners keep the wall on the same side, so the
-// away-from-wall perpendicular comes first — and turn into the first
-// walkable arm, carrying the line so the ride (and the blue) continues
-// uninterrupted. Returns null for true dead ends and pocket backs (faces
-// without a walkable arm), which keep the dead-end seek.
+// away-from-wall perpendicular comes first — from the current cell and one
+// cell ahead along the arm (a 1-bloc jog only shows past the step), and
+// turn into the first walkable arm, carrying the line so the ride (and the
+// blue) continues uninterrupted. Returns null for true dead ends and
+// pocket backs (faces without a walkable arm), which keep the dead-end
+// seek.
 function innerTurn(mob, prevAxis) {
   const rel = mob.followLine.rel ?? 1;
   const order = [normYaw(prevAxis + rel * Math.PI / 2), normYaw(prevAxis - rel * Math.PI / 2)];
   for (const Q of order) {
     const check = normYaw(Q - rel * Math.PI / 2);
-    const m = measureWallTake(mob, Q, check);
+    const [qx, qz] = dirVec(Q);
+    // A 1-bloc jog blinds the scan from the current cell (the stepped arm
+    // only shows past the step): retry one cell ahead along the arm, like
+    // the exit takes below.
+    const m = measureWallTake(mob, Q, check)
+      ?? measureWallTake(mob, Q, check, { x: mob.pos.x + qx * 1.0, z: mob.pos.z + qz * 1.0 });
     if (!m) continue;
     // Same wall only: the arm must start at the old wall's tip — a nose
     // blocked by a stranger wall keeps the seek (U-turn) instead.
     if (!connectedTake(mob, prevAxis, m.cell)) continue;
-    const [qx, qz] = dirVec(Q);
     const nx = mob.pos.x + qx * 1.0, nz = mob.pos.z + qz * 1.0;
     if (!makeStepOk(mob, true, false, 0, Q, 0)(nx, nz) || !descendOk(mob, nx, nz)) continue;
     // Hole-ward lines round gently like exit rides (see followExit below).
@@ -832,8 +826,9 @@ function innerTurn(mob, prevAxis) {
 // (never the phantom-masked classifier votes) — straights first for
 // smooth parades, then the away-from-wall perpendicular (inner arms keep
 // the wall on the same side), then the toward-wall one. Each exit is
-// measured from the current cell and from one cell ahead along it (an
-// L-arm wall only shows past the corner). A kept exit must also be
+// measured from the current cell and from one and two cells ahead along
+// it (an L-arm wall only shows past the corner, a 1-bloc jog past the
+// step). A kept exit must also be
 // walkable (body fits a step ahead, no pit drop): the wall measurement
 // alone can keep a straight the nose is already grinding into, wedging
 // the ride instead of turning. Same-wall continuity gates every take:
@@ -857,10 +852,10 @@ function followExit(mob, prevAxis) {
     return { x: mob.pos.x + ex * 1.0, z: mob.pos.z + ez * 1.0 };
   };
   // Two cells ahead: a 2-wide gap blinds the lateral scan (no wall within
-  // reach from the current cell or one ahead), but the wall resumes on the
-  // same plane past it — straights look through so doors parade like
-  // setbacks instead of U-turning. sameWallFace below still verifies the
-  // plane, so true ends and rooms keep releasing.
+  // reach from the current cell or one ahead), but the wall resumes past
+  // it — exits look through so doors parade like setbacks instead of
+  // U-turning. sameWallFace / connectedTake below still verify the
+  // plane and the tip, so true ends and rooms keep releasing.
   const ahead2 = (E) => {
     const [ex, ez] = dirVec(E);
     return { x: mob.pos.x + ex * 2.0, z: mob.pos.z + ez * 2.0 };
@@ -880,9 +875,13 @@ function followExit(mob, prevAxis) {
   const guidedTake = gl0?.guideKey != null && ggx != null && ggz != null;
   const takes = [];
   for (const E of [...straight, ...turns]) {
-    const win = E === prevAxis
-      ? measure(E, null) ?? measure(E, ahead(E)) ?? measure(E, ahead2(E))
-      : measure(E, null) ?? measure(E, ahead(E));
+    // Every exit looks from the current cell, one cell ahead, and two
+    // cells ahead along it (a 1-cell jog or gap blinds the nearer scans,
+    // but the stepped wall resumes on a neighbouring plane past it —
+    // chained 1-bloc zigzags turn instead of U-turning). sameWallFace /
+    // connectedTake below still verify the plane and the tip, so true ends
+    // and rooms keep releasing.
+    const win = measure(E, null) ?? measure(E, ahead(E)) ?? measure(E, ahead2(E));
     if (!win || !walkable(E)) continue;
     // Cooled mouth: never TURN back into it (the entry-draw gate alone would
     // let a servo turn stroll straight back in). Straight continuations stay

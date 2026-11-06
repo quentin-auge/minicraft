@@ -1488,7 +1488,7 @@ console.log("PASS hole-threads-red");
     for (let x = -10; x <= 10; x++) for (let z = -8; z <= 8; z++) setBlock(x, 0, z, STONE);
     for (let x = -6; x <= 6; x++) { if (x !== 0) { setBlock(x, 1, 2, STONE); setBlock(x, 2, 2, STONE); } }
     const mob = makeTestMob("pig", -5.5, FEET, 1.5, Math.PI / 2);
-    mob.pinWallRide = true; // legacy ride: no lottery, no budget quit
+    mob.pinWallRide = true; // pinned ride: no budget quit, geometry only
     mob.lane = { axis: Math.PI / 2, entry: -Math.PI / 2, lockX: -6, lockZ: 1 };
     mob.followLine = {
       axis: Math.PI / 2, line: 1.5, side: -1, rel: 1,
