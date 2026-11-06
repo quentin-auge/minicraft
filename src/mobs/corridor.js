@@ -96,18 +96,18 @@ export function classifyExits(px, pz, axis, pointFree, cellFree) {
 }
 
 // Proximity entry detection: tunnel mouths attracting mobs from the open.
-// One rule, two widths, orientation-free (all four cardinals scanned):
+// Orientation-free (all four cardinals scanned):
 //
 // A mouth is a hole of width 1 (one cell) or 2 (two laterally adjacent
 // cells) with 3 blocks of free depth of the same width, entry included:
-// the mouth row plus the two rows behind it all walk. One rule for both
-// widths: the mouth row reads walled on its outer flanks (solid or drop
-// through the injected cellFree), each flank backed by a walled run of at
-// least MIN_FLANK cells (an ended wall tip, a bank, or both — so a lone
-// pillar never counts, while the opening stays held by the other side),
-// and the row in front walks with at least one open side. A wall running
-// on past the mouth on one side is still a mouth (one edge starts, the
-// other may run longer) — so a field, room, or open ground, never
+// the mouth row plus the two rows behind it all walk. 1-wide flanks read
+// walled on the mouth row (solid or drop through the injected cellFree),
+// each backed by a walled run of at least MIN_FLANK cells; 2-wide pairs
+// use the hardened crossing geometry instead (solid-only 1+1 with a run on
+// one side — water and drops never hold). Both widths add the same open
+// approach: the row in front walks with at least one open side. A wall
+// running on past the mouth on one side is still a mouth (one edge starts,
+// the other may run longer) — so a field, room, or open ground, never
 // mid-corridor (approach walled both sides), which is what makes this a
 // boundary detector: cells deep inside a corridor never match, so a
 // cruising mob never re-detects its own lane.
@@ -144,14 +144,9 @@ export const ENTRY_STALL_T = 0.1;
 // never a backward decide. Genuine walks convert to a guided ride within
 // ENTRY_STALL_T, so only sealed holes ever reach it.
 export const ENTRY_TIMEOUT = 15;
-// Violet hold: after an arrival closes the entry commit, the pass tint
-// stays on until the mob walks this far past the aimed slot (mouth
-// half-width plus body plus margin — about one block past the mouth), so
-// the physical threading reads violet, not just the approach.
-// Entry cooldown: once the hold clears (mob out of the mouth), no new
-// entry draw for this many sim-seconds — arrivals walk away instead of
-// instantly re-drawing the mouth they just threaded.
-export const VIOLET_HOLD_D = 1.0;
+// Entry cooldown: once a mob leaves a passage (or times out crossing one),
+// no new entry draw for this many sim-seconds — arrivals walk away instead
+// of instantly re-drawing the mouth they just threaded.
 export const ENTRY_COOL_T = 5;
 
 function entryDist(px, pz, x, z) {
@@ -181,10 +176,39 @@ function makeCache(cellFree, cx, cz) {
   };
 }
 
-export function findEntries(px, pz, cellFree) {
+// Hardened 2-wide flanks, shared by entry scan and crossing detector: both
+// outer mouth cells solid (1+1), with a solid run of MIN_FLANK on at least
+// one side — down its depth file (tunnel banks, notches tolerated) or along
+// the mouth row (pen/door collars). Lone pillars and single open flanks
+// never hold; pool rims and drops never count (solid-only).
+export function pairFlanksHardened(ox1, oz1, ox2, oz2, fx, fz, lx, lz, cellSolid) {
+  if (!cellSolid(ox1, oz1) || !cellSolid(ox2, oz2)) return false;
+  const supported = (ox, oz) => {
+    let file = 0;
+    for (let k = 0; k <= 2; k++) {
+      if (cellSolid(ox + fx * k, oz + fz * k)) file++;
+    }
+    let row = 1;
+    for (const s of [1, -1]) {
+      for (let k = 1; row < MIN_FLANK && cellSolid(ox + lx * k * s, oz + lz * k * s); k++) row++;
+    }
+    return file >= MIN_FLANK || row >= MIN_FLANK;
+  };
+  return supported(ox1, oz1) || supported(ox2, oz2);
+}
+
+// The 6 free cells behind a 2-wide pair: mouth row plus two rows ahead.
+export function pairOpenCells(bx, bz, qx, qz, fx, fz, cellFree) {
+  return cellFree(bx, bz) && cellFree(qx, qz) &&
+    cellFree(bx + fx, bz + fz) && cellFree(qx + fx, qz + fz) &&
+    cellFree(bx + 2 * fx, bz + 2 * fz) && cellFree(qx + 2 * fx, qz + 2 * fz);
+}
+
+export function findEntries(px, pz, cellFree, cellSolid) {
   const out = [];
   const seen = new Set();
   const cf = makeCache(cellFree, Math.floor(px), Math.floor(pz));
+  const cs = cellSolid ?? ((bx, bz) => !cf(bx, bz));
   const cx = Math.floor(px), cz = Math.floor(pz);
   const R = Math.ceil(ENTRY_R_2W) + 1;
   // Prefilter on the widest radius plus the pair half-step: a 2-wide
@@ -249,6 +273,16 @@ export function findEntries(px, pz, cellFree) {
     // Open approach: the row in front walks with at least one open side.
     return approachOpen(bx, bz, fx, fz, lx, lz, w, qx, qz);
   };
+  // 2-wide entry = hardened crossing geometry plus the open-approach
+  // boundary filter (the crossing detector itself requires nothing behind).
+  const mouthMatch2 = (bx, bz, fx, fz, lx, lz, qx, qz) => {
+    if (!pairOpenCells(bx, bz, qx, qz, fx, fz, cf)) return false;
+    const s = pairSign(bx, bz, qx, qz, lx, lz);
+    const o1x = bx - lx * s, o1z = bz - lz * s;
+    const o2x = qx + lx * s, o2z = qz + lz * s;
+    if (!pairFlanksHardened(o1x, o1z, o2x, o2z, fx, fz, lx, lz, cs)) return false;
+    return approachOpen(bx, bz, fx, fz, lx, lz, 2, qx, qz);
+  };
   for (let bx = cx - R; bx <= cx + R; bx++) {
     for (let bz = cz - R; bz <= cz + R; bz++) {
       // Distance first: voxel reads only happen for in-range mouths.
@@ -278,7 +312,7 @@ export function findEntries(px, pz, cellFree) {
           const lineAxis = fx === 0 ? "ns" : "ew";
           const key = `2:${lox},${loz}|${hix},${hiz}|${lineAxis}`;
           if (seen.has(key)) continue;
-          if (!mouthMatch(bx, bz, fx, fz, lx, lz, 2, qx, qz)) continue;
+          if (!mouthMatch2(bx, bz, fx, fz, lx, lz, qx, qz)) continue;
           const x = (bx + 0.5 + qx + 0.5) / 2, z = (bz + 0.5 + qz + 0.5) / 2;
           const dist = entryDist(px, pz, x, z);
           if (dist > ENTRY_R_2W + 1e-9) continue;
@@ -327,24 +361,142 @@ export function laneTunneled(event, axis, walled, px, pz, cellFree) {
   return walledDir(normYaw(axis + Math.PI / 2)) && walledDir(normYaw(axis - Math.PI / 2));
 }
 
-// 2-wide lane motif (XOOX around the mob cell): the travel run reads free
-// fore and aft, exactly one adjacent lateral cell stands blocked (the near
-// edge), and the cell two over past the open side stands blocked (the far
-// edge). The mob threads a 2-wide passage and must walk it straight —
-// flank grazes inside one are passage, never contact, so the flank latch
-// declines them instead of yanking the mob onto an edge line. Lone walls
-// (far side open), L corners (run blocked) and true 1-wide cells (both
-// flanks blocked) all fail the motif and latch normally. Pure.
-export function isTwoWideLane(bcx, bcz, axis, cellFree) {
+// 2-wide mouth around the mob cell (X solid-only, O walkable, ? don't-care,
+// exit upward = travel axis; the mob stands on the exit row, either pair
+// cell) — one rule behind entry scan and crossing detector:
+//
+//   XXOOX   (or the mirror XOOXX, or tunnel banks B down the depth files)
+//   ?OO??     BOOOB
+//   ?OO??     BOOOB
+//   ?????     ?????
+//
+// The exit-row pair walks, the two rows ahead walk the same width (free
+// depth in the exit direction), and both outer flanks read solid (1+1) with
+// a solid run of MIN_FLANK on at least one side — down its depth file or
+// along the mouth row — so lone pillars never hold. Nothing is required
+// behind (the approach may be walled — only the way out matters).
+// The free cells read walkable through the injected cellFree (water still
+// threads, just never as a mouth); the flanks read solid-only through
+// cellSolid, so pool rims and drop edges never hold a mouth. Symmetric thin
+// gaps without runs (XOOX), lone walls and L corners all fail and cross as
+// plain roam. Pure.
+// Pair cells behind the predicate below (null when no mouth): the exit-row
+// pair the mob cell belongs to, so callers can key claims and aim captures
+// at the same geometry the predicate matches. Pure.
+export function mouthPairCells(bcx, bcz, axis, cellFree, cellSolid) {
   const [fx, fz] = dirVec(axis);
   const [lx, lz] = dirVec(normYaw(axis + Math.PI / 2));
-  if (!cellFree(bcx + fx, bcz + fz) || !cellFree(bcx - fx, bcz - fz)) return false;
-  const leftBlocked = !cellFree(bcx + lx, bcz + lz);
-  const rightBlocked = !cellFree(bcx - lx, bcz - lz);
-  if (leftBlocked === rightBlocked) return false;
-  const open = leftBlocked ? -1 : 1;
-  return !cellFree(bcx + lx * 2 * open, bcz + lz * 2 * open);
+  // The mob cell is the left or the right member of the exit-row pair.
+  for (const s of [1, -1]) {
+    const qx = bcx + lx * s, qz = bcz + lz * s;
+    if (!pairOpenCells(bcx, bcz, qx, qz, fx, fz, cellFree)) continue;
+    const ax = bcx - lx * s, az = bcz - lz * s;
+    const bx2 = qx + lx * s, bz2 = qz + lz * s;
+    if (pairFlanksHardened(ax, az, bx2, bz2, fx, fz, lx, lz, cellSolid)) {
+      return [{ x: bcx, z: bcz }, { x: qx, z: qz }];
+    }
+  }
+  return null;
 }
+
+// Boolean form of the pair matcher above.
+export function isTwoWideMouth(bcx, bcz, axis, cellFree, cellSolid) {
+  return mouthPairCells(bcx, bcz, axis, cellFree, cellSolid) != null;
+}
+
+// Stable mouth key from cells, one builder behind every claim, capture and
+// cooldown gate: pair key for kind 2, single-cell key for kind 1. Pure.
+export function mouthCellKey(dim, kind, ax, az, bx, bz) {
+  if (kind === 2) {
+    const lox = Math.min(ax, bx), loz = Math.min(az, bz);
+    const hix = Math.max(ax, bx), hiz = Math.max(az, bz);
+    return `${dim}|2:${lox},${loz}|${hix},${hiz}`;
+  }
+  return `${dim}|1:${ax},${az}`;
+}
+
+// Cooled-mouth center behind a per-mouth cooldown key (null when the key
+// parses to nothing). Keys are canonical cell keys (`dim|2:lox,loz|hix,hiz`
+// or `dim|1:x,z`), so the center is the cell(s) middle. Pure.
+export function cooledMouthCenter(key) {
+  if (!key || typeof key !== "string") return null;
+  const bar = key.indexOf("|");
+  if (bar < 0) return null;
+  const rest = key.slice(bar + 1);
+  if (rest.startsWith("2:")) {
+    const parts = rest.slice(2).split("|");
+    if (parts.length !== 2) return null;
+    const [lox, loz] = parts[0].split(",").map(Number);
+    const [hix, hiz] = parts[1].split(",").map(Number);
+    if (![lox, loz, hix, hiz].every(Number.isFinite)) return null;
+    return { x: (lox + hix) / 2 + 0.5, z: (loz + hiz) / 2 + 0.5 };
+  }
+  if (rest.startsWith("1:")) {
+    const [x, z] = rest.slice(2).split(",").map(Number);
+    if (!Number.isFinite(x) || !Number.isFinite(z)) return null;
+    return { x: x + 0.5, z: z + 0.5 };
+  }
+  return null;
+}
+
+// True when walking from (px, pz) toward (tx, tz) runs into the cooled
+// mouth: the mouth center lies ahead (positive dot — walking away never
+// counts) and the segment passes within veto radius of it. Only the
+// direction matters, never the distance reached, so a forward exit reads
+// free while a U-turn back reads blocked. Pure.
+export const MOUTH_VETO_R = 0.8;
+export function headsToCooledMouth(px, pz, tx, tz, coolKey) {
+  const c = cooledMouthCenter(coolKey);
+  if (!c) return false;
+  const dx = tx - px, dz = tz - pz;
+  const len2 = dx * dx + dz * dz;
+  if (len2 < 1e-9) return false;
+  const mx = c.x - px, mz = c.z - pz;
+  if (mx * dx + mz * dz <= 0) return false;
+  const t = Math.max(0, Math.min(1, (mx * dx + mz * dz) / len2));
+  const cx = px + dx * t, cz = pz + dz * t;
+  const ex = c.x - cx, ez = c.z - cz;
+  return ex * ex + ez * ez < MOUTH_VETO_R * MOUTH_VETO_R;
+}
+
+// Mob-level form of the veto above: true while a per-mouth cooldown runs
+// and the candidate target lies on the way back into that mouth. Pure
+// reads only (position + cooldown fields).
+export function mobHeadsToCooledMouth(mob, tx, tz) {
+  if ((mob.entryCoolT ?? 0) <= 0 || mob.entryCoolKey == null) return false;
+  return headsToCooledMouth(mob.pos.x, mob.pos.z, tx, tz, mob.entryCoolKey);
+}
+
+// True while the mob cell itself reads as the cooled mouth (any axis, either
+// width): still threading the exit walk, not yet out. Callers gate the veto
+// on this — the way out always crosses the mouth center, so vetoing from
+// inside would trap the exit itself. Needs the live predicates (injected at
+// the call sites, which already own them).
+export function insideCooledMouth(cellFree, cellSolid, dim, cx, cz, coolKey) {
+  if (!coolKey) return false;
+  for (const axis of CARDINALS) {
+    for (const kind of [2, 1]) {
+      if (mouthKey(dim, cx, cz, axis, kind, cellFree, cellSolid) === coolKey) return true;
+    }
+  }
+  return false;
+}
+
+// Stable cooldown key for the mouth under the mob cell (null when the cell
+// holds no mouth of that kind). Pure.
+export function mouthKey(dim, bcx, bcz, axis, kind, cellFree, cellSolid) {
+  if (kind === 2) {
+    const pair = mouthPairCells(bcx, bcz, axis, cellFree, cellSolid);
+    if (!pair) return null;
+    return mouthCellKey(dim, 2, pair[0].x, pair[0].z, pair[1].x, pair[1].z);
+  }
+  return mouthCellKey(dim, 1, bcx, bcz);
+}
+
+// Fresh-leave window behind the no-U-turn hold (see the servo): a ride
+// that lost its wall this soon after threading a 2-wide holds straight
+// instead of flipping back into the mouth.
+export const LEAVE_FRESH_T = 2;
 
 export function closestDir(yaw, dirs) {
   let best = dirs[0], bd = yawDiff(yaw, dirs[0]);

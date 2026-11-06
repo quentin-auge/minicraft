@@ -59,8 +59,8 @@ function makeMob(x, z, yaw, seed) {
     stuckT: 0, lastX: x, lastZ: z, fallFrom: FEET, lane: null, servoStall: 0,
     blendFrom: null, blendT: 0, roam: null, followLine: null, followCool: 0,
     turnHold: 0, entryScanT: 0, jrng: null,
-    wallFollow: false, oneWide: false, tunnelPass: false,
-    tunnelHoldX: null, tunnelHoldZ: null, entryCoolT: 0,
+    wallFollow: false, oneWide: false, tunnelPass: false, inPassage: false, passage: null,
+    entryCoolT: 0, entryCoolKey: null,
     _peerIdx: 0,
   };
 }

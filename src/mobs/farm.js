@@ -112,8 +112,8 @@ function makeFarmMob(kind, { x, z, y, dim, yaw, rand = Math.random }) {
     blendFrom: null, blendT: 0, roam: null, followLine: null, followCool: 0,
     turnHold: 0,
     entryScanT: 0, jrng: null,
-    wallFollow: false, oneWide: false, tunnelPass: false,
-    tunnelHoldX: null, tunnelHoldZ: null, entryCoolT: 0,
+    wallFollow: false, oneWide: false, tunnelPass: false, inPassage: false, passage: null,
+    entryCoolT: 0, entryCoolKey: null,
   };
   mob.target = pickTarget(mob, rand);
   return mob;

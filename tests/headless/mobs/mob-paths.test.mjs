@@ -6,11 +6,11 @@ import assert from "node:assert/strict";
 import { AIR, STONE, LOG, WATER } from "../../../src/core/blocks.js";
 import { setDimension, resetWorld, setBlock, getBlock } from "../../../src/core/store.js";
 import { LIVESTOCK_SPECS, specCircles } from "../../../src/mobs/livestock.js";
-import { FARM_WALK, tickFarmMob, aabbIntersectsSolid, segmentWalkable } from "../../../src/mobs/mover.js";
-import { strideTarget } from "../../../src/mobs/step.js";
+import { FARM_WALK, tickFarmMob, aabbIntersectsSolid, segmentWalkable, freshFromMouth } from "../../../src/mobs/mover.js";
+import { strideTarget, liquidSurface, makeCellFree, makeCellSolid } from "../../../src/mobs/step.js";
 import { entryTick, pickEntryTarget, clearEntryClaims } from "../../../src/mobs/entry.js";
-import { exitPassage } from "../../../src/mobs/roam.js";
-import { ENTRY_SCAN_T, ENTRY_COOL_T } from "../../../src/mobs/corridor.js";
+import { exitMouth, ARRIVE_D } from "../../../src/mobs/roam.js";
+import { ENTRY_SCAN_T, ENTRY_COOL_T, LEAVE_FRESH_T, findEntries } from "../../../src/mobs/corridor.js";
 import { NO_EXPIRY } from "../../../src/mobs/step.js";
 import { village, computeLayout, placeVillage } from "../../../src/world/village.js";
 
@@ -116,7 +116,8 @@ function makeTestMob(kind, x, y, z, yaw) {
     stuckT: 0, lastX: x, lastZ: z, fallFrom: y, lane: null, servoStall: 0,
     blendFrom: null, blendT: 0, roam: null, followLine: null, followCool: 0,
     turnHold: 0,
-    entryScanT: 0, jrng: null, wallFollow: false, oneWide: false, tunnelPass: false,
+    entryScanT: 0, jrng: null, wallFollow: false, oneWide: false, tunnelPass: false, inPassage: false, passage: null,
+    entryCoolT: 0, entryCoolKey: null,
   };
 }
 
@@ -319,7 +320,9 @@ function buildMouthRig() {
   for (const z of [-1, 1]) for (const x of [2, 3]) { setBlock(x, 1, z, STONE); setBlock(x, 2, z, STONE); }
   const mob = makeTestMob("pig", 0.5, FEET, 0.5, Math.PI / 2);
   mob.target = { x: 9, z: 9 };
-  const r = scriptRand([0.0, 0.99]);
+  // Accept + span draws, then the arrival exit draws the straight roam arm
+  // (0.6) so the handoff stays a plain through-commit.
+  const r = scriptRand([0.0, 0.99, 0.6, 0.5]);
   assert.equal(entryTick(mob, DT, r), true);
   assert.ok(mob.roam?.entry === true);
   assert.deepEqual(mob.target, { x: 2.5, z: 0.5 });
@@ -328,8 +331,8 @@ function buildMouthRig() {
   assert.equal(r.calls, 2, "accept + span draws only");
   assert.equal(entryTick(mob, DT, r), true, "in-flight hold");
   assert.equal(r.calls, 2, "in-flight: no new draw");
-  // Arrival hands a plain through-commit past the mouth (plus a violet
-  // hold on the aimed slot): the mob walks out instead of turning back in.
+  // Arrival hands a plain through-commit past the mouth (plus the exit
+  // cooldown): the mob walks out instead of turning back in.
   mob.pos.x = 2.5; mob.pos.z = 0.5;
   const before = r.calls;
   assert.equal(entryTick(mob, DT, r), false);
@@ -346,9 +349,9 @@ function buildMouthRig() {
   console.log("PASS entry-accept-hold-close");
 }
 {
-  // Violet hold: arrival closes the commit, but the tint persists until
-  // the mob walks VIOLET_HOLD_D past the aimed slot; leaving arms a
-  // 5 s cooldown that blocks re-draws until it expires.
+  // 1-wide arrival handoff: the commit closes, no crossing state opens (rails
+  // own 1-wide threading), the unified exit arms a 5 s cooldown that blocks
+  // re-draws until it expires while the mob walks away.
   buildMouthRig();
   const mob = makeTestMob("pig", 0.5, FEET, 1.5, 0);
   mob.target = { x: 9, z: 9 };
@@ -361,40 +364,56 @@ function buildMouthRig() {
     for (; t < 1500 && mob.roam?.entry === true; t++) {
       tickFarmMob(mob, DT, () => mob.target);
     }
-    assert.ok(mob.roam?.entry !== true, "violet-hold: commit closed on arrival");
-    assert.deepEqual([mob.tunnelHoldX, mob.tunnelHoldZ], [0.5, 4.5], "violet-hold: hold armed on the slot");
-    assert.ok(mob.tunnelPass === true, "violet-hold: tint survives the commit");
-    // Walk clear of the slot through the real mover: every inside tick
-    // stays violet with no commit running.
-    let cleared = false;
-    for (let k = 0; k < 600 && !cleared; k++) {
-      assert.ok(mob.tunnelPass === true, `violet-hold: violet inside the hold @tick${k}`);
-      assert.ok(mob.roam?.entry !== true, `violet-hold: no commit inside the hold @tick${k}`);
-      tickFarmMob(mob, DT, () => mob.target);
-      cleared = mob.tunnelHoldX == null;
-    }
-    assert.ok(cleared, "violet-hold: hold clears past the slot");
+    assert.ok(mob.roam?.entry !== true, "arrival-handoff: commit closed on arrival");
+    assert.ok(mob.passage == null, "arrival-handoff: 1-wide opens no crossing state");
+    assert.ok(mob.tunnelPass === false, "arrival-handoff: purple approach over");
     assert.ok(mob.entryCoolT > 0 && mob.entryCoolT <= ENTRY_COOL_T,
-      `violet-hold: cooldown armed (${mob.entryCoolT})`);
-    assert.ok(mob.tunnelPass === false, "violet-hold: tint ends with the hold");
+      `arrival-handoff: cooldown armed (${mob.entryCoolT})`);
+    // Walk on through the real mover: the threaded mouth never re-draws
+    // (same-mouth gate + facing/underfoot rules), while stacked mouths
+    // ahead may chain forward — progress, never a backtrack into the hole.
+    // (Later rail releases may re-arm the timer on the way out — the unit
+    // block below covers the gate itself.)
+    const leaveZ = mob.pos.z;
+    let minZ = mob.pos.z, backEntry = false;
+    for (let k = 0; k < 310; k++) {
+      tickFarmMob(mob, DT, () => mob.target);
+      minZ = Math.min(minZ, mob.pos.z);
+      if (mob.roam?.entry === true && mob.target && mob.target.z < leaveZ) backEntry = true;
+    }
+    assert.ok(!backEntry, "arrival-handoff: no entry back into the mouth");
+    assert.ok(minZ >= leaveZ - 0.6, `arrival-handoff: never walks back (minZ=${minZ.toFixed(2)})`);
   } finally {
     Math.random = realRandom;
   }
-  // Cooldown gate (unit-level): a listed, facing, free mouth draws nothing
-  // while the cooldown runs, and draws again once it expires.
+  // Cooldown gate (unit-level): the threaded mouth draws nothing while its
+  // timer runs, and draws again once it expires — any other mouth draws
+  // straight through (per-mouth cooldown).
   buildMouthRig();
   clearEntryClaims();
   const mob2 = makeTestMob("pig", 0.5, FEET, 1.5, 0);
   mob2.target = { x: 9, z: 9 };
   mob2.entryScanT = 0;
   mob2.entryCoolT = ENTRY_COOL_T;
+  mob2.entryCoolKey = "over|1:0,4";
   const r2 = scriptRand([0.0, 0.99]);
   assert.equal(entryTick(mob2, DT, r2), false, "cooldown: no draw");
   assert.equal(r2.calls, 0, "cooldown: rand untouched");
   mob2.entryCoolT = 0;
+  mob2.entryScanT = 0;
   assert.equal(entryTick(mob2, DT, r2), true, "expired: draws again");
   assert.ok(mob2.roam?.entry === true, "expired: commit latched");
-  console.log("PASS violet-hold");
+  // Foreign key: the same cooldown never blocks another mouth.
+  buildMouthRig();
+  clearEntryClaims();
+  const mob3 = makeTestMob("pig", 0.5, FEET, 1.5, 0);
+  mob3.target = { x: 9, z: 9 };
+  mob3.entryScanT = 0;
+  mob3.entryCoolT = ENTRY_COOL_T;
+  mob3.entryCoolKey = "over|1:9,9";
+  assert.equal(entryTick(mob3, DT, scriptRand([0.0, 0.99])), true, "per-mouth: neighbour draws through");
+  assert.ok(mob3.roam?.entry === true, "per-mouth: commit latched");
+  console.log("PASS arrival-handoff");
 }
 {
   // A cruising true lane never re-draws (its own mouth stays in range).
@@ -869,7 +888,8 @@ function makeElevMob(x, y, z, yaw) {
     stuckT: 0, lastX: x, lastZ: z, fallFrom: y, lane: null, servoStall: 0,
     blendFrom: null, blendT: 0, roam: null, followLine: null, followCool: 0,
     turnHold: 0,
-    entryScanT: 0, jrng: null, wallFollow: false, oneWide: false, tunnelPass: false,
+    entryScanT: 0, jrng: null, wallFollow: false, oneWide: false, tunnelPass: false, inPassage: false, passage: null,
+    entryCoolT: 0, entryCoolKey: null,
   };
 }
 // visit(m) latches once (e.g. lip reached), goal(m) ends the run after that.
@@ -1242,13 +1262,15 @@ console.log("PASS entry-oblique-hold");
   assert.ok(diverted >= 6, `ride-turns-to-hole: diverted on ${diverted}/8 seeds`);
   assert.ok(inside >= 6, `ride-turns-to-hole: inside on ${inside}/8 seeds`);
 }
-// --- tunnel-exit-choice: a rail released at a tunnel mouth exits 50/50
-// wall-follow vs free roam — never back inside. A lock-turn on the mouth
-// cell pins a deterministic east exit; the mouth flanks behind are the
-// exit walls. A continuing wall rides straight out along it; a lone mouth
-// flank turns 90° onto the exterior face when it continues (pen ring) and
-// roams otherwise; open ground roams straight or ±45° with room, a blocked
-// straight forces the diagonal ---
+// --- tunnel-exit-choice: a rail released at a tunnel mouth draws the
+// unified table (wall-follow arms vs free roam) — never back inside. A
+// lock-turn on the mouth cell pins a deterministic east exit; the mouth
+// flanks behind are the exit walls. A continuing wall rides straight out
+// along it and keeps following like any touch ride (blue past the mouth,
+// turns and roundings included); a lone mouth flank turns 90° onto the
+// exterior face when it continues (pen ring) and roams otherwise; open
+// ground roams straight or ±45° with room, a blocked straight forces the
+// diagonal. Every exit arms the entry cooldown, so no mouth re-draws. ---
 {
   const setupExit = (walls) => {
     resetWorld("over");
@@ -1284,7 +1306,7 @@ console.log("PASS entry-oblique-hold");
     const realRandom = Math.random;
     Math.random = mulberry32(s);
     const trace = [];
-    let rideRel = null, rideAxis = null, sawExitRide = false;
+    let rideRel = null, rideAxis = null, blueLate = false;
     let firstHead = null, sawEntry = false, minDx = Infinity, maxDx = -Infinity;
     try {
       for (let t = 0; t < ticks; t++) {
@@ -1294,7 +1316,7 @@ console.log("PASS entry-oblique-hold");
           rideRel = mob.followLine.rel;
           rideAxis = mob.lane ? mob.lane.axis : null;
         }
-        if (mob.followLine?.exitRide != null) sawExitRide = true;
+        if (t >= 60 && mob.wallFollow === true) blueLate = true;
         if (mob.roam?.mode === "commit" && !mob.roam.entry && firstHead === null) {
           firstHead = mob.roam.heading;
         }
@@ -1305,7 +1327,7 @@ console.log("PASS entry-oblique-hold");
     } finally {
       Math.random = realRandom;
     }
-    return { trace, rideRel, rideAxis, sawExitRide, firstHead, sawEntry, minDx, maxDx };
+    return { trace, rideRel, rideAxis, blueLate, firstHead, sawEntry, minDx, maxDx };
   };
   const headRel = (h) => (h - Math.PI / 2) * 180 / Math.PI;
   const relOk = (h, maxDeg) => h != null && Math.abs(headRel(h)) <= maxDeg + 1e-9;
@@ -1332,8 +1354,9 @@ console.log("PASS entry-oblique-hold");
       if (r.rideRel != null) {
         rides++;
         assert.ok(r.rideRel === 1, `tunnel-exit ncont seed${s}: rides the continuing north wall (rel=${r.rideRel})`);
-        assert.ok(r.rideAxis != null && Math.abs(r.rideAxis - Math.PI / 2) < 1e-9 && r.sawExitRide,
-          `tunnel-exit ncont seed${s}: outward exit ride`);
+        assert.ok(r.rideAxis != null && Math.abs(r.rideAxis - Math.PI / 2) < 1e-9,
+          `tunnel-exit ncont seed${s}: straight out along the wall`);
+        assert.ok(r.blueLate, `tunnel-exit ncont seed${s}: still blue past the mouth`);
       } else {
         roams++;
         assert.ok(relOk(r.firstHead, 45), `tunnel-exit ncont seed${s}: roam straight or ±45° (rel=${r.firstHead == null ? "-" : headRel(r.firstHead).toFixed(0)})`);
@@ -1352,8 +1375,9 @@ console.log("PASS entry-oblique-hold");
       if (r.rideRel != null) {
         rides++;
         assert.ok(r.rideRel === -1, `tunnel-exit scont seed${s}: rides the continuing south wall (rel=${r.rideRel})`);
-        assert.ok(r.rideAxis != null && Math.abs(r.rideAxis - Math.PI / 2) < 1e-9 && r.sawExitRide,
-          `tunnel-exit scont seed${s}: outward exit ride`);
+        assert.ok(r.rideAxis != null && Math.abs(r.rideAxis - Math.PI / 2) < 1e-9,
+          `tunnel-exit scont seed${s}: straight out along the wall`);
+        assert.ok(r.blueLate, `tunnel-exit scont seed${s}: still blue past the mouth`);
       } else {
         roams++;
         assert.ok(relOk(r.firstHead, 45), `tunnel-exit scont seed${s}: roam straight or ±45° (rel=${r.firstHead == null ? "-" : headRel(r.firstHead).toFixed(0)})`);
@@ -1400,7 +1424,7 @@ console.log("PASS entry-oblique-hold");
           `tunnel-exit pen seed${s}: turned north or south (axis=${ra.toFixed(0)})`);
         if (Math.abs(ra - 270) < 1e-9) assert.ok(r.rideRel === 1, `tunnel-exit pen seed${s}: north is left (rel=${r.rideRel})`);
         else assert.ok(r.rideRel === -1, `tunnel-exit pen seed${s}: south is right (rel=${r.rideRel})`);
-        assert.ok(r.sawExitRide, `tunnel-exit pen seed${s}: guided as an exit ride`);
+        assert.ok(r.blueLate, `tunnel-exit pen seed${s}: still blue past the mouth`);
       } else if (r.maxDx > 1.0) {
         roams++;
         assert.ok(relOk(r.firstHead, 45), `tunnel-exit pen seed${s}: roam straight or ±45° (rel=${r.firstHead == null ? "-" : headRel(r.firstHead).toFixed(0)})`);
@@ -1556,6 +1580,89 @@ for (const seed of [7, 99]) {
   }
 }
 console.log("PASS village-door");
+
+// --- village-soak: mouth machinery must not break village life. On real
+// generated villages, wandering mobs stay wall-clean (floating where wet),
+// keep moving (no stuck clusters against houses), and doors still attract
+// (interiors visited, entries latched — no mass suppression by spurious
+// mouth holds or cooldowns). ---
+{
+  // Floating is legal (pool, trough): no wall penetration, no sinking, and
+  // any above-ground tick floats on liquid or lands from it.
+  const assertSoakClean = (trace, label, feet) => {
+    let prevY = null;
+    for (let i = 0; i < trace.length; i++) {
+      const p = trace[i];
+      assert.ok(!aabbIntersectsSolid(p.x, p.y, p.z, 0.32, 1.3), `${label}: body in wall @tick${i} (${p.x.toFixed(2)},${p.z.toFixed(2)})`);
+      assert.ok(p.y >= feet - 0.05, `${label}: sunk @tick${i} (y=${p.y.toFixed(3)})`);
+      if (Math.abs(p.y - feet) >= 0.05) {
+        const floating = liquidSurface(p.x, p.y, p.z, 0.32, 1.3) != null;
+        const landing = prevY != null && p.y < prevY + 1e-6 && p.y <= feet + 0.75;
+        assert.ok(floating || landing, `${label}: airborne off water @tick${i} (y=${p.y.toFixed(3)})`);
+      }
+      prevY = p.y;
+    }
+  };
+  let interiors = 0, latches = 0;
+  for (const seed of [7, 99]) {
+    resetWorld("over");
+    clearEntryClaims();
+    setDimension("over");
+    computeLayout(seed, () => 14);
+    const vy = village.center.y;
+    for (let x = village.minX - 4; x <= village.maxX + 4; x++) {
+      for (let z = village.minZ - 4; z <= village.maxZ + 4; z++) {
+        for (let y = 0; y <= 14; y++) setBlock(x, y, z, STONE);
+      }
+    }
+    placeVillage(setBlock, getBlock);
+    const houses = village.houses.slice(0, 2);
+    assert.ok(houses.length === 2, `village-soak seed${seed}: two houses to soak around`);
+    const runs = [];
+    for (const h of houses) {
+      const midx = h.doorNz !== 0 ? h.d0x + 1 : h.d0x + 0.5;
+      const midz = h.doorNz !== 0 ? h.d0z + 0.5 : h.d0z + 1;
+      const latx = h.doorNz !== 0 ? 1.0 : 0, latz = h.doorNz !== 0 ? 0 : 1.0;
+      // Door exteriors on both lateral sides, facing the door: entries stay
+      // likely while wandering covers the surroundings.
+      for (const s of [1, -1]) {
+        const sx = midx + h.doorNx * 1.2 + latx * s, sz = midz + h.doorNz * 1.2 + latz * s;
+        runs.push([sx, sz, Math.atan2(midx - sx, midz - sz)]);
+      }
+    }
+    for (const [sx, sz, yaw] of runs) {
+      const mob = makeTestMob("pig", sx, vy + 1, sz, yaw);
+      mob.target = null;
+      mob.wanderT = 0;
+      const realRandom = Math.random;
+      Math.random = mulberry32(seed * 31 + Math.floor(sx) * 7 + Math.floor(sz));
+      const trace = [];
+      let visited = false, latched = false, path = 0;
+      let px = sx, pz = sz, maxD = 0;
+      try {
+        for (let t = 0; t < 2000; t++) {
+          tickFarmMob(mob, DT, (m, rand) => strideTarget(m, null, rand) ?? m.target);
+          trace.push({ x: mob.pos.x, y: mob.pos.y, z: mob.pos.z });
+          path += Math.hypot(mob.pos.x - px, mob.pos.z - pz);
+          px = mob.pos.x; pz = mob.pos.z;
+          maxD = Math.max(maxD, Math.hypot(mob.pos.x - sx, mob.pos.z - sz));
+          if (mob.roam?.entry) latched = true;
+          if (houses.some((h) => mob.pos.x > h.minX && mob.pos.x < h.maxX + 1 && mob.pos.z > h.minZ && mob.pos.z < h.maxZ + 1)) visited = true;
+        }
+      } finally {
+        Math.random = realRandom;
+      }
+      assertSoakClean(trace, `village-soak seed${seed} (${sx.toFixed(1)},${sz.toFixed(1)})`, vy + 1);
+      assert.ok(path > 25, `village-soak seed${seed}: keeps moving (path ${path.toFixed(1)} m)`);
+      assert.ok(maxD > 6, `village-soak seed${seed}: explores (spread ${maxD.toFixed(1)} m)`);
+      if (visited) interiors++;
+      if (latched) latches++;
+    }
+  }
+  assert.ok(interiors >= 2, `village-soak: interiors visited (${interiors}/8 runs)`);
+  assert.ok(latches >= 2, `village-soak: entries latched (${latches}/8 runs)`);
+}
+console.log("PASS village-soak");
 
 // --- open field: straight runs stay bounded, headings keep turning ---
 {
@@ -1859,10 +1966,11 @@ console.log("PASS wide-cross");
 }
 console.log("PASS wide-straight");
 
-// --- exit-gentle: a 2-wide exit with wall contact draws the wall ride, but
-// the ride glues gently — lateral steps stay at the soft rate (no fresh
-// yank) while the line converges, then the ride quits outward past the
-// wall end, wall-clean throughout ---
+// --- exit-gentle: a 2-wide exit with wall contact draws the wall ride, and
+// the ride glues gently — lateral steps stay at the soft rate while the line
+// converges. The ride is an ordinary touch ride from there on: it turns with
+// its continuing wall and keeps following (blue) instead of quitting outward
+// past the wall end, wall-clean throughout ---
 {
     resetWorld("over");
     clearEntryClaims();
@@ -1877,15 +1985,15 @@ console.log("PASS wide-straight");
   const mob = makeTestMob("pig", 0.33, FEET, 3.4, 0);
   mob.entryScanT = 999; // throttled: no entry draws mid-ride
   const r = scriptRand([0.1, 0.5, 0.3, 0.7, 0.2]);
-  const latched = exitPassage(mob, 0, DT, true, false, r, () => null);
+  const latched = exitMouth(mob, 0, DT, true, false, r, () => null);
   assert.ok(latched, "exit-gentle: contact draws the ride");
-  assert.ok(mob.lane != null && mob.followLine?.exitRide != null, "exit-gentle: exit-marked lane");
+  assert.ok(mob.lane != null && mob.followLine?.touch === true, "exit-gentle: plain touch lane");
   assert.ok(mob.followLine.gentle === true, "exit-gentle: gentle flag");
   const lineX = mob.followLine.line;
   assert.ok(Math.abs(lineX - 0.5) < 1e-9, `exit-gentle: mouth-wall line (line=${lineX})`);
   let maxLat = 0, px = mob.pos.x;
   const trace = [];
-  for (let t = 0; t < 90; t++) {
+  for (let t = 0; t < 15; t++) {
     tickFarmMob(mob, DT, () => mob.target, r);
     trace.push({ x: mob.pos.x, y: mob.pos.y, z: mob.pos.z });
     maxLat = Math.max(maxLat, Math.abs(mob.pos.x - px));
@@ -1893,9 +2001,924 @@ console.log("PASS wide-straight");
   }
   assert.ok(maxLat <= 0.014, `exit-gentle: soft lateral steps (max ${maxLat.toFixed(4)})`);
   assert.ok(Math.abs(mob.pos.x - lineX) <= 0.08, `exit-gentle: converged (x=${mob.pos.x.toFixed(3)})`);
+  // Then the ordinary ride life: it may turn with its continuing wall, but
+  // it keeps following (blue, laned) instead of quitting outward.
+  for (let t = 0; t < 75; t++) {
+    tickFarmMob(mob, DT, () => mob.target, r);
+    trace.push({ x: mob.pos.x, y: mob.pos.y, z: mob.pos.z });
+  }
+  assert.ok(mob.lane != null, "exit-gentle: still riding past the wall end");
+  assert.ok(mob.wallFollow === true, "exit-gentle: still blue past the wall end");
   assertClean(trace, "exit-gentle");
 }
 console.log("PASS exit-gentle");
+
+// --- exit-table: the unified mouth exit draws one table off a single rand —
+// 25% wall-follow left, 25% right, 25% straight, 12.5% each diagonal. A drawn
+// side with no wall takes the other side; with no wall at all (or an
+// unlatchable one) the exit roams free. Erected rides are ordinary,
+// unmarked touch rides; every exit arms the entry cooldown. ---
+{
+  const setupExitTable = (walls) => {
+    resetWorld("over");
+    clearEntryClaims();
+    setDimension("over");
+    for (let x = -8; x <= 12; x++) for (let z = -8; z <= 8; z++) setBlock(x, 0, z, STONE);
+    for (const [wx, wz] of walls) { setBlock(wx, 1, wz, STONE); setBlock(wx, 2, wz, STONE); }
+  };
+  const wallRun = (x0, x1, z) => {
+    const w = [];
+    for (let x = x0; x <= x1; x++) w.push([x, z]);
+    return w;
+  };
+  // North wall continues past the drop, south wall ends at the mouth.
+  const northCont = [...wallRun(0, 7, 1), ...wallRun(0, 4, -1)];
+  const tryExit = (walls, sx, value) => {
+    setupExitTable(walls);
+    const mob = makeTestMob("pig", sx, FEET, 0.5, Math.PI / 2);
+    mob.entryScanT = 999;
+    const r = scriptRand([value, 0.5, 0.5, 0.5, 0.5, 0.5]);
+    const laned = exitMouth(mob, Math.PI / 2, DT, true, false, r, () => null);
+    return mob;
+  };
+  // Left arm hugs the continuing north wall straight out (rel +1).
+  {
+    const mob = tryExit(northCont, 5.5, 0.1);
+    assert.ok(mob.lane != null && mob.followLine?.touch === true, "exit-table L: ride erected");
+    assert.equal(mob.followLine.rel, 1, "exit-table L: north is left");
+    assert.equal(mob.lane.axis, Math.PI / 2, "exit-table L: straight out");
+    assert.ok(mob.entryCoolT > 0, "exit-table L: cooldown armed");
+  }
+  // Right arm: no continuing south wall, so it redirects to the side that
+  // has one (the north straight ride) instead of roaming.
+  {
+    const mob = tryExit(northCont, 5.5, 0.3);
+    assert.ok(mob.lane != null && mob.followLine?.touch === true, "exit-table R: ride erected");
+    assert.equal(mob.followLine.rel, 1, "exit-table R: redirected north");
+    assert.equal(mob.lane.axis, Math.PI / 2, "exit-table R: straight out");
+  }
+  // Straight arm roams east with room.
+  {
+    const mob = tryExit(northCont, 5.5, 0.6);
+    assert.ok(mob.lane == null, "exit-table S: no lane");
+    assert.ok(mob.roam?.mode === "commit" && !mob.roam.entry, "exit-table S: roam commit");
+    assert.ok(Math.abs(mob.roam.heading - Math.PI / 2) < 1e-9, "exit-table S: straight out");
+    assert.ok(mob.target.x > 5.5, "exit-table S: past the mouth");
+  }
+  // Diagonal arms roam ±45° in the open (walls would clip the stride).
+  for (const [value, sign, label] of [[0.8, 1, "D+"], [0.95, -1, "D-"]]) {
+    const mob = tryExit([], 2.5, value);
+    assert.ok(mob.lane == null, `exit-table ${label}: no lane`);
+    assert.ok(Math.abs(mob.roam.heading - (Math.PI / 2 + sign * Math.PI / 4)) < 1e-9,
+      `exit-table ${label}: diagonal out`);
+  }
+  // Freestanding: drawn wall arms with nothing to hug roam free instead.
+  {
+    const mob = tryExit([], 2.5, 0.1);
+    assert.ok(mob.lane == null, "exit-table lone: no ride without a wall");
+    assert.ok(mob.roam?.mode === "commit", "exit-table lone: free roam");
+    assert.ok(mob.entryCoolT > 0, "exit-table lone: cooldown armed anyway");
+  }
+  // A riding mob draws the table like any exit: the drawn arm re-latches
+  // the same wall as an ordinary ride (no mark, no free pass).
+  {
+    setupExitTable([...wallRun(-6, 8, 3).filter(([x]) => x !== 0 && x !== 1)]);
+    const mob = makeTestMob("pig", 0.33, FEET, 3.4, 0);
+    mob.lane = { axis: 0, entry: Math.PI, lockX: -1, lockZ: -1 };
+    mob.followLine = {
+      axis: 0, line: 0.5, side: 1, rel: -1,
+      virtual: true, touch: true, fresh: 0, face: 0, t: 1, wallSpan: 5,
+    };
+    const r = scriptRand([0.1, 0.5, 0.5, 0.5, 0.5, 0.5]);
+    assert.equal(exitMouth(mob, 0, DT, true, false, r, () => null), true);
+    assert.ok(r.calls > 0, "exit-table riding: draws like any exit");
+    assert.equal(mob.followLine.line, 0.5, "exit-table riding: same wall");
+    assert.ok(mob.followLine.touch === true, "exit-table riding: still a touch ride");
+    assert.ok(mob.entryCoolT > 0, "exit-table riding: cooldown armed");
+  }
+}
+console.log("PASS exit-table");
+
+// --- exit-noslide: a mouth exit drawn with noSlide latches parallel and
+// never slides laterally onto its line — the body keeps its threading
+// offset while advancing, still laned and blue, cooldown armed. ---
+{
+  resetWorld("over");
+  clearEntryClaims();
+  setDimension("over");
+  for (let x = -8; x <= 12; x++) for (let z = -8; z <= 8; z++) setBlock(x, 0, z, STONE);
+  // Asymmetric mouth row z=3, gap x=0,1: west wall running north (x=-1,
+  // z=2..6) so the straight ride persists, 2-thick east on the mouth row.
+  // Mob hugging west (0.35, gap 0.35) and off the edge line (0.5) so any
+  // slide would show; opts mirror the leave draw exactly.
+  for (const x of [-1, 2, 3]) { setBlock(x, 1, 3, STONE); setBlock(x, 2, 3, STONE); }
+  for (const z of [2, 4, 5, 6]) { setBlock(-1, 1, z, STONE); setBlock(-1, 2, z, STONE); }
+  const mob = makeTestMob("pig", 0.35, FEET, 3.4, 0);
+  mob.entryScanT = 999;
+  const r = scriptRand([0.1, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5]);
+  assert.equal(exitMouth(mob, 0, DT, true, false, r, () => null, null, { kind: 2, noSlide: true }), true);
+  assert.ok(mob.lane != null && mob.followLine?.touch === true, "exit-noslide: ride erected");
+  assert.ok(mob.followLine.noSlide === true, "exit-noslide: parallel flag stamped");
+  assert.ok(Math.abs(mob.followLine.line - 0.5) < 1e-9, "exit-noslide: line on the mouth edge");
+  assert.ok(mob.entryCoolT > 0, "exit-noslide: cooldown armed");
+  const x0 = mob.pos.x;
+  const trace = [];
+  for (let t = 0; t < 30; t++) {
+    tickFarmMob(mob, DT, () => mob.target, r);
+    trace.push({ x: mob.pos.x, y: mob.pos.y, z: mob.pos.z });
+  }
+  assert.ok(Math.abs(mob.pos.x - x0) <= 0.03, `exit-noslide: no lateral slide (dx=${Math.abs(mob.pos.x - x0).toFixed(4)})`);
+  assert.ok(mob.pos.z > 3.4 + 0.5, `exit-noslide: advanced forward (z=${mob.pos.z.toFixed(2)})`);
+  assert.ok(mob.lane != null, "exit-noslide: still riding");
+  assert.ok(mob.wallFollow === true, "exit-noslide: still blue");
+  assertClean(trace, "exit-noslide");
+}
+console.log("PASS exit-noslide");
+
+// --- exit-arms: two-stage kind-2 exits on real mouth cells (asymmetric
+// tunnel, edge and centered crossers, nose-blocked ends). No angles anywhere:
+// wall intent follows the nearest strictly-close flank, everything else
+// walks a locked straight (smooth marker) — a blocked nose holds in place
+// instead of maneuvering. Every roam commit carries the latch grace. ---
+{
+  const setupArms = () => {
+    resetWorld("over");
+    clearEntryClaims();
+    setDimension("over");
+    for (let x = -8; x <= 10; x++) for (let z = -8; z <= 10; z++) setBlock(x, 0, z, STONE);
+    for (let z = 0; z <= 5; z++) {
+      setBlock(-1, 1, z, STONE); setBlock(-1, 2, z, STONE);
+      setBlock(2, 1, z, STONE); setBlock(2, 2, z, STONE);
+      setBlock(3, 1, z, STONE); setBlock(3, 2, z, STONE);
+    }
+    for (const x of [0, 1]) { setBlock(x, 1, 6, STONE); setBlock(x, 2, 6, STONE); }
+  };
+  const setupShallow = () => {
+    resetWorld("over");
+    clearEntryClaims();
+    setDimension("over");
+    for (let x = -8; x <= 10; x++) for (let z = -8; z <= 10; z++) setBlock(x, 0, z, STONE);
+    // Single mouth row z=3 (west 1-thick, east 2-thick), open field beyond.
+    for (const x of [-1, 2, 3]) { setBlock(x, 1, 3, STONE); setBlock(x, 2, 3, STONE); }
+  };
+  const setupStub = () => {
+    resetWorld("over");
+    clearEntryClaims();
+    setDimension("over");
+    for (let x = -8; x <= 10; x++) for (let z = -8; z <= 10; z++) setBlock(x, 0, z, STONE);
+    // Dead-end stub: open cell with both flanks and nose walled.
+    for (const [x, z] of [[-1, 5], [1, 5], [0, 6]]) { setBlock(x, 1, z, STONE); setBlock(x, 2, z, STONE); }
+  };
+  const HOLD = { kind: 2, noSlide: true };
+  const tryArm = (x, z, values, opts, setup = setupArms) => {
+    setup();
+    const mob = makeTestMob("pig", x, FEET, z, 0);
+    mob.entryScanT = 999;
+    const r = scriptRand(values);
+    const laned = exitMouth(mob, 0, DT, true, false, r, () => null, null, opts);
+    return mob;
+  };
+  const V = [0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5];
+  // Edge hugger, wall intent: the close west wall is followed.
+  {
+    const mob = tryArm(0.5, 2.5, [0.1, ...V], HOLD);
+    assert.ok(mob.lane != null && mob.followLine?.touch === true, "exit-arms edge intent: ride");
+    assert.equal(mob.followLine.rel, 1, "exit-arms edge intent: west wall");
+    assert.ok(mob.followLine.noSlide === true, "exit-arms edge intent: parallel");
+  }
+  // Edge hugger, roam intent: straight with grace.
+  {
+    const mob = tryArm(0.5, 2.5, [0.6, ...V], HOLD);
+    assert.ok(mob.lane == null && mob.roam?.mode === "commit", "exit-arms edge roam: commit");
+    assert.ok(Math.abs(mob.roam.heading) < 1e-9, "exit-arms edge roam: straight");
+    assert.equal(mob.roam.smooth, true, "exit-arms edge roam: smooth marker");
+    assert.equal(mob.followCool, 0.5, "exit-arms edge roam: latch grace");
+  }
+  // Centered crosser (1.0 from both faces): too far either side — straight
+  // with grace in both intents, never a diagonal.
+  {
+    const mob = tryArm(1.0, 2.5, [0.1, ...V], HOLD);
+    assert.ok(mob.lane == null && mob.roam?.mode === "commit", "exit-arms center intent: roam");
+    assert.ok(Math.abs(mob.roam.heading) < 1e-9, "exit-arms center intent: straight");
+    assert.equal(mob.roam.smooth, true, "exit-arms center intent: smooth marker");
+    assert.equal(mob.followCool, 0.5, "exit-arms center intent: latch grace");
+  }
+  {
+    const mob = tryArm(1.0, 2.5, [0.6, ...V], HOLD);
+    assert.ok(mob.lane == null && mob.roam?.mode === "commit", "exit-arms center roam: commit");
+    assert.ok(Math.abs(mob.roam.heading) < 1e-9, "exit-arms center roam: straight");
+    assert.equal(mob.roam.smooth, true, "exit-arms center roam: smooth marker");
+    assert.equal(mob.followCool, 0.5, "exit-arms center roam: latch grace");
+  }
+  // Shallow gap, centered: straight out over open field, no diagonal.
+  {
+    const mob = tryArm(1.0, 3.4, [0.1, ...V], HOLD, setupShallow);
+    assert.ok(mob.lane == null && mob.roam?.mode === "commit", "exit-arms shallow: roam");
+    assert.ok(Math.abs(mob.roam.heading) < 1e-9, "exit-arms shallow: straight");
+    assert.equal(mob.roam.smooth, true, "exit-arms shallow: smooth marker");
+    assert.equal(mob.followCool, 0.5, "exit-arms shallow: latch grace");
+  }
+  // Nose-blocked end wall, roam intent: locked straight hold in place —
+  // no lane, no frontal ride, no U-turn. The span watchdog owns release.
+  {
+    const mob = tryArm(0.5, 5.4, [0.6, ...V], HOLD);
+    assert.ok(mob.lane == null && mob.roam?.mode === "commit", "exit-arms blocked: hold commit");
+    assert.ok(Math.abs(mob.roam.heading) < 1e-9, "exit-arms blocked: straight");
+    assert.equal(mob.roam.smooth, true, "exit-arms blocked: smooth marker");
+    assert.equal(mob.followCool, 0.5, "exit-arms blocked: latch grace");
+    assert.ok(mob.entryCoolT > 0, "exit-arms blocked: cooldown armed");
+  }
+  // Nose-blocked end wall, wall intent: the close west flank still rides.
+  {
+    const mob = tryArm(0.5, 5.4, [0.1, ...V], HOLD);
+    assert.ok(mob.lane != null && mob.followLine?.touch === true, "exit-arms blocked intent: ride");
+    assert.equal(mob.followLine.rel, 1, "exit-arms blocked intent: hugs the west wall");
+    assert.ok(mob.followLine.noSlide === true, "exit-arms blocked intent: parallel");
+  }
+  // Nose-blocked stub (both flanks walled), roam intent: hold, never a
+  // grind, never a diagonal.
+  {
+    const mob = tryArm(0.5, 5.4, [0.6, ...V], HOLD, setupStub);
+    assert.ok(mob.lane == null && mob.roam?.mode === "commit", "exit-arms stub: hold commit");
+    assert.ok(Math.abs(mob.roam.heading) < 1e-9, "exit-arms stub: straight");
+    assert.equal(mob.roam.smooth, true, "exit-arms stub: smooth marker");
+  }
+  // Nose-blocked stub, wall intent: no flank hugs along the exit axis
+  // (true 1-wide cell refuses the erect), so the hold owns it too.
+  {
+    const mob = tryArm(0.5, 5.4, [0.1, 0.6, ...V], HOLD, setupStub);
+    assert.ok(mob.lane == null && mob.roam?.mode === "commit", "exit-arms stub intent: hold commit");
+    assert.ok(Math.abs(mob.roam.heading) < 1e-9, "exit-arms stub intent: straight");
+    assert.equal(mob.roam.smooth, true, "exit-arms stub intent: smooth marker");
+  }
+  // Without options the centered body still draws through kind inference.
+  // The exit arms the timer but never keys (timer+key travel together from
+  // exact sources only).
+  {
+    const mob = tryArm(1.0, 2.5, [0.1, ...V]);
+    assert.ok(mob.lane == null && mob.roam?.mode === "commit", "exit-arms center free: roam");
+    assert.ok(Math.abs(mob.roam.heading) < 1e-9, "exit-arms center free: straight");
+    assert.ok(mob.entryCoolT > 0, "exit-arms center free: cooldown armed");
+    assert.equal(mob.entryCoolKey, null, "exit-arms center free: no key from the exit");
+  }
+}
+console.log("PASS exit-arms");
+
+// --- straight-smooth: locked kind-2 straights cross as one line: no lane
+// ever latches mid-thread, the heading never wavers, a blocked nose waits
+// in place, and only the span watchdog releases (liveness). ---
+{
+  const setupSmooth = () => {
+    resetWorld("over");
+    clearEntryClaims();
+    setDimension("over");
+    for (let x = -8; x <= 10; x++) for (let z = -8; z <= 10; z++) setBlock(x, 0, z, STONE);
+    for (let z = 0; z <= 5; z++) {
+      setBlock(-1, 1, z, STONE); setBlock(-1, 2, z, STONE);
+      setBlock(2, 1, z, STONE); setBlock(2, 2, z, STONE);
+      setBlock(3, 1, z, STONE); setBlock(3, 2, z, STONE);
+    }
+    for (const x of [0, 1]) { setBlock(x, 1, 6, STONE); setBlock(x, 2, 6, STONE); }
+  };
+  const HOLD = { kind: 2, noSlide: true };
+  // Centered walk: threads forward — one heading, no lane, never back.
+  {
+    setupSmooth();
+    const mob = makeTestMob("pig", 1.0, FEET, 2.5, 0);
+    mob.entryScanT = 999;
+    mob.rand = scriptRand([0.6, 0.5, 0.5, 0.5, 0.5]);
+    exitMouth(mob, 0, DT, true, false, mob.rand, () => null, null, HOLD);
+    assert.equal(mob.roam?.smooth, true, "straight-smooth: marker latched");
+    let minZ = mob.pos.z, maxYawErr = 0, everLane = false, everBlue = false;
+    for (let t = 0; t < 80; t++) {
+      tickFarmMob(mob, DT, () => mob.target ?? { x: 1, z: 9 }, mob.rand);
+      if (mob.lane != null) everLane = true;
+      if (mob.wallFollow === true) everBlue = true;
+      if (mob.roam?.smooth === true) maxYawErr = Math.max(maxYawErr, Math.abs(mob.roam.heading));
+      minZ = Math.min(minZ, mob.pos.z);
+    }
+    assert.ok(!everLane, "straight-smooth: no lane mid-thread");
+    assert.ok(!everBlue, "straight-smooth: never blue");
+    assert.ok(maxYawErr < 1e-9, "straight-smooth: heading locked");
+    assert.ok(minZ >= 2.5 - 1e-9, "straight-smooth: never steps back");
+    assert.ok(mob.pos.z > 3.6, `straight-smooth: advances (z=${mob.pos.z.toFixed(2)})`);
+  }
+  // Blocked nose: waits in place (no latch, still locked), then the span
+  // watchdog releases to a fresh decide.
+  {
+    setupSmooth();
+    const mob = makeTestMob("pig", 1.0, FEET, 5.4, 0);
+    mob.entryScanT = 999;
+    mob.rand = scriptRand([0.6, 0.5, 0.5, 0.5, 0.5]);
+    exitMouth(mob, 0, DT, true, false, mob.rand, () => null, null, HOLD);
+    assert.equal(mob.roam?.smooth, true, "straight-smooth hold: marker");
+    const trace = [];
+    for (let t = 0; t < 240; t++) {
+      tickFarmMob(mob, DT, () => ({ x: 1, z: 9 }), mob.rand);
+      trace.push({ x: mob.pos.x, y: mob.pos.y, z: mob.pos.z });
+      assert.ok(mob.lane == null, `straight-smooth hold: no latch @tick${t}`);
+      assert.ok(mob.roam?.smooth === true, `straight-smooth hold: still locked @tick${t}`);
+    }
+    assert.ok(Math.abs(mob.pos.z - 5.4) < 0.3, `straight-smooth hold: waits (dz=${Math.abs(mob.pos.z - 5.4).toFixed(3)})`);
+    assertClean(trace, "straight-smooth hold");
+    for (let t = 0; t < 120; t++) tickFarmMob(mob, DT, () => ({ x: 1, z: 9 }), mob.rand);
+    assert.ok(mob.roam?.smooth !== true, "straight-smooth hold: watchdog released");
+  }
+}
+console.log("PASS straight-smooth");
+
+// --- capture-no-violet: a mob walking head-on at a 2-wide with no entry
+// commit is captured outright: the passage opens (no violet walk), the
+// thread reads orange, the leave closes with cooldown. Rivals, cooldowns
+// and parallel passers-by are left alone. ---
+{
+  const setupGap = () => {
+    resetWorld("over");
+    clearEntryClaims();
+    setDimension("over");
+    for (let x = -10; x <= 12; x++) for (let z = -8; z <= 10; z++) setBlock(x, 0, z, STONE);
+    for (let x = -6; x <= 8; x++) {
+      if (x === 0 || x === 1) continue;
+      setBlock(x, 1, 3, STONE); setBlock(x, 2, 3, STONE);
+    }
+  };
+  // Unit: refused violet at the mouth captures with no new draw.
+  {
+    setupGap();
+    const mob = makeTestMob("pig", 1.0, FEET, 2.0, 0);
+    mob.target = { x: 1, z: 9 };
+    mob.entryScanT = 0;
+    const r = scriptRand([0.9]);
+    assert.equal(entryTick(mob, DT, r, { supported: true, floating: false }), true, "capture: latched");
+    assert.ok(mob.roam?.entry !== true, "capture: no violet commit");
+    assert.equal(mob.passage?.kind, 2, "capture: passage kind 2");
+    assert.equal(mob.passage?.axis, 0, "capture: passage axis");
+    assert.equal(mob.passage?.key, "over|2:0,3|1,3", `capture: pair key (${mob.passage?.key})`);
+    assert.equal(r.calls, 1, "capture: violet refusal only, no new draw");
+  }
+  // Contention: a rival holding the pair keeps it.
+  {
+    setupGap();
+    const a = makeTestMob("pig", 1.0, FEET, 2.0, 0);
+    a.target = { x: 1, z: 9 };
+    a.entryScanT = 0;
+    assert.equal(entryTick(a, DT, scriptRand([0.9]), { supported: true, floating: false }), true);
+    const b = makeTestMob("pig", 1.0, FEET, 1.6, 0);
+    b.target = { x: 1, z: 9 };
+    b.entryScanT = 0;
+    assert.equal(entryTick(b, DT, scriptRand([0.0]), { supported: true, floating: false }), false, "capture: rival waits");
+    assert.equal(b.passage, null, "capture: rival opens nothing");
+  }
+  // Cooldown: a mob that just left is not recaptured.
+  {
+    setupGap();
+    const mob = makeTestMob("pig", 1.0, FEET, 2.0, 0);
+    mob.target = { x: 1, z: 9 };
+    mob.entryScanT = 0;
+    mob.entryCoolT = ENTRY_COOL_T;
+    mob.entryCoolKey = "over|2:0,3|1,3";
+    const r = scriptRand([0.0]);
+    assert.equal(entryTick(mob, DT, r, { supported: true, floating: false }), false, "capture: cooldown gate");
+    assert.equal(r.calls, 0, "capture: no draw without a pick");
+  }
+  // Per-mouth: a foreign cooldown never blocks the capture.
+  {
+    setupGap();
+    const mob = makeTestMob("pig", 1.0, FEET, 2.0, 0);
+    mob.target = { x: 1, z: 9 };
+    mob.entryScanT = 0;
+    mob.entryCoolT = ENTRY_COOL_T;
+    mob.entryCoolKey = "over|1:9,9";
+    const r = scriptRand([0.9]);
+    assert.equal(entryTick(mob, DT, r, { supported: true, floating: false }), true, "capture: foreign key captures through");
+    assert.equal(mob.passage?.key, "over|2:0,3|1,3", "capture: pair key");
+  }
+  // Parallel passer-by: alongside the fence, no capture.
+  {
+    setupGap();
+    const mob = makeTestMob("pig", -2.5, FEET, 1.5, 0);
+    mob.target = { x: -2.5, z: 9 };
+    mob.entryScanT = 0;
+    assert.equal(entryTick(mob, DT, scriptRand([0.0]), { supported: true, floating: false }), false, "capture: parallel ignored");
+    assert.equal(mob.passage, null, "capture: parallel opens nothing");
+  }
+  // Kinematic: violet always refuses, yet the mob threads orange and leaves
+  // with cooldown — never purple.
+  {
+    setupGap();
+    const mob = makeTestMob("pig", 1.0, FEET, 1.0, 0);
+    mob.target = { x: 1, z: 9 };
+    mob.rand = scriptRand([0.9]);
+    const trace = [];
+    let purple = false, orange = false, done = false;
+    for (let t = 0; t < 1500; t++) {
+      tickFarmMob(mob, DT, () => mob.target, mob.rand);
+      trace.push({ x: mob.pos.x, y: mob.pos.y, z: mob.pos.z });
+      if (mob.tunnelPass) purple = true;
+      if (mob.inPassage) orange = true;
+      if (mob.pos.z >= 4.5) { done = true; break; }
+    }
+  assert.ok(done, "capture walk: through");
+  assert.ok(!purple, "capture walk: never violet");
+  assert.ok(orange, "capture walk: orange threading");
+  assertClean(trace, "capture walk");
+  }
+}
+console.log("PASS capture-no-violet");
+
+// --- exit-cooldown-no-return: a mob just outside a 2-wide it threaded (same
+// mouth cooldown freshly armed, facing back at it as if an obstacle spun it
+// around) never walks back through the gap while the cooldown runs — plain
+// roam decisions route around instead of strolling straight back in with no
+// draw. Baseline (no veto) marches every seed straight back through. ---
+{
+  const setupGap = () => {
+    resetWorld("over");
+    clearEntryClaims();
+    setDimension("over");
+    for (let x = -10; x <= 12; x++) for (let z = -8; z <= 10; z++) setBlock(x, 0, z, STONE);
+    for (let x = -6; x <= 8; x++) {
+      if (x === 0 || x === 1) continue;
+      setBlock(x, 1, 3, STONE); setBlock(x, 2, 3, STONE);
+    }
+  };
+  const realRandom = Math.random;
+  try {
+    for (let s = 1; s <= 8; s++) {
+      setupGap();
+      Math.random = mulberry32(s);
+      // Just threaded north out of the gap, spun back south by the obstacle,
+      // goal still south: the only way back is through the cooled mouth.
+      const mob = makeTestMob("pig", 1.0, FEET, 4.5, Math.PI);
+      mob.target = { x: 1, z: -10 };
+      mob.entryCoolT = ENTRY_COOL_T;
+      mob.entryCoolKey = "over|2:0,3|1,3";
+      const trace = [];
+      let reentered = false, repass = false;
+      for (let t = 0; t < 300; t++) {
+        tickFarmMob(mob, DT, () => mob.target);
+        trace.push({ x: mob.pos.x, y: mob.pos.y, z: mob.pos.z });
+        if (mob.passage?.key === "over|2:0,3|1,3") repass = true;
+        if (mob.roam?.entry === true && mob.roam.passageKey === "over|2:0,3|1,3") repass = true;
+        if (mob.pos.z < 3.2 && mob.pos.x > -0.5 && mob.pos.x < 2.5) reentered = true;
+      }
+      assert.ok(!reentered, `exit-cooldown-no-return seed${s}: never back through the gap`);
+      assert.ok(!repass, `exit-cooldown-no-return seed${s}: no same-mouth passage/entry`);
+      assertClean(trace, `exit-cooldown-no-return seed${s}`);
+    }
+  } finally {
+    Math.random = realRandom;
+  }
+}
+console.log("PASS exit-cooldown-no-return");
+
+// --- systematic-orange: every threading reads orange, even with violet
+// impossible (entry scans pinned off) — the geometry-only note opens the
+// crossing lifecycle for lane-less walkers and lane owners alike, with no
+// draw and no approach walk. Lane-less walkers thread straight through;
+// blue rides keep their wall (blue still outranks orange in paint) while the
+// flag reads orange underneath. ---
+{
+  const setupDoor = () => {
+    resetWorld("over");
+    clearEntryClaims();
+    setDimension("over");
+    for (let x = -10; x <= 12; x++) for (let z = -8; z <= 10; z++) setBlock(x, 0, z, STONE);
+    for (let x = -4; x <= 6; x++) {
+      if (x === 0 || x === 1) continue;
+      setBlock(x, 1, 3, STONE); setBlock(x, 2, 3, STONE);
+    }
+  };
+  const realRandom = Math.random;
+  try {
+    // Lane-less walkers: no violet can draw, yet every seed threads orange
+    // and leaves with the exact cooldown key.
+    for (let s = 1; s <= 8; s++) {
+      setupDoor();
+      Math.random = mulberry32(s);
+      const mob = makeTestMob("pig", 0.5, FEET, 0.5, 0);
+      mob.target = { x: 0.5, z: 9 };
+      mob.entryScanT = 99999;
+      const trace = [];
+      let purple = false, orange = false, through = false;
+      for (let t = 0; t < 1500; t++) {
+        tickFarmMob(mob, DT, () => mob.target);
+        trace.push({ x: mob.pos.x, y: mob.pos.y, z: mob.pos.z });
+        if (mob.tunnelPass) purple = true;
+        if (mob.inPassage) orange = true;
+        if (mob.pos.z >= 4.5) { through = true; break; }
+      }
+      assert.ok(through, `systematic-orange walk seed${s}: through`);
+      assert.ok(!purple, `systematic-orange walk seed${s}: never violet`);
+      assert.ok(orange, `systematic-orange walk seed${s}: orange threading`);
+      assert.equal(mob.passage, null, `systematic-orange walk seed${s}: passage closed at leave`);
+      assert.ok(mob.entryCoolT > 0, `systematic-orange walk seed${s}: cooldown armed`);
+      assert.equal(mob.entryCoolKey, "over|2:0,3|1,3", `systematic-orange walk seed${s}: exact mouth key`);
+      assertClean(trace, `systematic-orange walk seed${s}`);
+    }
+    // Lane owners: a blue ride threading the door reads orange underneath
+    // (still blue on top) with no violet anywhere.
+    for (let s = 1; s <= 8; s++) {
+      setupDoor();
+      Math.random = mulberry32(s);
+      const mob = makeTestMob("pig", 0.5, FEET, 2.2, 0);
+      mob.target = { x: 0.5, z: 9 };
+      mob.entryScanT = 99999;
+      mob.lane = { axis: 0, entry: Math.PI, lockX: -1, lockZ: -1 };
+      mob.followLine = {
+        axis: 0, line: 0.5, side: 1, rel: 1, virtual: true,
+        touch: true, fresh: 0, face: 0.0, t: 0, wallSpan: 99,
+      };
+      mob.yawTarget = 0;
+      const trace = [];
+      let purple = false, blue = false, orange = false;
+      for (let t = 0; t < 900; t++) {
+        tickFarmMob(mob, DT, () => mob.target);
+        trace.push({ x: mob.pos.x, y: mob.pos.y, z: mob.pos.z });
+        if (mob.tunnelPass) purple = true;
+        if (mob.wallFollow === true) blue = true;
+        if (mob.inPassage) orange = true;
+        if (mob.pos.z > 4.5) break;
+      }
+      assert.ok(blue, `systematic-orange ride seed${s}: rode blue`);
+      assert.ok(orange, `systematic-orange ride seed${s}: orange underneath`);
+      assert.ok(!purple, `systematic-orange ride seed${s}: never violet`);
+      assertClean(trace, `systematic-orange ride seed${s}`);
+    }
+  } finally {
+    Math.random = realRandom;
+  }
+}
+console.log("PASS systematic-orange");
+
+// --- orange-no-passage: a touch ride inside 2-wide geometry reads orange
+// even with no crossing open (nose-blocked close, timeout, same-mouth-
+// cooldown re-entry: the lifecycle is gone — here simulated by a running
+// same-mouth cooldown, which gates notes and draws alike — but the body
+// is still in the mouth). The flag owns it — paint already ranks orange
+// over any ride. ---
+{
+  const setupDoor = () => {
+    resetWorld("over");
+    clearEntryClaims();
+    setDimension("over");
+    for (let x = -10; x <= 12; x++) for (let z = -8; z <= 10; z++) setBlock(x, 0, z, STONE);
+    for (let x = -4; x <= 6; x++) {
+      if (x === 0 || x === 1) continue;
+      setBlock(x, 1, 3, STONE); setBlock(x, 2, 3, STONE);
+    }
+  };
+  setupDoor();
+  const realRandom = Math.random;
+  try {
+    Math.random = mulberry32(1);
+    const mob = makeTestMob("pig", 0.5, FEET, 3.5, 0);
+    mob.entryScanT = 99999;
+    // Same-mouth cooldown running: no note opens, no draw fires.
+    mob.entryCoolT = 5;
+    mob.entryCoolKey = "over|2:0,3|1,3";
+    mob.lane = { axis: 0, entry: Math.PI, lockX: -1, lockZ: -1 };
+    mob.followLine = {
+      axis: 0, line: 0.5, side: 1, rel: 1, virtual: true,
+      touch: true, fresh: 0, face: 0.0, t: 0, wallSpan: 99,
+    };
+    mob.yawTarget = 0;
+    assert.equal(mob.passage, null, "orange-no-passage: no crossing");
+    const trace = [];
+    let rode = false;
+    for (let t = 0; t < 20; t++) {
+      tickFarmMob(mob, DT, () => ({ x: 0.5, z: 9 }));
+      trace.push({ x: mob.pos.x, y: mob.pos.y, z: mob.pos.z });
+      assert.equal(mob.passage, null, `orange-no-passage: still no crossing (t=${t})`);
+      if (mob.pos.z >= 3.9) break;
+      if (mob.wallFollow === true) {
+        rode = true;
+        assert.ok(mob.inPassage === true, `orange-no-passage: orange under the ride (t=${t})`);
+      }
+    }
+    assert.ok(rode, "orange-no-passage: rode inside the mouth");
+    assertClean(trace, "orange-no-passage");
+  } finally {
+    Math.random = realRandom;
+  }
+}
+console.log("PASS orange-no-passage");
+
+// --- door-threshold: a blue ride threading a house-like door keeps going
+// instead of flipping back through it. The ride hugs the jamb in, loses
+// its wall past the threshold, and must hold straight (or take the
+// interior wall when one aligns) — never U-turn back into the mouth it
+// just threaded. Budget expiry still releases to open roam. ---
+{
+  const setupDoor = () => {
+    resetWorld("over");
+    clearEntryClaims();
+    setDimension("over");
+    for (let x = -10; x <= 12; x++) for (let z = -8; z <= 10; z++) setBlock(x, 0, z, STONE);
+    // House-like wall row z=3 with a 2-wide door at x=0,1, open both sides.
+    for (let x = -4; x <= 6; x++) {
+      if (x === 0 || x === 1) continue;
+      setBlock(x, 1, 3, STONE); setBlock(x, 2, 3, STONE);
+    }
+  };
+  // Hugger threads the door and walks the room: no south flip, ends inside.
+  {
+    setupDoor();
+    const mob = makeTestMob("pig", 0.5, FEET, 3.5, 0);
+    mob.entryScanT = 999;
+    mob.rand = scriptRand([0.1, 0.5, 0.5, 0.5, 0.5, 0.5]);
+    exitMouth(mob, 0, DT, true, false, mob.rand, () => null, null, { kind: 2, noSlide: true });
+    assert.ok(mob.lane != null && mob.followLine?.touch === true, "door-threshold: ride erected");
+    // Live held passage like passageTick opens it (closes with cooldown at
+    // the leave, arming the fresh window).
+    mob.passage = { kind: 2, axis: 0, key: "over|2:0,3|1,3", t: 0, held: true };
+    const trace = [];
+    let southToDoor = false, everBlue = false;
+    for (let t = 0; t < 400; t++) {
+      tickFarmMob(mob, DT, () => ({ x: 0.5, z: 9 }), mob.rand);
+      trace.push({ x: mob.pos.x, y: mob.pos.y, z: mob.pos.z });
+      if (mob.wallFollow === true) everBlue = true;
+      // Pathology: a south lane anywhere near the door span (turning back
+      // into the mouth just threaded). Corner takes at far wall ends (here
+      // the west tip at x=-4) are ordinary wall-following.
+      if (mob.lane != null && mob.pos.x > -1.0) {
+        const a = ((mob.lane.axis % (2 * Math.PI)) + 2 * Math.PI) % (2 * Math.PI);
+        if (Math.abs(a - Math.PI) < 1e-9) southToDoor = true;
+      }
+    }
+    assert.ok(everBlue, "door-threshold: rode blue through the door");
+    assert.ok(!southToDoor, "door-threshold: never turns back toward the door");
+    assert.ok(mob.pos.z > 4.5, `door-threshold: ends inside (z=${mob.pos.z.toFixed(2)})`);
+    assertClean(trace, "door-threshold");
+  }
+}
+console.log("PASS door-threshold");
+
+// --- fresh-from-mouth: the no-U-turn gate condition. A held 2-wide passage
+// or a just-armed same-mouth kind-2 cooldown reads fresh; anything else
+// (stale timer, kind-1 key, no key, 1-wide passage) does not. ---
+{
+  const mk = () => makeTestMob("pig", 0.5, FEET, 3.5, 0);
+  {
+    const mob = mk();
+    mob.passage = { kind: 2, axis: 0, key: "over|2:0,3|1,3", t: 0, held: true };
+    assert.equal(freshFromMouth(mob), true, "fresh: held kind-2 passage");
+  }
+  {
+    const mob = mk();
+    mob.entryCoolT = ENTRY_COOL_T;
+    mob.entryCoolKey = "over|2:0,3|1,3";
+    assert.equal(freshFromMouth(mob), true, "fresh: just-armed kind-2 leave");
+  }
+  {
+    const mob = mk();
+    mob.entryCoolT = ENTRY_COOL_T - LEAVE_FRESH_T - 0.5;
+    mob.entryCoolKey = "over|2:0,3|1,3";
+    assert.equal(freshFromMouth(mob), false, "fresh: stale timer");
+  }
+  {
+    const mob = mk();
+    mob.entryCoolT = ENTRY_COOL_T;
+    mob.entryCoolKey = "over|1:0,4";
+    assert.equal(freshFromMouth(mob), false, "fresh: kind-1 key");
+  }
+  {
+    const mob = mk();
+    mob.entryCoolT = ENTRY_COOL_T;
+    mob.entryCoolKey = null;
+    assert.equal(freshFromMouth(mob), false, "fresh: timer without key");
+  }
+  {
+    const mob = mk();
+    mob.passage = { kind: 1, axis: 0, key: null, t: 0 };
+    assert.equal(freshFromMouth(mob), false, "fresh: kind-1 passage never counts");
+  }
+  {
+    const mob = mk();
+    assert.equal(freshFromMouth(mob), false, "fresh: plain mob");
+  }
+}
+console.log("PASS fresh-from-mouth");
+
+// --- door-parade: an exterior wall ride parades past a 2-wide door on the
+// same face instead of U-turning at the gap (the lateral scan goes blind
+// inside it, but the wall resumes on the same plane — the straight looks
+// two cells ahead). Blue held across the whole door span, ends past it. ---
+{
+  const setupDoor = () => {
+    resetWorld("over");
+    clearEntryClaims();
+    setDimension("over");
+    for (let x = -10; x <= 12; x++) for (let z = -8; z <= 10; z++) setBlock(x, 0, z, STONE);
+    for (let x = -4; x <= 6; x++) {
+      if (x === 0 || x === 1) continue;
+      setBlock(x, 1, 3, STONE); setBlock(x, 2, 3, STONE);
+    }
+  };
+  setupDoor();
+  const mob = makeTestMob("pig", -3.5, FEET, 2.5, Math.PI / 2);
+  mob.entryScanT = 999;
+  mob.rand = scriptRand([0.5, 0.5, 0.5, 0.5]);
+  mob.pinWallRide = true; // rounds always, never expires: the parade alone is timed
+  mob.lane = { axis: Math.PI / 2, entry: -Math.PI / 2, lockX: -1, lockZ: -1 };
+  mob.followLine = {
+    axis: Math.PI / 2, line: 2.5, side: -1, rel: 1, virtual: true,
+    touch: true, fresh: 0, face: 3.0, t: 0, wallSpan: 99,
+  };
+  const trace = [];
+  let westBeforeEnd = false, blueAcross = false, orangeParade = false;
+  for (let t = 0; t < 450; t++) {
+    tickFarmMob(mob, DT, () => ({ x: 9, z: 2.5 }), mob.rand);
+    trace.push({ x: mob.pos.x, y: mob.pos.y, z: mob.pos.z });
+    if (mob.wallFollow === true && mob.pos.x > 0 && mob.pos.x < 2) blueAcross = true;
+    // The paint flip ranks a held passage over rides: a mere parader must
+    // never read a passage, or it would flash orange mid-parade.
+    if (mob.inPassage === true) orangeParade = true;
+    // Reversal on the south-face side before the east wall end (x=6) is
+    // the gap U-turn. The westward parade along the north face past the
+    // east tip (z≈4.5) is ordinary corner rounding.
+    if (mob.lane != null && mob.pos.x < 6 && mob.pos.z < 3.5) {
+      const a = ((mob.lane.axis % (2 * Math.PI)) + 2 * Math.PI) % (2 * Math.PI);
+      if (Math.abs(a - 3 * Math.PI / 2) < 1e-9) westBeforeEnd = true;
+    }
+  }
+  assert.ok(blueAcross, "door-parade: blue across the door span");
+  assert.ok(!orangeParade, "door-parade: never orange on a parade");
+  assert.ok(!westBeforeEnd, "door-parade: no U-turn at the gap");
+  assert.ok(mob.pos.x > 2.5, `door-parade: ends past the door (x=${mob.pos.x.toFixed(2)})`);
+  assertClean(trace, "door-parade");
+}
+console.log("PASS door-parade");
+
+// --- passage-orange: inside a live 2-wide passage reads orange while no rail
+// owns the tick (motif holds); 1-wide holes thread straight into the red
+// servo rail. Approach stays purple throughout. ---
+{
+  const trackPassage = (walls, sx, sz, yaw, maxTicks = 1500) => {
+    resetWorld("over");
+    clearEntryClaims();
+    setDimension("over");
+    for (let x = -10; x <= 12; x++) for (let z = -8; z <= 10; z++) setBlock(x, 0, z, STONE);
+    for (const [wx, wz] of walls) { setBlock(wx, 1, wz, STONE); setBlock(wx, 2, wz, STONE); }
+    const mob = makeTestMob("pig", sx, FEET, sz, yaw);
+    mob.target = { x: 9, z: 9 };
+    const realRandom = Math.random;
+    let sawPurple = false, sawOrange = false, sawRed = false, crossed = 0;
+    const trace = [];
+    try {
+      for (let s = 1; s <= 8; s++) {
+        Math.random = mulberry32(s);
+        mob.pos.x = sx; mob.pos.z = sz; mob.yaw = yaw; mob.yawTarget = yaw;
+        mob.roam = null; mob.lane = null; mob.followLine = null;
+        mob.passage = null;
+        mob.entryCoolT = 0; mob.entryScanT = 0; mob.target = { x: 9, z: 9 };
+        clearEntryClaims();
+        let purple = false, orange = false, red = false, done = false;
+        for (let t = 0; t < maxTicks; t++) {
+          tickFarmMob(mob, DT, () => mob.target);
+          trace.push({ x: mob.pos.x, y: mob.pos.y, z: mob.pos.z });
+          if (mob.tunnelPass) purple = true;
+          if (mob.inPassage) orange = true;
+          if (mob.oneWide) red = true;
+          if (mob.pos.z >= 4.5) { done = true; break; }
+        }
+        if (done) {
+          crossed++;
+          if (purple) sawPurple = true;
+          if (orange) sawOrange = true;
+          if (red) sawRed = true;
+        }
+      }
+    } finally {
+      Math.random = realRandom;
+    }
+    return { crossed, sawPurple, sawOrange, sawRed, trace };
+  };
+  // 2-wide fence gap: every crossing threads orange out of a purple approach.
+  {
+    const walls = [];
+    for (let x = -6; x <= 8; x++) {
+      if (x === 0 || x === 1) continue;
+      walls.push([x, 3]);
+    }
+    const r = trackPassage(walls, 0.75, 0.5, 0);
+    assert.ok(r.crossed >= 6, `passage-orange 2-wide: through on ${r.crossed}/8 seeds`);
+    assert.ok(r.sawPurple, "passage-orange 2-wide: purple approach");
+    assert.ok(r.sawOrange, "passage-orange 2-wide: orange threading");
+    assertClean(r.trace, "passage-orange 2-wide");
+  }
+  // 1-block fence hole: purple approach, then the red servo rail through
+  // the hole (1-wide opens no crossing state, so never orange).
+  {
+    const walls = [[2, 1], [2, 2], [2, -1], [2, -2]];
+    resetWorld("over");
+    clearEntryClaims();
+    setDimension("over");
+    for (let x = -10; x <= 12; x++) for (let z = -8; z <= 10; z++) setBlock(x, 0, z, STONE);
+    for (const [wx, wz] of walls) { setBlock(wx, 1, wz, STONE); setBlock(wx, 2, wz, STONE); }
+    let crossed = 0, sawPurple = false, sawOrange = false, sawRed = false;
+    const trace = [];
+    const realRandom = Math.random;
+    try {
+      for (let s = 1; s <= 8; s++) {
+        Math.random = mulberry32(s);
+        const mob = makeTestMob("pig", 4.5, FEET, 0.5, -Math.PI / 2);
+        mob.target = { x: 0.5, z: 0.5 };
+        clearEntryClaims();
+        let purple = false, orange = false, red = false, done = false;
+        for (let t = 0; t < 1500; t++) {
+          tickFarmMob(mob, DT, () => mob.target);
+          trace.push({ x: mob.pos.x, y: mob.pos.y, z: mob.pos.z });
+          if (mob.tunnelPass) purple = true;
+          if (mob.inPassage) orange = true;
+          if (mob.oneWide) red = true;
+          if (mob.pos.x < 1.5) { done = true; break; }
+        }
+        if (done) {
+          crossed++;
+          if (purple) sawPurple = true;
+          if (orange) sawOrange = true;
+          if (red) sawRed = true;
+        }
+      }
+    } finally {
+      Math.random = realRandom;
+    }
+    assert.ok(crossed >= 6, `passage-orange 1-wide: through on ${crossed}/8 seeds`);
+    assert.ok(sawPurple, "passage-orange 1-wide: purple approach");
+    assert.ok(!sawOrange, "passage-orange 1-wide: never orange in a 1-wide");
+    assert.ok(sawRed, "passage-orange 1-wide: red servo through the hole");
+    assertClean(trace, "passage-orange 1-wide");
+  }
+}
+console.log("PASS passage-orange");
+
+// --- deep-tunnel: a 5-deep 2-wide tunnel ending in a wall is explored whole.
+// The arrival opens a crossing state (no draw), long strides walk the depth
+// while the motif holds, and the unified exit draws only at the leave — so
+// no commit ever points back out before the end wall is reached. Every seed
+// reaches the end wall out of a purple approach, orange while inside; the
+// walk back out never re-draws the mouth behind (no southbound entry). ---
+{
+  // Threading runs near the middle slot, out of strict hug range: holds draw
+  // roam (rides stay unit-locked by exit-arms edge cases).
+  let reached = 0, sawPurpleAll = true, sawOrangeAll = true;
+  const trace = [];
+  const realRandom = Math.random;
+  try {
+    for (let s = 1; s <= 8; s++) {
+      Math.random = mulberry32(s);
+      resetWorld("over");
+      clearEntryClaims();
+      setDimension("over");
+      for (let x = -8; x <= 10; x++) for (let z = -8; z <= 10; z++) setBlock(x, 0, z, STONE);
+      // Asymmetric mouth walls: 1-thick west (x=-1), 2-thick east (x=2,3).
+      for (let z = 0; z <= 5; z++) {
+        setBlock(-1, 1, z, STONE); setBlock(-1, 2, z, STONE);
+        setBlock(2, 1, z, STONE); setBlock(2, 2, z, STONE);
+        setBlock(3, 1, z, STONE); setBlock(3, 2, z, STONE);
+      }
+      for (const x of [0, 1]) { setBlock(x, 1, 6, STONE); setBlock(x, 2, 6, STONE); }
+      const mob = makeTestMob("pig", 0.75, FEET, -2.5, 0);
+      const fixed = { x: 0.75, z: 30 };
+      mob.target = fixed;
+      let purple = false, orange = false, entered = false, maxZ = -Infinity;
+      let earlyBack = false, pingPong = false, prevPass = false, lastLeave = -1e9, lastLeaveKey = null;
+      for (let t = 0; t < 1500; t++) {
+        tickFarmMob(mob, DT, () => fixed);
+        trace.push({ x: mob.pos.x, y: mob.pos.y, z: mob.pos.z });
+        if (mob.tunnelPass) purple = true;
+        if (mob.roam?.entry) entered = true;
+        if (mob.inPassage) orange = true;
+        maxZ = Math.max(maxZ, mob.pos.z);
+        if (entered && maxZ < 4.8 && mob.roam?.mode === "commit" && !mob.roam.entry &&
+            Math.cos(mob.roam.heading) < -0.5) earlyBack = true;
+        const hasP = mob.passage != null;
+        if (prevPass && !hasP) { lastLeave = t; lastLeaveKey = mob.entryCoolKey; }
+        prevPass = hasP;
+        // A leave arms exactly ENTRY_COOL_T (5 s = 300 slices, no sub-slicing
+        // at test DT): the left mouth never re-draws inside that window
+        // (same key) — stacked mouths ahead chaining forward stay legal.
+        if (mob.roam?.entry === true && t - lastLeave < 300 &&
+            mob.roam.passageKey != null && mob.roam.passageKey === lastLeaveKey) pingPong = true;
+      }
+      if (maxZ >= 4.8) {
+        reached++;
+        if (!purple) sawPurpleAll = false;
+        if (!orange) sawOrangeAll = false;
+      }
+      assert.ok(!earlyBack, `deep-tunnel seed${s}: no backward commit before the end wall`);
+      assert.ok(!pingPong, `deep-tunnel seed${s}: no re-draw within cooldown of a leave`);
+    }
+  } finally {
+    Math.random = realRandom;
+  }
+  assert.ok(reached >= 6, `deep-tunnel: last cell on ${reached}/8 seeds`);
+  assert.ok(sawPurpleAll, "deep-tunnel: purple approach on every reach");
+  assert.ok(sawOrangeAll, "deep-tunnel: orange while crossing on every reach");
+  assertClean(trace, "deep-tunnel");
+}
+console.log("PASS deep-tunnel");
 
 // --- mouth-corner: corner-graze false engage. Fat body probes clipping a
 // jamb corner one side and a slope block the other read walled with no
@@ -2044,17 +3067,41 @@ function buildFencePool() {
   for (let z = -34; z <= -27; z++) for (const x of [21, 30]) setBlock(x, 0, z, STONE);
 }
 
-// --- gap-walk: 2-wide fence/pool slot attracts (long-flank mouth) ---
+// --- gap-walk: 2-wide fence/pool slot never attracts (solid-only flanks) ---
 // Seed-4 village shape: the pen fence with the pool 2 cells past it. The
-// slot between them reads walled both sides with 3 blocks of free depth
-// and an open approach from the west — one edge (fence) starts while the
-// pool run holds the other side, so the unified rule lists it and a mob
-// walking the gap is drawn in and threads it violet. Locks the aligned
-// 1/2-wide approach clause (at least one open side). ---
+// slot between them has a solid fence edge but a water edge on the pool
+// side — water never holds a mouth (solid-only flanks), so the unified
+// rule lists nothing and a mob walking the gap holds its line instead of
+// threading violet. Locks the solid-only flank gate.
+// The stroll runs the pool rim: float walkers legally swim it (dry
+// destinations, wet en route — see strideTarget), so this rig allows
+// floating (never walls, never sinking) instead of the dry-strict
+// assertClean. ---
 {
+  // Floating is legal here: no wall penetration, no sinking, and any
+  // above-ground tick stays near the ground/float band (a rail exit may
+  // angle the stroll into the pool edge, so float bobbing past the surface
+  // predicate reads as briefly airborne — cap it instead of policing it).
+  const assertCleanOrFloat = (trace, label) => {
+    for (let i = 0; i < trace.length; i++) {
+      const p = trace[i];
+      assert.ok(!aabbIntersectsSolid(p.x, p.y, p.z, 0.32, 1.3), `${label}: body in wall @tick${i} (${p.x.toFixed(2)},${p.z.toFixed(2)})`);
+      assert.ok(p.y >= FEET - 0.05, `${label}: sunk @tick${i} (y=${p.y.toFixed(3)})`);
+      assert.ok(p.y <= 2.1, `${label}: hover @tick${i} (y=${p.y.toFixed(3)})`);
+    }
+  };
   for (let s = 1; s <= 8; s++) {
     buildFencePool();
     const mob = makeTestMob("pig", 18.5, FEET, -34.5, Math.PI / 2);
+    // Rule level: from mid-gap the scan lists no 2-wide mouth — the water
+    // edge never holds one, so nothing can draw here whatever the seed.
+    for (const gx of [20.5, 26.5]) {
+      const twos = findEntries(gx, -34.5, makeCellFree(mob), makeCellSolid(mob))
+        .filter((e) => e.kind === "two");
+      assert.equal(twos.length, 0, `gap-walk seed${s}: no 2-wide mouth at x=${gx}`);
+    }
+    // Behavior level: pinned straight walk (re-pin only when no live
+    // commit — an entry draw would survive and trip sawEntry), scans live.
     mob.target = { x: 60, z: -34.5 };
     const realRandom = Math.random;
     Math.random = mulberry32(s);
@@ -2062,6 +3109,17 @@ function buildFencePool() {
     let done = false, sawViolet = false, sawEntry = false;
     try {
       for (let t = 0; t < 1500; t++) {
+        const r = mob.roam;
+        const arrived = r?.mode === "commit" && mob.target &&
+          Math.hypot(r.target.x - mob.pos.x, r.target.z - mob.pos.z) < ARRIVE_D;
+        if (!r?.entry && (!r?.mode || arrived || mob.target !== r.tgt)) {
+          mob.target = { x: 60, z: -34.5 };
+          mob.wanderT = NO_EXPIRY;
+          mob.roam = {
+            mode: "commit", heading: Math.PI / 2, target: mob.target, tgt: mob.target,
+            t: 0, span: 99, runT: 0,
+          };
+        }
         tickFarmMob(mob, DT, () => mob.target);
         trace.push({ x: mob.pos.x, y: mob.pos.y, z: mob.pos.z });
         if (mob.tunnelPass) sawViolet = true;
@@ -2071,10 +3129,10 @@ function buildFencePool() {
     } finally {
       Math.random = realRandom;
     }
-    assert.ok(sawEntry, `gap-walk seed${s}: drew into the slot`);
-    assert.ok(sawViolet, `gap-walk seed${s}: threaded violet`);
+    assert.ok(!sawEntry, `gap-walk seed${s}: no entry into the slot`);
+    assert.ok(!sawViolet, `gap-walk seed${s}: never violet`);
     assert.ok(done, `gap-walk seed${s}: walked the gap`);
-    assertClean(trace, `gap-walk seed${s}`);
+    assertCleanOrFloat(trace, `gap-walk seed${s}`);
   }
 }
 console.log("PASS gap-walk");
