@@ -272,12 +272,21 @@ export function makeCellSolid(mob) {
 // footNose overrides the circle offset for the void probes: the corridor
 // classifier passes 0 (body-only direction sensing, so 1-cell arms ending
 // in a wall still read open), the drive passes the real nose reach.
-export function makeStepOk(mob, supported, floating, noseAlong, yaw, footNose = null) {
+// hwShrink (1-wide passing only) narrows the body box against voxels —
+// an offset shoulder may graze the wall face by a bounded depth instead
+// of refusing every stride on float-exact face contact. Peer math, nose
+// probe, footing, and headroom stay exact.
+export function makeStepOk(mob, supported, floating, noseAlong, yaw, footNose = null, hwShrink = 0) {
   const foot = footNose ?? noseAlong;
+  const hw = hwShrink > 0 ? Math.max(0.05, mob.hw - hwShrink) : mob.hw;
+  // Same shrink on the nose disc (passing only): at noseAlong 0 the disc
+  // sits inside the body box, so an unshrunk nose would veto the very
+  // shoulder graze the shrunk body allows. shrink 0 keeps legacy exact.
+  const nr = hwShrink > 0 ? Math.max(0.05, mob.nose.r - hwShrink) : mob.nose.r;
   return (nx, nz) => {
-    if (aabbIntersectsSolid(nx, mob.pos.y, nz, mob.hw, mob.h)) return false;
+    if (aabbIntersectsSolid(nx, mob.pos.y, nz, hw, mob.h)) return false;
     const gx = nx + Math.sin(yaw) * noseAlong, gz = nz + Math.cos(yaw) * noseAlong;
-    if (aabbIntersectsSolid(gx, mob.pos.y, gz, mob.nose.r, mob.h)) return false;
+    if (aabbIntersectsSolid(gx, mob.pos.y, gz, nr, mob.h)) return false;
     if (floating) return true;
     // Bounded drift, gated on the takeoff level: legal descents keep
     // their glide, falls over void drop straight from the first tick.
