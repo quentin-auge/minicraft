@@ -186,9 +186,11 @@ export function applyMobGap(isSolidAt, hw, h, land, face, arriveGap, hangClear) 
 // level, riding up to +upMax when occupied (mob release passes 0 — never
 // above: a blocked landing re-holds instead of manufacturing support
 // overhead). Null when nothing fits — the caller keeps holding instead of
-// embedding the mob in a wall.
-export function findReleaseSpot(isSolidAt, hw, h, fx, fy, fz, upMax = 8) {
-  const at = (x, y, z) => boxFree(isSolidAt, x, y, z, hw, h);
+// embedding the mob in a wall. peerFree (optional (x, y, z) => bool)
+// extends the fit test to live peers, so a release never stacks one body
+// onto another: a peer-held spot reads exactly like a walled one.
+export function findReleaseSpot(isSolidAt, hw, h, fx, fy, fz, upMax = 8, peerFree = null) {
+  const at = (x, y, z) => boxFree(isSolidAt, x, y, z, hw, h) && (!peerFree || peerFree(x, y, z));
   if (at(fx, fy, fz)) return { x: fx, y: fy, z: fz };
   for (let r = 1; r <= 2; r++) {
     for (let dx = -r; dx <= r; dx++)
@@ -200,4 +202,22 @@ export function findReleaseSpot(isSolidAt, hw, h, fx, fy, fz, upMax = 8) {
       }
   }
   return null;
+}
+
+// Peer-occupancy test for a release candidate: true when no live same-dim
+// peer's body box (plus a comfort gap) intersects the candidate's box.
+// Duck-typed peers ({pos, yaw?, hw, h, alive, dim}), pure, headless-testable.
+export function releasePeerFree(peers, mob, x, y, z, gap = 0.1) {
+  const hw = mob.hw ?? 0.32, h = mob.h ?? 1;
+  for (const o of peers) {
+    if (o === mob || !o.alive) continue;
+    if ((o.dim ?? "over") !== (mob.dim ?? "over")) continue;
+    const ox = o.pos.x ?? o.x ?? 0, oy = o.pos.y ?? o.y ?? 0, oz = o.pos.z ?? o.z ?? 0;
+    const ohw = o.hw ?? 0.32, oh = o.h ?? 1;
+    if (Math.abs(ox - x) >= hw + ohw + gap) continue;
+    if (Math.abs(oz - z) >= hw + ohw + gap) continue;
+    if (oy >= y + h || oy + oh <= y) continue;
+    return false;
+  }
+  return true;
 }

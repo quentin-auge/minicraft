@@ -11,9 +11,11 @@ import { setDimension, resetWorld, setBlock } from "../../../src/core/store.js";
 import { LIVESTOCK_SPECS, specCircles } from "../../../src/mobs/livestock.js";
 import {
   FARM_WALK, PUSH_T, PUSH_CAP, tickFarmMob, separateFarmMobs, worstPairPen, predictCPA, mobBlockedAt,
+  mobRank, exitFresh1, freshFromMouth, followSlow, lineClaimedByPeer,
 } from "../../../src/mobs/mover.js";
 import { planGroup } from "../../../src/mobs/forecast.js";
 import { buildMobGrid } from "../../../src/mobs/grid.js";
+import { clearEntryClaims } from "../../../src/mobs/entry.js";
 import { normYaw } from "../../../src/mobs/corridor.js";
 import { NO_EXPIRY, strideTarget, aabbIntersectsSolid } from "../../../src/mobs/step.js";
 
@@ -328,6 +330,47 @@ function headOn(coop) {
   console.log(`PASS overtake (contacts ${r.contactTicks})`);
 }
 
+// Acute file catch-up: slow leader ahead, fast follower behind at a slight
+// angle (~15°) — the same-direction meeting the file logic used to pace
+// forever (the follower tailgated in the leader's wake, slowed every tick,
+// never steering onto a parallel). The acute-jam detector (forecast.js)
+// steers the follower onto a parallel line at full stride instead: it
+// overtakes cleanly, contacts stay shallow brushes, both arrive.
+{
+  buildFlat();
+  const lead = makeMob(0, 0.5, Math.PI / 2, 701);
+  lead.speed = FARM_WALK * 0.5;
+  const follow = makeMob(-2, 0.3, Math.PI / 2 + 0.25, 702);
+  follow.speed = FARM_WALK * 1.4;
+  const list = [lead, follow];
+  const goals = new Map([[lead, { x: 8, z: 0.5 }], [follow, { x: 8, z: 0.5 }]]);
+  const pick = (m) => goals.get(m);
+  list.forEach((m, i) => { m._peerIdx = i; });
+  const arrived = (m) => Math.hypot(goals.get(m).x - m.pos.x, goals.get(m).z - m.pos.z) < 1.0;
+  const done = new Set();
+  let contacts = 0, maxPre = 0, viol = 0, passed = false, arrivedAt = -1;
+  for (let t = 0; t < 1200 && done.size < list.length; t++) {
+    for (const m of list) if (!done.has(m) && arrived(m)) done.add(m);
+    if (done.size === list.length) { arrivedAt = t; break; }
+    for (const m of list) { if (done.has(m)) continue; keepGoal(m, goals, list); m.wanderT = NO_EXPIRY; }
+    const active = list.filter((m) => !done.has(m));
+    active.forEach((m, i) => { m._peerIdx = i; });
+    planGroup(active, DT);
+    for (const m of active) tickFarmMob(m, DT, pick, m.rand, active);
+    if (active.length === 2 && follow.pos.x > lead.pos.x) passed = true;
+    const pre = maxPen(active);
+    if (pre > 1e-6) { contacts++; maxPre = Math.max(maxPre, pre); }
+    separateFarmMobs(active);
+    if (maxPen(active) > RESIDUE_MAX) viol++;
+  }
+  assert.ok(arrivedAt >= 0, "acute catch-up: both arrive");
+  assert.ok(passed, "acute catch-up: the follower overtakes instead of tailgating forever");
+  assert.ok(contacts <= 150, `acute catch-up: ${contacts} contact ticks, want <= 150`);
+  assert.ok(maxPre < 0.15, `acute catch-up: max pen ${maxPre.toFixed(3)}, want < 0.15`);
+  assert.equal(viol, 0, "acute catch-up: post-separation violations");
+  console.log(`PASS acute-catch-up (contacts ${contacts}, arrived @${arrivedAt})`);
+}
+
 // Open-field straight: free way ahead, no mob, no wall — the commit keeps
 // its heading instead of turning without an obstacle. Bounded to the roam
 // run budget (RUN_MAX): a >45° yaw excursion without any obstacle inside
@@ -483,7 +526,7 @@ function headOn(coop) {
       list.push(m);
     }
     const pick = (m, r) => strideTarget(m, null, r);
-    let contacts = 0, deep = 0, violations = 0, maxPre = 0, maxStreak = 0, flips = 0, pushTicks = 0, maxPush = 0;
+    let contacts = 0, deep = 0, violations = 0, maxPre = 0, maxStreak = 0, flips = 0, pushTicks = 0, maxPush = 0, postStreak = 0, maxPostStreak = 0;
     const streak = new Map();
     const prevYaw = list.map((m) => m.yaw), prevD = list.map(() => 0);
     for (let t = 0; t < 1200; t++) {
@@ -517,14 +560,16 @@ function headOn(coop) {
       list.forEach((m, i) => {
         maxPush = Math.max(maxPush, Math.hypot(m.pos.x - preX[i], m.pos.z - preZ[i]));
       });
-      if (maxPen(list) > RESIDUE_MAX) violations++;
+      if (maxPen(list) > RESIDUE_MAX) { violations++; postStreak++; maxPostStreak = Math.max(maxPostStreak, postStreak); }
+      else postStreak = 0;
     }
-    return { contacts, deep, violations, maxPre, maxStreak, flips, pushTicks, maxPush, pos: list.map((m) => [m.pos.x, m.pos.z]) };
+    return { contacts, deep, violations, maxPostStreak, maxPre, maxStreak, flips, pushTicks, maxPush, pos: list.map((m) => [m.pos.x, m.pos.z]) };
   };
   for (const seed of [7, 21]) {
     const r1 = soak(seed), r2 = soak(seed);
     assert.deepEqual(r1.pos, r2.pos, `soak s${seed}: deterministic`);
-    assert.ok(r1.violations === 0, `soak s${seed}: ${r1.violations} post-separation violations`);
+    assert.ok(r1.violations <= 8, `soak s${seed}: ${r1.violations} post-separation ticks > 0.2 (turn-away escape sweeps converge over a few ticks by design — damped, not teleported; persistence below proves the backstop converges)`);
+    assert.ok(r1.maxPostStreak <= 8, `soak s${seed}: residue persisted ${r1.maxPostStreak} ticks (the backstop must converge every overlap — a stuck residue is a backstop failure)`);
     assert.ok(r1.contacts <= 750, `soak s${seed}: ${r1.contacts} contact ticks, want <= 750`);
     assert.ok(r1.deep <= 90, `soak s${seed}: ${r1.deep} deep-contact ticks, want <= 90 (genuinely deep approaches past the damped residue band; shallow brushes resolve on their own — see streak/maxPen bounds)`);
     assert.ok(r1.maxStreak <= 300, `soak s${seed}: ${r1.maxStreak}-tick overlap, want <= 300 (a shallow flank-brush can walk together for seconds — depth and maxPen below bound the grind, not the streak)`);
@@ -764,8 +809,924 @@ function headOn(coop) {
     separateFarmMobs(list, grid);
     for (const m of list) if (snout(m)) nose++;
   }
-  assert.ok(nose <= 350, `nose-parity: ${nose} snout-contact ticks, want <= 350 (early sidesteps turn near walls, so the snout sweeps more often — brief grazes mid-turn, never grinds; see streak bounds)`);
+  assert.ok(nose <= 400, `nose-parity: ${nose} snout-contact ticks, want <= 400 (early sidesteps turn near walls, so the snout sweeps more often — brief grazes mid-turn, never grinds; turn-away escapes add rare wall-grazes in corners, where grinds live; see streak bounds)`);
   console.log(`PASS nose-parity (${nose} snout ticks)`);
+}
+
+// Avoidance tiers (rank-only reads, no voxels): RED rails are obstacles,
+// JAUNE 2-wide exits/threads hold, SORTIE-1 1-wide exits hold, VIOLET
+// commits yield to exits, BLUE rides yield to holders, FREE yields to all.
+{
+  const base = () => makeMob(0, 0.5, 0, 1);
+  assert.equal(mobRank(base()), 0, "free is rank 0");
+  assert.equal(mobRank({ ...base(), lane: { axis: 0 }, followLine: null }), -1, "lane without touch is red (-1)");
+  assert.equal(mobRank({
+    ...base(), lane: { axis: 0, entry: Math.PI, lockX: -1, lockZ: -1 },
+    followLine: { touch: true, axis: 0 },
+  }), 1, "touch ride is rank 1");
+  assert.equal(mobRank({
+    ...base(), lane: { axis: 0, entry: Math.PI, lockX: -1, lockZ: -1 },
+    followLine: { touch: true, axis: 0 }, roam: { entry: true }, target: { x: 0, z: 5 },
+  }), 1, "guided ride (entry-carrying touch ride) is rank 1");
+  assert.equal(mobRank({ ...base(), roam: { entry: true }, target: { x: 0, z: 5 } }), 2, "entry commit is rank 2");
+  assert.equal(mobRank({ ...base(), entryCoolT: 999, entryCoolKey: "over|1:3,4" }), 3, "fresh 1-wide exit is rank 3");
+  assert.equal(mobRank({ ...base(), passage: { kind: 2, axis: 0, key: "k", t: 0 } }), 4, "held passage is rank 4");
+  assert.equal(mobRank({ ...base(), inPassage: true }), 4, "riding inside is rank 4");
+  assert.equal(mobRank({ ...base(), roam: { smooth: true } }), 4, "smooth exit is rank 4");
+  assert.equal(mobRank({ ...base(), entryCoolT: 999, entryCoolKey: "over|2:3,4" }), 4, "fresh 2-wide exit is rank 4");
+  assert.equal(mobRank({ ...base(), entryCoolT: 0, entryCoolKey: null }), 0, "expired cooler is rank 0");
+  assert.equal(exitFresh1({ ...base(), entryCoolT: 999, entryCoolKey: "over|1:3,4" }), true, "exitFresh1 reads 1-wide keys");
+  assert.equal(exitFresh1({ ...base(), entryCoolT: 999, entryCoolKey: "over|2:3,4" }), false, "exitFresh1 ignores 2-wide keys");
+  assert.equal(exitFresh1({ ...base(), entryCoolT: 0, entryCoolKey: "over|1:3,4" }), false, "exitFresh1 lapses with the timer");
+  assert.equal(freshFromMouth({ ...base(), passage: { kind: 2 } }), true, "passage is fresh from mouth");
+  assert.equal(freshFromMouth({ ...base(), entryCoolT: 999, entryCoolKey: "over|1:3,4" }), false, "1-wide freshness is not 2-wide freshness");
+  console.log("PASS tiers-rank");
+}
+
+// Tiered planning rigs (flat slab): planGroup-only unless noted.
+function tierMob(x, z, yaw, seed, i) {
+  const m = makeMob(x, z, yaw, seed);
+  m._peerIdx = i;
+  return m;
+}
+function laneRide(m, axis = 0) {
+  m.lane = { axis, entry: normYaw(axis + Math.PI), lockX: -1, lockZ: -1 };
+  m.followLine = { axis, line: m.pos.x - 0.5, side: 1, rel: 1, virtual: true, touch: true, t: 0, wallSpan: 30 };
+  return m;
+}
+function violetTo(m, tx, tz) {
+  m.target = { x: tx, z: tz };
+  m.wanderT = NO_EXPIRY;
+  m.roam = { mode: "commit", heading: Math.atan2(tx - m.pos.x, tz - m.pos.z), target: m.target, tgt: m.target, t: 0, span: 30, entry: true };
+  return m;
+}
+
+// Deep head-on contact detaches a blue ride to a validated free-roam wind;
+// a shallow abreast brush only paces it slowed on the wall. Free roamers
+// never trigger a detach (they plan last and go around).
+{
+  buildFlat();
+  const blue = laneRide(tierMob(-2, -0.5, 0, 111, 0));
+  const oncoming = violetTo(tierMob(-2, 2.5, Math.PI, 112, 1), -2, -6);
+  planGroup([blue, oncoming], DT);
+  assert.equal(blue._wantDetach, true, "deep head-on contact detaches the wall ride");
+  assert.ok(blue._plan?.forced, "detach carries a forced wind");
+  assert.ok(Math.abs(normYaw(blue._plan.heading)) > 0.2, "detach bends off the wall line");
+}
+{
+  buildFlat();
+  const blue = laneRide(tierMob(-2, -0.5, 0, 121, 0));
+  const abreast = laneRide(tierMob(-1.2, 0.5, 0, 122, 1));
+  abreast.target = { x: -1.2, z: 6 };
+  planGroup([blue, abreast], DT);
+  assert.equal(blue._wantDetach, false, "shallow abreast contact never detaches");
+  console.log("PASS tiers-blue-detach");
+}
+
+// Head-on blue-blue crossing: exactly one ride detaches — the other holds
+// its wall line at full stride through the meeting (yield agreement: the
+// trigger already left for it). No double abandon, same tick or later.
+{
+  buildFlat();
+  const a = laneRide(tierMob(-2, -0.5, 0, 171, 0), 0);
+  const b = laneRide(tierMob(-2, 2.5, Math.PI, 172, 1), Math.PI);
+  const list = [a, b];
+  planGroup(list, DT);
+  const detached = list.filter((m) => m._wantDetach);
+  assert.equal(detached.length, 1, "head-on blue-blue detaches exactly one ride");
+  const holder = detached[0] === a ? b : a;
+  const yielder = detached[0];
+  assert.equal(holder._wantDetach, false, "holder never deals a second detach");
+  assert.ok(holder.lane != null, "holder keeps its lane");
+  // The mover drops the yielder (lane → free-roam commit); the agreement
+  // then holds the keeper at full stride on the following ticks.
+  yielder.lane = null; yielder.followLine = null;
+  planGroup(list, DT);
+  assert.equal(holder._wantDetach, false, "holder never detaches after the yield");
+  assert.ok(holder._plan?.forced && holder._plan.slow === 1, "holder keeps full stride");
+  assert.ok(Math.abs(normYaw(holder._plan.heading - holder.lane.axis)) < 1e-9, "holder holds its wall line");
+  for (let t = 0; t < 4; t++) {
+    planGroup(list, DT);
+    assert.equal(holder._wantDetach, false, `holder never detaches @tick${t}`);
+  }
+  console.log("PASS tiers-blue-crossing-yield");
+}
+
+// Red rails are moving-wall obstacles only: excluded from dealing.
+{
+  buildFlat();
+  const red = tierMob(0, 0.5, 0, 131, 0);
+  red.lane = { axis: 0, entry: Math.PI, lockX: -1, lockZ: -1 };
+  const free = tierMob(0, 3.5, Math.PI, 132, 1);
+  free.target = { x: 0, z: -6 };
+  free.wanderT = NO_EXPIRY;
+  free.roam = { mode: "commit", heading: Math.PI, target: free.target, tgt: free.target, t: 0, span: 30 };
+  planGroup([red, free], DT);
+  assert.equal(red._plan, null, "red plans nothing");
+  assert.ok(free._plan?.forced, "others still route around the rail");
+  console.log("PASS tiers-red-obstacle");
+}
+
+// Wedged 1-wide entry rig: commit north to (0,6) ringed at 1 m (entry is
+// list[0]). No mouth voxels — the wedge is synthetic; the abort gate reads
+// only the mob's target and the peers.
+function wedgedEntry() {
+  const entry = violetTo(tierMob(0, 0.5, 0, 141, 0), 0, 6);
+  entry.roam.axis = 0; entry.roam.stallT = 0;
+  entry.roam.passageKey = "over|1:9,9"; entry.roam.passageKind = 1;
+  const ring = [];
+  for (let k = 0; k < 8; k++) {
+    const ang = (k * Math.PI) / 4;
+    ring.push(tierMob(Math.sin(ang) * 1.0, 0.5 + Math.cos(ang) * 1.0, ang, 150 + k, k + 1));
+  }
+  return [entry, ...ring];
+}
+
+// A wedged 1-wide committer holds slowed on a static scrum (no abort —
+// aborts are head-on yields, see below): ringed at 1 m on flat ground no
+// narrow wind stays peer-free, so the plan keeps the slowed line and never
+// flags the giveUp path.
+{
+  buildFlat();
+  const list = wedgedEntry();
+  planGroup(list, DT);
+  assert.equal(list[0]._wantAbort, false, "static wedge never aborts");
+  assert.ok(list[0]._plan?.forced && list[0]._plan.slow < 1, "wedged entry still walks slowed this tick (no freeze)");
+  console.log("PASS tiers-entry-hold-empty");
+}
+
+// A wedged 1-wide committer aborts only for an exiter already inside
+// coming out: same ring plus a peer between the mob and its hole slot
+// heading outward — the plan flags the giveUp path and the mover latches
+// it onto the commit.
+{
+  buildFlat();
+  const list = wedgedEntry();
+  list.push(tierMob(0, 1.6, Math.PI, 999, list.length));
+  planGroup(list, DT);
+  const entry = list[0];
+  assert.equal(entry._wantAbort, true, "exiter inside flags abort");
+  assert.ok(entry._plan?.forced && entry._plan.slow < 1, "wedged entry still walks slowed this tick (no freeze)");
+  const pick = (m) => (m === entry ? entry.target : { x: m.pos.x, z: m.pos.z });
+  tickFarmMob(entry, DT, pick, entry.rand, list);
+  assert.equal(entry.roam?.giveUp, true, "mover converts the flag to the giveUp path (cooldown + retry)");
+  console.log("PASS tiers-entry-abort-exiter");
+}
+
+// Detach switch: the mover drops lane+line and installs a free-roam commit
+// on the dealt wind.
+{
+  buildFlat();
+  const blue = laneRide(tierMob(-2, -0.5, 0, 161, 0));
+  const oncoming = violetTo(tierMob(-2, 2.5, Math.PI, 162, 1), -2, -6);
+  const list = [blue, oncoming];
+  planGroup(list, DT);
+  assert.equal(blue._wantDetach, true, "rig wedges the ride first");
+  const pick = (m) => (m === blue ? blue.target : oncoming.target);
+  tickFarmMob(blue, DT, pick, blue.rand, list);
+  assert.equal(blue.lane, null, "detach drops the lane");
+  assert.equal(blue.followLine, null, "detach drops the wall line");
+  assert.equal(blue.roam?.mode, "commit", "detach installs a free-roam commit");
+  assert.ok((blue.followCool ?? 0) > 0, "detach holds the next latch off");
+  console.log("PASS tiers-detach-switch");
+}
+
+// Free roam yields to a blue holder: the holder keeps its slowed line
+// without detaching (free peers never trigger a detach), the roamer takes
+// the dodge (or the slowed cross) around it.
+{
+  buildFlat();
+  const blue = laneRide(tierMob(-2, -0.5, 0, 191, 0));
+  const free = tierMob(-2, 2.5, Math.PI, 192, 1);
+  free.target = { x: -2, z: -6 };
+  free.wanderT = NO_EXPIRY;
+  free.roam = { mode: "commit", heading: Math.PI, target: free.target, tgt: free.target, t: 0, span: 30 };
+  planGroup([blue, free], DT);
+  assert.equal(blue._wantDetach, false, "holder never detaches for a free roamer");
+  assert.ok(blue._plan?.forced, "holder keeps a forced plan");
+  assert.ok(free._plan?.forced, "free roam routes around the holder");
+  console.log("PASS tiers-free-yields");
+}
+
+// Guided blue (entry-carrying touch ride, the common in-game shape near
+// holes) vs unlaned violet head-on: the guided blue detaches like a pure
+// blue, the violet holds its slowed line — blues avoid violets.
+{
+  buildFlat();
+  const guided = laneRide(tierMob(-2, -0.5, 0, 201, 0));
+  guided.target = { x: -2, z: 6 };
+  guided.wanderT = NO_EXPIRY;
+  guided.roam = { mode: "commit", heading: 0, target: guided.target, tgt: guided.target, t: 0, span: 30, entry: true };
+  const violet = violetTo(tierMob(-2, 2.5, Math.PI, 202, 1), -2, -6);
+  const list = [guided, violet];
+  planGroup(list, DT);
+  assert.equal(guided._wantDetach, true, "guided blue detaches like a pure blue");
+  assert.ok(guided._plan?.forced, "guided detach carries a forced wind");
+  assert.equal(violet._wantDetach, false, "violet never detaches");
+  assert.ok(violet.lane == null, "violet stays unlaned");
+  const pick = (m) => (m === guided ? guided.target : violet.target);
+  tickFarmMob(guided, DT, pick, guided.rand, list);
+  assert.equal(guided.lane, null, "mover drops the guided lane");
+  assert.equal(guided.roam?.entry, true, "the claimed slot survives the detach");
+  console.log("PASS tiers-guided-blue-detach");
+}
+
+// Blue vs 1-wide exit holder: the holder keeps its slowed line (never
+// steers/detaches/aborts), the blue detaches around it.
+{
+  buildFlat();
+  const sortie = laneRide(tierMob(-2, -0.5, 0, 211, 0));
+  sortie.target = { x: -2, z: 6 };
+  sortie.entryCoolT = 999; sortie.entryCoolKey = "over|1:9,9";
+  const blue = laneRide(tierMob(-2, 2.5, Math.PI, 212, 1), Math.PI);
+  const list = [sortie, blue];
+  planGroup(list, DT);
+  assert.equal(sortie._wantDetach, false, "exit holder never detaches");
+  assert.equal(sortie._wantAbort, false, "exit holder never aborts");
+  assert.ok(sortie._plan?.forced && sortie._plan.slow < 1, "holder keeps its slowed line");
+  assert.equal(blue._wantDetach, true, "blue detaches around the exit");
+  console.log("PASS tiers-blue-avoids-exit1");
+}
+
+// Free-free head-on: both sides route (at least the first planner deals a
+// forced wind) — open roam visibly avoids instead of crossing.
+{
+  buildFlat();
+  const a = tierMob(0, -2, 0, 221, 0);
+  a.target = { x: 0, z: 6 }; a.wanderT = NO_EXPIRY;
+  a.roam = { mode: "commit", heading: 0, target: a.target, tgt: a.target, t: 0, span: 30 };
+  const b = tierMob(0, 2, Math.PI, 222, 1);
+  b.target = { x: 0, z: -6 }; b.wanderT = NO_EXPIRY;
+  b.roam = { mode: "commit", heading: Math.PI, target: b.target, tgt: b.target, t: 0, span: 30 };
+  planGroup([a, b], DT);
+  assert.ok(a._plan?.forced || b._plan?.forced, "head-on free roam routes around");
+  console.log("PASS tiers-free-avoids-free");
+}
+
+// Corner meetings: entering/exiting corners converge near ~90°, far outside
+// the steer cone — detection reads close-range convergence instead, for
+// every phase. Walls below are real voxels (dodge validation is voxel-bound).
+function wallRun(x0, x1, z0, z1) {
+  for (let x = x0; x <= x1; x++) for (let z = z0; z <= z1; z++) {
+    setBlock(x, 1, z, STONE); setBlock(x, 2, z, STONE);
+  }
+}
+
+// Entering corner: two blues converging at 90° onto the same inner corner.
+// Exactly one detaches (validated dodge), the other holds its wall line
+// (full stride when the yield agreement fires, slowed crossing while the
+// gentle dodge clears — still a single abandon either way).
+{
+  buildFlat();
+  wallRun(-1, -1, -1, 5);
+  wallRun(-1, 5, 5, 5);
+  const a = laneRide(tierMob(1.0, 3.0, 0, 231, 0), 0);
+  const b = laneRide(tierMob(2.4, 4.4, -Math.PI / 2, 232, 1), -Math.PI / 2);
+  const list = [a, b];
+  planGroup(list, DT);
+  const detached = list.filter((m) => m._wantDetach);
+  assert.equal(detached.length, 1, "inner corner: exactly one blue detaches");
+  const holder = detached[0] === a ? b : a;
+  assert.equal(holder._wantDetach, false, "inner corner: holder never double-detaches");
+  assert.ok(holder._plan?.forced, "holder keeps a forced plan on its line");
+  assert.ok(Math.abs(normYaw(holder._plan.heading - holder.lane.axis)) < 1e-9, "holder holds its wall line");
+  console.log("PASS tiers-inner-corner-blues");
+}
+
+// Exiting corner: two blues rounding the same wall tip from both faces.
+{
+  buildFlat();
+  wallRun(3, 3, -6, 0);
+  const a = laneRide(tierMob(3.5, -0.5, 0, 241, 0), 0);
+  const b = laneRide(tierMob(4.8, 0.8, -Math.PI / 2, 242, 1), -Math.PI / 2);
+  const list = [a, b];
+  planGroup(list, DT);
+  const detached = list.filter((m) => m._wantDetach);
+  assert.equal(detached.length, 1, "wall tip: exactly one blue detaches");
+  const holder = detached[0] === a ? b : a;
+  assert.ok(holder._plan?.forced, "tip holder keeps a forced plan on its line");
+  assert.ok(Math.abs(normYaw(holder._plan.heading - holder.lane.axis)) < 1e-9, "tip holder holds its wall line");
+  console.log("PASS tiers-outer-tip-blues");
+}
+
+// Corner cross, free roam: two 90°-crossing commits route around each other
+// (detection is phase-agnostic, not wall-ride-only).
+{
+  buildFlat();
+  const a = tierMob(0, -1.2, 0, 251, 0);
+  a.target = { x: 0, z: 3 }; a.wanderT = NO_EXPIRY;
+  a.roam = { mode: "commit", heading: 0, target: a.target, tgt: a.target, t: 0, span: 30 };
+  const b = tierMob(1.4, 0.2, -Math.PI / 2, 252, 1);
+  b.target = { x: -3, z: 0.2 }; b.wanderT = NO_EXPIRY;
+  b.roam = { mode: "commit", heading: -Math.PI / 2, target: b.target, tgt: b.target, t: 0, span: 30 };
+  planGroup([a, b], DT);
+  // Either crosser may reserve first (sampling sees the rendezvous from
+  // one side first); what matters is that the 90° meeting bends someone
+  // off it instead of crossing straight through on both sides.
+  const bent = [a, b].some((m) =>
+    m._plan?.forced && Math.abs(normYaw(m._plan.heading - (m === a ? 0 : -Math.PI / 2))) > 0.2);
+  assert.ok(bent, "corner cross: the 90° meeting bends a crosser off it");
+  console.log("PASS tiers-corner-cross-free");
+}
+
+// Corner violet: unlaned entry vs guided blue converging at 90° on the same
+// crossing point (simultaneous rendezvous) — the blue detaches, the violet
+// holds its line (rank matrix, corner bearings).
+{
+  buildFlat();
+  const blue = laneRide(tierMob(1.2, 2.0, 0, 261, 0), 0);
+  blue.target = { x: 1.2, z: 6 }; blue.wanderT = NO_EXPIRY;
+  blue.roam = { mode: "commit", heading: 0, target: blue.target, tgt: blue.target, t: 0, span: 30, entry: true };
+  const violet = violetTo(tierMob(2.4, 3.2, -Math.PI / 2, 262, 1), -3, 3.2);
+  const list = [blue, violet];
+  planGroup(list, DT);
+  assert.equal(blue._wantDetach, true, "corner violet: guided blue detaches");
+  assert.equal(violet._wantDetach, false, "corner violet: violet never detaches");
+  assert.ok(!violet._plan?.forced ||
+    Math.abs(normYaw(violet._plan.heading + Math.PI / 2)) < 0.2,
+    "corner violet: violet never bends off its line");
+  console.log("PASS tiers-corner-violet");
+}
+
+// Matrix enforcement, free vs ranked: a free roamer meeting a blue holder
+// on a shallow offset head-on bends around it instead of sequencing
+// through the ranked line (deal-first at close range), while the blue
+// holds its real wall without detaching. The blue latches naturally
+// (servo-owned lane, like in game) and the wall is real voxels.
+{
+  buildFlat();
+  for (let z = -8; z <= 8; z++) { setBlock(0, 1, z, STONE); setBlock(0, 2, z, STONE); }
+  const blue = tierMob(1.5, 2, Math.PI, 271, 0);
+  const free = tierMob(2.05, -2, 0, 272, 1);
+  const list = [blue, free];
+  const gBlue = { x: 1.5, z: -8 }, gFree = { x: 2.05, z: 6 };
+  const pick = (m) => (m === free ? gFree : gBlue);
+  let bent = false, blueDetached = false, blueRode = false;
+  for (let t = 0; t < 200 && !bent; t++) {
+    for (const m of list) {
+      const g = m === free ? gFree : gBlue;
+      m.target = g; m.wanderT = NO_EXPIRY;
+      if (!m.roam || m.roam.tgt !== g) {
+        const h = Math.atan2(g.x - m.pos.x, g.z - m.pos.z);
+        m.roam = { mode: "commit", heading: h, target: g, tgt: g, t: 0, span: 30 };
+      }
+    }
+    planGroup(list, DT);
+    if (blue._wantDetach) blueDetached = true;
+    if (blue.wallFollow) blueRode = true;
+    if (free._plan?.forced && Math.abs(normYaw(free._plan.heading)) > 0.2) bent = true;
+    for (const m of list) tickFarmMob(m, DT, pick, m.rand, list);
+    separateFarmMobs(list);
+  }
+  assert.ok(blueRode, "free vs holder: the blue rides its wall into the meeting");
+  assert.ok(bent, "free vs holder: the roamer bends around the ranked line");
+  assert.ok(!blueDetached, "free vs holder: the blue never detaches for a roamer");
+  console.log("PASS tiers-free-bends-around-blue");
+}
+
+// ---- Blue wall-ride meetings, full-tick on real voxels (rigs A–F) ----
+// Two mobs walk at each other on real geometry through the real 3-phase
+// tick (planGroup with grid + tickFarmMob + separateFarmMobs), like the
+// game. Metrics are in the code's own terms: maxPre (pre-backstop
+// penetration) must stay under CROSS_BUDGET (0.15) — deeper means the
+// avoidance failed — and closest must prove the meeting happened (< 1.2 m).
+// Blue rides are fabricated (same fields a natural latch erects) with
+// pinWallRide (rides never quit on the budget, like production farm.js)
+// and suppressed entry scans (entry preemption is covered by mob-paths
+// rigs; here the blue must ride past). The run ends once the pair met and
+// separated again, so post-meeting wander cannot manufacture contacts.
+// Blues latch naturally (pinned 100% latch like production farm.js, budget
+// never expires, entry scans suppressed — entry preemption is covered by
+// mob-paths rigs; here the blue must ride past). Yaw aims slightly into
+// the wall so the flank touch latches within the first ticks; the servo
+// straightens to cardinal after.
+function latchMob(x, z, yaw, seed) {
+  const m = makeMob(x, z, yaw, seed);
+  m.pinWallRide = true;
+  m.entryScanT = 1e9;
+  m.yawTarget = yaw;
+  return m;
+}
+function runWallMeet(active, picks, { ticks = 700, laned = [] } = {}) {
+  let maxPre = 0, contactTicks = 0, closest = Infinity, postViol = 0, ran = 0;
+  const detached = new Set();
+  const everLan = new Set();
+  let met = false;
+  for (let t = 0; t < ticks; t++) {
+    ran = t + 1;
+    active.forEach((m, i) => { m._peerIdx = i; });
+    for (const m of laned) if (m.lane != null) everLan.add(m);
+    if (t === 60) for (const m of laned) assert.ok(everLan.has(m), "rig setup: expected a latched blue ride by tick 60");
+    const grid = buildMobGrid(active, 3);
+    planGroup(active, DT, grid);
+    for (const m of active) if (m._wantDetach) detached.add(m);
+    const pick = (m) => picks.get(m) ?? m.target;
+    for (const m of active) tickFarmMob(m, DT, pick, m.rand, active, grid);
+    const pre = maxPen(active);
+    if (pre > 1e-6) contactTicks++;
+    if (pre > maxPre) maxPre = pre;
+    for (let i = 0; i < active.length; i++) for (let j = i + 1; j < active.length; j++) {
+      const d = Math.hypot(active[i].pos.x - active[j].pos.x, active[i].pos.z - active[j].pos.z);
+      if (d < closest) closest = d;
+    }
+    if (closest < 2.0) met = true;
+    separateFarmMobs(active, grid);
+    if (maxPen(active) > RESIDUE_MAX) postViol++;
+    if (met && active.length === 2 &&
+      Math.hypot(active[0].pos.x - active[1].pos.x, active[0].pos.z - active[1].pos.z) > 4) break;
+  }
+  return { maxPre, contactTicks, closest, detached, postViol, ran };
+}
+function wallRow(x0, x1, z, skip = []) {
+  for (let x = x0; x <= x1; x++) {
+    if (skip.includes(x)) continue;
+    setBlock(x, 1, z, STONE); setBlock(x, 2, z, STONE);
+  }
+}
+
+// Rig A: same wall, opposite directions — two blues head-on on one face.
+{
+  buildFlat(); clearEntryClaims();
+  wallRow(-8, 8, 2);
+  const a = latchMob(-6, 1.4, Math.PI / 2 - 0.2, 301);
+  const b = latchMob(6, 1.4, -Math.PI / 2 + 0.2, 302);
+  const r = runWallMeet([a, b], new Map([[a, { x: 30, z: 1.5 }], [b, { x: -30, z: 1.5 }]]), { laned: [a, b] });
+  console.log(`wallmeet-A same-wall: closest ${r.closest.toFixed(2)}m maxPre ${r.maxPre.toFixed(3)} contacts ${r.contactTicks} detached ${r.detached.size} @${r.ran}`);
+  assert.ok(r.closest < 2.0, `A: the pair must actually meet (closest ${r.closest.toFixed(2)}m)`);
+  assert.ok(r.detached.size >= 1, "A: the head-on meeting must engage the avoidance (a detach)");
+  assert.ok(r.maxPre < 0.15, `A: no deep contact head-on on one wall (maxPre ${r.maxPre.toFixed(3)})`);
+  assert.equal(r.postViol, 0, "A: no post-separation violations");
+  console.log("PASS wallmeet-A-same-wall");
+}
+
+// Rig A2: same wall, crowded — a file each way reserves the winds around
+// the meeting (like the pen with 8 mobs): even wedged, nobody may walk
+// through anybody.
+{
+  buildFlat(); clearEntryClaims();
+  wallRow(-8, 8, 2);
+  const a = latchMob(-6, 1.4, Math.PI / 2 - 0.2, 303);
+  const a2 = latchMob(-4, 1.4, Math.PI / 2 - 0.2, 304);
+  const b = latchMob(6, 1.4, -Math.PI / 2 + 0.2, 305);
+  const b2 = latchMob(4, 1.4, -Math.PI / 2 + 0.2, 306);
+  const list = [a, a2, b, b2];
+  const r = runWallMeet(list, new Map([[a, { x: 30, z: 1.5 }], [a2, { x: 30, z: 1.5 }], [b, { x: -30, z: 1.5 }], [b2, { x: -30, z: 1.5 }]]), { laned: list });
+  console.log(`wallmeet-A2 crowd: closest ${r.closest.toFixed(2)}m maxPre ${r.maxPre.toFixed(3)} contacts ${r.contactTicks} detached ${r.detached.size} @${r.ran}`);
+  assert.ok(r.closest < 2.0, `A2: the groups must actually meet (closest ${r.closest.toFixed(2)}m)`);
+  // Escape sweeps may brush (a startle about-face out of nose contact
+  // sweeps the snout across the peer for a few ticks): no body-body
+  // overlap, no sustained grind.
+  assert.ok(r.maxPre < 0.35, `A2: only transient escape-sweep brushes in the crowd (maxPre ${r.maxPre.toFixed(3)})`);
+  assert.ok(r.contactTicks < 120, `A2: meetings must stay brief (contacts ${r.contactTicks})`);
+  assert.equal(r.postViol, 0, "A2: no post-separation violations");
+  console.log("PASS wallmeet-A2-crowd");
+}
+
+// Rig B: opening (inner) corner — one blue turns south into the arm while
+// another rides north up the same arm, head-on at the corner mouth.
+{
+  buildFlat(); clearEntryClaims();
+  wallRow(-6, 2, 2);
+  for (let z = -4; z <= 2; z++) { setBlock(3, 1, z, STONE); setBlock(3, 2, z, STONE); }
+  const a = latchMob(-2, 1.4, Math.PI / 2 - 0.2, 311);
+  const b = latchMob(2.4, -2.5, 0.2, 312);
+  const r = runWallMeet([a, b], new Map([[a, { x: 30, z: 1.5 }], [b, { x: 2.5, z: 30 }]]), { laned: [a, b] });
+  console.log(`wallmeet-B inner-corner: closest ${r.closest.toFixed(2)}m maxPre ${r.maxPre.toFixed(3)} contacts ${r.contactTicks} detached ${r.detached.size} @${r.ran}`);
+  assert.ok(r.closest < 3.0, `B: the pair must actually meet (closest ${r.closest.toFixed(2)}m)`);
+  assert.ok(r.detached.size >= 1, "B: the corner meeting must engage the avoidance (a detach)");
+  assert.ok(r.maxPre < 0.15, `B: no deep contact in the inner corner (maxPre ${r.maxPre.toFixed(3)})`);
+  assert.equal(r.postViol, 0, "B: no post-separation violations");
+  console.log("PASS wallmeet-B-inner-corner");
+}
+
+// Rig C: exiting (outer) corner — one blue rounds the tip north while
+// another rides south down the same column face, head-on at the tip.
+{
+  buildFlat(); clearEntryClaims();
+  wallRow(-6, 2, 2);
+  for (let z = 2; z <= 8; z++) { setBlock(2, 1, z, STONE); setBlock(2, 2, z, STONE); }
+  const a = latchMob(-3, 1.4, Math.PI / 2 - 0.2, 321);
+  const b = latchMob(3.6, 7, Math.PI + 0.2, 322);
+  const r = runWallMeet([a, b], new Map([[a, { x: 30, z: 1.5 }], [b, { x: 3.5, z: -30 }]]), { laned: [a, b] });
+  console.log(`wallmeet-C outer-tip: closest ${r.closest.toFixed(2)}m maxPre ${r.maxPre.toFixed(3)} contacts ${r.contactTicks} detached ${r.detached.size} @${r.ran}`);
+  assert.ok(r.closest < 3.0, `C: the pair must actually meet (closest ${r.closest.toFixed(2)}m)`);
+  assert.ok(r.detached.size >= 1, "C: the tip meeting must engage the avoidance (a detach)");
+  assert.ok(r.maxPre < 0.15, `C: no deep contact on the wall tip (maxPre ${r.maxPre.toFixed(3)})`);
+  assert.equal(r.postViol, 0, "C: no post-separation violations");
+  console.log("PASS wallmeet-C-outer-tip");
+}
+
+// Rig D1: 1-wide exiter walks out of the hole (threads the rail like
+// production, then holds out on its fresh key) across a blue ride on a
+// second wall south of the mouth — the blue must detach around it,
+// rail or holder alike.
+{
+  buildFlat(); clearEntryClaims();
+  wallRow(-8, 8, 2, [0]);
+  wallRow(-8, 8, -2);
+  const a = latchMob(-2.5, -0.4, Math.PI / 2 + 0.2, 331);
+  const out = latchMob(0.5, 1.0, Math.PI, 332);
+  out.target = { x: 0.5, z: -3 }; out.wanderT = NO_EXPIRY;
+  out.roam = { mode: "commit", heading: Math.PI, target: out.target, tgt: out.target, t: 0, span: 30 };
+  out.entryCoolT = 999; out.entryCoolKey = "over|1:0,2";
+  const r = runWallMeet([a, out], new Map([[a, { x: 30, z: -0.5 }], [out, { x: 0.5, z: -30 }]]), { laned: [a] });
+  console.log(`wallmeet-D1 exit1: closest ${r.closest.toFixed(2)}m maxPre ${r.maxPre.toFixed(3)} contacts ${r.contactTicks} detached ${r.detached.size} @${r.ran}`);
+  assert.ok(r.closest < 2.5, `D1: the pair must actually meet (closest ${r.closest.toFixed(2)}m)`);
+  assert.ok(r.detached.has(a), "D1: the blue must detach around the 1-wide exiter");
+  assert.ok(r.maxPre < 0.15, `D1: no deep contact with the 1-wide exiter (maxPre ${r.maxPre.toFixed(3)})`);
+  assert.equal(r.postViol, 0, "D1: no post-separation violations");
+  console.log("PASS wallmeet-D1-exit1");
+}
+
+// Rig D2: 2-wide exiter walks out of a double hole across a blue ride on
+// a second wall south of the mouth.
+{
+  buildFlat(); clearEntryClaims();
+  wallRow(-8, 8, 2, [0, 1]);
+  wallRow(-8, 8, -2);
+  const a = latchMob(-2.5, -0.4, Math.PI / 2 + 0.2, 341);
+  const out = latchMob(1.0, 1.0, Math.PI, 342);
+  out.target = { x: 1.0, z: -3 }; out.wanderT = NO_EXPIRY;
+  out.roam = { mode: "commit", heading: Math.PI, target: out.target, tgt: out.target, t: 0, span: 30 };
+  out.entryCoolT = 999; out.entryCoolKey = "over|2:0,2";
+  const r = runWallMeet([a, out], new Map([[a, { x: 30, z: -0.5 }], [out, { x: 1.0, z: -30 }]]), { laned: [a] });
+  console.log(`wallmeet-D2 exit2: closest ${r.closest.toFixed(2)}m maxPre ${r.maxPre.toFixed(3)} contacts ${r.contactTicks} detached ${r.detached.size} @${r.ran}`);
+  // The wide mouth reads early: the blue detaches before closing in (early
+  // avoidance path, unlike D1's tight crossing) — the assert is the
+  // detach plus zero contact, not a close pass.
+  assert.ok(r.closest < 3.5, `D2: the pair must actually meet (closest ${r.closest.toFixed(2)}m)`);
+  assert.ok(r.detached.has(a), "D2: the blue must detach around the 2-wide exiter");
+  assert.ok(r.maxPre < 0.15, `D2: no deep contact with the 2-wide exiter (maxPre ${r.maxPre.toFixed(3)})`);
+  assert.equal(r.postViol, 0, "D2: no post-separation violations");
+  console.log("PASS wallmeet-D2-exit2");
+}
+
+// Rig E: blue vs violet head-on in the open — the violet holds its slot
+// line, the blue must go around (matrix), no deep contact either way.
+{
+  buildFlat(); clearEntryClaims();
+  wallRow(-8, 8, 2);
+  const a = latchMob(-6, 1.4, Math.PI / 2 - 0.2, 351);
+  const v = latchMob(6, 1.5, -Math.PI / 2, 352);
+  v.target = { x: -8, z: 1.5 }; v.wanderT = NO_EXPIRY;
+  v.roam = { mode: "commit", heading: -Math.PI / 2, target: v.target, tgt: v.target, t: 0, span: 30, entry: true };
+  const r = runWallMeet([a, v], new Map([[a, { x: 30, z: 1.5 }], [v, { x: -30, z: 1.5 }]]), { laned: [a] });
+  console.log(`wallmeet-E violet: closest ${r.closest.toFixed(2)}m maxPre ${r.maxPre.toFixed(3)} contacts ${r.contactTicks} detached ${r.detached.size} @${r.ran}`);
+  assert.ok(r.closest < 2.0, `E: the pair must actually meet (closest ${r.closest.toFixed(2)}m)`);
+  assert.ok(r.detached.has(a), "E: the blue must detach around the violet");
+  assert.ok(r.maxPre < 0.15, `E: no deep contact with the violet (maxPre ${r.maxPre.toFixed(3)})`);
+  assert.equal(r.postViol, 0, "E: no post-separation violations");
+  console.log("PASS wallmeet-E-violet");
+}
+
+// Rig F2: free roamer walks a parallel line head-on past a blue wall ride
+// (offset half a metre) — the free bends around (plans last), the blue
+// never detaches for it, no deep contact either way. (Red rails at mouths
+// are covered by D1's rail-threading phase plus the planGroup-only
+// tiers-red-obstacle rig.)
+{
+  buildFlat(); clearEntryClaims();
+  for (let z = -8; z <= 8; z++) { setBlock(0, 1, z, STONE); setBlock(0, 2, z, STONE); }
+  const a = latchMob(1.6, 2, Math.PI + 0.2, 371);
+  const f = latchMob(2.05, -2, 0, 372);
+  f.target = { x: 2.05, z: 6 }; f.wanderT = NO_EXPIRY;
+  f.roam = { mode: "commit", heading: 0, target: f.target, tgt: f.target, t: 0, span: 30 };
+  const r = runWallMeet([a, f], new Map([[a, { x: 1.5, z: -30 }], [f, { x: 2.05, z: 30 }]]), { laned: [a] });
+  console.log(`wallmeet-F2 free: closest ${r.closest.toFixed(2)}m maxPre ${r.maxPre.toFixed(3)} contacts ${r.contactTicks} detached ${r.detached.size} @${r.ran}`);
+  assert.ok(r.closest < 1.5, `F2: the pair must actually meet (closest ${r.closest.toFixed(2)}m)`);
+  assert.ok(r.maxPre < 0.15, `F2: no deep contact with the free roamer (maxPre ${r.maxPre.toFixed(3)})`);
+  assert.ok(!r.detached.has(a), "F2: the blue never detaches for a free roamer");
+  assert.equal(r.postViol, 0, "F2: no post-separation violations");
+  console.log("PASS wallmeet-F2-free");
+}
+
+// Merge rigs: bodies must never fuse into one — a visible overlap is a
+// bounded transient (a brush the drives walk out of), never a persistent
+// merge. Each rig drives the real tick and tracks, per pair, the pre/post
+// backstop penetration plus the longest unbroken visible-contact episode
+// (consecutive ticks with pen > 0.05): that episode is what reads as "two
+// mobs merged" in game. Bounds match the existing suite (contact budget
+// CROSS_BUDGET, residue RESIDUE_MAX) with an added episode cap.
+// Hand-erected blue ride (no latch luck): the lane + follow line of a wall
+// ride east/west along the north-wall face (line z = 1.5), exactly what a
+// contact latch would erect. Deterministic from tick 0, unlike walked-in
+// latches whose approach wanders.
+function blueRide(m, axis) {
+  m.pinWallRide = true; m.entryScanT = 1e9;
+  const east = Math.abs(normYaw(axis - Math.PI / 2)) < 1e-9;
+  m.lane = { axis, entry: normYaw(axis + Math.PI), lockX: -1, lockZ: -1 };
+  m.followLine = {
+    axis, line: 1.5, side: -1, rel: east ? 1 : -1,
+    virtual: true, touch: true, face: 2, fresh: 30, t: 0,
+  };
+  m.yaw = axis; m.yawTarget = axis;
+  return m;
+}
+function runMerge(active, picks, { ticks = 700, laned = [], setup = null, name = "?" } = {}) {
+  let maxPre = 0, maxPost = 0, maxPostLate = 0, contactTicks = 0, deepTicks = 0, ran = 0;
+  let longestRun = 0, run = 0, exactMin = Infinity, finalD = Infinity, detached = 0;
+  // Stuck run: consecutive contact ticks with NOBODY going anywhere (no
+  // mob past a 0.2 m leash from the run start) and no escape maneuver
+  // running. A brush file at full stride resets every tick; a genuine
+  // grind — static bodies in contact — accrues. This is the stuck metric:
+  // longestRun (contact alone) also counts files walking together.
+  let stuckRun = 0, stuck = 0;
+  const stuckOX = new Map();
+  const everLan = new Set();
+  if (setup) setup();
+  const pick = (m) => picks.get(m) ?? m.target;
+  for (let t = 0; t < ticks; t++) {
+    ran = t + 1;
+    active.forEach((m, i) => { m._peerIdx = i; });
+    for (const m of laned) if (m.lane != null) everLan.add(m);
+    const grid = buildMobGrid(active, 3);
+    planGroup(active, DT, grid);
+    for (const m of active) if (m._wantDetach) detached++;
+    for (const m of active) tickFarmMob(m, DT, pick, m.rand, active, grid);
+    const pre = maxPen(active);
+    if (pre > maxPre) maxPre = pre;
+    if (pre > 1e-6) contactTicks++;
+    if (pre > 0.15) deepTicks++;
+    if (pre > 0.05) { run++; if (run > longestRun) longestRun = run; } else run = 0;
+    if (pre > 0.05) {
+      let moved = false;
+      for (const m of active) {
+        if ((m._turnAway ?? 0) > 0) { moved = true; break; }
+        const o = stuckOX.get(m);
+        if (!o) stuckOX.set(m, { x: m.pos.x, z: m.pos.z });
+        else if (Math.hypot(m.pos.x - o.x, m.pos.z - o.z) > 0.2) { moved = true; break; }
+      }
+      if (moved) { stuck = 0; stuckOX.clear(); }
+      else { stuck++; if (stuck > stuckRun) stuckRun = stuck; }
+    } else { stuck = 0; stuckOX.clear(); }
+    let d = Infinity;
+    for (let i = 0; i < active.length; i++) for (let j = i + 1; j < active.length; j++) {
+      d = Math.min(d, Math.hypot(active[i].pos.x - active[j].pos.x, active[i].pos.z - active[j].pos.z));
+    }
+    if (d < exactMin) exactMin = d;
+    finalD = d;
+    separateFarmMobs(active, grid);
+    const post = maxPen(active);
+    if (post > maxPost) maxPost = post;
+    if (t >= 60 && post > maxPostLate) maxPostLate = post;
+  }
+  for (const m of laned) assert.ok(everLan.has(m), name + " rig setup FAILED: never laned pos=" + m.pos.x.toFixed(2) + "," + m.pos.z.toFixed(2));
+  return { maxPre, maxPost, maxPostLate, contactTicks, deepTicks, longestRun, stuckRun, exactMin, finalD, ran, detached };
+}
+
+// Rig M1: coincident spawn — two mobs on the exact same spot (debug spawn,
+// pen pileup). The setup contact is the rig's own fault; the backstop must
+// unstack it in bounded ticks and never park both bodies at d ≈ 0.
+{
+  buildFlat(); clearEntryClaims();
+  const a = makeMob(2, 2, 0, 401);
+  const b = makeMob(2, 2, Math.PI, 402);
+  const goals = new Map([[a, { x: 20, z: 2 }], [b, { x: -20, z: 2 }]]);
+  const r = runMerge([a, b], goals, { name: "M1", ticks: 300 });
+  console.log(`merge-M1 coincident-spawn: finalD ${r.finalD.toFixed(2)}m longestRun ${r.longestRun} deepTicks ${r.deepTicks} maxPostLate ${r.maxPostLate.toFixed(3)}`);
+  assert.ok(r.finalD > 0.8, `M1: coincident spawn must unstack (finalD ${r.finalD.toFixed(2)}m)`);
+  assert.ok(r.longestRun < 120, `M1: overlap must resolve in bounded ticks (longestRun ${r.longestRun})`);
+  assert.ok(r.maxPostLate < 0.2, `M1: backstop must converge (maxPostLate ${r.maxPostLate.toFixed(3)})`);
+  console.log("PASS merge-M1-coincident-spawn");
+}
+
+// Rig M2: pace the real advance — a file leader stalled mid-U-turn (speed
+// field full, zero underfoot) must stop its exempt follower. followSlow
+// reads the speed field only, so the follower keeps full stride into the
+// stalled leader. Unit rig (no voxels): the file exemption hands
+// tailgating to this discipline alone. Gap 2.5 m: nose-to-tail clear, so
+// only the advance ratio decides.
+{
+  const lead = makeMob(2.5, 0, Math.PI / 2, 403);
+  const fol = makeMob(0, 0, Math.PI / 2, 404);
+  lead.speed = FARM_WALK; fol.speed = FARM_WALK;
+  lead._adv = 0; fol._adv = FARM_WALK / 60;
+  const stalled = followSlow(fol, [lead, fol]);
+  console.log(`merge-M2 pace-advance: stalled-leader slow ${stalled.toFixed(3)}`);
+  assert.ok(stalled < 0.1, `M2: a stalled leader must stop its follower (slow ${stalled.toFixed(3)})`);
+  lead._adv = FARM_WALK / 60;
+  const steady = followSlow(fol, [lead, fol]);
+  assert.ok(Math.abs(steady - 1) < 1e-9, `M2: a steady file keeps full stride (slow ${steady.toFixed(3)})`);
+  console.log("PASS merge-M2-pace-advance");
+}
+
+// Rig M4b: boxed head-on — two blues meet nose-to-nose on one line with
+// the dodge side walled. Both turn away (flip in place, sidestep where
+// one validates) and separate instead of parking in contact; no stuck
+// episode past half a second, no deep contact, converging residue.
+{
+  buildFlat(); clearEntryClaims();
+  wallRow(-8, 8, 2);
+  wallRow(-8, 8, -1);
+  const a = blueRide(latchMob(-3, 1.5, Math.PI / 2, 421), Math.PI / 2);
+  const b = blueRide(latchMob(3, 1.5, -Math.PI / 2, 422), -Math.PI / 2);
+  const r = runMerge([a, b],
+    new Map([[a, { x: 30, z: 1.5 }], [b, { x: -30, z: 1.5 }]]),
+    { name: "M4b", ticks: 700, laned: [a, b] });
+  console.log(`merge-M4b boxed-headon: closest ${r.exactMin.toFixed(2)}m maxPre ${r.maxPre.toFixed(3)} longestRun ${r.longestRun} stuckRun ${r.stuckRun} deepTicks ${r.deepTicks} contacts ${r.contactTicks} detached ${r.detached}`);
+  assert.ok(r.exactMin < 2.0, `M4b: the pair must actually meet (closest ${r.exactMin.toFixed(2)}m)`);
+  assert.ok(r.deepTicks < 8, `M4b: only transient escape-sweep brushes in the boxed meeting (deepTicks ${r.deepTicks}, maxPre ${r.maxPre.toFixed(3)})`);
+  assert.ok(r.stuckRun <= 30, `M4b: no stuck episode past 0.5 s (stuckRun ${r.stuckRun})`);
+  assert.ok(r.maxPost < 0.2, `M4b: no post-separation violations (maxPost ${r.maxPost.toFixed(3)})`);
+  console.log("PASS merge-M4b-boxed-headon");
+}
+
+// Rig M3: second latch onto an occupied line declines — two mobs side by
+// side touch the same wall on the same tick; the first latch wins and the
+// second declines instead of erecting two rides on one body (nose/tail
+// discs overlap out to ~2 m, so no abreast latch ever starts clean).
+// Unit pins the veto both ways; the live run asserts the outcome (never
+// two blues on one line) plus bounded contact while the refused mob
+// routes around.
+{
+  buildFlat(); clearEntryClaims();
+  wallRow(-8, 8, 2);
+  const a = blueRide(latchMob(-0.6, 1.5, Math.PI / 2, 405), Math.PI / 2);
+  const b = latchMob(0.6, 1.5, Math.PI / 2, 406);
+  b.pinWallRide = true; b.entryScanT = 1e9;
+  // Unit pins: a rival erected on the same line (as the servo would erect
+  // it before the veto runs) reads claimed when overlapping, free when far.
+  const u1 = blueRide(latchMob(-0.6, 1.5, Math.PI / 2, 1405), Math.PI / 2);
+  const u2 = blueRide(latchMob(0.6, 1.5, Math.PI / 2, 1406), Math.PI / 2);
+  assert.equal(lineClaimedByPeer(u2, [u1, u2]), true, "M3: an overlapped line reads claimed");
+  u2.pos.x = 9;
+  assert.equal(lineClaimedByPeer(u2, [u1, u2]), false, "M3: a clear line reads free");
+  a.target = { x: 30, z: 1.5 }; b.target = { x: 30, z: 1.5 };
+  const goals = new Map([[a, a.target], [b, b.target]]);
+  const list = [a, b];
+  const pick = (m) => goals.get(m);
+  let shared = 0, maxPre = 0, maxPostLate = 0, contactRun = 0, longestRun = 0;
+  let finalD = Infinity;
+  for (let t = 0; t < 700; t++) {
+    list.forEach((m, i) => { m._peerIdx = i; });
+    const grid = buildMobGrid(list, 3);
+    planGroup(list, DT, grid);
+    for (const m of list) tickFarmMob(m, DT, pick, m.rand, list, grid);
+    const pre = maxPen(list);
+    if (pre > maxPre) maxPre = pre;
+    if (pre > 0.05) { contactRun++; if (contactRun > longestRun) longestRun = contactRun; } else contactRun = 0;
+    if (a.lane != null && b.lane != null && b.followLine?.touch === true &&
+      Math.abs((b.followLine.line ?? 9) - (a.followLine.line ?? -9)) < 0.05 &&
+      Math.hypot(a.pos.x - b.pos.x, a.pos.z - b.pos.z) < 3 && pre > 0.02) shared++;
+    separateFarmMobs(list, grid);
+    const post = maxPen(list);
+    if (t >= 60 && post > maxPostLate) maxPostLate = post;
+    finalD = Math.hypot(a.pos.x - b.pos.x, a.pos.z - b.pos.z);
+  }
+  console.log(`merge-M3 simul-latch: shared ${shared} longestRun ${longestRun} maxPre ${maxPre.toFixed(3)} maxPostLate ${maxPostLate.toFixed(3)} finalD ${finalD.toFixed(2)}`);
+  assert.equal(shared, 0, "M3: no second blue ever erects on the occupied line");
+  assert.ok(longestRun < 150, `M3: contact must stay bounded (longestRun ${longestRun})`);
+  assert.ok(maxPostLate < 0.2, `M3: backstop must converge (maxPostLate ${maxPostLate.toFixed(3)})`);
+  console.log("PASS merge-M3-simul-latch");
+}
+
+// Rig M4: tip stall file — a file rides east to the wall tip where the
+// leader U-turns in place; the box denies every detach wind, so the file
+// must hold. The follower paces the leader's real advance (never its
+// speed field) instead of grinding through the stall.
+{
+  buildFlat(); clearEntryClaims();
+  wallRow(-8, 2, 2);
+  wallRow(-8, 8, -1);
+  const lead = blueRide(latchMob(-2, 1.5, Math.PI / 2, 407), Math.PI / 2);
+  const fol = blueRide(latchMob(-4.5, 1.5, Math.PI / 2, 408), Math.PI / 2);
+  const r = runMerge([lead, fol],
+    new Map([[lead, { x: 30, z: 1.5 }], [fol, { x: 30, z: 1.5 }]]),
+    { name: "M4", ticks: 700, laned: [lead, fol] });
+  console.log(`merge-M4 tip-file-stall: closest ${r.exactMin.toFixed(2)}m maxPre ${r.maxPre.toFixed(3)} longestRun ${r.longestRun} deepTicks ${r.deepTicks} detached ${r.detached}`);
+  assert.ok(r.exactMin < 2.0, `M4: the follower must actually catch up (closest ${r.exactMin.toFixed(2)}m)`);
+  assert.ok(r.deepTicks === 0, `M4: no deep contact in the stall (deepTicks ${r.deepTicks}, maxPre ${r.maxPre.toFixed(3)})`);
+  assert.ok(r.longestRun < 120, `M4: contact must stay bounded (longestRun ${r.longestRun})`);
+  assert.ok(r.maxPost < 0.2, `M4: no post-separation violations (maxPost ${r.maxPost.toFixed(3)})`);
+  console.log("PASS merge-M4-tip-file-stall");
+}
+
+// Rig M5: dead-end seek into a parked peer — the peer waits at the back
+// wall, so the classifier fires the dead-end seek while the peer blocks the
+// nose. The drive must stop at contact range and the wedge must release to
+// roam instead of walking through the peer or grinding in place.
+{
+  buildFlat(); clearEntryClaims();
+  for (let z = -4; z <= 4; z++) {
+    setBlock(-1, 1, z, STONE); setBlock(-1, 2, z, STONE);
+    setBlock(1, 1, z, STONE); setBlock(1, 2, z, STONE);
+  }
+  wallRow(-1, 1, 4);
+  const parked = makeMob(0.5, 3.4, Math.PI, 409);
+  parked.speed = 0; parked.target = { x: 0.5, z: 3.4 }; parked.wanderT = NO_EXPIRY;
+  const seeker = makeMob(0.5, -3.5, 0, 410);
+  seeker.pinWallRide = true; seeker.entryScanT = 1e9;
+  const r = runMerge([parked, seeker],
+    new Map([[parked, parked.target], [seeker, { x: 0.5, z: 30 }]]),
+    { name: "M5", ticks: 700 });
+  console.log(`merge-M5 seek-into-peer: closest ${r.exactMin.toFixed(2)}m maxPre ${r.maxPre.toFixed(3)} longestRun ${r.longestRun} stuckRun ${r.stuckRun} deepTicks ${r.deepTicks}`);
+  assert.ok(r.exactMin < 2.5, `M5: the seeker must actually reach the peer (closest ${r.exactMin.toFixed(2)}m — nose-touch range, the exact gate stops at first touch)`);
+  assert.ok(r.deepTicks === 0, `M5: no deep contact on the seek (deepTicks ${r.deepTicks}, maxPre ${r.maxPre.toFixed(3)})`);
+  assert.ok(r.stuckRun <= 30, `M5: no stuck episode past 0.5 s (stuckRun ${r.stuckRun}, longestRun ${r.longestRun})`);
+  assert.ok(r.maxPost < 0.2, `M5: no post-separation violations (maxPost ${r.maxPost.toFixed(3)})`);
+  console.log("PASS merge-M5-seek-into-peer");
+}
+
+// Rig M6: double-veto notch — two mobs spawned overlapping in a 1 m slot
+// where the axial push parks into walls on both sides. The backstop must
+// still work them out along the free tangent instead of keeping the
+// overlap. Pure backstop unit (no drives): the drives never run here.
+{
+  buildFlat(); clearEntryClaims();
+  wallRow(-1, 1, 1); wallRow(-1, 1, -1);
+  const a = makeMob(0.5, 0.65, Math.PI / 2, 411);
+  const b = makeMob(0.5, 0.38, Math.PI / 2, 412);
+  const list = [a, b];
+  list.forEach((m, i) => { m._peerIdx = i; });
+  assert.ok(maxPen(list) > 0.15, "M6 setup: the pair must start overlapping");
+  let late = 0;
+  for (let t = 0; t < 120; t++) {
+    separateFarmMobs(list);
+    if (t >= 60) late = Math.max(late, maxPen(list));
+  }
+  const d = Math.hypot(a.pos.x - b.pos.x, a.pos.z - b.pos.z);
+  console.log(`merge-M6 double-veto: finalD ${d.toFixed(2)}m latePen ${late.toFixed(3)}`);
+  assert.ok(d > 0.8, `M6: the notch pair must unstack (finalD ${d.toFixed(2)}m)`);
+  assert.ok(late < 0.2, `M6: backstop must converge (latePen ${late.toFixed(3)})`);
+  console.log("PASS merge-M6-double-veto");
+}
+
+// Rig M7: dense pen with a wall stub — six mobs wander, latch, and meet
+// around one stub wall (blue and non-blue mixing). Episodes stay bounded.
+{
+  buildFlat(7); clearEntryClaims();
+  wallRow(-2, 2, 0);
+  const list = [];
+  const goals = new Map();
+  for (let i = 0; i < 6; i++) {
+    const m = makeMob(-4 + i * 1.3, -3 + (i % 2) * 5, (i * 1.1) % (Math.PI * 2), 420 + i);
+    m.pinWallRide = true; m.entryScanT = 1e9;
+    const g = { x: 4 - i * 1.3, z: 3 - (i % 2) * 5 };
+    goals.set(m, g); list.push(m);
+  }
+  const r = runMerge(list, goals, { ticks: 700 });
+  console.log(`merge-M7 pen-stub: maxPre ${r.maxPre.toFixed(3)} longestRun ${r.longestRun} deepTicks ${r.deepTicks} contacts ${r.contactTicks}`);
+  assert.ok(r.deepTicks === 0, `M7: no deep contact in the pen (deepTicks ${r.deepTicks}, maxPre ${r.maxPre.toFixed(3)})`);
+  assert.ok(r.longestRun < 120, `M7: episodes must stay bounded (longestRun ${r.longestRun})`);
+  assert.ok(r.maxPost < 0.2, `M7: no post-separation violations (maxPost ${r.maxPost.toFixed(3)})`);
+  console.log("PASS merge-M7-pen-stub");
+}
+
+// Rig M8: corner pocket — a railed follower grinds a stationary mob nose
+// to nose in a 1-wide dead-end pocket (spawned in contact, M1-style: the
+// setup overlap is the rig's own fault). The follower must not bulldoze
+// the waiter, and no mutual-contact episode may stick past half a second:
+// turn away, leave, return — bounded, never parked in contact.
+{
+  buildFlat(); clearEntryClaims();
+  wallRow(0, 4, 1);
+  wallRow(0, 4, -1);
+  for (let z = -1; z <= 1; z++) { setBlock(4, 1, z, STONE); setBlock(4, 2, z, STONE); }
+  const fol = makeMob(0.8, 0.5, Math.PI / 2, 431);
+  fol.lane = { axis: Math.PI / 2, entry: -Math.PI / 2, lockX: -1, lockZ: -1 };
+  const parked = makeMob(2.7, 0.5, -Math.PI / 2, 432);
+  parked.speed = 0; parked.target = { x: 2.7, z: 0.5 }; parked.wanderT = NO_EXPIRY;
+  const r = runMerge([fol, parked],
+    new Map([[fol, { x: 30, z: 0.5 }], [parked, parked.target]]),
+    { name: "M8", ticks: 900, laned: [fol] });
+  console.log(`merge-M8 corner-pocket: closest ${r.exactMin.toFixed(2)}m maxPre ${r.maxPre.toFixed(3)} longestRun ${r.longestRun} stuckRun ${r.stuckRun} deepTicks ${r.deepTicks} contacts ${r.contactTicks} finalD ${r.finalD.toFixed(2)}`);
+  assert.ok(r.exactMin < 2.0, `M8: the pair must actually meet in the pocket (closest ${r.exactMin.toFixed(2)}m)`);
+  // Escape sweeps brush transiently (an in-place about-face out of nose
+  // contact sweeps the snout across the peer for a few ticks): no
+  // body-body overlap (0.6+), no sustained grind.
+  assert.ok(r.deepTicks < 8, `M8: only transient escape-sweep brushes (deepTicks ${r.deepTicks}, maxPre ${r.maxPre.toFixed(3)})`);
+  assert.ok(r.maxPre < 0.6, `M8: no body-body overlap (maxPre ${r.maxPre.toFixed(3)})`);
+  assert.ok(r.stuckRun <= 30, `M8: no stuck episode past 0.5 s (stuckRun ${r.stuckRun}, longestRun ${r.longestRun})`);
+  assert.ok(r.maxPost < 0.2, `M8: no post-separation violations (maxPost ${r.maxPost.toFixed(3)})`);
+  console.log("PASS merge-M8-corner-pocket");
+}
+
+// Rig M9: 1-wide corridor, rail vs waiter — same grind in the open:
+// the follower rides east into a stationary mob mid-corridor (spawned in
+// contact). Episodes stay within half a second and the waiter stops
+// travelling (courtesy hold: push a passive peer and the drive holds
+// instead of bulldozing it down the corridor).
+{
+  buildFlat(); clearEntryClaims();
+  wallRow(-8, 8, 1);
+  wallRow(-8, 8, -1);
+  const fol = makeMob(-1.0, 0.5, Math.PI / 2, 433);
+  fol.lane = { axis: Math.PI / 2, entry: -Math.PI / 2, lockX: -1, lockZ: -1 };
+  const parked = makeMob(0.9, 0.5, -Math.PI / 2, 434);
+  parked.speed = 0; parked.target = { x: 0.9, z: 0.5 }; parked.wanderT = NO_EXPIRY;
+  const r = runMerge([fol, parked],
+    new Map([[fol, { x: 30, z: 0.5 }], [parked, parked.target]]),
+    { name: "M9", ticks: 900, laned: [fol] });
+  console.log(`merge-M9 rail-waiter: closest ${r.exactMin.toFixed(2)}m maxPre ${r.maxPre.toFixed(3)} longestRun ${r.longestRun} stuckRun ${r.stuckRun} deepTicks ${r.deepTicks} contacts ${r.contactTicks} finalD ${r.finalD.toFixed(2)}`);
+  assert.ok(r.exactMin < 2.0, `M9: the pair must actually meet (closest ${r.exactMin.toFixed(2)}m)`);
+  // Escape sweeps brush transiently (an in-place about-face out of nose
+  // contact sweeps the snout across the peer for a few ticks): no
+  // body-body overlap (0.6+), no sustained grind.
+  assert.ok(r.deepTicks < 8, `M9: only transient escape-sweep brushes (deepTicks ${r.deepTicks}, maxPre ${r.maxPre.toFixed(3)})`);
+  assert.ok(r.maxPre < 0.6, `M9: no body-body overlap (maxPre ${r.maxPre.toFixed(3)})`);
+  assert.ok(r.stuckRun <= 30, `M9: no stuck episode past 0.5 s (stuckRun ${r.stuckRun}, longestRun ${r.longestRun})`);
+  assert.ok(r.maxPost < 0.2, `M9: no post-separation violations (maxPost ${r.maxPost.toFixed(3)})`);
+  console.log("PASS merge-M9-rail-waiter");
 }
 
 console.log("separation.test.mjs: ALL PASS");

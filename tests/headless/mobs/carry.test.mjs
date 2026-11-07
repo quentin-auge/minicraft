@@ -10,7 +10,7 @@ import {
 import {
   CARRY_DIST, CARRY_DOWN, heldMob, holdMob, latchMob, severCarry, isCarried,
   staysHullPinned,
-  holdFeet, tickHeld, boxFree, findReleaseSpot, settleReleased,
+  holdFeet, tickHeld, boxFree, findReleaseSpot, releasePeerFree, settleReleased,
   grabHaulProtected, resolveBlockLanding, applyMobGap,
 } from "../../../src/mobs/carry.js";
 import { registerMobType, registerMobSource, allMobs, mobType } from "../../../src/mobs/registry.js";
@@ -112,6 +112,25 @@ for (let dx = -2; dx <= 2; dx++)
   for (let dz = -2; dz <= 2; dz++)
     for (let y = 0; y <= 10; y++) solid.add(`${dx},${y},${dz}`);
 assert.equal(findReleaseSpot(isSolidAt, 0.3, 1, 0.5, 0, 0.5), null); // nowhere: caller keeps holding
+
+// --- release peer veto: a live peer's body reads like a wall ---
+const freeAir = () => false; // no voxels anywhere
+const released = { pos: { x: 9, y: 9, z: 9 }, hw: 0.32, h: 1, alive: true, dim: "over" };
+const sitter = { pos: { x: 0.5, y: 1, z: 0.5 }, hw: 0.32, h: 1, alive: true, dim: "over" };
+assert.equal(releasePeerFree([], released, 0.5, 1, 0.5), true, "no peers: free");
+assert.equal(releasePeerFree([sitter], released, 0.5, 1, 0.5), false, "peer on the spot: blocked");
+assert.equal(releasePeerFree([{ ...sitter, alive: false }], released, 0.5, 1, 0.5), true, "dead peers never block");
+assert.equal(releasePeerFree([{ ...sitter, dim: "end" }], released, 0.5, 1, 0.5), true, "other dims never block");
+assert.equal(releasePeerFree([sitter], released, 5, 1, 5), true, "distant peers never block");
+assert.deepEqual(findReleaseSpot(freeAir, 0.32, 1, 0.5, 1, 0.5, 0,
+  (x, y, z) => releasePeerFree([sitter], released, x, y, z)), { x: -0.5, y: 1, z: -0.5 },
+  "peer-held aim falls through to the ring");
+// Voxel-free ring fully peered: null, the caller keeps holding.
+const crowd = [];
+for (let dx = -2; dx <= 2; dx++) for (let dz = -2; dz <= 2; dz++)
+  crowd.push({ pos: { x: 0.5 + dx, y: 1, z: 0.5 + dz }, hw: 0.32, h: 1, alive: true, dim: "over" });
+assert.equal(findReleaseSpot(freeAir, 0.32, 1, 0.5, 1, 0.5, 0,
+  (x, y, z) => releasePeerFree(crowd, released, x, y, z)), null);
 
 // --- ENTER-up abort rule: flights abort, a latched grab haul completes ---
 assert.equal(grabHaulProtected("mob", true), false); // flying grab aborts
