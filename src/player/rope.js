@@ -20,9 +20,36 @@ let mesh = null;
 let tipMesh = null;
 let head = null;
 const _dummy = new THREE.Object3D();
+// Active rope style (spec singleton): re-applied only on change, so the
+// shared materials never pay a needsUpdate per frame.
+let lastRopeStyle = null;
 
 export function initRope(scene) {
   sceneRef = scene;
+}
+
+// Per-kind rope style (master's red carry grapple vs brown block grapple):
+// colors + opacity on the shared materials, driven every visible frame by
+// tickHookFx from line.spec.rope. One hook at a time means no conflicts;
+// the retract keeps its own spec's style.
+export function applyRopeStyle(style) {
+  if (!style || style === lastRopeStyle || !sceneRef) return;
+  // Ensure first: the tip mesh only exists after a settled block grapple,
+  // so a first-of-session mob grab must not bail on missing meshes.
+  ensureRope();
+  ensureHead();
+  ensureTip();
+  lastRopeStyle = style;
+  mesh.material.color.setHex(style.cube);
+  tipMesh.material.color.setHex(style.cube);
+  head.material.color.setHex(style.head);
+  const opacity = style.opacity ?? 1;
+  const trans = opacity < 1;
+  for (const m of [mesh.material, tipMesh.material, head.material]) {
+    m.transparent = trans;
+    m.opacity = opacity;
+    m.needsUpdate = true;
+  }
 }
 
 export function showRope(ax, ay, az, bx, by, bz) {

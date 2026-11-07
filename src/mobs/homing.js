@@ -60,7 +60,7 @@ function aimTarget(camera) {
   let best = null, bestT = Math.min(MAX_AIM_DISTANCE, blockDist + 0.5);
   for (const mob of TARGETS) {
     const spec = mobType(mob.type);
-    if (!mob.alive || mob.dim !== activeDim || !spec?.capabilities.homingTnt) continue;
+    if (!mob.alive || mob.dim !== activeDim || mob._carried || !spec?.capabilities.homingTnt) continue;
     const t = spec.aimHitTest
       ? spec.aimHitTest(mob, camera.position, dir)
       : rayBox(camera.position, dir, mob);

@@ -6,7 +6,7 @@
 // Kinematics (probes, 1-wide servo, stepping, separation) live in mover.js,
 // three-free and headless-tested; this module owns meshes and lifecycle.
 import * as THREE from "three";
-import { registerMobType, createMob } from "./registry.js";
+import { registerMobType, registerMobSource, createMob } from "./registry.js";
 import {
   LIVESTOCK_SPECS, PIG_COUNT, COW_COUNT, setFarmSeed, pickPenSpawns,
   specCircles,
@@ -24,6 +24,7 @@ import { clearEntryClaims } from "./entry.js";
 import { village } from "../world/village.js";
 import { dimSpec } from "../world/dimensions.js";
 import { hash2 } from "../core/noise.js";
+import { isCarried } from "./carry.js";
 
 let sceneRef = null;
 let activeDim = "over";
@@ -105,6 +106,8 @@ function makeFarmMob(kind, { x, z, y, dim, yaw, rand = Math.random }) {
   const mob = {
     type: kind, dim, pos: root.position, vel: new THREE.Vector3(),
     hw: shape.hw, h: shape.h, nose: shape.nose, tail: shape.tail,
+    grabR: shape.grabR, grabH: shape.grabH,
+    grabSide: shape.grabSide, grabFront: shape.grabFront, grabBack: shape.grabBack,
     maxDrop: spec.drop ?? 1, alive: true, root,
     yaw, yawTarget: yaw, target: null, wanderT: 1 + rand() * 3,
     legPhase: rand() * Math.PI * 2, speed: FARM_WALK, rand,
@@ -153,7 +156,7 @@ function disposeFarmMob(mob) {
 for (const kind of ["pig", "cow"]) {
   registerMobType({
     key: kind,
-    capabilities: { walk: true, float: true },
+    capabilities: { walk: true, float: true, grabbable: true },
     create: (ctx) => makeFarmMob(kind, ctx),
     tick: (mob, dt) => {
       tickFarmMob(mob, dt, pickTarget);
@@ -246,6 +249,12 @@ export function handleFarmTravel(scene, dest) {
   syncVisibility();
 }
 
+export function listFarmMobs() {
+  return [...mobs];
+}
+
+registerMobSource("farm", listFarmMobs);
+
 export function tickFarmMobs(dt, dimName) {
   activeDim = dimName;
   sepBuf.length = 0;
@@ -253,6 +262,7 @@ export function tickFarmMobs(dt, dimName) {
     if (!mob.alive) continue;
     mob.root.visible = mob.dim === dimName;
     if (mob.dim !== dimName) continue;
+    if (isCarried(mob)) continue; // grab hook owns the frame: frozen, unplanned
     mob._peerIdx = sepBuf.length;
     sepBuf.push(mob);
   }

@@ -25,7 +25,9 @@ export const AIR_SPRINT = 1.35;
 // Grapple-release inertia: linear horizontal bleed (FLING_LIN) from the
 // first frame after the fling, so the trajectory is a parabola with a
 // vertical asymptote end to end. Below FLING_SNAP the fall reads vertical.
-export const FLING_LIN = 0.9;
+// Tuned halfway between no-input release (lower bound) and held-UP release
+// (upper bound, steering preserves speed): half the lower-bound bleed.
+export const FLING_LIN = 0.45;
 export const FLING_SNAP = 1.0;
 export const STEP_SPEED = 9.5;
 export const STEP_UP = 12;
