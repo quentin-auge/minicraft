@@ -52,9 +52,25 @@ const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
 // probes closing over a pre-turn predicate keep it. Returns {err, dist} —
 // dist 0 covers refused steps and spin-in-place ticks alike.
 export function driveToward(mob, dt, yawTarget, makeStep, move, opts = {}) {
-  const { rate = TURN_RATE, gated = true } = opts;
+  const { rate = TURN_RATE, gated = true, turnOk = null } = opts;
   mob.yawTarget = yawTarget;
-  turnTo(mob, dt, rate);
+  if (turnOk) {
+    // Peer-gated turn: a yaw step that would swing the nose/tail discs
+    // into a peer past the brush budget is halved down (translation gates
+    // only test positions — a pure rotation deepens contact for free).
+    // Partial turns still express, so the dodge never freezes mid-sweep.
+    // Bit-identical to turnTo whenever the gate approves (no floor), so
+    // the only divergence from legacy is an actual veto.
+    let step = clamp(normYaw(yawTarget - mob.yaw), -rate * dt, rate * dt);
+    if (step !== 0) {
+      let guard = 0;
+      while (guard++ < 10 && !turnOk(normYaw(mob.yaw + step))) {
+        step /= 2;
+        if (Math.abs(step) <= 1e-9) { step = 0; break; }
+      }
+    }
+    mob.yaw += step;
+  } else turnTo(mob, dt, rate);
   const err = Math.abs(normYaw(mob.yawTarget - mob.yaw));
   const stride = mob.speed * dt * (gated ? Math.max(0, Math.cos(Math.min(err, Math.PI / 2))) : 1);
   if ((gated && (err >= SPIN || stride <= 1e-6)) || stride <= 0) return { err, dist: 0 };
