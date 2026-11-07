@@ -5,8 +5,8 @@
 //   - picker(origin, dir) returns a descriptor or null (DDA, ray-vs-AABB…).
 //   - the per-kind filter resolves it to an anchor point + landing.
 // Hook kinds are data: shared flight/pull numbers live in HOOK_DEFAULTS,
-// entries override only what differs — a new kind (grab-grapple, ...) is one
-// registry entry with its own speeds, pull mode, ghost, and retarget,
+// entries override only what differs — mob grab/release ship as registry
+// entries with their own speeds, pull mode, ghost, and retarget,
 // never a fork.
 // Grapple (middle-click block hook) is the first specialization. The head is
 // a visible projectile: it flies out boosted to the aimed face, latches
@@ -18,15 +18,18 @@
 // forced back under the liquid): the top submerged cell floats, deeper cells
 // swim freely, and nobody leaves the water while held. In open air it freezes
 // the player until release.
-import { pos, vel, playerBody, collideBody, headInWater, headInWaterAt, setOnGround, setGhostPass, noteFling, PLAYER_HW, PLAYER_H, EYE } from "./physics.js";
+import { pos, vel, yaw, pitch, playerBody, collideBody, headInWater, headInWaterAt, setOnGround, setGhostPass, noteFling, PLAYER_HW, PLAYER_H, EYE } from "./physics.js";
 import { dim, isSolid } from "../core/store.js";
 import { dimSpec } from "../world/dimensions.js";
 import { skyGrappleTarget } from "../world/tntstream.js";
-import { pickPortalFill, portalWindowLive, portalGhostCell } from "../world/portals.js";
+import { pickPortalFill, portalWindowLive, portalGhostCell, toast } from "../world/portals.js";
 import { isSolidId } from "../core/blocks.js";
-import { showRope, showPinnedRope, showTip, hideRope, hideLine, hideTip } from "./rope.js";
+import { showRope, showPinnedRope, showTip, hideRope, hideLine, hideTip, applyRopeStyle } from "./rope.js";
 import { pickBlock } from "./edit.js";
 import { flyOn } from "./fly.js";
+import { pickMob, grabScale, mobCenterOffset } from "../mobs/pick.js";
+import { heldMob, holdMob, latchMob, holdFeet, boxFree, findReleaseSpot, settleReleased, grabHaulProtected, resolveBlockLanding, applyMobGap } from "../mobs/carry.js";
+import { mobType, allMobs } from "../mobs/registry.js";
 
 const HOOK_DEFAULTS = {
   throwSpeed: 70,
@@ -58,11 +61,38 @@ export const HOOK_TYPES = [
     pullSpeed: 26,
     flingSpeed: 34,
     // Pull mode, dispatched live by updateHook: "self-to-anchor" yanks the
-    // player to the landing; a mob kind registers "anchor-to-self" to haul
-    // the anchor instead.
+    // player to the landing; mob kinds register "anchor-to-self" to haul
+    // the anchor (a carried mob) instead.
     pull: "self-to-anchor",
     ghost: grappleGhost,
     retarget: retargetBlock,
+    rope: { cube: 0x8a6d3b, head: 0x4a3a1e, opacity: 1 },
+  },
+  {
+    // Mob grab: the head flies to the aimed mob, then hauls it to the hand
+    // (hold pose below the sight line). No ghosting, no player pull.
+    // Flies in fly mode too (master never gated the carry grapple on fly).
+    ...HOOK_DEFAULTS,
+    key: "mob-grab",
+    throwSpeed: HOOK_DEFAULTS.throwSpeed * 1.25,
+    mobPull: HOOK_DEFAULTS.throwSpeed * 1.25 * 1.25,
+    pull: "anchor-to-self",
+    allowFly: true,
+    ghost: () => false,
+    rope: { cube: 0x870000, head: 0x5a0000, opacity: 0.7 },
+  },
+  {
+    // Mob release: the head ferries the held mob to the aimed block cell,
+    // riding it visibly, then the placement rule settles it (or re-holds).
+    // Flies in fly mode too, like the grab.
+    ...HOOK_DEFAULTS,
+    key: "mob-release",
+    throwSpeed: HOOK_DEFAULTS.throwSpeed * 1.25,
+    mobPull: HOOK_DEFAULTS.throwSpeed * 1.25 * 1.25,
+    pull: "anchor-to-self",
+    allowFly: true,
+    ghost: () => false,
+    rope: { cube: 0x870000, head: 0x5a0000, opacity: 0.7 },
   },
 ];
 
@@ -98,6 +128,54 @@ export function grapplePick(origin, dir) {
   return portal.dist <= bd ? portal : block;
 }
 
+// Mob-grab picker: nearest live mob along the ray with solid occlusion
+// (a mob behind a wall never draws, like master). Ungrabbable kinds veto
+// here with their message instead of falling through to a mob behind.
+export function mobGrabTarget(origin, dir) {
+  if (heldMob()) return null;
+  const eye = { x: origin.x, y: origin.y, z: origin.z };
+  const d = { x: dir.x, y: dir.y, z: dir.z };
+  const block = pickBlock(origin, dir, true, Infinity, 1024);
+  const blockT = block
+    ? Math.hypot(
+      block.x + 0.5 + block.face[0] * 0.5 - eye.x,
+      block.y + 0.5 + block.face[1] * 0.5 - eye.y,
+      block.z + 0.5 + block.face[2] * 0.5 - eye.z)
+    : Infinity;
+  const hit = pickMob(allMobs(), eye, d, {
+    blockT,
+    // Distance-scaled oriented pick box (exact up close, wider far away);
+    // the hook itself latches the body middle, not the hit point.
+    boxScale: grabScale,
+    exclude: (m) => !m.alive || (m.dim ?? "over") !== dim || m._carried || m === heldMob(),
+  });
+  if (!hit) return null;
+  if (!mobType(hit.mob.type)?.capabilities?.grabbable) {
+    const msg = mobType(hit.mob.type)?.refuseMsg;
+    if (msg) toast(msg);
+    return null;
+  }
+  return { kind: "mob", ref: hit.mob };
+}
+
+// Mob-release target: the held mob plus the aimed block and face. The hook
+// resolves the exact player-equivalent landing (shared rule) at fire time
+// and tracks it live, like the player grapple. The caller owns the block
+// aim (currentBlock).
+export function mobReleaseTarget(mob, x, y, z, face) {
+  return { kind: "mobRelease", ref: mob, cx: x, cy: y, cz: z, face };
+}
+
+// Camera-frame helpers for the mob landing (hold pose below the sight line).
+function eyePos() {
+  return { x: pos.x, y: pos.y + EYE, z: pos.z };
+}
+
+function lookDir() {
+  const cp = Math.cos(pitch);
+  return { x: -Math.sin(yaw) * cp, y: Math.sin(pitch), z: -Math.cos(yaw) * cp };
+}
+
 // Anchor readout for streaming eviction pins (null when unhooked).
 export function hookAnchor() {
   if (!hook) return null;
@@ -120,13 +198,14 @@ export function fireSkyHook(origin, dir, minD, maxD, refresh) {
 }
 
 export function fireHookTarget(pick, origin, dir, kindKey = "grapple") {
-  if (flyOn || hook) return false;
+  // Fly gate is per kind spec: the block grapple refuses in fly mode, mob
+  // kinds carry `allowFly` (master never gated the carry grapple on fly).
+  if (hook || (flyOn && !hookKindOf(kindKey).allowFly)) return false;
   const target = pick(origin, dir);
   if (!target) return false;
   // Registry dispatch, no kind-name switches: the filter table resolves the
-  // target kind to an anchor. Unknown kinds (mob, ...) have no entry yet and
-  // refuse, until they ship as table entries with a following retarget and
-  // their own pull mode.
+  // target kind to an anchor. Unknown kinds refuse until they ship as table
+  // entries with a following retarget and their own pull mode.
   const fire = TARGET_FILTERS[target.kind];
   if (!fire) return false;
   return fire(target, hookKindOf(kindKey));
@@ -196,7 +275,219 @@ function hookRetarget(h) { (h.retarget ?? h.spec.retarget)(h); }
 function hookGhost(bx, by, bz, h) { return (h.ghost ?? h.spec.ghost)(bx, by, bz, h); }
 function hookAlive(h) { return (h.alive ?? (() => true))(h); }
 
-const TARGET_FILTERS = { block: fireBlock, portal: firePortal };
+const TARGET_FILTERS = { block: fireBlock, portal: firePortal, mob: fireMob, mobRelease: fireMobRelease };
+
+// Carried-mob alpha (master: opaque while grappled, 0.35 once held).
+// Clone-once per root (shared materials must never go transparent for every
+// mob of that kind), skipping halo-marked meshes; needs no THREE import
+// (traverse/clone are methods). Runs after displacement-color, which
+// reassigns paintable materials every tick.
+export const HELD_ALPHA = 0.35;
+
+export function setMobAlpha(mob, alpha) {
+  const root = mob?.root;
+  if (!root) return;
+  if (mob._alpha === alpha) return;
+  mob._alpha = alpha;
+  const trans = alpha < 1;
+  if (!root.userData.ghostCloned) {
+    root.userData.ghostCloned = true;
+    root.traverse((obj) => {
+      if (obj.isMesh && obj.material && !obj.userData.halo) {
+        obj.material = Array.isArray(obj.material)
+          ? obj.material.map((m) => m.clone())
+          : obj.material.clone();
+      }
+    });
+  }
+  root.traverse((obj) => {
+    if (!obj.isMesh || !obj.material || obj.userData.halo) return;
+    const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
+    for (const m of mats) {
+      m.transparent = trans;
+      m.opacity = alpha;
+      m.depthWrite = !trans;
+      m.needsUpdate = true;
+    }
+  });
+}
+
+// Mob liveness: still alive in this dimension. A mob that dies or changes
+// dim mid-flight severs the hook (retract, no placement) like a mined block.
+function mobAlive(h) {
+  return h.ref && h.ref.alive !== false && (h.ref.dim ?? "over") === dim;
+}
+
+// Grab retarget: the body-middle anchor is re-derived from the live mob
+// position every frame (flight and haul alike), so the hook follows a
+// moving body; the landing tracks the hold pose below the sight line, so
+// both ends follow a moving mob and a moving player mid-flight.
+function retargetMobGrab(h) {
+  h.ax = h.ref.pos.x + h.ox;
+  h.ay = h.ref.pos.y + h.oy;
+  h.az = h.ref.pos.z + h.oz;
+  const f = holdFeet(eyePos(), lookDir(), h.ref.h ?? 1);
+  h.tx = f.x;
+  h.ty = f.y;
+  h.tz = f.z;
+}
+
+// Release retarget: the shared player landing, recomputed live every frame
+// (column edits under a flying head track exactly like the player grapple).
+function retargetMobRelease(h) {
+  const r = resolveBlockLanding(isSolid, h.bx, h.by, h.bz, [h.fx, h.fy, h.fz], h.spec.headOff);
+  h.topLand = r.topLand;
+  h.tx = r.tx; h.ty = r.ty; h.tz = r.tz;
+  h.ax = r.ax; h.ay = r.ay; h.az = r.az;
+}
+
+// Release ride: the mob visibly rides the head (feet hang half a body below
+// it) from the hand to the target cell.
+function rideMobOnHead(h) {
+  h.ref.pos.set(h.hx - h.ox, h.hy - h.oy, h.hz - h.oz);
+  if (h.ref.root) h.ref.root.rotation.y = yaw + Math.PI;
+}
+
+function arriveMobGrab(h) {
+  holdMob(h.ref);
+  if (h.ref.vel?.set) h.ref.vel.set(0, 0, 0);
+  setMobAlpha(h.ref, HELD_ALPHA);
+  finishMobHook(h);
+}
+
+function abortMobGrab(h) {
+  h.ref._carried = false; // flight abort: the mob was never frozen, it just
+  setMobAlpha(h.ref, 1); // keeps moving; haul abort frees it instead
+}
+
+// Grab latch: the head just reached the live body — freeze it now (it kept
+// moving, e.g. falling, for the whole flight). The haul owns its frame
+// from here on.
+function latchMobGrab(h) {
+  latchMob(h.ref);
+}
+
+function arriveMobRelease(h) {
+  // Player-equivalent arrival at the shared landing, validated with the mob
+  // body: gaps first (conditional, like applyArriveGap), then the spot,
+  // then a same-level ring only — never above. A blocked landing re-holds
+  // instead of manufacturing support overhead; gravity then decides exactly
+  // as if the player had been released there (falls iff unsupported). A
+  // placed mob keeps facing the release direction and walks it (mover yaw
+  // convention: same yaw + PI as the held pose, zero visual snap).
+  const mob = h.ref;
+  const hw = mob.hw ?? 0.3, mh = mob.h ?? 1;
+  const g = applyMobGap(isSolid, hw, mh, h, [h.fx, h.fy, h.fz], h.spec.arriveGap, h.spec.hangClear);
+  const at = (x, y, z) => boxFree(isSolid, x, y, z, hw, mh);
+  const spot = at(g.x, g.y, g.z) ? g : findReleaseSpot(isSolid, hw, mh, h.tx, h.ty, h.tz, 0);
+  if (spot) {
+    mob.pos.set(spot.x, spot.y, spot.z);
+    settleReleased(mob, yaw + Math.PI);
+    setMobAlpha(mob, 1);
+  } else {
+    holdMob(mob); // nowhere free: keep holding instead of embedding
+    setMobAlpha(mob, HELD_ALPHA);
+  }
+  finishMobHook(h);
+}
+
+function abortMobRelease(h) {
+  holdMob(h.ref); // back to the hold pose, still frozen
+  setMobAlpha(h.ref, HELD_ALPHA);
+}
+
+// Mob grab fire: latch the body middle on the live body and fly the head
+// out — the mob stays simulated (a falling mob keeps falling) while the
+// head homes on its live anchor; the latch freezes it, then the haul owns
+// its frame to the hand.
+function fireMob(t, spec) {
+  const mob = t.ref;
+  if (!mob || mob.alive === false || (mob.dim ?? "over") !== dim || mob._carried || heldMob()) return false;
+  if (!mobType(mob.type)?.capabilities?.grabbable) return false;
+  const c = mobCenterOffset(mob);
+  const a = {
+    kind: "mob", spec, ref: mob, ox: c.x, oy: c.y, oz: c.z,
+    alive: mobAlive, retarget: retargetMobGrab, latch: latchMobGrab, onArrive: arriveMobGrab, onAbort: abortMobGrab,
+  };
+  hookRetarget(a);
+  const sx = pos.x, sy = pos.y + spec.eyeDy, sz = pos.z;
+  if (Math.hypot(a.ax - sx, a.ay - sy, a.az - sz) < 0.3) return false;
+  const dist = Math.hypot(a.ax - sx, a.ay - sy, a.az - sz);
+  hook = { ...a, sx, sy, sz, tx: a.tx, ty: a.ty, tz: a.tz, hx: sx, hy: sy, hz: sz, fly: 0, dist, flying: true, arrived: false, pulling: false, stuck: 0 };
+  line = { spec, hx: sx, hy: sy, hz: sz, retracting: false };
+  setGhostPass((bx, by, bz) => !!hook && !hook.arrived && hookGhost(bx, by, bz, hook));
+  return true;
+}
+
+// Mob release fire: hands empty while the hook ferries the held mob to the
+// shared player-equivalent landing for the aimed block (same conditions,
+// ride-up included — a released mob falls if and only if the player would
+// have fallen there after arrival + release).
+function fireMobRelease(t, spec) {
+  const mob = t.ref;
+  if (!mob || heldMob() !== mob) return false;
+  holdMob(null);
+  mob._carried = true;
+  const face = t.face ?? [0, 1, 0];
+  const a = {
+    kind: "mobRelease", spec, ref: mob, ox: 0, oy: (mob.h ?? 1) * 0.5, oz: 0,
+    bx: t.cx, by: t.cy, bz: t.cz, fx: face[0], fy: face[1], fz: face[2],
+    alive: mobAlive, retarget: retargetMobRelease, ride: rideMobOnHead,
+    onArrive: arriveMobRelease, onAbort: abortMobRelease,
+  };
+  hookRetarget(a);
+  const sx = pos.x, sy = pos.y + spec.eyeDy, sz = pos.z;
+  if (Math.hypot(a.tx - sx, a.ty - sy, a.tz - sz) < 0.3) { holdMob(mob); return false; }
+  const dist = Math.hypot(a.tx - sx, a.ty - sy, a.tz - sz);
+  hook = { ...a, sx, sy, sz, hx: sx, hy: sy, hz: sz, fly: 0, dist, flying: true, arrived: false, pulling: false, stuck: 0 };
+  line = { spec, hx: sx, hy: sy, hz: sz, retracting: false };
+  setGhostPass((bx, by, bz) => !!hook && !hook.arrived && hookGhost(bx, by, bz, hook));
+  return true;
+}
+
+// Mob-hook teardown: retract the rope with no player fling. Arrival converts
+// (hold/place) through onArrive; ENTER-up aborts through onAbort.
+function finishMobHook(h) {
+  line = { spec: h.spec, hx: h.flying ? h.hx : h.ax, hy: h.flying ? h.hy : h.ay, hz: h.flying ? h.hz : h.az, retracting: true };
+  clearHook();
+}
+
+function abortMobHook() {
+  const h = hook;
+  if (h?.onAbort) h.onAbort(h);
+  if (h) line = { spec: h.spec, hx: h.flying ? h.hx : h.ax, hy: h.flying ? h.hy : h.ay, hz: h.flying ? h.hz : h.az, retracting: true };
+  clearHook();
+}
+
+// "anchor-to-self": drive the mob toward the landing at the kind's haul
+// speed while the head stays pinned on its anchor. The player frame freezes
+// (like a settled grapple) so the hold pose can't drift mid-haul. Anchor
+// death severs instead of placing thin air.
+function pullAnchorToSelf(dt) {
+  const h = hook, spec = h.spec, mob = h.ref;
+  hookRetarget(h);
+  if (!hookAlive(h)) { abortMobHook(); return false; }
+  line.hx = h.ax; line.hy = h.ay; line.hz = h.az;
+  const dx = h.tx - mob.pos.x, dy = h.ty - mob.pos.y, dz = h.tz - mob.pos.z;
+  const dist = Math.hypot(dx, dy, dz);
+  const step = (spec.mobPull ?? spec.pullSpeed) * dt;
+  if (dist <= step + 0.15) {
+    mob.pos.set(h.tx, h.ty, h.tz);
+    h.hx = h.ax; h.hy = h.ay; h.hz = h.az;
+    h.onArrive(h);
+    return false;
+  }
+  const s = step / dist;
+  mob.pos.x += dx * s;
+  mob.pos.y += dy * s;
+  mob.pos.z += dz * s;
+  if (mob.root) mob.root.rotation.y = yaw + Math.PI;
+  if (mob.vel?.set) mob.vel.set(0, 0, 0);
+  h.hx = h.ax; h.hy = h.ay; h.hz = h.az;
+  line.hx = h.ax; line.hy = h.ay; line.hz = h.az;
+  h.pulling = true;
+  return true;
+}
 
 // Re-resolve every frame (flight and pull): the rope anchor sits centered
 // on the aimed face plane (top faces: column-top surface point;
@@ -205,21 +496,14 @@ const TARGET_FILTERS = { block: fireBlock, portal: firePortal };
 // a short stack rides up onto the anchor top, taller faces land in the
 // free cell before the hit, feet at its bottom. Re-resolving in flight
 // tracks column edits under a flying head; mob kinds track mob.pos here.
+// The landing math is the shared rule in carry.js (mob release lands
+// exactly where the player would).
 function retargetBlock(h) {
-  const off = h.spec.headOff;
-  let q = 0;
-  while (isSolid(h.bx, h.by + q + 1, h.bz)) q++;
-  h.topLand = q <= 1;
-  if (h.topLand) {
-    h.topY = h.by + q;
-    h.tx = h.bx + 0.5; h.ty = h.topY + 1.001; h.tz = h.bz + 0.5;
-    h.ax = h.bx + 0.5; h.ay = h.topY + 1 + off; h.az = h.bz + 0.5;
-  } else {
-    h.tx = h.bx + h.fx + 0.5; h.ty = h.by + h.fy + 0.001; h.tz = h.bz + h.fz + 0.5;
-    h.ax = h.bx + 0.5 + h.fx * (0.5 + off);
-    h.ay = h.by + 0.5 + h.fy * (0.5 + off);
-    h.az = h.bz + 0.5 + h.fz * (0.5 + off);
-  }
+  const r = resolveBlockLanding(isSolid, h.bx, h.by, h.bz, [h.fx, h.fy, h.fz], h.spec.headOff);
+  h.topLand = r.topLand;
+  h.topY = r.topY;
+  h.tx = r.tx; h.ty = r.ty; h.tz = r.tz;
+  h.ax = r.ax; h.ay = r.ay; h.az = r.az;
 }
 
 // The anchor column is passable only for top landings (riding up to stand
@@ -335,6 +619,15 @@ export function hookHeldSwim() {
 // head, so nothing stays welded on the face during the ride back.
 export function cancelHook(fling = true) {
   if (!hook && !line) return;
+  // Mob hooks never fling the player: ENTER-up aborts a flight (grab frees,
+  // release re-holds) but never a latched grab haul — like master, the haul
+  // to the hand always completes once the head has latched
+  // (`grabHaulProtected`, regression-tested in carry.test.mjs).
+  if (hook && hook.spec.pull === "anchor-to-self") {
+    if (grabHaulProtected(hook.kind, hook.flying)) return;
+    abortMobHook();
+    return;
+  }
   const spec = (hook && hook.spec) || (line && line.spec) || HOOK_TYPES[0];
   const pulling = hook ? !!hook.pulling : false;
   if (pulling) {
@@ -382,19 +675,22 @@ export function updateHook(dt) {
       hook.hx = hook.ax; hook.hy = hook.ay; hook.hz = hook.az;
       hook.flying = false;
       hook.pulling = false;
+      if (hook.latch) hook.latch(hook); // grab latch: freeze the live body
       line = { spec, hx: hook.ax, hy: hook.ay, hz: hook.az, retracting: false };
       return false;
     }
     hook.hx = hook.sx + (hook.ax - hook.sx) * hook.fly;
     hook.hy = hook.sy + (hook.ay - hook.sy) * hook.fly;
     hook.hz = hook.sz + (hook.az - hook.sz) * hook.fly;
+    if (hook.ride) hook.ride(hook); // release ferry: the mob rides the head
     line.hx = hook.hx; line.hy = hook.hy; line.hz = hook.hz;
     hook.pulling = false;
     return false;
   }
-  // Pull-mode dispatch: grapple yanks the player to the landing; future
-  // kinds (mob grab: "anchor-to-self") add their branch beside it.
+  // Pull-mode dispatch: grapple yanks the player to the landing; mob kinds
+  // ("anchor-to-self") haul the anchor to the hand/cell instead.
   if (spec.pull === "self-to-anchor") return pullSelfToAnchor(dt);
+  if (spec.pull === "anchor-to-self") return pullAnchorToSelf(dt);
   return false;
 }
 
@@ -456,6 +752,7 @@ function pullSelfToAnchor(dt) {
 export function tickHookFx(dt) {
   if (!line) return;
   const spec = line.spec;
+  applyRopeStyle(spec.rope);
   const cx = pos.x, cy = pos.y + spec.eyeDy, cz = pos.z;
   if (line.retracting) {
     // Detach the mark from the anchor on arrival here, so the cross and dark

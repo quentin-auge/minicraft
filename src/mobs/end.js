@@ -1,6 +1,7 @@
 // End-specific mob types: the flying boss and the gaze-reactive Enderman.
 import * as THREE from "three";
-import { registerMobType, mobType, createMob } from "./registry.js";
+import { registerMobType, registerMobSource, mobType, createMob } from "./registry.js";
+import { isCarried } from "./carry.js";
 import { registerHomingTarget } from "./homing.js";
 import { pickBlock } from "../player/edit.js";
 import { BLOCK_INFO } from "../core/blocks.js";
@@ -253,11 +254,14 @@ function makeEnderman(index) {
   }
   const mob = {
     ...model, type: "enderman", dim: "end", pos: model.root.position,
-    hw: 0.31, h: 2.7, alive: true, t: mobHash(index, 13, 9405) * 6,
+    hw: 0.31, h: 2.7, grabR: 0.5, grabH: 2.7,
+    grabSide: 0.5, grabFront: 0.3, grabBack: 0.25, yaw: 0,
+    alive: true, t: mobHash(index, 13, 9405) * 6,
     lookTime: 0, angryTime: 0, redTime: 0,
   };
   model.root.position.set(x, END_PLATFORM_TOP + 1, z);
-  model.root.rotation.y = mobHash(index, 17, 9406) * Math.PI * 2;
+  mob.yaw = mobHash(index, 17, 9406) * Math.PI * 2;
+  model.root.rotation.y = mob.yaw;
   sceneRef.add(model.root);
   return mob;
 }
@@ -290,6 +294,7 @@ function dragonAimHit(mob, origin, direction) {
 registerMobType({
   key: "dragon",
   capabilities: { flying: true, homingTnt: true },
+  refuseMsg: "The dragon is too powerful to grab",
   homingTntShots: Infinity,
   aimHitTest: dragonAimHit,
   create: createDragon,
@@ -299,7 +304,7 @@ registerMobType({
 });
 registerMobType({
   key: "enderman",
-  capabilities: { flying: false, homingTnt: false },
+  capabilities: { flying: false, homingTnt: false, grabbable: true },
   create: createEnderman,
   tick: tickEnderman,
   dispose: disposeEndMob,
@@ -523,7 +528,8 @@ function groundYAt(x, z) {
 export function notifyEndermanVoxelChange(changed, camera) {
   if (!changed || !changed.length || !sceneRef) return;
   for (const mob of mobs) {
-    if (!mob.alive || mob.type !== "enderman") continue;
+    // A held enderman never teleports: the grab hook owns its frame.
+    if (!mob.alive || mob.type !== "enderman" || isCarried(mob)) continue;
     let relevant = false;
     const yLo = Math.floor(mob.pos.y) - 1, yHi = Math.floor(mob.pos.y + mob.h);
     for (const c of changed) {
@@ -543,6 +549,7 @@ function tickEnderman(mob, dt, camera) {
   if (mob.redTime > 0) mob.redTime = Math.max(0, mob.redTime - dt);
   const dx = camera.position.x - mob.pos.x, dz = camera.position.z - mob.pos.z;
   if (Math.hypot(dx, dz) > 0.001) mob.root.rotation.y = Math.atan2(dx, dz);
+  mob.yaw = mob.root.rotation.y; // oriented pick box tracks the facing
   const shaking = mob.angryTime > 0;
   const amp = shaking ? 0.45 : 0.06;
   const phase = mob.t * (shaking ? 16 : 1.8);
@@ -597,9 +604,16 @@ export function clearEndMobs() {
   dragonRef = null;
 }
 
+export function listEndMobs() {
+  return [...mobs];
+}
+
+registerMobSource("end", listEndMobs);
+
 export function tickEndMobs(dt, camera) {
   for (const mob of mobs) {
     if (!mob.alive) continue;
+    if (isCarried(mob)) continue; // grab hook owns the frame: frozen mid-hold
     mobType(mob.type)?.tick?.(mob, dt, camera);
   }
 }
