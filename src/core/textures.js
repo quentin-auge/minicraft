@@ -4,6 +4,7 @@ import {
   GRASS, DIRT, STONE, SAND, LOG, LEAVES, WATER, PLANKS, GLASS,
   TNT, MEGA_TNT, ULTRA_TNT, FLOWER, PORTAL, ENDSTONE, OBSIDIAN, CLOUD, MOON, MOON_WATER,
   GLOWSTONE, LAVA, NETHERRACK, SOULSAND,
+  HULL, HULL_ACCENT, THRUSTER, PAD,
 } from "./blocks.js";
 import { GLOW_VARIANTS, GLOW_ICON_VARIANT } from "../world/glowstone.js";
 
@@ -266,6 +267,46 @@ export const TEX = {
     ctx.fillStyle = "rgba(0,0,0,0.16)";
     for (let i = 0; i < 6; i++) ctx.fillRect(Math.random() * 14, Math.random() * 14, 2 + Math.random() * 3, 2 + Math.random() * 2);
   }),
+  hull: canvasTex((ctx) => {
+    ctx.fillStyle = "#e6e9ee"; ctx.fillRect(0, 0, 16, 16);
+    pxNoise(ctx, [230, 233, 238], 10);
+    ctx.fillStyle = "rgba(120,130,145,0.55)";
+    ctx.fillRect(0, 0, 16, 1); ctx.fillRect(0, 15, 16, 1);
+    ctx.fillRect(0, 0, 1, 16); ctx.fillRect(15, 0, 1, 16);
+    ctx.fillStyle = "rgba(160,170,185,0.45)";
+    for (const [x, y] of [[2, 3], [13, 3], [2, 12], [13, 12]]) ctx.fillRect(x, y, 1, 1);
+  }),
+  hull_orange: canvasTex((ctx) => {
+    ctx.fillStyle = "#dd6b24"; ctx.fillRect(0, 0, 16, 16);
+    pxNoise(ctx, [221, 107, 36], 14);
+    ctx.fillStyle = "rgba(90,35,10,0.45)";
+    ctx.fillRect(0, 0, 16, 2); ctx.fillRect(0, 14, 16, 2);
+    ctx.fillStyle = "rgba(255,180,110,0.35)";
+    ctx.fillRect(2, 5, 12, 1); ctx.fillRect(2, 10, 12, 1);
+  }),
+  thruster: canvasTex((ctx) => {
+    ctx.fillStyle = "#2b2f36"; ctx.fillRect(0, 0, 16, 16);
+    pxNoise(ctx, [43, 47, 54], 14);
+    ctx.strokeStyle = "#14161a"; ctx.lineWidth = 1;
+    for (const r of [2, 4, 6]) { ctx.beginPath(); ctx.arc(8, 8, r, 0, Math.PI * 2); ctx.stroke(); }
+    ctx.fillStyle = "#dd6b24"; ctx.fillRect(7, 7, 2, 2);
+    ctx.fillStyle = "#4a505a"; ctx.fillRect(0, 0, 16, 1); ctx.fillRect(0, 15, 16, 1);
+  }),
+  pad: canvasTex((ctx) => {
+    ctx.fillStyle = "#3a3f47"; ctx.fillRect(0, 0, 16, 16);
+    pxNoise(ctx, [58, 63, 71], 16);
+    ctx.fillStyle = "#d8a31d";
+    for (let i = 0; i < 4; i++) {
+      ctx.save();
+      ctx.translate(i * 4, 0);
+      ctx.beginPath(); ctx.moveTo(0, 16); ctx.lineTo(4, 12); ctx.lineTo(4, 16); ctx.closePath(); ctx.fill();
+      ctx.restore();
+    }
+    ctx.strokeStyle = "rgba(0,0,0,0.45)"; ctx.lineWidth = 1;
+    ctx.strokeRect(0.5, 0.5, 15, 15);
+    ctx.fillStyle = "rgba(190,200,215,0.35)";
+    for (const [x, y] of [[3, 4], [12, 4], [3, 9], [12, 9]]) ctx.fillRect(x, y, 1, 1);
+  }),
 };
 
 export function material(map, opts = {}) {
@@ -446,6 +487,10 @@ export function materialsFor(id) {
     case LAVA: return basicFace(TEX.lava, { fog: false });
     case NETHERRACK: return faceTex(TEX.netherrack);
     case SOULSAND: return faceTex(TEX.soulsand);
+    case HULL: return faceTex(TEX.hull);
+    case HULL_ACCENT: return faceTex(TEX.hull_orange);
+    case THRUSTER: return faceTex(TEX.thruster);
+    case PAD: return faceTex(TEX.pad);
     default: return faceTex(TEX.dirt);
   }
 }

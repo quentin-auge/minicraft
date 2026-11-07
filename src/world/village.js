@@ -5,6 +5,14 @@
 import { AIR, GRASS, STONE, LOG, WATER, GLASS, PLANKS, PORTAL, OBSIDIAN, BLOCK_INFO } from "../core/blocks.js";
 import { hash2 } from "../core/noise.js";
 import { WATER_LEVEL, WORLD_RADIUS, key } from "../core/store.js";
+import { choosePadSite, placeRocketSite } from "./rocketpad.js";
+
+// Rect overlap with a clearance margin, shared by every structure placer so
+// the pad, pen, pool, and houses never stack: one rule, never a fork.
+export function rectsOverlap(a, b, margin = 0) {
+  return !(a.maxX + margin < b.minX || b.maxX + margin < a.minX ||
+           a.maxZ + margin < b.minZ || b.maxZ + margin < a.minZ);
+}
 
 // Village dimensions as one spec object: a bigger or denser village
 // overrides properties here, never the layout code below.
@@ -21,6 +29,7 @@ export const village = {
   houses: [],
   pen: null,
   pool: null,
+  pad: null,
   minX: 0, maxX: 0, minZ: 0, maxZ: 0,
   radius: VILLAGE_SPEC.radius,
   houseCount: VILLAGE_SPEC.houses,
@@ -44,12 +53,14 @@ export function configureVillage({ radius = VILLAGE_SPEC.radius, houses = VILLAG
 }
 
 // Picks a flat-ish site near the world center, then places pen, pool, and
-// houses with mutual avoidance. Needs heightAt from the overworld module.
+// houses with mutual avoidance, and the launch pad last at a clear remove
+// from all of them. Needs heightAt from the overworld module.
 export function computeLayout(seed, heightAt) {
   const R = village.radius;
   village.houses = [];
   village.pen = null;
   village.pool = null;
+  village.pad = null;
   villageFrames.length = 0;
   let vx = 0, vz = 0, vy = 0;
   for (let t = 0; t < 400; t++) {
@@ -117,6 +128,18 @@ export function computeLayout(seed, heightAt) {
     const beamMask = Math.floor(hash2(i, 20, seed + 7330) * 16);
     village.houses.push({ id: i, cx, cz, vy, minX, maxX, minZ, maxZ, doorNx, doorNz, d0x, d0z, d1x, d1z, varId, beamMask });
     i++;
+  }
+  // Launch pad last: systematically in a village-square corner, one clear
+  // cell off the corner. The village bounds absorb it so the terrain fill
+  // flattens its footprint.
+  {
+    village.pad = choosePadSite(heightAt, vx, vz, R, vy);
+    if (village.pad) {
+      village.minX = Math.min(village.minX, village.pad.minX);
+      village.maxX = Math.max(village.maxX, village.pad.maxX);
+      village.minZ = Math.min(village.minZ, village.pad.minZ);
+      village.maxZ = Math.max(village.maxZ, village.pad.maxZ);
+    }
   }
 }
 
@@ -292,5 +315,6 @@ function levelHouse(h, setBlock, getBlock) {
 export function placeVillage(setBlock, getBlock) {
   placePen(setBlock, getBlock);
   placePool(setBlock, getBlock);
+  placeRocketSite(setBlock, getBlock, village.pad);
   placeHouses(setBlock, getBlock);
 }

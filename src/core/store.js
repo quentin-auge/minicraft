@@ -123,6 +123,10 @@ export function protectCell(x, y, z, name = dim) {
   protectedCells[name].add(key(x, y, z));
 }
 
+export function unprotectCell(x, y, z, name = dim) {
+  protectedCells[name].delete(key(x, y, z));
+}
+
 export function isCellProtected(x, y, z, name = dim) {
   return protectedCells[name].has(key(x, y, z));
 }

@@ -261,7 +261,10 @@ export function tickFarmMobs(dt, dimName) {
   for (const mob of mobs) {
     if (!mob.alive) continue;
     mob.root.visible = mob.dim === dimName;
-    if (mob.dim !== dimName) continue;
+    // Riding mobs are frozen statues pinned by the vehicle, carried mobs
+    // are owned by the grab hook: skip the whole tick (mover, entry,
+    // separation planning) so nothing can drift them mid-flight.
+    if (mob.dim !== dimName || mob._riding) continue;
     if (isCarried(mob)) continue; // grab hook owns the frame: frozen, unplanned
     mob._peerIdx = sepBuf.length;
     sepBuf.push(mob);

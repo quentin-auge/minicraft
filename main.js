@@ -70,6 +70,12 @@ const bridgeTouchedUnion = [];
 import { CHUNK, renderDist, dim, setDimension, setBlock, getBlock, outOfWorld, worlds } from "./src/core/store.js";
 import { dimEnv, dimSpec, dimHasMoon, dimHotbar } from "./src/world/dimensions.js";
 import { EYE, setFlyStepAllow, updateFreeSwim } from "./src/player/physics.js";
+import { setExtraSolid } from "./src/player/physics.js";
+import {
+  initRocket, resetRocket, tickRocket, rocketPiloting, rocketTakesOver,
+  rocketEditingBlocked, rocketSolidAt, rocketFlying,
+  rocketAimHit, rocketPlaceExtra, rocketBreakExtra, carryRiders,
+} from "./src/vehicles/rocket.js";
 import { initHomingTnt, fireHomingTnt, tickHomingTnt, clearHomingTnt } from "./src/mobs/homing.js";
 import { enterEndMobs, clearEndMobs, tickEndMobs, notifyEndermanVoxelChange, dragonHealth, setDragonVictoryHook, setMobSeed } from "./src/mobs/end.js";
 import { enterFarmMobs, clearFarmMobs, tickFarmMobs, handleFarmTravel, setFarmSeed, spawnFarmMobAt } from "./src/mobs/farm.js";
@@ -125,6 +131,8 @@ initPoolLights(scene);
 initAmbient(scene);
 initRope(scene);
 initPortals(scene);
+initRocket(scene, addCamShake);
+setExtraSolid(rocketSolidAt);
 buildPortalDom();
 // Fly steps up only onto bottom frames of portals with a live fill.
 setFlyStepAllow((bx, by, bz) => isLivePortalSill(bx, by, bz));
@@ -369,9 +377,10 @@ async function buildWorld() {
   building = true;
   worldReady = false;
   revealT = 0;
-  severHook();
-  dropHeldMob();
-  clearHomingTnt();
+    severHook();
+    dropHeldMob();
+    resetRocket();
+    clearHomingTnt();
   clearEndMobs();
   clearFarmMobs();
   resetTravelLinks();
@@ -816,6 +825,20 @@ document.addEventListener("mousemove", (e) => {
 
 document.addEventListener("mousedown", (e) => {
   if (!isLocked() || isHelpOpen() || !started) return;
+  if (rocketEditingBlocked()) return;
+  // In flight the pilot edits the moving hull directly: discrete taps join
+  // or leave the riding set (no chain strokes, no grapple).
+  if (rocketFlying()) {
+    camera.getWorldDirection(_hookDir);
+    if (e.button === 0) {
+      const hit = rocketAimHit(camera.position, _hookDir);
+      if (hit) rocketPlaceExtra(hit, selectedId());
+    } else if (e.button === 2) {
+      const hit = rocketAimHit(camera.position, _hookDir);
+      if (hit) rocketBreakExtra(hit);
+    }
+    return;
+  }
   if (e.button === 0) {
     const id = selectedId();
     if (id === TNT && fireHomingTnt(camera)) return;
@@ -868,6 +891,9 @@ document.addEventListener("keydown", (e) => {
   if (e.code === "KeyH" && !keys[e.code]) { openHelp(); e.preventDefault(); return; }
   if (e.code === "Equal" && !e.repeat) { toggleDebug(); return; }
   if (e.code === "KeyF" && !e.repeat && started && !isHelpOpen()) {
+    // No fly toggle while piloting the rocket; the parked cabin keeps
+    // fly on (no prompt, no takeoff until it is off).
+    if (rocketPiloting()) { e.preventDefault(); return; }
     if (!flyOn) {
       setFly(true);
       cancelHook(false);
@@ -878,6 +904,7 @@ document.addEventListener("keydown", (e) => {
     return;
   }
   if (e.code === "KeyG" && !e.repeat && started && !isHelpOpen() && isLocked()) {
+    if (rocketPiloting()) { e.preventDefault(); return; }
     camera.getWorldDirection(_hookDir);
     if (!fireHookTarget(grapplePick, camera.position, _hookDir)) {
       fireSkyHook(camera.position, _hookDir, scene.fog.far + 40, TNT_SKY_GRAPPLE_MAX, refreshBlocks);
@@ -891,6 +918,7 @@ document.addEventListener("keydown", (e) => {
   // New World, or a running transition (travelTo no-ops while busy anyway).
   const WORLD_CYCLE = ["over", "end", "nether", "tnt"];
   if (e.code === "KeyZ" && !e.repeat && started && !isHelpOpen() && isLocked() && !building && isCheat()) {
+    if (rocketPiloting()) { e.preventDefault(); return; }
     const at = WORLD_CYCLE.indexOf(dim);
     debugTravelTo(WORLD_CYCLE[(at + 1) % WORLD_CYCLE.length]);
     e.preventDefault();
@@ -1056,10 +1084,13 @@ function loop(now) {
     }
     // Knockback impulse decays every sim frame, whatever mode moves next;
     // the hook pull owns its frame and simply leaves it for afterwards.
+    tickRocket(dt);
     tickKnockback(dt);
     const hookOwnsFrame = hookActive() ? updateHook(dt) : false;
     if (!hookOwnsFrame) {
-      if (hookHeldSwim()) updateFreeSwim(dt);
+      if (rocketTakesOver()) {
+        // Pilot stays pinned by tickRocket; the rocket reads the keys.
+      } else if (hookHeldSwim()) updateFreeSwim(dt);
       else if (flyOn) updateFly(dt);
       else updatePlayer(dt);
     }
@@ -1103,6 +1134,9 @@ function loop(now) {
     tickHomingTnt(sdt, dim);
     if (dim === "end") tickEndMobs(sdt, camera);
     tickFarmMobs(sdt, dim);
+    // Riding mobs inherit the hull delta after their own tick ran, so their
+    // gravity never pulls them through the moving (voxel-less) hull.
+    carryRiders();
     drainBlastRemesh(pos.x, pos.y, pos.z, scene.fog.far);
     // GPU relief while a wipe, dense mega, or sliced carve runs (master's
     // quality-tier dip): full resolution restores the frame the queues
@@ -1191,7 +1225,11 @@ function loop(now) {
       }
     }
     tickPortals(sdt, true);
-    const hit = updateTarget(camera, selectedId());
+    // In flight the highlight tracks the moving hull (voxel DDA would sail
+    // through it); held chain strokes are skipped there, discrete taps only.
+    const hit = rocketFlying()
+      ? rocketAimHit(camera.position, camera.getWorldDirection(_hookDir))
+      : (rocketEditingBlocked() ? null : updateTarget(camera, selectedId()));
     if (hit) {
       highlight.visible = true;
       highlight.position.set(hit.x + 0.5, hit.y + 0.5, hit.z + 0.5);
@@ -1203,7 +1241,8 @@ function loop(now) {
     // Held edits queue (budgeted drain) instead of rebuilding inline, so a
     // max-rate bridge never pays a synchronous rebuildChunk per frame;
     // discrete taps keep the sync path in the mousedown handlers above.
-    const touched = tickChain(chain, dt, {
+    // Skipped in flight: hull edits are discrete taps on the moving model.
+    const touched = rocketFlying() ? [] : tickChain(chain, dt, {
       camera,
       currentBlock: hit,
       selectedId: selectedId(),

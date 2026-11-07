@@ -120,6 +120,17 @@
       background: rgba(0,0,0,0.5); padding: 12px 22px; border-radius: 10px;
       opacity: 0; transition: opacity .4s; pointer-events: none; text-align: center;
     }
+    #rocketPrompt {
+      position: fixed; bottom: 96px; left: 50%; transform: translateX(-50%);
+      color: #fff; font-size: 17px; font-weight: 700; text-shadow: 1px 1px 3px #000;
+      background: rgba(0,0,0,0.55); padding: 10px 20px; border-radius: 8px;
+      display: none; pointer-events: none; text-align: center; z-index: 20;
+    }
+    #rocketCountdown {
+      position: fixed; top: 30%; left: 50%; transform: translateX(-50%);
+      color: #ff9a33; font-size: 72px; font-weight: 800; text-shadow: 2px 2px 6px #000;
+      display: none; pointer-events: none; z-index: 20;
+    }
     #bossbar {
       position: fixed; top: 52px; left: 50%; transform: translateX(-50%);
       width: 340px; max-width: 60vw; text-align: center; display: none; pointer-events: none;
@@ -219,6 +230,8 @@
     <div class="swirl-wrap front"><svg id="portalSpiralFront" viewBox="-100 -100 200 200" data-spin="150 1"></svg></div>
     <div id="portalFlash"></div>
   </div>
+  <div id="rocketPrompt"></div>
+  <div id="rocketCountdown"></div>
   <div id="help">
     <div class="panel">
       <h2>Help</h2>

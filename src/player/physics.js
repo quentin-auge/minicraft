@@ -64,8 +64,13 @@ export function setGhostPass(fn) { ghostPass = fn; }
 // ledges never step). Unset denies every step.
 let flyStepAllow = null;
 export function setFlyStepAllow(fn) { flyStepAllow = fn; }
+// Extra solid: a vehicle (the flying rocket hull, outside the voxel store)
+// reports its live cells here so every axis mover collides with them.
+let extraSolid = null;
+export function setExtraSolid(fn) { extraSolid = fn; }
 function solidForMove(bx, by, bz) {
-  return isSolid(bx, by, bz) && !(ghostPass && ghostPass(bx, by, bz));
+  return (isSolid(bx, by, bz) || (extraSolid ? extraSolid(bx, by, bz) : false)) &&
+    !(ghostPass && ghostPass(bx, by, bz));
 }
 
 let stepDown = false;
