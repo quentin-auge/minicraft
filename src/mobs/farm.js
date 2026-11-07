@@ -195,25 +195,33 @@ function spotFree(x, y, z, yaw, hw, h, nose) {
 
 // Debug spawn (cheat only, B key): drops a random pig/cow at an arbitrary
 // point in the active dimension. Free-roaming — no pen attachment exists
-// anywhere in this system — under the standard persistence rule.
+// anywhere in this system — under the standard persistence rule. Peer-aware
+// like the grab release: never stacks the newborn onto a live mob (the
+// separation backstop would unstack it, but spawning clean beats resolving).
 export function spawnFarmMobAt(scene, x, z, y, rand = Math.random) {
   sceneRef = scene;
-  const kind = rand() < 0.5 ? "pig" : "cow";
+  const kind = rand() < 0.5 ? "cow" : "pig";
   const spec = LIVESTOCK_SPECS[kind];
   const shape = specCircles(spec);
   const hw = shape.hw, h = shape.h;
+  const probe = { pos: { x: 0, y: 0, z: 0 }, yaw: 0, hw, nose: shape.nose, tail: shape.tail, alive: true };
+  const peers = [...mobs].filter((m) => m.alive && m.dim === activeDim);
+  const peerFree = (sx, sy, sz, syaw) => {
+    probe.yaw = syaw;
+    return !mobBlockedAt(probe, sx, sz, sy, peers, 0, null, 0);
+  };
   const baseYaw = rand() * Math.PI * 2;
   let sy = y, yaw = baseYaw;
   for (let t = 0; t < 5; t++) {
     let placed = false;
     for (let k = 0; k < 4 && !placed; k++) {
       yaw = baseYaw + k * Math.PI / 2;
-      placed = spotFree(x, sy, z, yaw, hw, h, shape.nose);
+      placed = spotFree(x, sy, z, yaw, hw, h, shape.nose) && peerFree(x, sy, z, yaw);
     }
     if (placed) break;
     sy++;
   }
-  if (!spotFree(x, sy, z, yaw, hw, h, shape.nose)) return null;
+  if (!spotFree(x, sy, z, yaw, hw, h, shape.nose) || !peerFree(x, sy, z, yaw)) return null;
   const mob = createMob(kind, { x, z, y: sy, dim: activeDim, yaw, rand });
   if (mob) {
     mobs.add(mob);

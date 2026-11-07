@@ -17,7 +17,7 @@ import {
   liquidSurface, footingOk, headroomOk,
   makeCellFree, makeCellSolid, makeStepOk, descendOk, turnTo,
   moveClamped, moveVector, driveToward, dropLane, spawnRng, stepVertical,
-  SERVO_STEP, VIRTUAL_W, slideDeflect, segmentWalkable,
+  SERVO_STEP, VIRTUAL_W, NO_EXPIRY, slideDeflect, segmentWalkable,
 } from "./step.js";
 import {
   upkeepFollowLine, roamStep, roamSpan, ARRIVE_D, FOLLOW_COOL,
@@ -94,19 +94,45 @@ export const GATE_ALLOW = 0.05;
 // the step gate refuses like a wall — read everywhere a meeting asks "can
 // we cross": the step gate, the detour probe, and the planner's cross test
 // (forecast.js). Shipped at 0.15: shoulders brush past, the backstop
-// clearing every residue.
+// clearing every residue. Turn maneuvers tolerate a small give past it
+// (see TURN_GIVE) — bounded, never a walk-through.
 export const CROSS_BUDGET = 0.15;
+export const TURN_GIVE = 0.05;
+// Maneuver turn give (m): how far past the brush budget a turn-away
+// escape may sweep while unwinding nose-to-nose contact. Broad snouts
+// veto every partial yaw under the strict rule, freezing the escape in
+// place; this much deepening unfreezes it. Transient, backstop-cleared,
+// an order below body-body overlap.
 // Comfort margin (m) added to the picker's blocked check: aim with room
 // to spare since bodies keep moving after the pick. The step gate itself
 // stays exact — it refuses only true overlaps.
 export const PICK_COMFORT = 0.3;
+// Peer-grind trip (s): sustained static contact trips this fast — the
+// pair-distance leash (see grindAccrue) restamps every passing brush, so
+// only grinding in place counts, and a quarter second already separates
+// meetings from mayhem. Past the ~0.25 s passing brushes, so brushes
+// never trip even at this speed.
+export const GRIND_T = 0.25;
+// Peer-hold fuse (s): a quiet hold re-polls the escape this often —
+// geometry shifts as the peer maneuvers, so a hold that never re-checks
+// would freeze a meeting the next sidestep could have resolved.
+export const HOLD_FUSE = 0.15;
+// Grind-episode window (s): re-grinding the same peer inside this counts
+// the next episode (escalating yield); past it the slate is clean.
+export const GRIND_WINDOW = 4;
+// Turn-away leave: first-episode hop and repeat-episode long yield
+// (distance m, span s). The long yield also doubles the latch cooldown so
+// the yielder does not re-latch straight back into the same meeting.
+export const LEAVE_DIST = 1.6;
+export const LEAVE_SPAN = 0.5;
+export const YIELD_DIST = 2.4;
+export const YIELD_SPAN = 0.9;
 // Prediction horizon: ~3 s at farm stride (~6 m). Long enough to
 // sequence a pen crossing early, short enough that a latched roam heading
 // stays roughly valid.
 export const PREDICT_T = 3.0;
 // Scratch buffers for grid queries (single-threaded, never reentrant:
 // each call fully consumes its buffer before the next begins).
-const _blockNear = [];
 const _sepNear = [];
 
 // Intended heading: the latched roam commit when there is one (2–8 s of
@@ -143,25 +169,78 @@ export function predictCPA(a, b) {
 // stride. Deterministic, no rand stream. Internal to the tick (lane-less
 // slow factor only); no external callers.
 const _followNear = [];
-function followSlow(mob, peers, grid = null) {
-  let slow = 1;
+// Whether mob paces behind o (the file-following relation): o ahead-close
+// on the same heading. The paced peer is exempt from the laned peer gate
+// below (pacing owns tailgating; the gate owns meetings) — except an acute
+// catch-up at a slight angle (see acuteSameDir in forecast.js): the gate
+// still stops the step, the planner still steers, so a follower never walks
+// through its leader. The exemption stays for settled files at constant
+// spacing; only the closing-angle case re-arms the gate.
+const ACUTE_PACE_COS = 0.5;
+function followsPace(mob, o) {
+  if (o === mob || !o.alive) return false;
+  if (Math.abs(o.pos.y - mob.pos.y) > SEP_Y) return false;
   const fx = Math.sin(mob.yaw), fz = Math.cos(mob.yaw);
   const rx = -Math.cos(mob.yaw), rz = Math.sin(mob.yaw);
-  const list = grid ? queryMobGrid(grid, mob.pos.x, mob.pos.z, 3.0, _followNear) : peers;
-  for (let k = 0; k < list.length; k++) {
-    const o = list[k];
+  const ox = o.pos.x - mob.pos.x, oz = o.pos.z - mob.pos.z;
+  const d2 = ox * ox + oz * oz;
+  if (d2 > 3.0 * 3.0 || d2 < 1e-8) return false;
+  const d = Math.sqrt(d2);
+  if ((ox * fx + oz * fz) / d < 0.9) return false;
+  if (Math.abs(ox * rx + oz * rz) > mob.hw + o.hw + SEP_GAP + 0.3) return false;
+  const sameDir = Math.sin(mob.yaw) * Math.sin(o.yaw) + Math.cos(mob.yaw) * Math.cos(o.yaw);
+  // Pace catch-ups up to ~60° off the leader's heading (acute files meet at
+  // a slight angle, never dead astern); settled files (≈0°) pace exactly as
+  // before, so existing replays keep their spacing.
+  if (sameDir < ACUTE_PACE_COS) return false;
+  if (mob.speed <= 1e-9) return false;
+  return true;
+}
+// Whether a live peer already rides mob's latched line overlapping the
+// mob's body: a second latch there erects two rides on one body — the
+// lateral slide converges both onto the same middle and the pair grinds as
+// one (nose/tail discs overlap out to ~1.35 m, far past the core gap, so no
+// fixed distance separates cleanly — read the circles themselves). Pure
+// reads; grid optional (latches are rare, peer sets small).
+export function lineClaimedByPeer(mob, peers, grid = null) {
+  const vw = mob.followLine;
+  if (!vw || !mob.lane) return false;
+  const list = grid ? queryMobGrid(grid, mob.pos.x, mob.pos.z, 3.0, _penNear) : peers;
+  for (const o of list) {
     if (o === mob || !o.alive) continue;
     if (Math.abs(o.pos.y - mob.pos.y) > SEP_Y) continue;
-    const ox = o.pos.x - mob.pos.x, oz = o.pos.z - mob.pos.z;
-    const d2 = ox * ox + oz * oz;
-    if (d2 > 3.0 * 3.0 || d2 < 1e-8) continue;
-    const d = Math.sqrt(d2);
-    if ((ox * fx + oz * fz) / d < 0.9) continue;
-    if (Math.abs(ox * rx + oz * rz) > mob.hw + o.hw + SEP_GAP + 0.3) continue;
-    const sameDir = Math.sin(mob.yaw) * Math.sin(o.yaw) + Math.cos(mob.yaw) * Math.cos(o.yaw);
-    if (sameDir < 0.7) continue;
-    if (mob.speed <= 1e-9) continue;
-    slow = Math.min(slow, (o.speed ?? mob.speed) / mob.speed);
+    if (o.followLine?.touch !== true || o.lane == null) continue;
+    const w = worstPairPenAt(mob.pos.x, mob.pos.z, Math.sin(mob.yaw), Math.cos(mob.yaw),
+      mob.hw, mob.nose, mob.tail, o, 0, 0);
+    if (w != null && w.pen > 0) return true;
+  }
+  return false;
+}
+// Exported for headless units (merge rigs pin the file discipline alone).
+export function followSlow(mob, peers, grid = null) {
+  let slow = 1;
+  const list = grid ? queryMobGrid(grid, mob.pos.x, mob.pos.z, 3.0, _followNear) : peers;
+  const fx = Math.sin(mob.yaw), fz = Math.cos(mob.yaw);
+  for (let k = 0; k < list.length; k++) {
+    const o = list[k];
+    if (!followsPace(mob, o)) continue;
+    // Pace the leader's real advance, not its speed field: a leader stalled
+    // mid-U-turn (full stride on paper, zero underfoot) must stop its
+    // gate-exempt follower — the file exemption hands tailgating to this
+    // discipline alone. Falls back to the speed ratio while either advance
+    // is unknown (first tick); a standing follower paces a standing leader
+    // at zero (never resumes into it) and a walking one at the legacy ratio.
+    const oa = o._adv, ma = mob._adv;
+    const pace = (oa != null && ma != null)
+      ? (ma > 1e-9 ? oa / ma : (oa > 1e-9 ? (o.speed ?? mob.speed) / mob.speed : 0))
+      : (o.speed ?? mob.speed) / mob.speed;
+    // Gap keeping: pacing alone tailgates into the leader and grinds at
+    // contact range — ease off proportionally with live overlap (all body
+    // circles, not just core distance: nose/tail discs overlap far past
+    // the core gap), so files settle parallel with a gap instead of fused.
+    // Smooth (no bang-bang): clear reads full pace, deep reads stop.
+    const w = worstPairPenAt(mob.pos.x, mob.pos.z, fx, fz, mob.hw, mob.nose, mob.tail, o, 0, 0);
+    slow = Math.min(slow, pace, w == null ? 1 : Math.max(0, 1 - w.pen / 0.3));
   }
   return Math.min(slow, 1);
 }
@@ -206,26 +285,78 @@ export function worstPairPen(a, b, i = 0, j = 1) {
     a.hw, a.nose, a.tail, b, i, j);
 }
 
-// Would mob m occupying (x, z) overlap any peer's body circles past the
-// allowance? extra inflates m's own core half-width (comfort margin for
-// picks); allow is the step-gate brush budget (GATE_ALLOW on real steps,
-// 0 for exact detection). Pure: reads positions only.
-export function mobBlockedAt(mob, x, z, y, peers, extra = 0, grid = null, allow = 0) {
-  const sx = Math.sin(mob.yaw), sz = Math.cos(mob.yaw);
+// Max circle-pair penetration between a body posed at (x, z) with the
+// given yaw-oriented circles and any live same-level peer: 0 when clear.
+// One rule behind the step gate, the laned gate, and the turn gate (same
+// budget, same math — only the pose and the verdict differ). extra inflates
+// the core half-width (comfort margin for picks); exempt skips peers whose
+// spacing another discipline owns (paced file peers, same-direction pairs).
+// Pure: reads positions only.
+const _penNear = [];
+export function peerPenAt(mob, x, z, sx, sz, y, peers, grid = null, extra = 0, exempt = null) {
   // 3.5 m query covers the 3 m skip below (steps move cm per tick), so the
   // same peers are examined. Null grid = legacy scan.
-  const list = grid ? queryMobGrid(grid, x, z, 3.5, _blockNear) : peers;
+  const list = grid ? queryMobGrid(grid, x, z, 3.5, _penNear) : peers;
+  let worst = 0;
   for (const o of list) {
     if (o === mob || !o.alive) continue;
     if (Math.abs(o.pos.y - y) > SEP_Y) continue;
+    if (exempt != null && exempt(o)) continue;
     const ox = o.pos.x - x, oz = o.pos.z - z;
     if (ox * ox + oz * oz > 3 * 3) continue;
     const w = worstPairPenAt(x, z, sx, sz, mob.hw + extra, mob.nose, mob.tail, o, 0, 0);
-    // allow = 0 keeps the exact gate (any touch blocks); a brush
-    // budget only ever lets shallower penetrations through.
-    if (w != null && w.pen > allow) return true;
+    if (w != null && w.pen > worst) worst = w.pen;
   }
-  return false;
+  return worst;
+}
+
+// Would mob m occupying (x, z) overlap any peer's body circles past the
+// allowance? allow is the step-gate brush budget (GATE_ALLOW on real steps,
+// 0 for exact detection); skipFollowed exempts paced file peers (their
+// spacing is the follow discipline's job, not the gate's). Absolute gate:
+// separating steps still read blocked past the budget — unstacking owns
+// the backstop, which converges every overlap on its own (escape hatches
+// here fight the planner's holds: a drive walking through contact the
+// planner sequenced around re-latches holds that never drop).
+export function mobBlockedAt(mob, x, z, y, peers, extra = 0, grid = null, allow = 0, skipFollowed = false) {
+  const exempt = skipFollowed ? (o) => followsPace(mob, o) : null;
+  // allow = 0 keeps the exact gate (any touch blocks); a brush budget only
+  // ever lets shallower penetrations through.
+  return peerPenAt(mob, x, z, Math.sin(mob.yaw), Math.cos(mob.yaw), y, peers, grid, extra, exempt) > allow;
+}
+
+// Turn gate factory (see tickFarmMob): poses the body at a candidate yaw
+// through the same circle math as the step gate. A turn landing past the
+// brush budget is refused; an already-deep pose stays free so escape turns
+// and the stuck path keep working. Same-direction pairs (files, formation
+// flight) are exempt — pacing and drift own their spacing — EXCEPT a turn
+// that would deepen same-direction contact past the brush budget: the nose
+// lever outruns the stride, so a sweep the planner never predicted must not
+// grind into a file mate. Settling turns at constant spacing stay frank.
+// give relaxes every refusal by that much (maneuver turns only): a
+// broad-snount nose-to-nose deadlock vetoes every partial yaw under the
+// strict rule, so the escape would freeze in place — bounded deepening
+// unfreezes it without ever freeing a real sweep-through.
+export function makeTurnGate(mob, peers, grid = null, give = 0) {
+  const meetingOnly = (o) => Math.cos(normYaw(o.yaw - mob.yaw)) >= 0.5;
+  return (yaw) => {
+    const curAll = peerPenAt(mob, mob.pos.x, mob.pos.z,
+      Math.sin(mob.yaw), Math.cos(mob.yaw), mob.pos.y, peers, grid);
+    if (curAll > CROSS_BUDGET) return true;
+    const nextAll = peerPenAt(mob, mob.pos.x, mob.pos.z,
+      Math.sin(yaw), Math.cos(yaw), mob.pos.y, peers, grid);
+    if (nextAll > CROSS_BUDGET + give) return false;
+    const cur = peerPenAt(mob, mob.pos.x, mob.pos.z,
+      Math.sin(mob.yaw), Math.cos(mob.yaw), mob.pos.y, peers, grid, 0, meetingOnly);
+    if (cur > CROSS_BUDGET) return true;
+    const next = peerPenAt(mob, mob.pos.x, mob.pos.z,
+      Math.sin(yaw), Math.cos(yaw), mob.pos.y, peers, grid, 0, meetingOnly);
+    // Middle band (brush already engaged): rotate out, never in — a sweep
+    // the planner never predicted (nose lever outruns the stride) must not
+    // deepen contact, while clear-air turns keep the landing budget.
+    if (cur > GATE_ALLOW) return next <= cur + give;
+    return next <= CROSS_BUDGET + give;
+  };
 }
 
 // Whether voxel walls stand within snout-sweep range in any direction:
@@ -305,7 +436,7 @@ export function pickDetourTarget(mob, rand, peers, grid = null) {
 // it was latched against); cruise holds the latched line unconditionally.
 // Returns the applied slide (0 when refused) so the stall guard can credit
 // it as progress.
-function centerPull(mob, dt, supported, floating, holdLine) {
+function centerPull(mob, dt, supported, floating, holdLine, peers = null) {
   const [ax, az] = dirVec(mob.lane.axis);
   // Parallel rides (mouth exits) never slide laterally onto their line: the
   // body keeps its threading offset while the ride turns and quits on the
@@ -313,23 +444,28 @@ function centerPull(mob, dt, supported, floating, holdLine) {
   if (mob.followLine?.noSlide === true) return 0;
   let ccx = cellCenter(mob.pos.x), ccz = cellCenter(mob.pos.z);
   const vw = mob.followLine;
+  // Sidestepped rides aim at the offset parallel, not the measured line.
+  const lineT = vw ? vw.line + (mob._lineOff ?? 0) : 0;
   if (vw) {
     const dd = Math.abs(normYaw(vw.axis - mob.lane.axis));
     if (dd < 1e-6 || dd > Math.PI - 1e-6) {
-      const near = (ax === 0 && Math.abs(mob.pos.x - vw.line) <= Math.abs(mob.pos.x - ccx)) ||
-        (ax !== 0 && Math.abs(mob.pos.z - vw.line) <= Math.abs(mob.pos.z - ccz));
+      const near = (ax === 0 && Math.abs(mob.pos.x - lineT) <= Math.abs(mob.pos.x - ccx)) ||
+        (ax !== 0 && Math.abs(mob.pos.z - lineT) <= Math.abs(mob.pos.z - ccz));
       // Same corridor line reads the same middle from either direction.
       // Freshly carried lines (touch latches, corner turns) bypass the
       // stale-line guard: the line is new and measured walkable, the body
       // just hasn't slid onto it yet — upkeep ticks the freshness down.
       if (!holdLine || near || (vw.fresh ?? 0) > 0) {
-        if (ax === 0) ccx = vw.line; else ccz = vw.line;
+        if (ax === 0) ccx = lineT; else ccz = lineT;
       }
     }
   }
   const e = (ccx - mob.pos.x) * -az + (ccz - mob.pos.z) * ax;
-  // Gentle exit rides converge instead of yanking: same line target, a
-  // fraction of the stride per tick (see GENTLE_RATE in roam.js).
+  // File discipline on touch rides: a follower pacing a leader on the same
+  // wall holds its lateral offset instead of converging onto the leader's
+  // line (both pulls targeting the same middle is what glued files into one
+  // body). Same voxel probe below, just a smaller slide — the leader keeps
+  // the full pull, so the file walks parallel instead of merging.
   // Pull-up: a touch ride crabbing far off its line (diagonal placement
   // latch, spawn drop) with open room ahead converges at double rate, so
   // the drive never outruns the pull into a wide arc — the ride re-glues
@@ -338,6 +474,13 @@ function centerPull(mob, dt, supported, floating, holdLine) {
   // their exact legacy pull, and anything with a wall soon ahead stays
   // untouched. The axisOk probe below still gates every slide, so no pull
   // ever enters a wall.
+  let rate = vw?.gentle === true ? GENTLE_RATE : 0.9;
+  if (peers && vw?.touch === true && mob.followLine?.touch === true) {
+    for (let k = 0; k < peers.length; k++) {
+      const o = peers[k];
+      if (o !== mob && o.alive && followsPace(mob, o)) { rate *= 0.3; break; }
+    }
+  }
   let pullScale = 1;
   if (vw?.touch === true && vw.noSlide !== true && vw.guideKey == null && mob.lane) {
     const [tax2] = dirVec(mob.lane.axis);
@@ -348,11 +491,27 @@ function centerPull(mob, dt, supported, floating, holdLine) {
         mob.pos.x + lax * 2.0, mob.pos.z + laz * 2.0)) pullScale = 2;
     }
   }
-  const cap = mob.speed * dt * (vw?.gentle === true ? GENTLE_RATE : 0.9) * pullScale;
-  const c = Math.max(-cap, Math.min(cap, e));
+  const cap = mob.speed * dt * rate * pullScale;
+  let c = Math.max(-cap, Math.min(cap, e));
   if (Math.abs(c) <= 1e-4) return 0;
   const centerBase = makeStepOk(mob, supported, floating, 0, mob.lane.axis, 0);
   const axisOk = wrapStepOk(mob, (nx, nz) => centerBase(nx, nz) && descendOk(mob, nx, nz));
+  // Peer-aware slide: the lateral pull converges every ride onto its line —
+  // two abreast rides would grind onto one body. Halve the slide down to the
+  // largest peer-free lateral (same budget as the step gates), refusing it
+  // when even a hair stays overlapped: the file keeps its lateral offset
+  // instead of merging. Null grid (legacy scan): slides are rare per tick
+  // and the peer set is small; the math matches the gated drives exactly.
+  if (peers) {
+    const msx = Math.sin(mob.yaw), msz = Math.cos(mob.yaw);
+    let guard = 0;
+    while (guard++ < 10) {
+      const tx = mob.pos.x + -az * c, tz = mob.pos.z + ax * c;
+      if (peerPenAt(mob, tx, tz, msx, msz, mob.pos.y, peers, null) <= CROSS_BUDGET) break;
+      c /= 2;
+      if (Math.abs(c) <= 1e-4) return 0;
+    }
+  }
   const tx = mob.pos.x + -az * c, tz = mob.pos.z + ax * c;
   if (!axisOk(tx, tz)) return 0;
   mob.pos.x = tx; mob.pos.z = tz;
@@ -366,6 +525,39 @@ function centerPull(mob, dt, supported, floating, holdLine) {
 function guidedActive(mob) {
   return mob.roam?.entry === true &&
     (mob.followLine?.guideKey ?? null) === mob.roam.passageKey;
+}
+
+// Fresh out of a 1-wide mouth only (keyed `|1:` leave window): the exit
+// holder ranks above violet commits (they abort for an exiter coming out)
+// and above blue rides and free roam (both yield). 2-wide freshness stays
+// a JAUNE holder (see mobRank) with untouched 2-wide steering. Exported
+// for headless units.
+export function exitFresh1(mob) {
+  return (mob.entryCoolT ?? 0) > ENTRY_COOL_T - LEAVE_FRESH_T &&
+    (mob.entryCoolKey ?? "").includes("|1:");
+}
+
+// Avoidance rank behind the group planner (forecast.js): one total order,
+// read live every planning tick (never one tick stale). RED rails are
+// moving-wall obstacles only (-1, never planned); JAUNE 2-wide exits and
+// threads hold (4, legacy cascade, 2-wide steering untouched); SORTIE-1
+// 1-wide exits hold (3, legacy-paced line, never steer/detach/abort);
+// BLUE covers every laned touch ride (1) — including entry-carrying guided
+// rides, which detach like pure blues instead of holding for their hole;
+// VIOLET is the unlaned entry commit only (2, yields to exits and rails);
+// FREE roam yields to everyone (0, legacy cascade, never flags). Pure
+// reads, no rand stream.
+export function mobRank(mob) {
+  const laned = mob.lane != null;
+  const blue = mob.followLine?.touch === true && laned;
+  const red = laned && mob.followLine?.touch !== true;
+  if (red) return -1;
+  if (mob.passage?.kind === 2 || mob.inPassage === true ||
+    mob.roam?.smooth === true || freshFromMouth(mob)) return 4;
+  if (exitFresh1(mob)) return 3;
+  if (blue || mob.wallFollow === true) return 1;
+  if (mob.roam?.entry === true) return 2;
+  return 0;
 }
 
 // Fresh from a 2-wide: threading one now (held passage) or out of one
@@ -465,10 +657,14 @@ function wrapStepOk(mob, stepOk) {
 // probes below; motion itself is the unchanged 1-wide servo (engage,
 // cruise, junction blend, dead-end seek). Sense, engage, and the lane
 // drives run in order; each drive owns its motion.
-export function servoTick(mob, dt, supported, floating, rand = Math.random, pickTarget = null) {
+export function servoTick(mob, dt, supported, floating, rand = Math.random, pickTarget = null, peerGate = null, peers = null, turnGate = null) {
   if (!supported || floating) { mob.lane = null; return false; }
   // R2 upkeep first: the latched line below biases this very tick's pull.
   upkeepFollowLine(mob, dt);
+  // A turn-away leave flies lane-less open-loop for its span: re-engaging
+  // a rail mid-maneuver would kill the away commit the very next tick and
+  // ram the peer again at full stride the tick after.
+  if (mob._turnAway > 0 && !mob.lane) return false;
   // Pending guided slide: an entry commit riding its touch line erects the
   // hole-ward touch as soon as the nose meets the wall — no drop to a free
   // commit, no pivot toward the mouth.
@@ -478,6 +674,17 @@ export function servoTick(mob, dt, supported, floating, rand = Math.random, pick
   if (pre === "touch") {
     // Contact latch erected the lane: sense again along it, virtual wall up.
     sense = senseLane(mob);
+    // A peer already rides this exact line close by (abreast latch onto one
+    // body): declining the latch routes around instead of grinding onto the
+    // peer — the peer-aware slide below would only refuse the convergence,
+    // leaving two rides erected on one line. Entry commits never decline
+    // (the claim system serializes mouths; see entry.js).
+    if (peers && mob.roam?.entry !== true && lineClaimedByPeer(mob, peers)) {
+      dropFollowLine(mob);
+      dropLane(mob);
+      mob.followCool = FOLLOW_COOL;
+      return false;
+    }
   } else if (pre !== undefined) return pre;
   // Junction draws come from the mob's own stream (seeded once below), not
   // the ambient rand: roam refactors can never reshuffle junction outcomes.
@@ -608,7 +815,7 @@ export function servoTick(mob, dt, supported, floating, rand = Math.random, pick
     // relative side, blue stays on) instead of flipping; true dead ends
     // and pocket backs have no walkable arm and keep the seek below.
     const inner = touchRide ? innerTurn(mob, prevAxis) : null;
-    if (inner == null) return seekDeadEnd(mob, dt, supported, floating);
+    if (inner == null) return seekDeadEnd(mob, dt, supported, floating, peers);
     mob.lane = { axis: inner.axis, entry: oppositeYaw(inner.axis), lockX: cx, lockZ: cz };
     mob.followLine = inner.followLine;
     mob.stuckT = 0;
@@ -730,7 +937,7 @@ export function servoTick(mob, dt, supported, floating, rand = Math.random, pick
     }
   }
   blendTurn(mob, dt, res);
-  return cruiseLane(mob, dt, supported, floating, res, rand);
+  return cruiseLane(mob, dt, supported, floating, res, rand, peerGate, peers, turnGate);
 }
 
 // Lane sensing: body-only direction probes (footNose 0, no nose disc — the
@@ -1027,19 +1234,22 @@ function dropFollowLine(mob) {
 // Dead-end seek: the classifier reads a wall 1.3 m out, but up to 0.6 m
 // of corridor may remain. Walk nose-to-the-end first, flip only when the
 // drive itself refuses — the mob touches the back wall, then U-turns.
-function seekDeadEnd(mob, dt, supported, floating) {
+function seekDeadEnd(mob, dt, supported, floating, peers = null) {
   const forward = mob.lane.entry; // pre-flip axis: updateLane already swapped
   // Recentre first (no corridor gate: a corner wedge is never a true
   // 1-wide cell, and that is exactly when the seek needs centring —
   // the axisOk probe below refuses any slide into a wall, and a stale
   // flipped follow line still pins the lateral via modulo-π).
-  centerPull(mob, dt, supported, floating, true);
+  const recentered = centerPull(mob, dt, supported, floating, true, peers);
   // Dead-end seek refuses pit descents (see descendOk): the pit lip is
-  // the end of the line — touch it, turn, leave.
+  // the end of the line — touch it, turn, leave. Peer-gated like every
+  // other drive: the seek walks nose-to-the-end, so without the gate it
+  // walks nose-through-the-peer standing there.
   const makeSeek = () => {
     const sdriveBase = makeStepOk(mob, supported, floating, 0, mob.yaw, 0);
     const wrapped = wrapStepOk(mob, sdriveBase);
-    return (nx, nz) => wrapped(nx, nz) && descendOk(mob, nx, nz);
+    return (nx, nz) => wrapped(nx, nz) && descendOk(mob, nx, nz) &&
+      (!peers || !mobBlockedAt(mob, nx, nz, mob.pos.y, peers, 0, null, CROSS_BUDGET));
   };
   const seek = driveToward(mob, dt, forward, makeSeek, moveVector, { rate: SERVO_TURN });
   if (seek.dist > 0) {
@@ -1048,9 +1258,20 @@ function seekDeadEnd(mob, dt, supported, floating) {
     mob.stuckT = 0;
     return true;
   }
-  // Nose contact: keep the flipped lane, rotate in place below.
+  // Wedged seek (a peer hard-blocks the nose): release like a stalled
+  // cruise instead of grinding in place — the roam routes around the
+  // blocker where the rail never could. Strictly additive: without a peer
+  // ahead servoStall passes through untouched (legacy voxel dynamics).
+  if (recentered === 0 && seek.err < SERVO_SPIN && peers && mobBlocksAhead(mob, peers, null)) {
+    mob.servoStall = (mob.servoStall ?? 0) + dt;
+  }
+  if (mob.servoStall > 0.75) return releaseStalledLane(mob);
+  // Nose contact: keep the flipped lane, rotate in place below (gated: the
+  // flip must not sweep the nose discs through an adjacent peer).
   mob.yawTarget = mob.lane.axis;
-  turnTo(mob, dt, SERVO_TURN);
+  driveToward(mob, dt, mob.lane.axis, () => () => false, moveVector, {
+    rate: SERVO_TURN, turnOk: peers ? makeTurnGate(mob, peers, null) : null,
+  });
   mob.stuckT = 0;
   return true;
 }
@@ -1084,46 +1305,48 @@ function blendTurn(mob, dt, res) {
   }
 }
 
-// Corridor cruise: locked-yaw drive with the lateral centre slide, plus
-// the stall guard (a latched lane that cannot advance — nose wedged where
-// the body fits — releases to the wander instead of freezing in place; a
-// successful 1-wide recentre counts as progress, not a stall).
-function cruiseLane(mob, dt, supported, floating, res, rand = Math.random) {
-  // Cruise never descends into a pit (see descendOk): ramps with a
-  // walkable continuation pass through, local minima read as walls. The
-  // probe below captures the pre-turn facing exactly like the inline drive
-  // did; the move itself runs post-turn.
-  const cruiseBase = makeStepOk(mob, supported, floating, 0, mob.yaw, 0);
-  const cruiseOk = wrapStepOk(mob, cruiseBase);
-  const { err, dist } = driveToward(mob, dt, mob.yawTarget, () => {
-    return (nx, nz) => cruiseOk(nx, nz) && descendOk(mob, nx, nz);
-  }, moveVector, { rate: SERVO_TURN });
-  // Lateral centering on straights: yaw stays locked on the corridor
-  // axis (no hunting), the body slides toward the lane middle when free —
-  // the cell centre in a true 1-wide corridor, the virtual-lane middle
-  // while wall-following. Turns and seeks centre through centerPull above.
-  const recentered = res.event === "cruise"
-    ? 0
-    : centerPull(mob, dt, supported, floating, true);
-  if (dist === 0 && recentered === 0 && err < SERVO_SPIN) mob.servoStall = (mob.servoStall ?? 0) + dt;
-  else mob.servoStall = 0;
+
+// In-place lane flip (shared by the stall release and the turn-away
+// escape): reverse the lane axis keeping the line, reset the stall
+// clocks. The turn below expresses it (gated); the escape arms its
+// maneuver flag on top.
+function flipLaneInPlace(mob) {
+  mob.lane = { axis: oppositeYaw(mob.lane.axis), entry: mob.lane.axis, lockX: -1, lockZ: -1 };
+  mob.servoStall = 0;
+  mob.stuckT = 0;
+}
+
+// Lane release to roam (shared by the stall release branches): drop the
+// virtual wall and the lane, arm the latch cooldown. Entry commits re-arm
+// their directed touch from the new spot (see callers).
+function releaseLaneToRoam(mob) {
+  mob.servoStall = 0;
+  dropFollowLine(mob);
+  dropLane(mob);
+  mob.followCool = FOLLOW_COOL;
+}
+
+// Stalled-lane release (shared by the cruise and dead-end-seek stall
+// guards): a lane that cannot advance, slide, or turn releases instead of
+// grinding peers forever — touch rides U-turn in place keeping the line
+// (guided violet rides release to the direct entry walk, cooled-mouth flips
+// release to roam), red rails release to roam. Returns the servo verdict.
+function releaseStalledLane(mob) {
   // A fully stalled lane (wedged nose, refused slide, aligned yaw) always
   // releases — touch rides included: nose contact leads body contact by a
   // few ticks, so genuine dead ends and inner corners U-turn long before
-  // the 0.75 s trip, while a lock-held grind would otherwise freeze
-  // forever. The in-place U-turn pace keeps moving, so it never trips it.
-  if (mob.servoStall > 0.75) {
+  // the 0.75 s trip, while a peer grind trips the mutual turn-away first
+  // (see grindWatchTick) instead of freezing in place. The in-place
+  // U-turn pace keeps moving, so it never trips it.
+  {
     if (mob.followLine?.touch === true && mob.lane) {
       // A guided (violet) ride never U-turns in place: release to the
       // direct entry walk (re-armed — dock, stall latch, or hold take it
       // from the new spot).
       if (guidedActive(mob)) {
-        mob.servoStall = 0;
         mob.roam.stallT = 0;
         mob.roam.latchTried = false;
-        dropFollowLine(mob);
-        dropLane(mob);
-        mob.followCool = FOLLOW_COOL;
+        releaseLaneToRoam(mob);
         return false;
       }
       // Stalled touch ride: U-turn in place and keep the line (never
@@ -1131,15 +1354,10 @@ function cruiseLane(mob, dt, supported, floating, res, rand = Math.random) {
       // runs back into the cooled mouth: release to roam instead (the roam
       // veto walks the cooldown out rather than strolling back in).
       if (backIsCooled(mob, mob.lane.axis)) {
-        mob.servoStall = 0;
-        dropFollowLine(mob);
-        dropLane(mob);
-        mob.followCool = FOLLOW_COOL;
+        releaseLaneToRoam(mob);
         return false;
       }
-      mob.lane = { axis: oppositeYaw(mob.lane.axis), entry: mob.lane.axis, lockX: -1, lockZ: -1 };
-      mob.servoStall = 0;
-      mob.stuckT = 0;
+      flipLaneInPlace(mob);
       return true;
     }
     mob.lane = null; mob.servoStall = 0; mob.followCool = FOLLOW_COOL;
@@ -1148,7 +1366,365 @@ function cruiseLane(mob, dt, supported, floating, res, rand = Math.random) {
     if (mob.roam?.entry) { mob.roam.stallT = 0; mob.roam.latchTried = false; }
     return false;
   }
-  if (res.event === "cruise") centerPull(mob, dt, supported, floating, false);
+}
+
+// Sidestep offset for a peer-stalled wall ride: hold a validated parallel
+// instead of grinding nose-to-nose on one line. The offset lives beside
+// the follow line (never in it: takes re-erect the measured line every
+// tick and would wipe a rebased one) and biases only the lateral slide
+// target — probes, takes, and the virtual wall keep reading the real
+// corridor. The slide converges gradually (no hop); gates let the pair
+// walk past each other abreast. Roles break the mirror grind
+// deterministically: the higher peer index sidesteps, the lower holds its
+// line — no rand, no negotiation, no line-swapping loop (live-peer
+// validation refuses a sidestep back onto the holder). Guided entries keep
+// their claimed slots and mouth exits keep their threading offset; red
+// rails recentre instead. Cleared once no peer holds the line nearby.
+function tryLaneSidestep(mob, supported, floating, peers) {
+  const vw = mob.followLine;
+  if (!vw || vw.touch !== true || vw.noSlide === true) return false;
+  if (guidedActive(mob) || mob.roam?.entry === true) return false;
+  if ((mob._peerIdx ?? 0) % 2 === 0) return false;
+  const [ax, az] = dirVec(mob.lane.axis);
+  const msx = Math.sin(mob.yaw), msz = Math.cos(mob.yaw);
+  for (const s of [1, -1]) {
+    const px = mob.pos.x + -az * s * 0.8, pz = mob.pos.z + ax * s * 0.8;
+    // Unwrapped voxel probe: the sidestep leaves the virtual corridor on
+    // purpose, so the complementary wall must not veto it — only real
+    // walls, pits, and live peers gate the escape.
+    const base = makeStepOk(mob, supported, floating, 0, mob.lane.axis, 0);
+    if (!base(px, pz)) continue;
+    if (!descendOk(mob, px, pz)) continue;
+    const pen = peerPenAt(mob, px, pz, msx, msz, mob.pos.y, peers, null);
+    if (pen > CROSS_BUDGET) continue;
+    mob._lineOff = (mob._lineOff ?? 0) + (ax === 0 ? -az : ax) * s * 0.8;
+    mob._lineOffAxis = mob.lane.axis;
+    return true;
+  }
+  return false;
+}
+
+// Grinding-peer scan (shared by the courtesy hold, the grind watch, and
+// the escape): one pass reads the live same-level peers — the deepest
+// current circle-pair penetration (who grinds, how deep) and the closest
+// center distance (the grind-window leash). Never three separate scans.
+const _grindNear = [];
+function grindScan(mob, peers, grid = null) {
+  let best = null, worst = 0, nearest = Infinity;
+  const msx = Math.sin(mob.yaw), msz = Math.cos(mob.yaw);
+  const list = grid ? queryMobGrid(grid, mob.pos.x, mob.pos.z, 3.5, _grindNear) : (peers ?? []);
+  for (const o of list) {
+    if (o === mob || !o.alive) continue;
+    if (Math.abs(o.pos.y - mob.pos.y) > SEP_Y) continue;
+    const dx = o.pos.x - mob.pos.x, dz = o.pos.z - mob.pos.z;
+    const d2 = dx * dx + dz * dz;
+    const d = Math.sqrt(d2);
+    if (d < nearest) nearest = d;
+    if (d2 > 3 * 3) continue;
+    const w = worstPairPenAt(mob.pos.x, mob.pos.z, msx, msz,
+      mob.hw, mob.nose, mob.tail, o, 0, 0);
+    if (w != null && w.pen > worst) { worst = w.pen; best = o; }
+  }
+  return { peer: best, pen: worst, dist: nearest };
+}
+
+// A validated heading away from the grinder: 8 winds ordered by turn
+// cost from the current yaw (narrowest first), each probed end-to-end
+// against voxels (segment) and live peers — the same strictness as the
+// stuck detour, so a leave never walks into a wall, a pit, or the next
+// mob. The endpoint must gain separation from the grinder, so every
+// validating wind actually leaves. Cheapest turn wins: a lateral sidestep
+// out of nose contact sweeps shallow (the nose moves off the peer instead
+// of orbiting through it); the full about-face only deals when boxed in.
+// Null when boxed in (the caller holds instead). No nose-tip endpoint
+// probe: a committed detour drives nose-first into its endpoint, but a
+// leave turns en route and the per-tick drive probes own wall clearance —
+// grazing the snout disc on a jamb must not veto the only way out.
+function pickAwayHeading(mob, peer, supported, floating, peers, grid, dist) {
+  const nowD = Math.hypot(mob.pos.x - peer.pos.x, mob.pos.z - peer.pos.z);
+  const P = Math.PI;
+  const winds = [0, P / 4, -P / 4, P / 2, -P / 2, (3 * P) / 4, -(3 * P) / 4, P];
+  for (const dh of winds) {
+    const h = normYaw(mob.yaw + dh);
+    const sx = Math.sin(h), cz = Math.cos(h);
+    const tx = mob.pos.x + sx * dist, tz = mob.pos.z + cz * dist;
+    if (Math.hypot(tx - peer.pos.x, tz - peer.pos.z) < nowD - 1e-6) continue;
+    if (mobBlockedAt(mob, tx, tz, mob.pos.y, peers, PICK_COMFORT, grid)) continue;
+    if (!segmentWalkable(mob, mob.pos.x, mob.pos.z, tx, tz)) continue;
+    return h;
+  }
+  return null;
+}
+
+// Directed leave: drop any rail, commit a validated away heading open-loop
+// (the roam ignore-plan flag below keeps the planner from yanking it back
+// into the peer for the span), and — on repeats — double the latch
+// cooldown so the yielder does not re-latch straight back in. Returns
+// false when no away heading validates (boxed: the caller holds).
+function leaveAndYield(mob, dt, supported, floating, peers, grid, peer, extended) {
+  const dist = extended ? YIELD_DIST : LEAVE_DIST;
+  const span = extended ? YIELD_SPAN : LEAVE_SPAN;
+  const away = pickAwayHeading(mob, peer, supported, floating, peers, grid, dist);
+  if (away == null) return false;
+  mob.lane = null; mob.followLine = null; mob.turnHold = 0;
+  mob.servoStall = 0; mob.stuckT = 0;
+  mob.followCool = extended ? FOLLOW_COOL * 2 : Math.max(mob.followCool ?? 0, FOLLOW_COOL);
+  const t = { x: mob.pos.x + Math.sin(away) * dist, z: mob.pos.z + Math.cos(away) * dist };
+  mob.target = t; mob.wanderT = span;
+  mob.roam = { mode: "commit", heading: away, target: t, tgt: t, t: 0, span };
+  mob._detour = true; mob._planHold = null; mob._prevForce = null; mob._rebase = false;
+  mob._turnAway = span;
+  mob._progTgt = null; mob._progBad = 0; mob._progAge = 0;
+  return true;
+}
+
+// Mutual turn-away escape for a sustained peer grind: both parties turn
+// and leave in appropriate directions instead of parking in contact, so
+// every episode breaks within the stuck budget. Roles are generic
+// (committed line vs free seek), never one-off kinds:
+// - touch ride: sidestep onto a validated parallel when one opens (a pass,
+//   not a retreat); else flip in place keeping the line — the follower
+//   keeps its line — unless the way back runs into a cooled mouth, which
+//   releases to a directed leave instead;
+// - red rail: release to a directed leave (no line to keep);
+// - lane-less: directed away leave, long with latch cooldown on repeats;
+// - both touch on a repeat: the higher peer index yields fully (drop + long
+//   leave) while the lower holds its line — deterministic, no negotiation;
+// - priority: against a free peer the touch ride holds its line (the peer's
+//   own episode yields it); against a peer that cannot maneuver (parked,
+//   guided, holder) the touch ride yields by flipping again.
+// Guided entries, holders, smooth crossings, and stationary mobs never
+// maneuver (caller gates them); their peers' episodes yield instead.
+// Returns true when a maneuver or hold started (the tick is done),
+// false on a clean sidestep (the drive below resumes) or when boxed.
+function peerGrindEscape(mob, dt, supported, floating, peers, grid, knownGrinder = null) {
+  const grinder = knownGrinder ?? grindScan(mob, peers, grid).peer;
+  if (!grinder) { mob._peerStall = 0; return false; }
+  const touch = mob.followLine?.touch === true && mob.lane != null;
+  if (touch && tryLaneSidestep(mob, supported, floating, peers)) {
+    mob._peerStall = 0; mob.servoStall = 0;
+    return false;
+  }
+  // Episode memory: re-grinding the same peer inside the window escalates;
+  // past it the slate is clean. Sidestep passes (above) never count.
+  let ep = 1;
+  if (mob._grindPeer === grinder && (mob._grindCool ?? 0) > 0) ep = (mob._grindEp ?? 1) + 1;
+  mob._grindPeer = grinder; mob._grindEp = ep; mob._grindCool = GRIND_WINDOW;
+  mob._peerStall = 0; mob.servoStall = 0; mob._peerHold = false; mob._holdTurn = false;
+  mob._planHold = null; mob._prevForce = null;
+  const peerTouch = grinder.followLine?.touch === true;
+  const peerMovable = (grinder.speed ?? 0) > 0 && !guidedActive(grinder) &&
+    grinder.roam?.entry !== true && mobRank(grinder) < 3;
+  const extended = ep >= 2;
+  if (!touch) {
+    // Red rail or lane-less: the free party yields, long on repeats.
+    if (leaveAndYield(mob, dt, supported, floating, peers, grid, grinder, extended)) return true;
+    return false;
+  }
+  // Turn away: flip in place keeping the line — unless the previous flip
+  // has not expressed yet (yaw still off the lane axis): flipping again
+  // reverses a turn in progress and ping-pongs in place, so hold and let
+  // the turn finish instead. A piled-up episode count yields fully instead
+  // of holding forever: drop the line and leave like the free party.
+  const yawErr = Math.abs(normYaw(mob.yaw - mob.lane.axis));
+  if (ep >= 3) {
+    if (leaveAndYield(mob, dt, supported, floating, peers, grid, grinder, true)) return true;
+  }
+  if (yawErr > 0.5) {
+    mob._peerHold = true; mob._peerHoldAxis = mob.lane.axis; mob._peerHoldT = 0;
+    mob._holdTurn = true;
+    mob.stuckT = 0;
+    return true;
+  }
+  if (extended && peerTouch && peerMovable) {
+    if ((mob._peerIdx ?? 0) > (grinder._peerIdx ?? 0)) {
+      if (leaveAndYield(mob, dt, supported, floating, peers, grid, grinder, true)) return true;
+    }
+    // Lower index holds its line: the higher peer yields fully instead.
+    mob._peerHold = true; mob._peerHoldAxis = mob.lane.axis; mob._peerHoldT = 0;
+    mob.stuckT = 0;
+    return true;
+  }
+  if (extended && !peerTouch) {
+    // Priority: the line holder keeps its line, the free peer yields via
+    // its own episode — unless the peer cannot maneuver at all (parked,
+    // guided, holder), in which case flip again rather than hold forever.
+    if (peerMovable) {
+      mob._peerHold = true; mob._peerHoldAxis = mob.lane.axis; mob._peerHoldT = 0;
+      mob.stuckT = 0;
+      return true;
+    }
+  }
+  // Turn away: flip in place keeping the line; a cooled way back releases
+  // to a directed leave instead of flipping into the mouth. The flip arms
+  // the maneuver flag too: the turn below is the resolution (bounded,
+  // open-loop), not a new grind.
+  if (backIsCooled(mob, mob.lane.axis)) {
+    if (leaveAndYield(mob, dt, supported, floating, peers, grid, grinder, extended)) return true;
+    return false;
+  }
+  flipLaneInPlace(mob);
+  mob._turnAway = Math.max(mob._turnAway ?? 0, 0.5);
+  return true;
+}
+
+// Grind-window accrual (shared by the laned and lane-less watches):
+// contact — or a backstop-confirmed overlap — opens a window keyed on the
+// closest peer distance; closing by more than the leash restamps it (an
+// approach walks through), while grinding in place accrues to the trip.
+// Self displacement lies here (the push-apart/walk-back sawtooth moves
+// every tick, shared shoves move both), the snout reads far, but the pair
+// distance only closes on a real approach.
+function grindAccrue(mob, dt, penPeak, pushed, minD) {
+  if (penPeak > 0.03 || pushed) {
+    if (mob._grindD == null) { mob._grindD = minD; }
+    else if (mob._grindD - minD > 0.2) {
+      mob._grindD = minD; mob._peerStall = 0;
+      return;
+    }
+    mob._peerStall = (mob._peerStall ?? 0) + dt;
+  } else if (penPeak <= 0.01) {
+    mob._grindD = null;
+    mob._peerStall = Math.max(0, (mob._peerStall ?? 0) - dt * 4);
+  } else {
+    mob._peerStall = Math.max(0, (mob._peerStall ?? 0) - dt);
+  }
+}
+
+// Grind watch (shared by the laned cruise and the lane-less tick): accrue
+// live contact over the pair-distance leash, trip the mutual turn-away
+// escape past GRIND_T. Returns the escape verdict (true = the tick is
+// done). The caller gates eligibility — the lane-less path skips holders,
+// smooth crossings, entries, and active maneuvers; the laned path always
+// watches (holders never maneuver — their peers' episodes yield instead,
+// enforced inside the escape).
+function grindWatchTick(mob, dt, supported, floating, peers, grid) {
+  const pushed = mob._pushed === true;
+  mob._pushed = false;
+  if (peers == null) { mob._peerStall = 0; return false; }
+  const s = grindScan(mob, peers, grid);
+  grindAccrue(mob, dt, s.pen, pushed, s.dist);
+  if ((mob._peerStall ?? 0) > GRIND_T) {
+    mob._peerStall = 0;
+    return peerGrindEscape(mob, dt, supported, floating, peers, grid, s.peer);
+  }
+  return false;
+}
+
+// A passive peer blocking the nose: real body contact now, the peer
+// roughly ahead and close, and advancing nowhere itself (parked, wedged,
+// waiting its own turn). Pushing it shoves it down the corridor (the
+// backstop clears every overlap), so the drive holds at brush range
+// instead — the grind pipeline below owns the escape, the waiter stops
+// travelling. Movers (displacing peers) and side brushes never hold:
+// files pace, crossers pass. Measured at the current pose, never on
+// forward probes: the metre-long snout reads brushes two metres out,
+// while only established contact may freeze the drive.
+function passiveAhead(mob, peers, dt) {
+  const msx = Math.sin(mob.yaw), msz = Math.cos(mob.yaw);
+  const s = grindScan(mob, peers, null);
+  if (s.pen <= 0.03 || s.dist >= 1.0) return false;
+  const g = s.peer;
+  if (!g) return false;
+  const dx = g.pos.x - mob.pos.x, dz = g.pos.z - mob.pos.z;
+  const d = Math.hypot(dx, dz) || 1;
+  if ((dx * msx + dz * msz) / d < 0.3) return false;
+  const osp = g.speed ?? mob.speed;
+  return osp <= 0 || (g._adv ?? 0) < osp * dt * 0.1;
+}
+
+// Corridor cruise: locked-yaw drive with the lateral centre slide, plus
+// the stall guard (a latched lane that cannot advance — nose wedged where
+// the body fits — releases to the wander instead of freezing in place; a
+// successful 1-wide recentre counts as progress, not a stall).
+function cruiseLane(mob, dt, supported, floating, res, rand = Math.random, peerGate = null, peers = null, turnGate = null) {
+  // Cruise never descends into a pit (see descendOk): ramps with a
+  // walkable continuation pass through, local minima read as walls. The
+  // probe below captures the pre-turn facing exactly like the inline drive
+  // did; the move itself runs post-turn.
+  const cruiseBase = makeStepOk(mob, supported, floating, 0, mob.yaw, 0);
+  const cruiseOk = wrapStepOk(mob, cruiseBase);
+  // Peer-stall discipline: a sustained grind breaks into the mutual
+  // turn-away below instead of parking in contact (see peerGrindEscape);
+  // the stall below owns the state after the maneuver. Measured on the
+  // post-drive pose (the contact peak: the pre-drive pose reads the
+  // backstop's trough and flickers the signal).
+  // Courtesy hold first: never push a passive peer down the corridor —
+  // skip the forward drive (slide only) while one blocks the nose. The
+  // stall below still accrues (dist reads 0) and trips the escape, so a
+  // wait never parks forever, and the waiter stops travelling. No state:
+  // the quiet hold below owns persistence, this only refuses the push.
+  const held = peers != null && passiveAhead(mob, peers, dt);
+  // Quiet hold from a previous trip: skip the forward drive while a peer
+  // still touches the body, keep sliding laterally. Clears the tick the
+  // body reads free or the lane axis changes (flip/release). A turn still
+  // expressing (held mid-flip below) clears once the yaw lands on the lane
+  // instead — the drive below then walks out of the meeting. Fused: past
+  // the fuse the escape re-polls instead of holding forever — geometry
+  // shifts as the peer maneuvers, and a hold that never re-checks would
+  // freeze a meeting the next sidestep could have resolved.
+  if (mob._peerHold === true) {
+    if ((mob._peerHoldAxis ?? mob.lane.axis) !== mob.lane.axis ||
+      peerPenAt(mob, mob.pos.x, mob.pos.z, Math.sin(mob.yaw), Math.cos(mob.yaw), mob.pos.y, peers ?? [], null) <= 0 ||
+      (mob._holdTurn === true && Math.abs(normYaw(mob.yaw - mob.lane.axis)) < 0.3)) {
+      mob._peerHold = false; mob._holdTurn = false;
+    } else {
+      mob._peerHoldT = (mob._peerHoldT ?? 0) + dt;
+      if (mob._peerHoldT > HOLD_FUSE && peers) {
+        mob._peerHold = false; mob._peerStall = 0;
+        if (peerGrindEscape(mob, dt, supported, floating, peers, null)) return true;
+      } else {
+        centerPull(mob, dt, supported, floating, false, peers);
+        mob.stuckT = 0;
+        return true;
+      }
+    }
+  }
+  // Sidestep offset expiry: a turn onto a new axis drops it outright; once
+  // no peer holds the line nearby the ride re-converges onto its measured
+  // line instead of parading a stale parallel.
+  if (mob._lineOff) {
+    const [lax, laz] = dirVec(mob.lane.axis);
+    if ((mob._lineOffAxis ?? mob.lane.axis) !== mob.lane.axis) mob._lineOff = 0;
+    else {
+      let near = false;
+      for (const o of peers ?? []) {
+        if (o === mob || !o.alive || Math.abs(o.pos.y - mob.pos.y) > SEP_Y) continue;
+        const ox = o.pos.x - mob.pos.x, oz = o.pos.z - mob.pos.z;
+        if (Math.abs(ox * lax + oz * laz) < 2.5 && Math.abs(ox * -laz + oz * lax) < 1.5) { near = true; break; }
+      }
+      if (!near) mob._lineOff = 0;
+      else mob._lineOffAxis = mob.lane.axis;
+    }
+  }
+  const driveRes = held ? null : driveToward(mob, dt, mob.yawTarget, () => {
+    // Peer gate (same budget as the lane-less step gate): laned drives
+    // stop at deep peer contact instead of grinding through — brushes walk
+    // through, paced files are exempt (followSlow paces them), and the
+    // stall path owns the escape (U-turn/release), exactly like the
+    // lane-less stuck path. No freeze: the drive only ever refuses, never
+    // reverses by itself.
+    return (nx, nz) => cruiseOk(nx, nz) && descendOk(mob, nx, nz) &&
+      (peerGate == null || !peerGate(nx, nz));
+  }, moveVector, { rate: SERVO_TURN, turnOk: turnGate });
+  const err = driveRes ? driveRes.err : Math.abs(normYaw(mob.yawTarget - mob.yaw));
+  const dist = driveRes ? driveRes.dist : 0;
+  // Lateral centering on straights: yaw stays locked on the corridor
+  // axis (no hunting), the body slides toward the lane middle when free —
+  // the cell centre in a true 1-wide corridor, the virtual-lane middle
+  // while wall-following. Turns and seeks centre through centerPull above.
+  const recentered = res.event === "cruise"
+    ? 0
+    : centerPull(mob, dt, supported, floating, true, peers);
+  if (dist === 0 && recentered === 0 && err < SERVO_SPIN) mob.servoStall = (mob.servoStall ?? 0) + dt;
+  else mob.servoStall = 0;
+  if (mob.servoStall > 0.75) return releaseStalledLane(mob);
+  // Peer grind past the trip (see grindWatchTick): both parties turn away
+  // and leave in appropriate directions instead of parking in contact —
+  // the shared escape owns the maneuver, the stall below owns the state
+  // after it.
+  if (grindWatchTick(mob, dt, supported, floating, peers, null)) return true;
+  if (res.event === "cruise") centerPull(mob, dt, supported, floating, false, peers);
   mob.stuckT = 0;
   return true;
 }
@@ -1178,16 +1754,19 @@ export function tickFarmMob(mob, dt, pickTarget, rand = mob.rand ?? Math.random,
   // Tunnel-entry attraction primes over everything (open roam, wall rides,
   // wander picks): draws repeat every scan until one accepts, steered as a
   // plain roam commit. While one runs, the picks below pause (stuck/refresh
-  // would steal its target) and peer steering stands down (entries are
-  // short precise maneuvers; the backstop still separates).
+  // would steal its target); peer avoidance stays live (the tiered planner
+  // slows, sidesteps hole-ward, or aborts entries — only the backstop ran
+  // before, which shoved precise maneuvers).
   mob.entryScanT = Math.max(0, (mob.entryScanT ?? 0) - dt);
   mob.entryCoolT = Math.max(0, (mob.entryCoolT ?? 0) - dt);
+  mob._grindCool = Math.max(0, (mob._grindCool ?? 0) - dt);
+  mob._turnAway = Math.max(0, (mob._turnAway ?? 0) - dt);
   const entryHold = supported && !floating ? entryTick(mob, dt, rand, { supported, floating, pickTarget }) : false;
   // 2-wide crossing state: maintained while the mouth holds, draws the exit
   // at the first hold tick and closes with cooldown at the leave
   // (passageTick owns it; lane owners and entry commits are exempt).
   if (supported && !floating) passageTick(mob, dt, supported, floating, rand, pickTarget);
-  const peersEff = entryHold ? null : peers;
+  const peersEff = peers;
   if (!entryHold) {
     mob.wanderT -= dt;
     const dx = mob.target ? mob.target.x - mob.pos.x : 0;
@@ -1202,6 +1781,9 @@ export function tickFarmMob(mob, dt, pickTarget, rand = mob.rand ?? Math.random,
     // survives next tick's decide instead of dying after one step.
     if (mob.target) {
       const stepped = Math.hypot(mob.pos.x - mob.lastX, mob.pos.z - mob.lastZ);
+      // Real advance this slice (drives only — the separation backstop runs
+      // after the tick): the file discipline paces it, not the speed field.
+      mob._adv = stepped;
       if (stepped < mob.speed * dt * 0.2) mob.stuckT += dt;
       else { mob.stuckT = 0; }
       // Solo legacy path (peers == null: headless rigs, registry ticks):
@@ -1234,7 +1816,10 @@ export function tickFarmMob(mob, dt, pickTarget, rand = mob.rand ?? Math.random,
       }
       const progStuck = (mob._progBad ?? 0) >= PROG_STRIKES;
       // Smooth crossings never maneuver (same single release as solo).
-      if ((mob.stuckT >= STUCK_T || progStuck) && mob.roam?.smooth !== true) {
+      // Holders never maneuver either (rank >= 3: exiting or threading —
+      // walls forbid sidesteps, so a frank detour would shove the hold —
+      // keep the slowed line and let the backstop clear residue instead).
+      if ((mob.stuckT >= STUCK_T || progStuck) && mob.roam?.smooth !== true && mobRank(mob) < 3) {
         // Shuffle within snout-sweep range of walls: no forced maneuver —
         // its turn would sweep the snout along the rock — hand decide a
         // fresh wall-aware commit instead (open headings read clearance),
@@ -1294,6 +1879,7 @@ export function tickFarmMob(mob, dt, pickTarget, rand = mob.rand ?? Math.random,
       } // end peer path (solo legacy above keeps the old draw stream)
     } else {
       mob.stuckT = 0;
+      mob._adv = 0;
       mob._progTgt = null; mob._progBad = 0; mob._progAge = 0;
     }
     mob.lastX = mob.pos.x;
@@ -1315,7 +1901,8 @@ export function tickFarmMob(mob, dt, pickTarget, rand = mob.rand ?? Math.random,
   // Roam stepping owns lane-less ticks the servo declines (the R2 upkeep
   // above already ran inside the servo tick). Speed only ever takes the
   // planner's two levels (full or PLAN_SLOW) — no continuous yield factor,
-  // so meets never judder. Lane mobs and entries run legacy full speed.
+  // so meets never judder. Tiers plan every mode now (slow for laned wall
+  // rides, steer/abort for entries); red rails stay unplanned.
   // Mob bodies count as obstacles for lane-less stepping (same Y level
   // only): a refused step stops at contact range instead of overlapping
   // past the brush budget, and the stuck re-pick below routes around true
@@ -1323,12 +1910,75 @@ export function tickFarmMob(mob, dt, pickTarget, rand = mob.rand ?? Math.random,
   const blockedByMob = peersEff && !mob.lane
     ? (nx, nz) => mobBlockedAt(mob, nx, nz, mob.pos.y, peersEff, 0, grid, CROSS_BUDGET)
     : null;
-  // Group plan (forecast.js, latched): a forced heading overrides the
-  // commit target while the hold lasts — except on a committed detour,
-  // which flies its own validated line open-loop instead: re-aiming the
-  // point every tick would wobble the escape. Null plan (or lane motion)
-  // keeps legacy behavior; lanes never take a heading override.
-  const plan = peersEff && !mob.lane && mob._plan?.forced ? mob._plan : null;
+  // Laned peer gate (same budget as above): a rail never overlaps a peer
+  // past the brush budget either — the drive stops at contact range and
+  // the stall path owns the escape (U-turn/release), exactly like the
+  // lane-less stuck path. Settled files are exempt (followSlow paces them);
+  // acute catch-ups at a yaw angle re-arm the gate (same circles, same
+  // budget — only the exemption narrows), so a follower arriving at ~20°
+  // stops at contact range instead of walking through its leader.
+  const lanePeerGate = peersEff && mob.lane
+    ? (nx, nz) => peerPenAt(mob, nx, nz, Math.sin(mob.yaw), Math.cos(mob.yaw),
+      mob.pos.y, peersEff, grid, 0,
+      (o) => followsPace(mob, o) && Math.abs(normYaw(o.yaw - mob.yaw)) < 0.3) > CROSS_BUDGET
+    : null;
+  // Turn gate (same budget as the step gates): a yaw step that would swing
+  // the nose/tail discs into a peer past the brush budget is refused —
+  // translation gates only test positions, so a pure rotation deepens
+  // contact for free (outer-tip grind: the dodger turns in place into the
+  // holder). Already-deep contact stays free (escape turns and the stuck
+  // path own it); shallow turns walk through like shallow steps.
+  // Lane-less maneuver turns carry a small give (see makeTurnGate): bounded
+  // deepening unfreezes broad-snount deadlocks without freeing sweeps.
+  // Laned flip turns stay strict — the line re-measures every tick, so a
+  // strict turn converges instead of freezing, and the sweep stays clean.
+  const turnGate = peersEff
+    ? makeTurnGate(mob, peersEff, grid, 0)
+    : null;
+  const turnGiveGate = peersEff && mob._turnAway > 0
+    ? makeTurnGate(mob, peersEff, grid, TURN_GIVE)
+    : turnGate;
+  // Group plan (forecast.js, latched): slow applies to every planned mob
+  // (laned wall rides pace on their servo line, never re-aimed); a forced
+  // heading overrides the commit target only lane-less — except locked
+  // smooth crossings, which slow but never steer — and never on a committed
+  // detour, which flies its own validated line open-loop instead: re-aiming
+  // the point every tick would wobble the escape. Null plan (or lane
+  // motion) keeps legacy behavior. Detach (blue → free roam) and abort
+  // (wedged 1-wide committer → giveUp path) flags land here, the tick the
+  // plan deals them, so the drive below already flies the new mode.
+  // Every blue ride detaches — including entry-carrying guided rides: the
+  // claimed slot survives (stall re-armed), so the commit re-approaches
+  // after the dodge expresses itself instead of losing the hole.
+  const slowPlan = peersEff && mob._plan?.forced ? mob._plan : null;
+  // Detach (blue → free roam) lands the tick the plan deals it, so the drive
+  // below already flies the new mode. Guided entry rides keep their claimed
+  // slot (stall re-armed) and re-approach after the dodge; pure blues open
+  // a free-roam commit along the dodge wind.
+  if (mob._wantDetach && mob.lane) {
+    const h = slowPlan ? slowPlan.heading : mob.yaw;
+    mob.lane = null; mob.followLine = null; mob.turnHold = 0;
+    mob.followCool = FOLLOW_COOL; mob.stuckT = 0; mob.servoStall = 0;
+    mob._detour = false; mob._rebase = false;
+    if (mob.roam?.entry === true) {
+      mob.roam.stallT = 0; mob.roam.latchTried = false;
+    } else {
+      // Dodge commit past the meeting, not just off the line: a short hop
+      // expires right back inside the crowd (arrival → blind wander →
+      // re-meeting), so walk the dodge wind until voxel-clear (2.4 m when
+      // the whole segment walks, 1.6 m otherwise).
+      const reach = segmentWalkable(mob, mob.pos.x, mob.pos.z,
+        mob.pos.x + Math.sin(h) * 2.4, mob.pos.z + Math.cos(h) * 2.4) ? 2.4 : 1.6;
+      const t = { x: mob.pos.x + Math.sin(h) * reach, z: mob.pos.z + Math.cos(h) * reach };
+      mob.target = t;
+      mob.wanderT = NO_EXPIRY;
+      mob.roam = { mode: "commit", heading: h, target: t, tgt: t, t: 0, span: roamSpan(rand), runT: 0 };
+    }
+  }
+  mob._wantDetach = false;
+  const plan = !mob.lane && slowPlan && mob.roam?.smooth !== true ? slowPlan : null;
+  if (mob._wantAbort && mob.roam?.entry === true) mob.roam.giveUp = true;
+  mob._wantAbort = false;
   const cruise = mob._detour && !plan && mob.roam?.heading != null ? mob.roam.heading : null;
   // Line rebase (forecast.js flagged the stand-down): the sidestep episode
   // adopted a parallel line — move the goal onto it instead of swinging
@@ -1356,19 +2006,30 @@ export function tickFarmMob(mob, dt, pickTarget, rand = mob.rand ?? Math.random,
       }
     }
   }
-  let slow = plan ? plan.slow : 1;
+  let slow = slowPlan ? slowPlan.slow : 1;
   // File discipline: match a same-direction peer's pace ahead in the
   // corridor instead of tailgating into it — the file walks parallel at
-  // constant spacing instead of grinding. Slow-only, lane-less only.
-  if (peersEff && !mob.lane) slow = Math.min(slow, followSlow(mob, peersEff, grid));
+  // constant spacing instead of grinding. Slow-only, any mode (laned wall
+  // rides pace on their servo line).
+  if (peersEff) slow = Math.min(slow, followSlow(mob, peersEff, grid));
   let savedSpeed = 0;
   if (slow !== 1) { savedSpeed = mob.speed; mob.speed *= slow; }
-  const servoed = servoTick(mob, dt, supported, floating, rand, pickTarget);
+  const servoed = servoTick(mob, dt, supported, floating, rand, pickTarget, lanePeerGate, peersEff, turnGate);
   let roamed = false;
   if (!servoed && supported && !floating) {
     roamed = roamStep(mob, dt, supported, floating, rand, pickTarget, blockedByMob,
-      plan ? plan.heading : cruise);
+      plan ? plan.heading : cruise, turnGiveGate);
   }
+  // Lane-less peer-grind watch (same discipline as the laned cruise,
+  // see grindWatchTick): sustained body contact with no escape breaks into
+  // the mutual turn-away instead of churning release/re-pick forever.
+  // Stationary mobs, holders, smooth crossings, and entry commits never
+  // maneuver — their peers' episodes yield instead.
+  if (!mob.lane && peersEff && supported && !floating && (mob.speed ?? 0) > 0 &&
+    mobRank(mob) < 3 && mob.roam?.smooth !== true && mob.roam?.entry !== true &&
+    !(mob._turnAway > 0)) {
+    grindWatchTick(mob, dt, supported, floating, peersEff, grid);
+  } else if (!mob.lane) mob._peerStall = 0;
   if (mob.target && !servoed && !roamed) {
     // Legal-step gate (non-jumping walkers): never up, down at most
     // maxDrop. A deeper drop is a vertical air wall — rejected exactly
@@ -1397,7 +2058,7 @@ export function tickFarmMob(mob, dt, pickTarget, rand = mob.rand ?? Math.random,
     // full stride while turning).
     const goal = plan ? plan.heading : cruise ?? Math.atan2(mob.target.x - mob.pos.x, mob.target.z - mob.pos.z);
     driveToward(mob, dt, slideDeflect(mob, dt, goal, supported, floating),
-      makeWander, moveClamped, { gated: false });
+      makeWander, moveClamped, { gated: false, turnOk: turnGiveGate });
   }
   // One-tick plan: consumed above (roam or wander) or ignored (servo) —
   // never carried over, the planner re-runs (and re-latches holds) every
@@ -1460,9 +2121,13 @@ export function sepSpotFree(mob, x, z) {
 // drives walk them out on their own) — correcting those is the visible
 // shove. Deeper overlaps correct fractionally, so a single tick never
 // teleports a mob: the residue converges over the following ticks, and
-// the veto still parks heads out of walls. A vetoed side stays put and
-// the other side takes the damped correction; both vetoed keeps the
-// overlap for this tick (rare — wall sandwich — and retried next tick).
+// the veto still parks heads out of walls. Separation runs center to
+// center (never along the worst pair's own axis): competing circle pairs
+// would otherwise ping-pong the correction between their normals and hold
+// a steady overlap forever. Coincident centers fall back to the worst
+// pair's deterministic axis. A vetoed side stays put and the other side
+// takes the damped correction; both vetoed slides tangentially instead of
+// keeping the overlap (wall sandwiches unstack sideways, never into rock).
 // Y-gated so a faller never shoves a walker below.
 // Alloc-free: circle centers stay in locals, pairs share one loop.
 // grid (optional, same tick's buildMobGrid) restricts each mob to neighbors
@@ -1500,6 +2165,11 @@ export function separateFarmMobs(list, grid = null) {
         if (!b.alive) continue;
         const w = worstPairPen(a, b, i, inner ? (idx.get(b) ?? 0) : i + 1 + k);
         if (!w || w.pen <= PUSH_T) continue;
+        // Center-to-center axis (see header): strictly grows body distance.
+        let nx = w.nx, nz = w.nz;
+        const ox = a.pos.x - b.pos.x, oz = a.pos.z - b.pos.z;
+        const od2 = ox * ox + oz * oz;
+        if (od2 >= 1e-8) { const od = Math.sqrt(od2); nx = ox / od; nz = oz / od; }
         // Damped and capped: each side takes a quarter of the penetration
         // per iteration, never more than PUSH_CAP per tick total — deep
         // overlaps converge geometrically instead of teleporting, and a
@@ -1510,17 +2180,33 @@ export function separateFarmMobs(list, grid = null) {
         let db = Math.min(w.pen / 4, PUSH_CAP - (spent.get(b) ?? 0));
         if (da < 0) da = 0;
         if (db < 0) db = 0;
-        if (!sepSpotFree(a, a.pos.x + w.nx * da, a.pos.z + w.nz * da)) { da = 0; db = Math.min(w.pen / 4, PUSH_CAP - (spent.get(b) ?? 0)); if (db < 0) db = 0; }
-        if (!sepSpotFree(b, b.pos.x - w.nx * db, b.pos.z - w.nz * db)) {
+        if (!sepSpotFree(a, a.pos.x + nx * da, a.pos.z + nz * da)) { da = 0; db = Math.min(w.pen / 4, PUSH_CAP - (spent.get(b) ?? 0)); if (db < 0) db = 0; }
+        if (!sepSpotFree(b, b.pos.x - nx * db, b.pos.z - nz * db)) {
           db = 0;
-          if (da === 0) continue;
+          if (da === 0) {
+            // Double veto (wall sandwich): slide tangentially instead of
+            // keeping the overlap — walls veto the axis, the tangent stays
+            // inside the corridor. Deterministic side order, capped share.
+            let ta = Math.min(w.pen / 4, PUSH_CAP - (spent.get(a) ?? 0));
+            let tb = Math.min(w.pen / 4, PUSH_CAP - (spent.get(b) ?? 0));
+            if (ta < 0) ta = 0;
+            if (tb < 0) tb = 0;
+            const tx = -nz, tz = nx;
+            if (ta > 0 && sepSpotFree(a, a.pos.x + tx * ta, a.pos.z + tz * ta) &&
+              sepSpotFree(b, b.pos.x - tx * tb, b.pos.z - tz * tb)) {
+              da = ta; db = tb; nx = tx; nz = tz;
+            } else if (ta > 0 && sepSpotFree(a, a.pos.x - tx * ta, a.pos.z - tz * ta) &&
+              sepSpotFree(b, b.pos.x + tx * tb, b.pos.z + tz * tb)) {
+              da = ta; db = tb; nx = -tx; nz = -tz;
+            } else continue;
+          }
         }
-        a.pos.x += w.nx * da;
-        a.pos.z += w.nz * da;
-        b.pos.x -= w.nx * db;
-        b.pos.z -= w.nz * db;
-        if (da > 0) spent.set(a, (spent.get(a) ?? 0) + da);
-        if (db > 0) spent.set(b, (spent.get(b) ?? 0) + db);
+        a.pos.x += nx * da;
+        a.pos.z += nz * da;
+        b.pos.x -= nx * db;
+        b.pos.z -= nz * db;
+        if (da > 0) { spent.set(a, (spent.get(a) ?? 0) + da); a._pushed = true; }
+        if (db > 0) { spent.set(b, (spent.get(b) ?? 0) + db); b._pushed = true; }
         if (da > 0 || db > 0) moved = true;
       }
     }

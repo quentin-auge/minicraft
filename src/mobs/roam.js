@@ -840,7 +840,7 @@ export function tryGuidedErect(mob, dt, supported, floating, rand = Math.random)
 }
 
 // Decision + stepping when the servo owns nothing. Returns handled.
-export function roamStep(mob, dt, supported, floating, rand = Math.random, pickTarget, blocked = null, forceHeading = null) {
+export function roamStep(mob, dt, supported, floating, rand = Math.random, pickTarget, blocked = null, forceHeading = null, turnGate = null) {
   if (mob.lane) return false;
   const r = mob.roam;
   const broken = r && r.mode && mob.target !== r.tgt;
@@ -882,11 +882,14 @@ export function roamStep(mob, dt, supported, floating, rand = Math.random, pickT
   if (c.detour) {
     const [fax, faz] = dirVec(c.axis);
     yawGoal = Math.atan2(c.target.x - fax - mob.pos.x, c.target.z - faz - mob.pos.z);
-  } else if (forceHeading != null && !c.entry && !c.smooth) {
+  } else if (forceHeading != null && !c.smooth && !(mob._turnAway > 0)) {
     // Group-plan override (forecast.js): the latched evasion heading wins
-    // over the point re-aim for the tick. Entry commits ignore it — guided
-    // hole-ward lines are never yanked — and smooth crossings ignore it too
-    // (locked lines stay locked even in a crowd).
+    // over the point re-aim for the tick. Slot-gated entry dodges steer
+    // here (hole-ward by construction); smooth crossings ignore it
+    // (locked lines stay locked even in a crowd). An active turn-away
+    // maneuver ignores it instead: the validated away heading owns the
+    // tick, or the planner would yank the mob straight back into the peer
+    // the maneuver is leaving.
     yawGoal = forceHeading;
   } else {
     yawGoal = Math.atan2(c.target.x - mob.pos.x, c.target.z - mob.pos.z);
@@ -898,8 +901,18 @@ export function roamStep(mob, dt, supported, floating, rand = Math.random, pickT
   // instead of grinding in place. Progress re-arms the latch, so
   // wall-following stays preferred wherever a wall exists.
   if (!c.entry || c.latchTried || c.detour) yawGoal = slideDeflect(mob, dt, yawGoal, supported, floating);
+  // Startle turn: a turn-away maneuver snaps at quintuple rate — a
+  // nose-to-nose about-face can never unwind while every partial yaw is
+  // refused, so the escape would pirouette in place until the span runs
+  // out. The peer gate itself carries a small give while maneuvering (see
+  // makeTurnGate): bounded deepening unfreezes broad-snount deadlocks
+  // without ever freeing a real sweep-through. Strides stay fully gated
+  // either way. Bounded (one maneuver span), rare (peer grinds only).
+  // Pigs startle-turn fast; a snap reads as startled, not as skating.
+  const maneuver = mob._turnAway > 0;
   const yawBefore = mob.yaw;
-  const { err, dist } = driveToward(mob, dt, yawGoal, makeCommit, moveClamped);
+  const { err, dist } = driveToward(mob, dt, yawGoal, makeCommit, moveClamped,
+    { turnOk: turnGate, rate: maneuver ? TURN_RATE * 5 : undefined });
   // Anti-orbit guard: a lane-less open commit that rotates past ~1.6 turns
   // without arriving is lost (sidewalk-dance with a peer, orbit around a
   // pushed-off line) — drop it so decide re-aims fresh instead of grinding
