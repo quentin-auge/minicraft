@@ -48,7 +48,11 @@ export const LIVESTOCK_SPECS = {
 // and tail circles placed along the body axis (so the mover and the
 // separation pass cover the protruding head and tail without widening
 // the flanks), and the top of the highest part (so headroom covers
-// heads and horns, not just the body box). Pure and headless-testable.
+// heads and horns, not just the body box). Also derives the grab box: the
+// full visual footprint (head/snout/horns/tail/sides) as a yaw-independent
+// radius, so the slightest ray intersection latches — no margin, exact
+// extents. Physics keeps the tight hw/h; only picking reads grabR/grabH.
+// Pure and headless-testable.
 const CIRCLE_PARTS = ["body", "head", "snout", "eyes", "nostrils", "horns", "legs", "spots"];
 // Rearward slack for the tail group origin: exact for backward tails
 // (pig coil), a conservative overestimate for hanging ones (cow strand)
@@ -56,7 +60,7 @@ const CIRCLE_PARTS = ["body", "head", "snout", "eyes", "nostrils", "horns", "leg
 const TAIL_BACK_EXTRA = 0.3;
 export function specCircles(spec) {
   const hw = spec.hw ?? 0.3;
-  let top = spec.h ?? 1, front = hw, back = -hw, noseW = 0;
+  let top = spec.h ?? 1, front = hw, back = -hw, side = hw, noseW = 0;
   for (const k of CIRCLE_PARTS) {
     const p = spec[k];
     if (!p || !p.size || !p.at) continue;
@@ -64,6 +68,7 @@ export function specCircles(spec) {
     for (const a of ats) {
       front = Math.max(front, a[2] + p.size[2] / 2);
       back = Math.min(back, a[2] - p.size[2] / 2);
+      side = Math.max(side, Math.abs(a[0]) + p.size[0] / 2);
       top = Math.max(top, a[1] + p.size[1] / 2);
       if (k === "head" || k === "snout") noseW = Math.max(noseW, p.size[0] / 2);
     }
@@ -71,7 +76,11 @@ export function specCircles(spec) {
   if (spec.tail?.at) back = Math.min(back, spec.tail.at[2] - TAIL_BACK_EXTRA);
   const noseR = Math.min(hw, noseW || hw);
   const tailR = Math.min(hw * 0.7, 0.22);
-  return { hw, h: top, nose: { along: front - noseR, r: noseR }, tail: { along: back + tailR, r: tailR } };
+  // Axial extents for the oriented pick box (flanks = torso, front = head):
+  // the ray is tested in the mob's yaw frame, so flanks stay tight while
+  // the head still latches head-on. No margin, exact visual extents.
+  const grabR = Math.max(front, -back, side);
+  return { hw, h: top, grabR, grabH: top, grabSide: side, grabFront: front, grabBack: -back, nose: { along: front - noseR, r: noseR }, tail: { along: back + tailR, r: tailR } };
 }
 
 // World seed for deterministic pen draws. Movements wander freely; only the

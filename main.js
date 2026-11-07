@@ -22,7 +22,7 @@ import {
 import * as player from "./src/player/physics.js";
 import { flyOn, setFly, updateFly } from "./src/player/fly.js";
 import { updateTarget, breakTarget, placeAtSelection, breakBlockAt, pickBlock, tryPlace, currentBlock, flushChainBatch, purgeFloatingLiquidsAround } from "./src/player/edit.js";
-import { fireHookTarget, fireSkyHook, grapplePick, cancelHook, severHook, updateHook, hookActive, hookHeldSwim, hookAnchor, tickHookFx } from "./src/player/hook.js";
+import { fireHookTarget, fireSkyHook, grapplePick, mobGrabTarget, mobReleaseTarget, cancelHook, severHook, updateHook, hookActive, hookHeldSwim, hookAnchor, tickHookFx, setMobAlpha, HELD_ALPHA } from "./src/player/hook.js";
 import { initRope } from "./src/player/rope.js";
 import { tickTNT, initTNTFx, resetTNTMemory, clearRegularTntDim, onExplode, onLiquidPurge, shakeSpecFor, bandFront, bandActive, drainBlastRemesh, queueBlastRefresh, megaImminent, megaCarveActive, megaFxActive, MEGA_BLAST_T, MEGA_BLAST_TIME_SCALE } from "./src/fx/tnt.js";
 import { initFx, tickFx, tickDenseFx, denseFxActive, prewarmDenseFx, spawnDense, flushDense, noteDenseSpawn } from "./src/fx/particles.js";
@@ -73,6 +73,7 @@ import { EYE, setFlyStepAllow, updateFreeSwim } from "./src/player/physics.js";
 import { initHomingTnt, fireHomingTnt, tickHomingTnt, clearHomingTnt } from "./src/mobs/homing.js";
 import { enterEndMobs, clearEndMobs, tickEndMobs, notifyEndermanVoxelChange, dragonHealth, setDragonVictoryHook, setMobSeed } from "./src/mobs/end.js";
 import { enterFarmMobs, clearFarmMobs, tickFarmMobs, handleFarmTravel, setFarmSeed, spawnFarmMobAt } from "./src/mobs/farm.js";
+import { heldMob, tickHeld, severCarry } from "./src/mobs/carry.js";
 import { endPortalFrameKeys, resetEndDimension, setEndCleared } from "./src/world/end.js";
 import { resetTntUnlocks } from "./src/world/tntunlock.js";
 import { isCheat } from "./src/core/cheat.js";
@@ -346,6 +347,14 @@ function applySpawn() {
   if (s?.fly) setFly(true);
 }
 
+// Held-mob teardown (travel, New World, respawn): opaque again first, then
+// the pure state sever — the mob stays where the pose left it, movers resume.
+function dropHeldMob() {
+  const held = heldMob();
+  if (held) setMobAlpha(held, 1);
+  severCarry();
+}
+
 // The level loads behind the translucent menu in slices: voxels generate a
 // dozen rows per frame, then the spawn neighborhood builds (radius 2: the
 // closed-in fog only shows ~30 blocks, the clear-bubble guard covers the
@@ -361,6 +370,7 @@ async function buildWorld() {
   worldReady = false;
   revealT = 0;
   severHook();
+  dropHeldMob();
   clearHomingTnt();
   clearEndMobs();
   clearFarmMobs();
@@ -528,6 +538,7 @@ async function runTravel(dest, msg) {
   if (!alive()) return;
   try {
     severHook();
+    dropHeldMob();
     clearHomingTnt();
     clearEndMobs();
     resetTNTMemory();
@@ -909,6 +920,27 @@ document.addEventListener("keydown", (e) => {
     e.preventDefault();
     return;
   }
+  // Mob grab / release (ENTER): empty hands grab the aimed mob through the
+  // mob-grab hook kind; holding hands release through the mob-release kind
+  // toward the aimed block's face cell. Refusals (busy hook, no aim) fizzle.
+  if ((e.code === "Enter" || e.code === "NumpadEnter") && !e.repeat && started && !isHelpOpen() && isLocked() && !building) {
+    if (!hookActive()) {
+      camera.getWorldDirection(_hookDir);
+      const held = heldMob();
+      if (held) {
+        const aim = updateTarget(camera, selectedId());
+        if (aim) {
+          fireHookTarget(
+            () => mobReleaseTarget(held, aim.x, aim.y, aim.z, aim.face),
+            camera.position, _hookDir, "mob-release");
+        }
+      } else {
+        fireHookTarget(mobGrabTarget, camera.position, _hookDir, "mob-grab");
+      }
+    }
+    e.preventDefault();
+    return;
+  }
   keys[e.code] = true;
   keys[e.key] = true;
   if (e.code === "KeyK") select(selected - 1);
@@ -917,6 +949,7 @@ document.addEventListener("keydown", (e) => {
 });
 document.addEventListener("keyup", (e) => {
   if (e.code === "KeyG" && hookActive()) cancelHook(true);
+  if ((e.code === "Enter" || e.code === "NumpadEnter") && hookActive()) cancelHook(true);
   keys[e.code] = false;
   keys[e.key] = false;
 });
@@ -1030,6 +1063,20 @@ function loop(now) {
       else if (flyOn) updateFly(dt);
       else updatePlayer(dt);
     }
+    // Held-mob pose: pinned in front of the eye every sim frame while held
+    // (hook flights position the mob themselves; held is null then), kept
+    // at the master held alpha (after displacement-color, which reassigns
+    // paintable materials every tick).
+    const heldPose = heldMob();
+    if (heldPose) {
+      camera.getWorldDirection(_hookDir);
+      tickHeld(
+        { x: camera.position.x, y: camera.position.y, z: camera.position.z },
+        { x: _hookDir.x, y: _hookDir.y, z: _hookDir.z },
+        player.yaw,
+      );
+      setMobAlpha(heldPose, HELD_ALPHA);
+    }
     // Per-dimension floor, bounded dims only (overworld: below -20 means out
     // of the world, so respawn). respawnY: null (TNT sky) means no floor: the
     // fall never ends.
@@ -1037,6 +1084,7 @@ function loop(now) {
     if (floorY != null && pos.y < floorY) {
       vel.set(0, 0, 0);
       severHook();
+      dropHeldMob();
       applySpawn();
     }
     // While a band carves, blast refresh splits: portal frames track only
