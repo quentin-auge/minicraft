@@ -26,6 +26,12 @@ export const SOULSAND = 18;
 export const MOON = 19;
 export const GLOWSTONE = 20;
 export const MOON_WATER = 21;
+// Rocket family (worldgen only): white/orange hull, dark thruster nozzles,
+// and the hazard-plate launch pad. Windows reuse the stock GLASS block.
+export const HULL = 24;
+export const HULL_ACCENT = 25;
+export const THRUSTER = 27;
+export const PAD = 28;
 
 export const BLOCK_INFO = {
   [GRASS]: { name: "Grass", solid: true, opaque: true, placeable: true },
@@ -54,6 +60,10 @@ export const BLOCK_INFO = {
   [MOON]: { name: "Moon", solid: true, opaque: true, placeable: false },
   [MOON_WATER]: { name: "Moon Water", solid: false, opaque: false, placeable: true },
   [GLOWSTONE]: { name: "Glowstone", solid: true, opaque: true, placeable: true },
+  [HULL]: { name: "Hull", solid: true, opaque: true, placeable: false },
+  [HULL_ACCENT]: { name: "Hull Accent", solid: true, opaque: true, placeable: false },
+  [THRUSTER]: { name: "Thruster", solid: true, opaque: true, placeable: false },
+  [PAD]: { name: "Launch Pad", solid: true, opaque: true, placeable: false },
 };
 
 export function isSolidId(id) {

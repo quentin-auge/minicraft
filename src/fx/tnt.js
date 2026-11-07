@@ -2333,13 +2333,17 @@ function carvePoolCellContents(x, y, z, kind, touched, pool) {
     return;
   }
   // Silent consume (pool members and stragglers, normals inside a pool,
-  // ordinary cells): untrack indexed kinds, then one protected-aware write —
-  // setBlock refuses protected cells itself, so no second getBlock needed.
-  if (bid === GLOWSTONE) clearGlowstoneAt(x, y, z);
-  else if (bid === FLOWER) clearFlowerAt(x, y, z);
-  else if (bid === TNT) untrackRegularTnt(x, y, z);
-  else if (victimKind) untrackMega(x, y, z);
-  if (setBlock(x, y, z, AIR)) touched.push([x, y, z]);
+  // ordinary cells): one protected-aware write first — setBlock refuses
+  // protected cells itself — and indexes clear only when the voxel really
+  // went, so a protected glowstone keeps its color variant instead of
+  // reverting to the default green.
+  if (setBlock(x, y, z, AIR)) {
+    if (bid === GLOWSTONE) clearGlowstoneAt(x, y, z);
+    else if (bid === FLOWER) clearFlowerAt(x, y, z);
+    else if (bid === TNT) untrackRegularTnt(x, y, z);
+    else if (victimKind) untrackMega(x, y, z);
+    touched.push([x, y, z]);
+  }
 }
 
 export function litCount() {
