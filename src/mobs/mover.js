@@ -14,7 +14,7 @@ import { entryTick, passageTick } from "./entry.js";
 import { queryMobGrid, buildMobGrid } from "./grid.js";
 import {
   aabbIntersectsSolid, hasSupport,
-  liquidSurface, footingOk, headroomOk,
+  liquidSurface, footingOk, groundBelow, headroomOk,
   makeCellFree, makeCellSolid, makeStepOk, descendOk, turnTo,
   moveClamped, moveVector, driveToward, dropLane, spawnRng, stepVertical,
   SERVO_STEP, VIRTUAL_W, NO_EXPIRY, slideDeflect, segmentWalkable,
@@ -46,7 +46,10 @@ export const SERVO_TURN = 7;
 export const SERVO_SPIN = 1.2;
 // Corner swing duration: the junction blend turns entry→exit over this
 // time, tracked by the fast servo yaw above so the drive never stops.
-export const BLEND_T = 0.3;
+// Short enough that the swinging head clears the corner fast (less
+// nose-overlap per turn), long enough that the drive never spins in
+// place: at farm stride ~0.4 m of travel per swing, inside one cell.
+export const BLEND_T = 0.2;
 // Fresh-turn hold: after a touch-ride turn the router holds the new lane
 // this many ticks while the blend arc completes (~0.5 s ≈ 1 m of travel
 // onto the new line), so it never re-decides mid-arc.
@@ -961,6 +964,12 @@ function senseLane(mob) {
     ? (bx, bz) => (v.side * ((v.latIsX ? bx : bz) + 0.5 - v.V) > 0 ? false : cellFreeReal(bx, bz))
     : cellFreeReal;
   const opens = classifyExits(mob.pos.x, mob.pos.z, axisProbe, pointFree, cellFree);
+  if (mob.noseTurn) {
+    // Hold the nose-triggered reversal until it has moved one cell away.
+    if (mob.lane && Math.floor(mob.pos.x) === mob.noseTurn.lockX && Math.floor(mob.pos.z) === mob.noseTurn.lockZ) {
+      if (!opens.some((d) => yawDiff(d, mob.noseTurn.axis) < 1e-6)) opens.push(mob.noseTurn.axis);
+    } else mob.noseTurn = null;
+  }
   const [pax, paz] = dirVec(axisProbe);
   const fwdOpen = pointFree(mob.pos.x + pax * PROBE_DIST, mob.pos.z + paz * PROBE_DIST, axisProbe);
   // Blocked cardinals through the wrapped probes (virtual wall counts):
@@ -1231,9 +1240,57 @@ function dropFollowLine(mob) {
   mob.turnHold = 0;
 }
 
-// Dead-end seek: the classifier reads a wall 1.3 m out, but up to 0.6 m
-// of corridor may remain. Walk nose-to-the-end first, flip only when the
-// drive itself refuses — the mob touches the back wall, then U-turns.
+function noseBlockedAt(mob, x, z, yaw) {
+  const dx = Math.sin(yaw), dz = Math.cos(yaw);
+  // A nose over a drop must not turn the air-wall guard into a solid wall.
+  const reach = mob.nose.along;
+  const steps = Math.max(1, Math.ceil(reach / 0.25));
+  for (let i = 1; i <= steps; i++) {
+    const t = reach * i / steps;
+    if (groundBelow(x + dx * t, mob.pos.y + 1, z + dz * t) !== mob.pos.y) return false;
+  }
+  const nx = x + dx * mob.nose.along, nz = z + dz * mob.nose.along;
+  // Leave a small clearance so bounded move subdivision cannot end in a
+  // barely-intersecting pose.
+  return aabbIntersectsSolid(nx, mob.pos.y, nz, mob.nose.r + 0.03, mob.h);
+}
+
+// A nearby corner is not a dead end: its body turn arc owns clearance, not
+// the straight-ahead nose guard below. Only counts corners ahead of the
+// travel axis: from inside a stub the corridor behind would otherwise read
+// as a "turn ahead" and switch the nose guard off while the snout faces
+// the end wall (nose buried to the body stop).
+function hasTurnAhead(mob, forward) {
+  const cellFree = makeCellFree(mob);
+  const cx = Math.floor(mob.pos.x), cz = Math.floor(mob.pos.z);
+  for (let i = 0; i < CARDINALS.length; i++) {
+    const [ax, az] = dirVec(CARDINALS[i]);
+    for (let j = i + 1; j < CARDINALS.length; j++) {
+      if (yawDiff(CARDINALS[i], CARDINALS[j]) !== Math.PI / 2) continue;
+      const [bx, bz] = dirVec(CARDINALS[j]);
+      if (cellFree(cx + ax, cz + az) && cellFree(cx + bx, cz + bz)) return true;
+    }
+  }
+  for (const d of CARDINALS) {
+    // Behind the snout there is no turn to walk into — only the corridor
+    // already travelled. Counting it would disarm the guard exactly when
+    // the nose meets a wall (stub ends, pocket backs).
+    if (Math.abs(normYaw(d - forward)) > Math.PI / 2 + 1e-6) continue;
+    const [fx, fz] = dirVec(d);
+    if (!cellFree(cx + fx, cz + fz) || cellFree(cx + 2 * fx, cz + 2 * fz)) continue;
+    for (const side of CARDINALS) {
+      if (yawDiff(side, d) < 1e-6 || yawDiff(side, oppositeYaw(d)) < 1e-6) continue;
+      const [sx, sz] = dirVec(side);
+      if (cellFree(cx + fx + sx, cz + fz + sz)) return true;
+    }
+  }
+  return false;
+}
+
+// Dead-end seek: the classifier reads a wall 1.3 m out, but corridor may
+// remain. A forward-facing nose guard stops at the actual wall and begins
+// the U-turn before the head can clip through it; body-only probes still own
+// turns and any angle away from a true dead end.
 function seekDeadEnd(mob, dt, supported, floating, peers = null) {
   const forward = mob.lane.entry; // pre-flip axis: updateLane already swapped
   // Recentre first (no corridor gate: a corner wedge is never a true
@@ -1245,11 +1302,19 @@ function seekDeadEnd(mob, dt, supported, floating, peers = null) {
   // the end of the line — touch it, turn, leave. Peer-gated like every
   // other drive: the seek walks nose-to-the-end, so without the gate it
   // walks nose-through-the-peer standing there.
+  let noseStopped = false;
   const makeSeek = () => {
     const sdriveBase = makeStepOk(mob, supported, floating, 0, mob.yaw, 0);
     const wrapped = wrapStepOk(mob, sdriveBase);
-    return (nx, nz) => wrapped(nx, nz) && descendOk(mob, nx, nz) &&
-      (!peers || !mobBlockedAt(mob, nx, nz, mob.pos.y, peers, 0, null, CROSS_BUDGET));
+    const noseGate = !hasTurnAhead(mob, forward) && yawDiff(mob.yaw, forward) < 0.1;
+    return (nx, nz) => {
+      const voxelOk = wrapped(nx, nz) && descendOk(mob, nx, nz);
+      if (!voxelOk) return false;
+      if (peers && mobBlockedAt(mob, nx, nz, mob.pos.y, peers, 0, null, CROSS_BUDGET)) return false;
+      const noseBlocked = noseGate && noseBlockedAt(mob, nx, nz, forward);
+      if (noseBlocked) noseStopped = true;
+      return !noseBlocked;
+    };
   };
   const seek = driveToward(mob, dt, forward, makeSeek, moveVector, { rate: SERVO_TURN });
   if (seek.dist > 0) {
@@ -1268,6 +1333,11 @@ function seekDeadEnd(mob, dt, supported, floating, peers = null) {
   if (mob.servoStall > 0.75) return releaseStalledLane(mob);
   // Nose contact: keep the flipped lane, rotate in place below (gated: the
   // flip must not sweep the nose discs through an adjacent peer).
+  if (noseStopped) {
+    mob.lane.lockX = Math.floor(mob.pos.x);
+    mob.lane.lockZ = Math.floor(mob.pos.z);
+    mob.noseTurn = { axis: mob.lane.axis, lockX: mob.lane.lockX, lockZ: mob.lane.lockZ };
+  }
   mob.yawTarget = mob.lane.axis;
   driveToward(mob, dt, mob.lane.axis, () => () => false, moveVector, {
     rate: SERVO_TURN, turnOk: peers ? makeTurnGate(mob, peers, null) : null,

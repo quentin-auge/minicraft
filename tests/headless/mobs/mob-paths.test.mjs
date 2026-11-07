@@ -10,7 +10,7 @@ import { FARM_WALK, tickFarmMob, aabbIntersectsSolid, segmentWalkable, freshFrom
 import { strideTarget, liquidSurface, makeCellFree, makeCellSolid } from "../../../src/mobs/step.js";
 import { entryTick, pickEntryTarget, clearEntryClaims } from "../../../src/mobs/entry.js";
 import { exitMouth, ARRIVE_D } from "../../../src/mobs/roam.js";
-import { ENTRY_SCAN_T, ENTRY_COOL_T, LEAVE_FRESH_T, findEntries } from "../../../src/mobs/corridor.js";
+import { ENTRY_SCAN_T, ENTRY_COOL_T, LEAVE_FRESH_T, findEntries, normYaw } from "../../../src/mobs/corridor.js";
 import { NO_EXPIRY } from "../../../src/mobs/step.js";
 import { village, computeLayout, placeVillage } from "../../../src/world/village.js";
 
@@ -155,6 +155,12 @@ function speeds(trace) {
   return out;
 }
 
+function noseBlocked(mob) {
+  const x = mob.pos.x + Math.sin(mob.yaw) * mob.nose.along;
+  const z = mob.pos.z + Math.cos(mob.yaw) * mob.nose.along;
+  return aabbIntersectsSolid(x, mob.pos.y, z, mob.nose.r, mob.h);
+}
+
 // No wall penetration anywhere (body + nose), no floor sink.
 function assertClean(trace, label) {
   for (let i = 0; i < trace.length; i++) {
@@ -204,9 +210,10 @@ function assertNoReturn(trace, layout, label) {
   }
 }
 
-// --- straight: centre tracking, full speed, servo latched ---
+// --- straight: centre tracking, full speed, servo latched. The end goal is
+// the last nose-clear position before the end wall, not the wall-side cell.
 for (const kind of ["muret", "trench"]) {
-  const trace = runTrial(kind, "straight", { goal: (m) => Math.floor(m.pos.z) >= 6 });
+  const trace = runTrial(kind, "straight", { goal: (m) => m.pos.z >= 5.9 });
   assert.ok(trace.length < 1500, `${kind}/straight: reached the end`);
   const lat = trace.slice(15).map((p) => Math.abs(p.x - 0.5));
   assert.ok(Math.max(...lat) < 0.2, `${kind}/straight: centred (max dev ${Math.max(...lat).toFixed(3)})`);
@@ -222,7 +229,7 @@ console.log("PASS straight (muret + trench)");
 // so the lateral slide must actually work — the tz component only runs here).
 // Regression guard for the az/ax swap: without it z never recentres.
 for (const kind of ["muret", "trench"]) {
-  const trace = runTrial(kind, "straightE", { off: [0, 0.15], goal: (m) => Math.floor(m.pos.x) >= 6 });
+  const trace = runTrial(kind, "straightE", { off: [0, 0.15], goal: (m) => m.pos.x >= 5.9 });
   assert.ok(trace.length < 1500, `${kind}/straightE: reached the end`);
   const tail = trace.slice(Math.floor(trace.length * 0.66));
   assert.ok(Math.max(...tail.map((p) => Math.abs(p.z - 0.5))) < 0.05, `${kind}/straightE: recentred`);
@@ -263,7 +270,7 @@ console.log("PASS doorway (muret)");
   for (let s = 1; s <= 12; s++) {
     const trace = runTrial("muret", "entry1", {
       seed: s, walls: { skip: [[0, 3]] },
-      goal: (m) => Math.floor(m.pos.z) >= 6, maxTicks: 1500,
+      goal: (m) => m.pos.z >= 5.9, maxTicks: 1500,
     });
     assert.ok(trace.length < 1500, `entry1 seed${s}: walked into the corridor`);
     assertClean(trace, `entry1 seed${s}`);
@@ -751,7 +758,7 @@ console.log("PASS room (muret + trench)");
 
 // --- L: fluid corner, no stall, ends on the arm ---
 for (const kind of ["muret", "trench"]) {
-  const trace = runTrial(kind, "l", { goal: (m) => Math.floor(m.pos.x) >= 3 && Math.floor(m.pos.z) >= 2, maxTicks: 2000 });
+  const trace = runTrial(kind, "l", { goal: (m) => m.pos.x >= 2.9 && Math.floor(m.pos.z) >= 2, maxTicks: 2000 });
   assert.ok(trace.length < 2000, `${kind}/L: turned onto the arm`);
   assertFluid(trace, `${kind}/L`, 0.8, 8);
   assertClean(trace, `${kind}/L`);
@@ -784,28 +791,134 @@ for (const kind of ["muret", "trench"]) {
 }
 console.log("PASS zigzag (muret + trench)");
 
-// --- dead end: goes in, U-turns once, walks back out ---
+// --- turn nose overlap: forced 1-wide turns swing the overhanging snout
+// briefly through wall cells (the body itself never penetrates — see
+// assertClean). Live nose-disc counts with generous bounds: a broken
+// turn grinds nose-in-wall at 10-15x these, phase wobble is ±2, so the
+// bounds below pin "no worse than before" without flaking on timing.
+function runNoseOverlap(kind, name, { seed = 1, maxTicks = 2500, goal = null, animal = "pig" } = {}) {
+  buildRig(kind, LAYOUTS[name]);
+  const [sx, sz] = START[name];
+  const syaw = START_YAW[name] ?? 0;
+  const mob = makeTestMob(animal, sx + 0.5, FEET, sz + 0.5, syaw);
+  const fixed = { x: sx + 0.5 + Math.sin(syaw) * 30, z: sz + 0.5 + Math.cos(syaw) * 30 };
+  mob.target = fixed;
+  const realRandom = Math.random;
+  Math.random = mulberry32(seed);
+  let hits = 0, done = false;
+  try {
+    for (let t = 0; t < maxTicks; t++) {
+      tickFarmMob(mob, DT, () => fixed);
+      if (noseBlocked(mob)) hits++;
+      if (goal && goal(mob)) { done = true; break; }
+    }
+  } finally {
+    Math.random = realRandom;
+  }
+  return { hits, done };
+}
+for (const kind of ["muret", "trench"]) {
+  const l = runNoseOverlap(kind, "l", { goal: (m) => m.pos.x >= 2.9 && Math.floor(m.pos.z) >= 2, maxTicks: 2000 });
+  assert.ok(l.done, `${kind}/turn-nose L: turned onto the arm`);
+  assert.ok(l.hits <= 30, `${kind}/turn-nose L: ${l.hits} nose ticks`);
+  for (let s = 1; s <= 8; s++) {
+    const z = runNoseOverlap(kind, "zigzag", { seed: s, goal: (m) => Math.floor(m.pos.x) >= 2 && Math.floor(m.pos.z) >= 4, maxTicks: 2500 });
+    assert.ok(z.done, `${kind}/turn-nose zigzag seed ${s}: cleared all jogs`);
+    assert.ok(z.hits <= 110, `${kind}/turn-nose zigzag seed ${s}: ${z.hits} nose ticks`);
+  }
+}
+console.log("PASS turn nose overlap (muret + trench)");
+
+// --- junction nose: T branch, cross through-traffic, and the stub return
+// (turn after a U-turn) — goal-gated like their branch tests, both body
+// plans. Bounds pin "no worse than before", not zero.
+const TURN_NOSE_ARMS = [
+  ["lstubret", (m) => Math.floor(m.pos.z) <= 0 && Math.floor(m.pos.x) === 0, 1500, [1], { pig: 35, cow: 45 }],
+  ["t", (m) => Math.floor(m.pos.z) === 2 && (Math.floor(m.pos.x) === 0 || Math.floor(m.pos.x) === 2), 1200, [500, 501], { pig: 35, cow: 40 }],
+  ["cross", (m) => ["1,3", "0,1", "2,1"].includes(`${Math.floor(m.pos.x)},${Math.floor(m.pos.z)}`), 1500, [900], { pig: 20, cow: 25 }],
+];
+for (const kind of ["muret", "trench"]) {
+  for (const [name, goal, maxTicks, seeds, bounds] of TURN_NOSE_ARMS) {
+    for (const animal of ["pig", "cow"]) {
+      for (const seed of (animal === "pig" ? seeds : [seeds[0]])) {
+        const r = runNoseOverlap(kind, name, { seed, maxTicks, goal, animal });
+        assert.ok(r.done, `${kind}/${animal}/turn-nose ${name} seed${seed}: completed`);
+        assert.ok(r.hits <= bounds[animal], `${kind}/${animal}/turn-nose ${name} seed${seed}: ${r.hits} nose ticks`);
+      }
+    }
+  }
+}
+console.log("PASS junction nose overlap (muret + trench, pig + cow)");
+
+// --- dead end: approaches to nose clearance, U-turns once, walks back out ---
 for (const kind of ["muret", "trench"]) {
   const trace = runTrial(kind, "deadend", { maxTicks: 1200 });
   const maxZ = Math.max(...trace.map((p) => p.z));
-  assert.ok(maxZ >= 2.3, `${kind}/deadend: reached the back wall (${maxZ.toFixed(2)})`);
+  assert.ok(maxZ >= 1.9, `${kind}/deadend: approached the back wall (${maxZ.toFixed(2)})`);
   const tail = trace.slice(Math.floor(trace.length * 0.6));
   assert.ok(Math.min(...tail.map((p) => p.z)) <= 1.0, `${kind}/deadend: walked back out`);
   assertClean(trace, `${kind}/deadend`);
 }
 console.log("PASS deadend (muret + trench)");
 
-// --- turn-stub: dead end right past a turn, in and back out ---
-// The reported case: a 1-wide cul-de-sac directly after a bend must U-turn
-// like a straight one, with the arm cruised on its centreline both ways.
+// --- stub nose: a dead end one cell past a turn stops at nose clearance
+// like a straight dead end (mouth stop — the body never walks in
+// nose-buried), U-turns in place, and walks back out through the turn.
+// Returning through the south dead-end start cell re-arms a U-turn there,
+// so the run breaks on the first return instead of shuttling.
+function runStubEpisode(kind, animal) {
+  buildRig(kind, LAYOUTS.lstub);
+  const mob = makeTestMob(animal, 0.5, FEET, 0.5, 0);
+  mob.target = { x: 0.5, z: 30 };
+  const realRandom = Math.random;
+  Math.random = mulberry32(1);
+  const trace = [];
+  let hits = 0, armed = false, turned = false, done = false;
+  try {
+    for (let t = 0; t < 3000; t++) {
+      tickFarmMob(mob, DT, () => mob.target);
+      trace.push({ x: mob.pos.x, y: mob.pos.y, z: mob.pos.z, yaw: mob.yaw });
+      if (noseBlocked(mob)) hits++;
+      if (!armed && mob.pos.x >= 0.9) armed = true;
+      // Turned = swung away from the entry heading either way (E↔W spins
+      // take either side on float rounding — never assume one).
+      if (!turned && armed && Math.abs(normYaw(mob.yaw - Math.PI / 2)) > 1.2) turned = true;
+      if (turned && Math.floor(mob.pos.x) === 0 && Math.floor(mob.pos.z) <= 1) {
+        done = true; break;
+      }
+    }
+  } finally {
+    Math.random = realRandom;
+  }
+  return { trace, hits, done };
+}
+const STUB_NOSE = { pig: 85, cow: 90 };
 for (const kind of ["muret", "trench"]) {
-  const trace = runTrial(kind, "lstub", { goal: (m) => m.pos.x >= 1.5 });
-  assert.ok(trace.length < 1500, `${kind}/lstub: turned into the stub`);
-  assertClean(trace, `${kind}/lstub`);
-  assertFluid(trace, `${kind}/lstub`, 0.8, 8);
-  const arm = trace.filter((p) => p.x > 1.1);
-  assert.ok(arm.length > 8, `${kind}/lstub: arm cruise sampled`);
-  assert.ok(Math.max(...arm.map((p) => Math.abs(p.z - 2.5))) < 0.08, `${kind}/lstub: centred on the arm`);
+  for (const animal of ["pig", "cow"]) {
+    const r = runStubEpisode(kind, animal);
+    assert.ok(r.done, `${kind}/${animal}/stub-nose: mouth stop, U-turn, walked back`);
+    assert.ok(r.hits <= STUB_NOSE[animal], `${kind}/${animal}/stub-nose: ${r.hits} nose ticks`);
+    const maxX = Math.max(...r.trace.map((p) => p.x));
+    assert.ok(maxX >= 0.9 && maxX < 1.15, `${kind}/${animal}/stub-nose: stopped at the mouth (maxX=${maxX.toFixed(2)})`);
+    assertClean(r.trace, `${kind}/${animal}/stub-nose`);
+    // In-place U-turns read slow legitimately; the bound only catches
+    // grinding (a wedged shuttle reads 300+).
+    assertFluid(r.trace, `${kind}/${animal}/stub-nose`, 0.8, 40);
+    // No junction flip-flop: the U-turn swing commits one way (a lane
+    // shuttle reads dozens of yaw reversals).
+    let rev = 0, ps = 0, pd = 0, py = r.trace[0]?.yaw ?? 0, first = true;
+    for (let i = 1; i < r.trace.length; i++) {
+      let dy = r.trace[i].yaw - py;
+      while (dy > Math.PI) dy -= 2 * Math.PI;
+      while (dy < -Math.PI) dy += 2 * Math.PI;
+      py = r.trace[i].yaw;
+      if (Math.abs(dy) > 0.02) {
+        if (!first && Math.abs(pd) > 0.02 && Math.sign(dy) !== ps) rev++;
+        first = false; ps = Math.sign(dy); pd = dy;
+      }
+    }
+    assert.ok(rev <= 8, `${kind}/${animal}/stub-nose: ${rev} yaw reversals`);
+  }
   const back = runTrial(kind, "lstubret", { goal: (m) => Math.floor(m.pos.z) <= 0 && Math.floor(m.pos.x) === 0 });
   assert.ok(back.length < 1500, `${kind}/lstubret: walked back out through the turn`);
   assertClean(back, `${kind}/lstubret`);
@@ -814,16 +927,19 @@ for (const kind of ["muret", "trench"]) {
   assert.ok(armBack.length > 8, `${kind}/lstubret: arm cruise sampled`);
   assert.ok(Math.max(...armBack.map((p) => Math.abs(p.z - 2.5))) < 0.08, `${kind}/lstubret: centred on the arm`);
 }
-console.log("PASS turn-stub (muret + trench)");
+console.log("PASS stub nose (muret + trench, pig + cow)");
 
-// --- door: 1-wide dead end with a niche (door) in the end wall, in and back
-// out. Both turns are forced (no coin flip); the niche is entered, U-turned,
-// and left behind for good.
+// --- door: 1-wide dead end with a niche (door) in the end wall. The
+// mouth stops at nose clearance and U-turns (nose counts for this exact
+// geometry ride on the stub-nose block above); the exit proves the way
+// back out. Both turns are forced (no coin flip).
 for (const kind of ["muret", "trench"]) {
-  const trace = runTrial(kind, "door2", { goal: (m) => Math.floor(m.pos.x) === 1 && Math.floor(m.pos.z) === 2 });
-  assert.ok(trace.length < 1500, `${kind}/door2: walked into the niche`);
+  const trace = runTrial(kind, "door2", { goal: (m) => m.pos.x >= 0.9 && Math.abs(normYaw(m.yaw - Math.PI / 2)) > 1.2 });
+  assert.ok(trace.length < 1500, `${kind}/door2: reached the niche mouth and turned`);
   assertClean(trace, `${kind}/door2`);
-  assertFluid(trace, `${kind}/door2`, 0.8, 8);
+  assertFluid(trace, `${kind}/door2`, 0.8, 40);
+  const doorMaxX = Math.max(...trace.map((p) => p.x));
+  assert.ok(doorMaxX >= 0.9 && doorMaxX < 1.15, `${kind}/door2: stopped at the mouth (maxX=${doorMaxX.toFixed(2)})`);
   const back = runTrial(kind, "door2ret", { goal: (m) => Math.floor(m.pos.x) === 0 && Math.floor(m.pos.z) === 0 });
   assert.ok(back.length < 1500, `${kind}/door2ret: walked back out through the door`);
   assertClean(back, `${kind}/door2ret`);
@@ -846,8 +962,8 @@ const SPIRAL = [
   [3, 4], [2, 4], [1, 4], [0, 4],
   [0, 3], [0, 2], [1, 2], [2, 2],
 ];
-const PITSTRAIGHT = [[-1, 0], [0, 0], [1, 0], [2, 0]];
-const PITDECOY = [[-1, -2], [0, -2], [1, -2], [2, -2]];
+const PITSTRAIGHT = [[-2, 0], [-1, 0], [0, 0], [1, 0], [2, 0]];
+const PITDECOY = [[-2, -2], [-1, -2], [0, -2], [1, -2], [2, -2]];
 function buildElevated(kind, cells, pits = []) {
   resetWorld("over");
   clearEntryClaims();
@@ -924,22 +1040,28 @@ function assertSpiralClean(trace, label) {
   }
 }
 for (const kind of ["muret", "trench"]) {
-  // Plain spiral: wind into the centre, U-turn, unwind back out.
+  // Plain spiral: wind into the centre, U-turn, unwind back out. The
+  // terminal stops at nose clearance (mouth sliver), like every stub end.
   for (const [sx, sz, yaw, goal, label] of [
-    [0.5, 0.5, Math.PI / 2, (m) => Math.floor(m.pos.x) === 2 && Math.floor(m.pos.z) === 2, "in"],
+    [0.5, 0.5, Math.PI / 2, (m) => m.pos.x >= 1.9 && m.pos.x < 2.1 && Math.floor(m.pos.z) === 2, "in"],
     [2.5, 2.5, -Math.PI / 2, (m) => Math.floor(m.pos.x) === 0 && Math.floor(m.pos.z) === 0, "out"],
   ]) {
     const r = spiralTrial(kind, SPIRAL, { sx, sz, yaw, goal, seed: 1 });
     assert.ok(r.trace.length < 2500, `${kind}/spiral-${label}: completed`);
     assertSpiralClean(r.trace, `${kind}/spiral-${label}`);
     assertFluid(r.trace, `${kind}/spiral-${label}`, 0.8, 20);
+    if (label === "in") {
+      const termRow = r.trace.filter((p) => p.x < 3 && Math.floor(p.z) === 2).map((p) => p.x);
+      const termX = Math.max(...termRow);
+      assert.ok(termX >= 1.9 && termX < 2.1, `${kind}/spiral-in: stopped at the terminal mouth (termX=${termX.toFixed(2)})`);
+    }
   }
   // Pit across the path with a walkable parallel corridor 2 cells away
     // (the exact mirage setup): engage, cruise to the lip, U-turn, never
     // descend, walk back out.
   for (const [depth, label] of [[1, "spiral-pit1"], [2, "spiral-pit2"]]) {
     const r = spiralTrial(kind, [...PITSTRAIGHT, ...PITDECOY], {
-      sx: -0.5, sz: 0.5, yaw: Math.PI / 2,
+      sx: -1.5, sz: 0.5, yaw: Math.PI / 2,
       visit: (m) => m.pos.x >= -0.2,
       goal: (m) => m.pos.x < -0.55,
       pits: [[1, 0, depth]], seed: 1,
@@ -1023,13 +1145,13 @@ console.log("PASS cross branches (muret + trench)");
 // --- equivalence: same seed => bit-identical traces, mur ≡ air ---
 for (const name of ["straight", "l", "zigzag", "deadend", "lstub", "lstubret", "door2", "door2ret"]) {
   const goals = {
-    straight: (m) => Math.floor(m.pos.z) >= 6,
-    l: (m) => Math.floor(m.pos.x) >= 3 && Math.floor(m.pos.z) >= 2,
+    straight: (m) => m.pos.z >= 5.9,
+    l: (m) => m.pos.x >= 2.9 && Math.floor(m.pos.z) >= 2,
     zigzag: (m) => Math.floor(m.pos.x) >= 2 && Math.floor(m.pos.z) >= 4,
     deadend: null,
-    lstub: (m) => m.pos.x >= 1.5,
+    lstub: (m) => m.pos.x >= 0.9 && Math.cos(m.yaw) < -0.4,
     lstubret: (m) => Math.floor(m.pos.z) <= 0 && Math.floor(m.pos.x) === 0,
-    door2: (m) => Math.floor(m.pos.x) === 1 && Math.floor(m.pos.z) === 2,
+    door2: (m) => m.pos.x >= 0.9 && Math.cos(m.yaw) < -0.4,
     door2ret: (m) => Math.floor(m.pos.x) === 0 && Math.floor(m.pos.z) === 0,
   };
   const a = runTrial("muret", name, { seed: 7, maxTicks: 1200, goal: goals[name] });
@@ -1042,6 +1164,35 @@ for (const name of ["straight", "l", "zigzag", "deadend", "lstub", "lstubret", "
   assert.ok(dev < 1e-9, `${name}: identical trajectories (dev ${dev})`);
 }
 console.log("PASS muret≡trench equivalence");
+
+// --- nose clearance: 1-wide terminal seeks stop at the front-tip boundary
+// for both body plans, then rotate and turn away without driving the head
+// through the terminal block.
+for (const animal of ["pig", "cow"]) {
+  buildRig("muret", LAYOUTS.deadend);
+  const mob = makeTestMob(animal, 0.5, FEET, 1.5, 0);
+  mob.lane = { axis: 0, entry: Math.PI, lockX: -1, lockZ: -1 };
+  mob.target = { x: 0.5, z: 20 };
+  let furthest = mob.pos.z, turned = false, hits = 0;
+  for (let t = 0; t < 360; t++) {
+    tickFarmMob(mob, DT, () => mob.target);
+    if (noseBlocked(mob)) hits++;
+    if (Math.cos(mob.yaw) > 0.999 && Math.abs(Math.sin(mob.yaw)) < 0.02) {
+      furthest = Math.max(furthest, mob.pos.z);
+      assert.ok(!noseBlocked(mob), `${animal}/dead-end: nose stays clear while facing the wall (z=${mob.pos.z.toFixed(4)}, yaw=${mob.yaw.toFixed(4)})`);
+    }
+    if (furthest > 1.6 && Math.cos(mob.yaw) < -0.5) { turned = true; break; }
+  }
+  const expectedStop = 3 - mob.nose.along - mob.nose.r;
+  assert.ok(Math.abs(furthest - expectedStop) < 0.12,
+    `${animal}/dead-end: stops at nose clearance (z=${furthest.toFixed(3)}, expected ${expectedStop.toFixed(3)})`);
+  assert.ok(turned, `${animal}/dead-end: turns away from the wall`);
+  // Rotation-inclusive total: the 180° in-place sweep grazes the side
+  // walls briefly (0.75 m snout in a 1.0 m corridor — irreducible); the
+  // bound only catches grinding.
+  assert.ok(hits <= 30, `${animal}/dead-end: ${hits} nose ticks including the U-turn sweep`);
+}
+console.log("PASS dead-end nose clearance (pig + cow)");
 
 console.log("mob-paths.test.mjs: ALL PASS");
 
