@@ -645,6 +645,15 @@ export function servoTick(mob, dt, supported, floating, rand = Math.random, pick
     // the tip, across open field) is a switch — refuse it and let the
     // in-place U-turn below keep the ride on its own wall instead.
     if (corner != null && !connectedTake(mob, prevAxis, corner.cell)) corner = null;
+    // Fresh out of a 2-wide: refuse an unwalkable take (same rule as the
+    // early tip take and the forced exits below — the wall measurement
+    // alone can admit a take the body cannot round, like a door-jamb
+    // corner the arc clips, wedging the ride instead of turning it). The
+    // take falls through to the fresh hold-straight below, which walks
+    // clear of the jamb and re-measures the turn with clearance instead
+    // of grinding in place. Walkable takes still turn at once; outside
+    // the fresh window nothing changes.
+    if (corner != null && freshFromMouth(mob) && !takeWalkable(mob, corner.axis)) corner = null;
     if (corner != null) {
       adoptCornerTurn(mob, corner, cx, cz, res);
     } else if (sense.fwdOpen) {
