@@ -2,8 +2,8 @@
 // trapped laterally and below by non-air (solid or any liquid). The flood
 // never steps +y, so a well shaft open to the sky still traps while the open
 // surface (connected sideways) never does. Mixed liquid + solid walls trap;
-// the face keeps its own liquid's light color on its liquid-side sheet
-// (the air-side sheet stays standard blue). Three-free: decision only,
+// the face keeps its own liquid's inside color on its liquid-side sheet
+// (the air-side sheet keeps the outside color). Three-free: decision only,
 // the mesher splits quads through it at build time.
 import { AIR } from "./blocks.js";
 import { dimInfinite, getBlock, key, outOfWorld } from "./store.js";

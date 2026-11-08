@@ -1,10 +1,12 @@
 // Static air-pocket test: trapped air (bubble, well, mixed cavity) is a
 // pocket, open air (surface, detached cube surroundings) is not. Same rule
 // for every liquid; the mesher picks the face color through it at build.
+// Moon fringe: joined lake shafts keep no pocket-air neighbor of moon water.
 import assert from "node:assert/strict";
-import { WATER, LAVA, STONE } from "../../src/core/blocks.js";
-import { setDimension, resetWorld, setBlock } from "../../src/core/store.js";
+import { WATER, LAVA, STONE, MOON, MOON_WATER, AIR } from "../../src/core/blocks.js";
+import { setDimension, resetWorld, setBlock, getBlock } from "../../src/core/store.js";
 import { createPocketCache, isPocketAir } from "../../src/core/airpocket.js";
+import { generateMoon, moonLakeParams, MOON_R, MOON_SURFACE_Y, MOON_MIN_Y } from "../../src/world/moon.js";
 
 setDimension("over");
 
@@ -77,5 +79,50 @@ setDimension("over");
   const cache = createPocketCache();
   assert.equal(isPocketAir(0, 0, 0, cache), false, "water cell is not a pocket");
   console.log("PASS nonair");
+}
+
+// 7. Joined moon fringe: no air neighbor of moon water reads as a pocket.
+for (const seed of [7, 999, 4242]) {
+  resetWorld("over");
+  generateMoon(seed, setBlock, getBlock);
+  const cache = createPocketCache();
+  let pockets = 0;
+  for (let x = -MOON_R; x <= MOON_R; x++) {
+    for (let z = -MOON_R; z <= MOON_R; z++) {
+      if (x * x + z * z > MOON_R * MOON_R) continue;
+      for (let y = MOON_MIN_Y - 1; y <= MOON_SURFACE_Y + 1; y++) {
+        if (getBlock(x, y, z) !== MOON_WATER) continue;
+        const nb = [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]];
+        for (const [dx, dy, dz] of nb) {
+          if (getBlock(x + dx, y + dy, z + dz) !== AIR) continue;
+          if (isPocketAir(x + dx, y + dy, z + dz, cache)) pockets++;
+        }
+      }
+    }
+  }
+  assert.equal(pockets, 0, `seed ${seed} keeps no moon pocket air`);
+  console.log(`PASS moon-fringe ${seed}`);
+}
+
+// 8. Joined moon lakes: no moon-rock cell fully ringed by moon water.
+for (const seed of [7, 999, 4242]) {
+  resetWorld("over");
+  generateMoon(seed, setBlock, getBlock);
+  let ringed = 0;
+  for (const { cx, cz, cr } of moonLakeParams(seed)) {
+    for (let x = cx - cr - 2; x <= cx + cr + 2; x++) {
+      for (let z = cz - cr - 2; z <= cz + cr + 2; z++) {
+        for (let y = MOON_SURFACE_Y - 6; y <= MOON_SURFACE_Y; y++) {
+          if (getBlock(x, y, z) !== MOON) continue;
+          if (
+            getBlock(x + 1, y, z) === MOON_WATER && getBlock(x - 1, y, z) === MOON_WATER &&
+            getBlock(x, y, z + 1) === MOON_WATER && getBlock(x, y, z - 1) === MOON_WATER
+          ) ringed++;
+        }
+      }
+    }
+  }
+  assert.equal(ringed, 0, `seed ${seed} keeps no ringed moon rock`);
+  console.log(`PASS moon-norock ${seed}`);
 }
 console.log("ALL AIRPOCKET PASS");

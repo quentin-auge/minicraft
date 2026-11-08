@@ -27,7 +27,7 @@ import { initRope } from "./src/player/rope.js";
 import { tickTNT, initTNTFx, resetTNTMemory, clearRegularTntDim, onExplode, onLiquidPurge, shakeSpecFor, bandFront, bandActive, drainBlastRemesh, queueBlastRefresh, megaImminent, megaCarveActive, megaFxActive, MEGA_BLAST_T, MEGA_BLAST_TIME_SCALE } from "./src/fx/tnt.js";
 import { initFx, tickFx, tickDenseFx, denseFxActive, prewarmDenseFx, spawnDense, flushDense, noteDenseSpawn } from "./src/fx/particles.js";
 import { initPrecip, tickSnow } from "./src/fx/precip.js";
-import { MOON_MIN_Y, MOON_R, generateMoon, generateMoonUnderRows, markMoonBuilt, moonReady, moonChunkCenters, findMoonSpawn } from "./src/world/moon.js";
+import { MOON_MIN_Y, MOON_R, generateMoon, generateMoonUnderRows, joinMoonLakeWater, markMoonBuilt, moonReady, moonChunkCenters, findMoonSpawn } from "./src/world/moon.js";
 import { WATER, FLOWER, GLOWSTONE, MOON_WATER, TNT, BLOCK_INFO } from "./src/core/blocks.js";
 import { resetGlowstoneMemory, clearGlowstoneDim, setGlowSeed } from "./src/world/glowstone.js";
 import { resetFlowerMemory, clearFlowerDim, setFlowerSeed } from "./src/world/flowers.js";
@@ -739,6 +739,7 @@ async function fillMoonUnder(seed) {
       await new Promise((r) => requestAnimationFrame(r));
     }
     if (!dimHasMoon(dim) || getSeed() !== seed || building || !worldReady || moonReady(seed)) return;
+    joinMoonLakeWater(seed, setBlock, getBlock);
     markMoonBuilt(seed);
     const centers = moonChunkCenters();
     for (let i = 0; i < centers.length; i += 2) {
@@ -1052,7 +1053,7 @@ function loop(now) {
     const medium = eyeMediumId(camera.position.x, camera.position.y, camera.position.z);
     tickWaterFog(scene, camera, dt, envAir, medium);
     // Static pocket colors (airpocket.js, decided at mesh build): trapped air
-    // reads light blue, open air standard blue — no per-frame work here.
+    // reads the inside color, open air the outside — no per-frame work here.
     // Moon-band hotbar: 8 below the Moon's lower end the water slot becomes
     // moon water and the flower slot becomes glowstone; both restore on
     // descent. Moon dimensions only.

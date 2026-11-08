@@ -44,14 +44,14 @@ function liquidFaceVisible(x, y, z, id, dx, dy, dz) {
   return !info.opaque;
 }
 // Liquid rendering: every bound emits the coplanar pair — a FrontSide quad
-// (renderOrder 10, always standard blue) plus a BackSide quad
+// (renderOrder 10, always the outside color) plus a BackSide quad
 // (renderOrder 11). Each viewpoint sees exactly one sheet per quad
 // (backface culling). Both sheets write depth, so the nearest interface
 // occludes block undersides and far walls instead of composing through in
 // transparency; stacked boundaries still blend in a fixed deterministic
 // order instead of re-sorting by viewpoint. One rule picks the back color:
 // trapped air (airpocket.js: bubble, well, mixed liquid + solid cavity)
-// reads light blue, open air (surface, detached cubes) standard blue.
+// reads the inside color, open air (surface, detached cubes) the outside.
 // Chunks load within the dimension's render distance (RENDER_DIST overworld,
 // TNT_RENDER_DIST in the infinite sky) but unload three rings later, so fog far
 // stays inside the nearest evictable slab and border crossings never
@@ -390,8 +390,8 @@ export function rebuildChunk(cx, cz, fade = false) {
           for (let d = 0; d < LIQUID_DIRS.length; d++) {
             const [dx, dy, dz] = LIQUID_OFF[d];
             if (!liquidFaceVisible(x, y, z, id, dx, dy, dz)) continue;
-            // Static pair: the front is always standard blue; only the
-            // back of trapped air reads light blue (airpocket.js).
+            // Static pair: the front reads the outside color; only the
+            // back of trapped air reads the inside color (airpocket.js).
             const quad = [x, y, z, d];
             pushQuad(liquids, id, quad);
             if (isPocketAir(x + dx, y + dy, z + dz, pocketCache)) {
@@ -542,13 +542,13 @@ export function rebuildChunk(cx, cz, fade = false) {
     }
   }
   // Boundary faces only: every bound emits the coplanar pair — a FrontSide
-  // quad (renderOrder 10, always standard blue) plus a BackSide quad
+  // quad (renderOrder 10, always the outside color) plus a BackSide quad
   // (renderOrder 11). Each viewpoint sees exactly one sheet per quad
   // (backface culling); the sheets write depth, so the nearest interface
   // occludes what sits behind it instead of composing through in
   // transparency. Back color is static per quad: trapped air (bubble,
-  // well, mixed cavity) light blue, open air (surface, detached cube)
-  // standard blue. Glass draws last (renderOrder 13).
+  // well, mixed cavity) the inside color, open air (surface, detached cube)
+  // the outside color. Glass draws last (renderOrder 13).
   const quadMesh = (mat, quads, order) => {
     const mesh = new THREE.InstancedMesh(liquidGeo, mat, quads.length);
     for (let i = 0; i < quads.length; i++) writeLiquidQuad(mesh, i, quads[i]);

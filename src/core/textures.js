@@ -310,13 +310,14 @@ export function material(map, opts = {}) {
 }
 
 // Liquid surfaces: every bound emits the coplanar pair. The air-side sheet
-// is always standard blue (surface from outside, well rim look-down,
-// detached cubes); the liquid-side sheet is light blue only when the air
-// side is a pocket (airpocket.js: bubbles, wells, mixed liquid + solid
-// cavities — the diver's read), standard blue otherwise. Backface culling
-// shows exactly one sheet per viewpoint. Both sheets write depth, so the
-// nearest interface occludes block undersides and far walls. New liquids
-// register a spec; the mesher dispatches through it without forks.
+// is always the liquid's outside color (surface from outside, well rim
+// look-down, detached cubes); the liquid-side sheet keeps the outside color
+// except when the air side is a pocket (airpocket.js: bubbles, wells, mixed
+// liquid + solid cavities — the diver's read), where it reads the inside
+// color (water light blue, moon water ash gray, lava light blue).
+// Backface culling shows exactly one sheet per viewpoint. Both sheets write
+// depth, so the nearest interface occludes block undersides and far walls.
+// New liquids register a spec; the mesher dispatches through it without forks.
 const LIQUID_DEFAULTS = {
   outside: { color: "#2f66cc", opacity: 0.9, grain: 16 },
   // Trapped-air backs read almost solid: the pocket occludes its far walls
@@ -328,7 +329,7 @@ export const LIQUID_SURFACE = [
   {
     liquid: MOON_WATER, key: "moonwater",
     outside: { color: "#7a7e82" },
-    inside: { color: "#a4c8e8" },
+    inside: { color: "#a8adb2" },
   },
   {
     liquid: LAVA, key: "lava",
@@ -341,9 +342,9 @@ export const LIQUID_SURFACE = [
 const liquidSpecById = new Map(LIQUID_SURFACE.map((s) => [s.liquid, s]));
 // One table maps every visual role to its look: which side renders, which
 // registry spec supplies color/opacity (`spec`), and which painted texture
-// (`tex`, keyed `<liquid>_<tex>` below). Every front reads standard blue;
-// only trapped-air backs read light blue — new liquids register a spec
-// without framework forks.
+// (`tex`, keyed `<liquid>_<tex>` below). Fronts and open-air backs read the
+// outside color; only trapped-air backs read the inside color — new liquids
+// register a spec without framework forks.
 const ROLE_STYLE = {
   outside: { side: THREE.FrontSide, spec: "outside", tex: "outside", depthWrite: true },
   inside: { side: THREE.BackSide, spec: "outside", tex: "outside", depthWrite: true },
