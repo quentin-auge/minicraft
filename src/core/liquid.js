@@ -145,3 +145,37 @@ export function findFloatingLiquids(getBlock, coords) {
   }
   return purged;
 }
+
+// Per-stroke cell union for the deferred liquid purge (three-free).
+// Chain holds accumulate every tick's touched cells and validate once, at
+// release: re-flooding the growing stroke mass every tick froze the frame
+// (quadratic), while one end-of-stroke flood over the union is linear.
+// One stroke at a time; a dimension change mid-stroke drops the union
+// (coordinates are meaningless across dimensions — same leak profile as
+// the old per-tick purge after travel, but never a corrupt write).
+export function createStrokeUnion() {
+  return { dim: null, seen: new Set(), cells: [] };
+}
+export function noteStrokeCells(u, dim, cells) {
+  if (u.dim === null) u.dim = dim;
+  if (u.dim !== dim) {
+    u.dim = dim;
+    u.seen = new Set();
+    u.cells = [];
+  }
+  for (const [x, y, z] of cells) {
+    const k = key(x, y, z);
+    if (u.seen.has(k)) continue;
+    u.seen.add(k);
+    u.cells.push([x, y, z]);
+  }
+}
+// Drains the union (release or world reset); the caller purges it — or
+// drops it on reset, when the voxels are rebuilt anyway.
+export function takeStrokeUnion(u) {
+  const out = u.cells;
+  u.cells = [];
+  u.seen = new Set();
+  u.dim = null;
+  return out;
+}

@@ -77,7 +77,7 @@ function intersectsPlayer(bx, by, bz) {
 // or edge-neighbor is purged back to air. Rule + discovery live in
 // core/liquid (three-free, headless-tested); this module only applies
 // the writes.
-import { findFloatingLiquids } from "../core/liquid.js";
+import { findFloatingLiquids, createStrokeUnion, noteStrokeCells, takeStrokeUnion } from "../core/liquid.js";
 
 export function purgeFloatingLiquidsAround(coords) {
   const purged = [];
@@ -93,7 +93,23 @@ export function purgeFloatingLiquidsAround(coords) {
 // per-cell liquid purge, portal fill refresh, and light recompute, and the
 // caller flushes once per tick via flushChainBatch. Discrete taps use the
 // default unbatched path, unchanged.
+// Stroke rule: chain holds validate liquids once, at release — not per
+// tick. Re-flooding the growing stroke mass every tick froze the frame
+// (quadratic); solids need no purge at all, and one end-of-stroke flood
+// over the union is linear.
+const strokeUnion = createStrokeUnion();
 const pendingChainGlow = [];
+// Liquid-transition cells of the current stroke: tryPlace liquid writes only
+// (batched strokes; placement targets are air-or-liquid by construction, so
+// a liquid post-state here never came from solid). The chain caller drains
+// this once per tick and hands it to the mesher, which rebuilds only chunks
+// whose meshes can actually change instead of the full halo fan-out.
+const pendingLiquidCells = [];
+export function takeLiquidCells() {
+  if (!pendingLiquidCells.length) return null;
+  const out = pendingLiquidCells.splice(0);
+  return out;
+}
 
 export function breakBlockAt(x, y, z, opts) {
   const batched = !!opts?.batch;
@@ -140,6 +156,7 @@ export function tryPlace(id, px, py, pz, opts) {
   if (!(target === AIR || isLiquid(target))) return null;
   if (BLOCK_INFO[id].solid && intersectsPlayer(px, py, pz)) return null;
   setBlock(px, py, pz, id);
+  if (batched && isLiquid(id)) pendingLiquidCells.push([px, py, pz]);
   notePoolEdit();
   if (id === TNT) trackRegularTntPlaced(px, py, pz);
   // Player content pins its stream cell: edits (and portal frames built
@@ -162,13 +179,15 @@ export function tryPlace(id, px, py, pz, opts) {
   return [[px, py, pz], ...purged];
 }
 
-// End-of-tick flush for the batched chain path: glowstone variants, one
-// liquid purge over the union, one portal frame pass (fills heal from the
-// dirty flag via the periodic scanner, like band wipes).
+// End-of-tick flush for the batched chain path: glowstone variants, stroke
+// union bookkeeping (the liquid purge itself waits for release —
+// endChainStroke — so holds never re-flood the growing mass), one portal
+// frame pass (fills heal from the dirty flag via the periodic scanner,
+// like band wipes).
 // Adjacent pending stones share the previous variant instead of rescanning
 // the whole stone set each (pads stamp neighbours; the shared color is the
-// clustering intent); non-adjacent ones roll normally. Returns the purged
-// cells so the caller can refresh them too.
+// clustering intent); non-adjacent ones roll normally. Returns [] (no
+// per-tick purge anymore); the caller remeshes the touched cells as usual.
 export function flushChainBatch(cells) {
   let last = null;
   for (const [x, y, z] of pendingChainGlow.splice(0)) {
@@ -185,9 +204,25 @@ export function flushChainBatch(cells) {
   }
   notePoolEdit();
   if (!cells.length) return [];
-  const purged = purgeFloatingLiquidsAround(cells);
-  notePortalFramesOnly(purged.length ? [...cells, ...purged] : cells);
-  return purged;
+  noteStrokeCells(strokeUnion, dim, cells);
+  notePortalFramesOnly(cells);
+  return [];
+}
+
+// Stroke release: the single liquid purge over the whole stroke union.
+// Floating water painted mid-stroke stays until now, then returns to air
+// at once; anchored strokes purge nothing. Returns the purged cells so the
+// caller can refresh and notify them like a discrete edit would.
+export function endChainStroke() {
+  const union = takeStrokeUnion(strokeUnion);
+  if (!union.length) return [];
+  return purgeFloatingLiquidsAround(union);
+}
+
+// World reset mid-hold: the voxels are rebuilt anyway, so the pending
+// union is dropped, never purged (its coordinates are stale).
+export function clearChainStroke() {
+  takeStrokeUnion(strokeUnion);
 }
 
 export function placeAtSelection(id) {

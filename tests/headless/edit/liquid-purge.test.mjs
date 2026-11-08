@@ -5,7 +5,7 @@
 import assert from "node:assert/strict";
 import { AIR, STONE, WATER, LAVA } from "../../../src/core/blocks.js";
 import { setDimension, resetWorld, setBlock, getBlock } from "../../../src/core/store.js";
-import { touchesSolid, findFloatingLiquids } from "../../../src/core/liquid.js";
+import { touchesSolid, findFloatingLiquids, createStrokeUnion, noteStrokeCells, takeStrokeUnion } from "../../../src/core/liquid.js";
 
 function fresh() {
   resetWorld("over");
@@ -131,5 +131,28 @@ setBlock(1, 4, 1, STONE); // face anchor of (1,5,1) only
 assert.deepEqual(purgedAt([[0, 5, 0]]), ["0,6,0"]);
 assert.equal(getBlock(1, 5, 1), WATER);
 console.log("PASS corner separate");
+
+// --- stroke union: accumulate across ticks, dedupe, drain on take ---
+{
+  const u = createStrokeUnion();
+  noteStrokeCells(u, "over", [[0, 5, 0], [0, 5, 1]]);
+  noteStrokeCells(u, "over", [[0, 5, 1], [0, 5, 2]]); // overlap dedupes
+  noteStrokeCells(u, "over", []);
+  const drained = takeStrokeUnion(u).map(([x, y, z]) => `${x},${y},${z}`);
+  assert.deepEqual(drained.sort(), ["0,5,0", "0,5,1", "0,5,2"]);
+  assert.deepEqual(takeStrokeUnion(u), []); // drained: empty, reusable
+  noteStrokeCells(u, "over", [[1, 1, 1]]);
+  assert.deepEqual(takeStrokeUnion(u), [[1, 1, 1]]);
+  console.log("PASS stroke union accumulate");
+}
+
+// --- stroke union drops on dimension change (never cross-dim purge) ---
+{
+  const u = createStrokeUnion();
+  noteStrokeCells(u, "over", [[0, 5, 0]]);
+  noteStrokeCells(u, "nether", [[3, 3, 3]]); // travel mid-hold: restarts
+  assert.deepEqual(takeStrokeUnion(u), [[3, 3, 3]]);
+  console.log("PASS stroke union dim change");
+}
 
 console.log("liquid-purge: all PASS");
