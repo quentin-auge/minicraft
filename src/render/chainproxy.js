@@ -4,12 +4,13 @@
 // cell as a transient instance in the block's own shared material the same
 // tick, then drops it as soon as its chunk rebuilds (version-checked, so the
 // proxy never overlaps the real mesh and never z-fights) or after a sim-time
-// TTL backstop sized to outlast a backlogged remesh drain. Cubes and glowstone (per-variant material)
-// only — liquids and flowers keep the normal path.
+// TTL backstop sized to outlast a backlogged remesh drain. Cubes, glowstone
+// (per-variant material) and liquids (per-id tint) — flowers alone keep the
+// normal path.
 import * as THREE from "three";
 import { AIR, FLOWER, GLOWSTONE, isLiquid } from "../core/blocks.js";
 import { chunkOf, getBlock } from "../core/store.js";
-import { glowstoneMats, materialsFor } from "../core/textures.js";
+import { glowstoneMats, materialsFor, liquidSurfaceMat } from "../core/textures.js";
 import { glowVariantAt } from "../world/glowstone.js";
 import { chunkVersion } from "./mesher.js";
 
@@ -32,10 +33,17 @@ export function initChainProxy(scene) {
 }
 
 function handleFor(id, v) {
-  return id === GLOWSTONE ? "g" + v : "b" + id;
+  if (id === GLOWSTONE) return "g" + v;
+  if (isLiquid(id)) return "l" + id;
+  return "b" + id;
 }
 function matsFor(id, v) {
-  return id === GLOWSTONE ? glowstoneMats(v) : materialsFor(id);
+  if (id === GLOWSTONE) return glowstoneMats(v);
+  // Transient liquid cubes reuse the real outside-sheet material (cached,
+  // shared): same texture and opacity, so the proxy-to-mesh swap reads
+  // seamless. No pocket/veil/seal pass — the real rebuild takes over.
+  if (isLiquid(id)) return liquidSurfaceMat(id, "outside", false);
+  return materialsFor(id);
 }
 
 // Record this tick's touched cells (ids read back from live voxels: broken
@@ -48,7 +56,7 @@ export function proxyNote(list, now) {
     const id = getBlock(x, y, z);
     const k = x + "," + y + "," + z;
     const prev = cells.get(k);
-    if (id === AIR || id === FLOWER || isLiquid(id)) {
+    if (id === AIR || id === FLOWER) {
       // Broken mid-hold: drop the transient cube at once instead of waiting
       // for the chunk rebuild to cull it.
       if (prev) { cells.delete(k); dirty = true; }
@@ -109,6 +117,8 @@ function rebuild() {
       const mesh = new THREE.InstancedMesh(boxGeo, matsFor(g.id, g.v), CAP);
       mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
       mesh.frustumCulled = false; // transient positions; skip bounds tracking
+      // Same compositing slot as the real outside liquid sheets.
+      if (isLiquid(g.id)) mesh.renderOrder = 10;
       sceneRef.add(mesh);
       rec = { mesh };
       meshes.set(h, rec);

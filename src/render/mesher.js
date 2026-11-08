@@ -2,7 +2,7 @@
 // only for exposed blocks. Rebuilds stay local via refreshBlocks().
 import * as THREE from "three";
 import { AIR, BLOCK_INFO, FLOWER, GLASS, GLOWSTONE, isLiquid } from "../core/blocks.js";
-import { WORLD_RADIUS, CHUNK, renderDist, getBlock, topAt, colTopIdx, colOcc, dim, dimInfinite, chunkOf, isEnclosedAir, ensureChunkSource } from "../core/store.js";
+import { WORLD_RADIUS, CHUNK, renderDist, getBlock, topAt, colTopIdx, colOcc, dim, dimInfinite, chunkOf, isEnclosedAir, ensureChunkSource, key } from "../core/store.js";
 import { materialsFor, liquidSurfaceMat, glowstoneMats } from "../core/textures.js";
 import { FLOWER_GEOS, FLOWER_MAT } from "./flowers.js";
 import { haloRadius, bakeHaloTint, isHaloSuspended } from "./halobake.js";
@@ -1044,16 +1044,55 @@ function columnKeys(x, z) {
   return out;
 }
 
-export function refreshBlocks(coords) {
+// Narrow remesh range for liquid transitions (chain water painting): a
+// liquid post-state came from air-or-liquid (placement targets forbid
+// solid), so neighbor chunks keep their meshes unless same-liquid water
+// merges across the shared border — solid/glass faces read identically
+// against air and water, and baked tint only follows halo sources, which
+// liquids never are. Own chunk always rebuilds; a border neighbor rebuilds
+// only on liquid adjacency. Callers pass the transition cells explicitly
+// (takeLiquidCells); the post-state check keeps mixed batches (stone stamped
+// over fresh water reads solid) on the full fan-out path.
+function liquidKeys(x, y, z) {
+  const cx = chunkOf(x), cz = chunkOf(z);
+  const out = [cx + "_" + cz];
+  for (const [dx, dy, dz] of LIQUID_OFF) {
+    const nx = x + dx, nz = z + dz;
+    if (chunkOf(nx) === cx && chunkOf(nz) === cz) continue;
+    if (!isLiquid(getBlock(nx, y + dy, nz))) continue;
+    const ck = chunkOf(nx) + "_" + chunkOf(nz);
+    if (!out.includes(ck)) out.push(ck);
+  }
+  return out;
+}
+
+// Per-cell key mapping shared by both refresh paths: liquid-transition
+// cells (known air/liquid→liquid, still liquid now) take the narrow range,
+// everything else keeps the halo fan-out.
+function editKeys(x, y, z, narrow) {
+  if (narrow && narrow.has(key(x, y, z)) && isLiquid(getBlock(x, y, z))) {
+    return liquidKeys(x, y, z);
+  }
+  return haloKeys(x, z);
+}
+
+// Key set behind editKeys' narrow branch: null without transition cells.
+function narrowSet(liquidCells) {
+  return liquidCells ? new Set(liquidCells.map(([x, y, z]) => key(x, y, z))) : null;
+}
+
+export function refreshBlocks(coords, liquidCells) {
   const keys = new Set();
-  for (const [x, , z] of coords) {
+  const narrow = narrowSet(liquidCells);
+  for (const [x, y, z] of coords) {
     // Halo range, not just the edited column: a source add/remove re-tints
     // neighbor chunks up to haloRadius() past their border, so they rebuild
     // too. Interior edits still map to exactly their own chunk (R < CHUNK);
     // border edits fan out to at most 2x2. This superset covers the old
     // adjacent-chunk exposure rule, so columnKeys stays only for the
-    // band-wipe frontier gating below.
-    for (const ck of haloKeys(x, z)) keys.add(ck);
+    // band-wipe frontier gating below. Liquid transitions (narrow set) skip
+    // the fan-out via editKeys above.
+    for (const ck of editKeys(x, y, z, narrow)) keys.add(ck);
   }
   for (const ck of keys) {
     if (chunkMeshes.has(ck)) {
@@ -1077,10 +1116,12 @@ export function refreshBlocks(coords) {
 // sub-budget in maybeStream; unbuilt keys resolve through the normal build
 // queue, out-of-range keys drop when the stream window moves on.
 const pendingRefresh = new Set();
-export function queueRefreshBlocks(coords) {
-  for (const [x, , z] of coords) {
+export function queueRefreshBlocks(coords, liquidCells) {
+  const narrow = narrowSet(liquidCells);
+  for (const [x, y, z] of coords) {
     // Same halo range as refreshBlocks: the budgeted drain covers the rim.
-    for (const ck of haloKeys(x, z)) pendingRefresh.add(ck);
+    // Liquid transitions take the narrow range via editKeys above.
+    for (const ck of editKeys(x, y, z, narrow)) pendingRefresh.add(ck);
   }
 }
 // Chunk keys ("cx_cz") built while the halo was suspended (still-hold bridge

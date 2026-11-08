@@ -21,7 +21,7 @@ import {
 } from "./src/player/physics.js";
 import * as player from "./src/player/physics.js";
 import { flyOn, setFly, updateFly } from "./src/player/fly.js";
-import { updateTarget, breakTarget, placeAtSelection, breakBlockAt, pickBlock, tryPlace, currentBlock, flushChainBatch, purgeFloatingLiquidsAround } from "./src/player/edit.js";
+import { updateTarget, breakTarget, placeAtSelection, breakBlockAt, pickBlock, tryPlace, currentBlock, flushChainBatch, purgeFloatingLiquidsAround, takeLiquidCells, endChainStroke, clearChainStroke } from "./src/player/edit.js";
 import { fireHookTarget, fireSkyHook, grapplePick, mobGrabTarget, mobReleaseTarget, cancelHook, severHook, updateHook, hookActive, hookHeldSwim, hookAnchor, tickHookFx, setMobAlpha, HELD_ALPHA } from "./src/player/hook.js";
 import { initRope } from "./src/player/rope.js";
 import { tickTNT, initTNTFx, resetTNTMemory, clearRegularTntDim, onExplode, onLiquidPurge, shakeSpecFor, bandFront, bandActive, drainBlastRemesh, queueBlastRefresh, megaImminent, megaCarveActive, megaFxActive, MEGA_BLAST_T, MEGA_BLAST_TIME_SCALE } from "./src/fx/tnt.js";
@@ -66,6 +66,7 @@ const chain = createChainState();
 // Blast/countdown lights are untouched (owned by fx/tnt.js).
 const GLOW_SUSPENDED = new Set(["glowstone"]);
 let wasBridgeHeld = false;
+let wasChainHeld = false;
 const bridgeTouchedUnion = [];
 import { CHUNK, renderDist, dim, setDimension, setBlock, getBlock, outOfWorld, worlds } from "./src/core/store.js";
 import { dimEnv, dimSpec, dimHasMoon, dimHotbar } from "./src/world/dimensions.js";
@@ -387,10 +388,13 @@ async function buildWorld() {
   resetFlowerMemory();
   resetPoolLightMemory();
   proxyClear();
-  // A world reset ends any bridge stroke: drop its pending tint pass too.
+  // A world reset ends any chain stroke: drop its pending tint pass and
+  // its deferred liquid-purge union too (stale coordinates).
   setHaloSuspended(null);
   bridgeTouchedUnion.length = 0;
   wasBridgeHeld = false;
+  wasChainHeld = false;
+  clearChainStroke();
   scene.fog.near = LOAD_FOG_NEAR;
   scene.fog.far = LOAD_FOG_FAR;
   envAir.near = LOAD_FOG_NEAR;
@@ -527,10 +531,13 @@ async function runTravel(dest, msg) {
   // 2 re-queues it (renders skipped, sim frozen, queue cleared last).
   beginDispose();
   proxyClear(); // versions reset with the mesher; drop the overlay with them
-  // Travel ends any bridge stroke: drop its pending tint pass too.
+  // Travel ends any chain stroke: drop its pending tint pass and its
+  // deferred liquid-purge union (coordinates are meaningless across dims).
   setHaloSuspended(null);
   bridgeTouchedUnion.length = 0;
   wasBridgeHeld = false;
+  wasChainHeld = false;
+  clearChainStroke();
   while (disposeSome(80)) {
     if (!alive()) return;
     await raf();
@@ -1234,8 +1241,9 @@ function loop(now) {
       currentBlock: hit,
       selectedId: selectedId(),
       pick: (eye, dir, skip) => pickBlock(eye, dir, skip),
-      // Batched chain writes: per-cell purge/portal/light work is deferred
-      // to flushChainBatch below, once per tick over the union of cells.
+      // Batched chain writes: per-cell portal/light work is deferred
+      // to flushChainBatch below, once per tick over the union of cells;
+      // the liquid purge waits for the stroke release (endChainStroke).
       place: (id, x, y, z) => tryPlace(id, x, y, z, { batch: true }) || [],
       breakAt: (x, y, z) => breakBlockAt(x, y, z, { batch: true }),
       getBlock: (x, y, z) => getBlock(x, y, z),
@@ -1248,17 +1256,35 @@ function loop(now) {
     const bridge = chainBridgeActive(chain);
     setHaloSuspended(bridge ? GLOW_SUSPENDED : null);
     if (touched.length) {
-      for (const c of flushChainBatch(touched)) touched.push(c);
+      flushChainBatch(touched);
       if (dim === "end") notifyEndermanVoxelChange(touched, camera);
+      // Liquid transitions of this stroke (air/liquid→liquid): the mesher
+      // rebuilds only chunks whose meshes can change instead of fanning out
+      // over the halo range.
+      const liquidCells = takeLiquidCells();
       if (chainHoldActive(chain)) {
         // Remember the bridge union for the release tint pass.
         if (bridge) for (const c of touched) bridgeTouchedUnion.push(c);
-        queueRefreshBlocks(touched);
-      } else refreshBlocks(touched);
+        queueRefreshBlocks(touched, liquidCells);
+      } else refreshBlocks(touched, liquidCells);
       // Optimistic overlay: drawn this frame in the blocks' own materials,
       // culled as each chunk's real mesh rebuilds (see chainproxy.js).
       proxyNote(touched, simTime);
     }
+    // Stroke release (paint and dig alike): the single deferred liquid
+    // purge over the whole stroke union. Purged cells join the bridge tint
+    // union on a bridge release, else rebuild synchronously like a discrete
+    // edit; End notifies match the touched path above.
+    if (wasChainHeld && !chainHoldActive(chain)) {
+      const purged = endChainStroke();
+      if (purged.length) {
+        if (dim === "end") notifyEndermanVoxelChange(purged, camera);
+        notePortalEdits(purged);
+        if (wasBridgeHeld && !bridge) for (const c of purged) bridgeTouchedUnion.push(c);
+        else refreshBlocks(purged);
+      }
+    }
+    wasChainHeld = chainHoldActive(chain);
     // Bridge release: bake the whole stroke's tint through the budgeted drain
     // (touched union + chunks built under suspension), then resync pools once.
     if (wasBridgeHeld && !bridge) {
