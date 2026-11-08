@@ -39,6 +39,16 @@ export const PAD_SPEC = { w: 11, d: 11 };
 export const RIDE_BOX = {
   x0: -1, x1: ROCKET_SPEC.w, y0: 0, y1: ROCKET_SPEC.h, z0: -1, z1: ROCKET_SPEC.d,
 };
+// Boarding predicate for mob riders, three-free so the headless harness can
+// assert it: local feet cell inside the ride box with air underfoot — a
+// solid feet cell means hull wall, and the mob stays behind. Mobs are 1
+// wide, so the single feet cell decides. The runtime boards at countdown
+// start (exact standing spots, before any falling tick on the cleared
+// floor) and re-checks every frame after (late boarders walk in mid-ride).
+export function rideBoardable(lx, ly, lz, solid) {
+  if (lx < RIDE_BOX.x0 || lx > RIDE_BOX.x1 || ly < RIDE_BOX.y0 || ly > RIDE_BOX.y1 || lz < RIDE_BOX.z0 || lz > RIDE_BOX.z1) return false;
+  return !solid.has(lx + "," + ly + "," + lz);
+}
 // Corner lights, clockwise from the minimum/minimum corner.
 export const PAD_LIGHTS = ["red", "yellow", "red", "yellow"];
 const PAD_LIGHT_VARIANTS = PAD_LIGHTS.map((name) =>

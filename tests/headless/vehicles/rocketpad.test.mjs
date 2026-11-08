@@ -7,7 +7,7 @@ import { AIR, GLASS, GLOWSTONE, HULL, HULL_ACCENT, THRUSTER, PAD } from "../../.
 import { isCellProtected } from "../../../src/core/store.js";
 import { resetGlowstoneMemory, glowVariantAt, GLOW_VARIANTS } from "../../../src/world/glowstone.js";
 import {
-  ROCKET_SPEC, PAD_SPEC, PAD_LIGHTS, RIDE_BOX,
+  ROCKET_SPEC, PAD_SPEC, PAD_LIGHTS, RIDE_BOX, rideBoardable,
   buildRocketGrid, choosePadSite, placeRocketSite, rocketSite,
 } from "../../../src/world/rocketpad.js";
 import { rectsOverlap, computeLayout, village } from "../../../src/world/village.js";
@@ -178,6 +178,37 @@ function stubMaps() {
   // Rocket + pad fully protected (indestructible).
   for (const [x, y, z] of rocketSite.worldCells) assert.ok(isCellProtected(x, y, z), `cell ${x},${y},${z} protected`);
   assert.ok(isCellProtected(pad.minX, pad.vy, pad.minZ), "pad corner protected");
+}
+
+// --- rider boarding: feet cell in the box with air underfoot ---------------
+{
+  // Live-hull solid set, as the runtime's moving model carries it.
+  const g = buildRocketGrid();
+  const solid = new Set(g.cells.map((c) => c.x + "," + c.y + "," + c.z));
+  // Cabin stand + corners board (feet exactly on the floor top read air).
+  assert.ok(rideBoardable(3, 1, 3, solid), "cabin stand boards");
+  assert.ok(rideBoardable(1, 1, 1, solid), "cabin corner boards");
+  assert.ok(rideBoardable(5, 3, 5, solid), "mid-cabin boards");
+  // Open door cells board; pad-margin air inside the box boards too.
+  assert.ok(rideBoardable(3, 1, 0, solid), "doorway boards");
+  assert.ok(rideBoardable(-1, 0, 2, solid), "pad-margin air boards");
+  assert.ok(rideBoardable(7, 1, 2, solid), "far margin air boards");
+  // Hull cells never board: floor row, walls, glass band, tip.
+  assert.ok(!rideBoardable(3, 0, 3, solid), "floor row stays behind");
+  assert.ok(!rideBoardable(0, 0, 0, solid), "thruster corner stays behind");
+  assert.ok(!rideBoardable(0, 2, 2, solid), "glass wall stays behind");
+  assert.ok(!rideBoardable(3, 17, 3, solid), "tip stays behind");
+  // Nothing travels outside the box: all six faces, plus below/above.
+  assert.ok(!rideBoardable(-2, 1, 3, solid), "west of box stays");
+  assert.ok(!rideBoardable(8, 1, 3, solid), "east of box stays");
+  assert.ok(!rideBoardable(3, 1, -2, solid), "north of box stays");
+  assert.ok(!rideBoardable(3, 1, 8, solid), "south of box stays");
+  assert.ok(!rideBoardable(3, -1, 3, solid), "below the box stays");
+  assert.ok(!rideBoardable(3, 19, 3, solid), "above the box stays");
+  // A first falling tick that drops feet into the voxel-less floor row
+  // reads solid and refuses boarding forever — the countdown-start
+  // boarding exists so cabin mobs never reach that state.
+  assert.ok(!rideBoardable(3, 0, 3, solid), "sunk-to-plate feet stay behind");
 }
 
 console.log("rocketpad.test.mjs: ok");
