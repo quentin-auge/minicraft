@@ -49,6 +49,19 @@ export function rideBoardable(lx, ly, lz, solid) {
   if (lx < RIDE_BOX.x0 || lx > RIDE_BOX.x1 || ly < RIDE_BOX.y0 || ly > RIDE_BOX.y1 || lz < RIDE_BOX.z0 || lz > RIDE_BOX.z1) return false;
   return !solid.has(lx + "," + ly + "," + lz);
 }
+// Landing-stamp protection rule, three-free: only structural hull cells
+// come back protected (indestructible); player placements scanned into the
+// ride box (parked pre-takeoff builds) and flight extras stamp back plain
+// so they stay deletable. cells carry {lx, ly, lz, extra}; structural is a
+// Set of "lx,ly,lz" built from the layout grid (same local frame).
+export function partitionStampCells(cells, structural) {
+  const keep = [], plain = [];
+  for (const c of cells) {
+    if (!c.extra && structural.has(c.lx + "," + c.ly + "," + c.lz)) keep.push(c);
+    else plain.push(c);
+  }
+  return { keep, plain };
+}
 // Corner lights, clockwise from the minimum/minimum corner.
 export const PAD_LIGHTS = ["red", "yellow", "red", "yellow"];
 const PAD_LIGHT_VARIANTS = PAD_LIGHTS.map((name) =>
