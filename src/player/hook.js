@@ -18,7 +18,7 @@
 // forced back under the liquid): the top submerged cell floats, deeper cells
 // swim freely, and nobody leaves the water while held. In open air it freezes
 // the player until release.
-import { pos, vel, yaw, pitch, playerBody, collideBody, headInWater, headInWaterAt, setOnGround, setGhostPass, noteFling, PLAYER_HW, PLAYER_H, EYE } from "./physics.js";
+import { pos, vel, yaw, pitch, playerBody, collideBody, headInWater, setOnGround, setGhostPass, noteFling, PLAYER_HW, PLAYER_H, EYE } from "./physics.js";
 import { dim, isSolid } from "../core/store.js";
 import { dimSpec } from "../world/dimensions.js";
 import { skyGrappleTarget } from "../world/tntstream.js";
@@ -704,25 +704,20 @@ export function updateHook(dt) {
 
 // "self-to-anchor": drive the player toward the landing in substepped
 // collision + slide until close, then settle (free in liquid, frozen in air).
-// A pull that starts in water never carries the player out of it: reaching
-// the water edge settles in place with the rope pinned instead of climbing
-// onto a surface block and freezing there. Portal-fill pulls are exempt —
-// entering the fill is what fires travel.
+// The ride passes through any number of liquids in and out — only solids
+// stop it (collision plus the stall guard below). Portal-fill pulls are
+// exempt by kind: entering the fill is what fires travel.
 function pullSelfToAnchor(dt) {
   const spec = hook.spec;
   hookRetarget(hook);
   if (!hookAlive(hook)) { cancelHook(false); return false; } // anchor gone: retract
   line.hx = hook.ax; line.hy = hook.ay; line.hz = hook.az;
-  const wasInWater = headInWater();
-  const waterLock = wasInWater && hook.kind !== "portal";
   const dx = hook.tx - pos.x, dy = hook.ty - pos.y, dz = hook.tz - pos.z;
   const dist = Math.hypot(dx, dy, dz);
   const step = spec.pullSpeed * dt;
   if (dist <= step + 0.001) {
-    // Landing reached: snap on, unless that would lift a waterborne player
-    // out of the water — then settle where the swim already is.
-    if (waterLock && !headInWaterAt(hook.tx, hook.ty, hook.tz)) settleArrival();
-    else if (landingFree(hook.tx, hook.ty, hook.tz)) arrive();
+    // Landing reached: snap on, or stop against it when blocked.
+    if (landingFree(hook.tx, hook.ty, hook.tz)) arrive();
     else settleArrival(); // landing area reached but blocked: stop against it
     return settledFrame();
   }
@@ -730,16 +725,7 @@ function pullSelfToAnchor(dt) {
   const n = Math.max(1, Math.ceil(step / spec.substep));
   vel.set(dx / dist * spec.pullSpeed, dy / dist * spec.pullSpeed, dz / dist * spec.pullSpeed);
   for (let i = 0; i < n; i++) {
-    const qx = pos.x, qy = pos.y, qz = pos.z;
     collideBody(dt / n, playerBody, true);
-    // Ride stops at the water edge: restore the last wet spot and settle
-    // swimming instead of climbing out mid-pull.
-    if (waterLock && !headInWater()) {
-      pos.set(qx, qy, qz);
-      vel.set(0, 0, 0);
-      settleArrival();
-      return settledFrame();
-    }
   }
   const moved = Math.hypot(pos.x - px, pos.y - py, pos.z - pz);
   if (moved < step * 0.25) {
