@@ -13,7 +13,7 @@ import {
   unprotectCell, WORLD_RADIUS, key,
 } from "../core/store.js";
 import { materialsFor } from "../core/textures.js";
-import { ROCKET_SPEC, rocketSite, RIDE_BOX as RIDE } from "../world/rocketpad.js";
+import { ROCKET_SPEC, rocketSite, RIDE_BOX as RIDE, rideBoardable } from "../world/rocketpad.js";
 import { registerVehicleType } from "./registry.js";
 import {
   pos, vel, keys, yaw, pitch, setOnGround,
@@ -412,8 +412,7 @@ export function carryRiders() {
     // Boarding check: mobs are 1 wide, so the feet cell must be air —
     // a solid feet cell means hull wall, and the mob stays behind.
     const lx = Math.floor(mob.pos.x - ox), ly = Math.floor(mob.pos.y - oy), lz = Math.floor(mob.pos.z - oz);
-    if (lx < RIDE.x0 || lx > RIDE.x1 || ly < RIDE.y0 || ly > RIDE.y1 || lz < RIDE.z0 || lz > RIDE.z1) continue;
-    if (moving.solid.has(lx + "," + ly + "," + lz)) continue;
+    if (!rideBoardable(lx, ly, lz, moving.solid)) continue;
     seen.add(mob);
     ride(mob);
     // Frozen for the ride: no self-propulsion (restored to a fresh wander
@@ -511,6 +510,12 @@ function startCountdown() {
   piloting = true;
   phase = "countdown";
   countdown = COUNTDOWN;
+  // Board riders now, at their exact standing spots: the snapshot just
+  // cleared the cabin floor, and the mobs' own tick runs later this frame —
+  // a first falling tick (deep at high sim speed) would drop their feet
+  // into the voxel-less floor row, which reads solid and refuses boarding
+  // forever, sinking them through the floor while the rocket leaves.
+  carryRiders();
   exhaustT = 0;
   thrustLevel = 1;
   hullFade = 0;
