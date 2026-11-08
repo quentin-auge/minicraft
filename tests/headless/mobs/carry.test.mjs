@@ -9,6 +9,7 @@ import {
 } from "../../../src/mobs/pick.js";
 import {
   CARRY_DIST, CARRY_DOWN, heldMob, holdMob, latchMob, severCarry, isCarried,
+  staysHullPinned,
   holdFeet, tickHeld, boxFree, findReleaseSpot, settleReleased,
   grabHaulProtected, resolveBlockLanding, applyMobGap,
 } from "../../../src/mobs/carry.js";
@@ -81,6 +82,19 @@ assert.equal(heldMob(), null);
 assert.equal(m2._carried, false);
 assert.equal(m2.target, null);
 assert.equal(m2.lane, null); // sever clears stale servo state
+
+// --- hull-pin vs grab-hold arbitration: a carried mob is hook-owned -----
+assert.equal(staysHullPinned({ _riding: true }), true, "plain rider stays pinned");
+assert.equal(staysHullPinned({ _riding: true, _carried: true }), false, "grabbed rider yields to the hold");
+assert.equal(staysHullPinned({ _carried: true }), false, "held mob never boards");
+assert.equal(staysHullPinned({}), false, "free mob never pins");
+assert.equal(staysHullPinned(null), false, "null-safe");
+assert.equal(staysHullPinned(undefined), false, "undefined-safe");
+// A grab latch flips a rider out of the pin on the spot.
+const rider = { _riding: true, vel: { set() {} } };
+assert.equal(staysHullPinned(rider), true);
+latchMob(rider);
+assert.equal(staysHullPinned(rider), false, "latch hands the frame to the hook");
 
 // --- boxFree / findReleaseSpot on a stub voxel set ---
 const solid = new Set(["0,0,0"]);

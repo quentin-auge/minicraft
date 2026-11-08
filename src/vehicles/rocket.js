@@ -30,6 +30,7 @@ import { dimTntTiersUnlocked } from "../world/dimensions.js";
 import { isTntTierUnlocked } from "../world/tntunlock.js";
 import { villageFrames } from "../world/village.js";
 import { listFarmMobs } from "../mobs/farm.js";
+import { isCarried, staysHullPinned } from "../mobs/carry.js";
 
 registerVehicleType({ key: "rocket", name: "Rocket", carriesMobs: true });
 
@@ -400,6 +401,10 @@ export function carryRiders() {
   for (const mob of listFarmMobs()) {
     if (mob.dim !== "over" || !mob.alive) continue;
     if (riders.has(mob)) {
+      // Grab-hold wins over hull-pin: a rider that gets grabbed is
+      // released to the hold pose (the hook owns its frame from the
+      // latch on), so a held mob is never fought over mid-trip.
+      if (!staysHullPinned(mob)) { unride(mob); continue; }
       // Pinned: exact boarding spot, frozen heading, vel already zero.
       seen.add(mob);
       mob.pos.set(ox + mob._rideLocal.x, oy + mob._rideLocal.y, oz + mob._rideLocal.z);
@@ -409,6 +414,9 @@ export function carryRiders() {
       rideFade(mob);
       continue;
     }
+    // Hook-owned mobs never board a hull: the hold pose (not the hull
+    // pin) owns their frame for the whole trip.
+    if (isCarried(mob)) continue;
     // Boarding check: mobs are 1 wide, so the feet cell must be air —
     // a solid feet cell means hull wall, and the mob stays behind.
     const lx = Math.floor(mob.pos.x - ox), ly = Math.floor(mob.pos.y - oy), lz = Math.floor(mob.pos.z - oz);
