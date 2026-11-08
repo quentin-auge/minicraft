@@ -11,6 +11,7 @@ import { dim } from "../core/store.js";
 import { MOON_MIN_Y } from "../world/moon.js";
 
 const WHITE = new THREE.Color(0xffffff);
+const _tintBase = new THREE.Color();
 const smooth = (t) => {
   t = Math.max(0, Math.min(1, t));
   return t * t * (3 - 2 * t);
@@ -46,9 +47,30 @@ export const REGIONS = [
         m.color.copy(skyColor).lerp(WHITE, o);
         if (m.emissive) m.emissive.copy(skyColor).lerp(WHITE, o);
       }
+      // The opaque outside sheet mirrors the rock (staying depth-writing,
+      // sky-tinted), the inside/pocket sheets keep their generic opacity
+      // but get the same tint. The floor lifts the tint base off pure
+      // black, so the exterior never reads black at distance while the
+      // factor ramps (no-op at factor 1). The floor weight is zero at
+      // factor 0 and ramps in fast, so the lakes stay invisible with the
+      // rock instead of popping dark against the sky before the disc.
+      _tintBase.copy(skyColor).lerp(MOON_WATER_FLOOR, (1 - o) * smooth(o / 0.25));
+      for (const m of [ctx.liquidMat(MOON_WATER, "outside")].flat()) {
+        m.opacity = 1;
+        m.transparent = false;
+        m.depthWrite = true;
+        m.color.copy(_tintBase).lerp(WHITE, o);
+      }
+      for (const m of [ctx.liquidMat(MOON_WATER, "inside"), ctx.liquidMat(MOON_WATER, "pocket")].flat()) {
+        m.color.copy(_tintBase).lerp(WHITE, o);
+      }
     },
   },
 ];
+
+// Tint floor for the moonwater reveal: the tint base eases from this dark
+// grey (never pure black) to the sky color as the factor ramps to 1.
+const MOON_WATER_FLOOR = new THREE.Color(0x2e3236);
 
 const byKey = new Map(REGIONS.map((r) => [r.key, r]));
 export function regionByKey(key) {

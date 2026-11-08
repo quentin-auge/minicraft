@@ -42,6 +42,77 @@ function hexToRgb(hex) {
   return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
 }
 
+// Moon painter (base grey 160): pale disc, voxel data never touched.
+function paintMoonLight(ctx, base) {
+  ctx.fillStyle = `rgb(${base},${base + 4},${base + 8})`; ctx.fillRect(0, 0, 16, 16);
+  for (let y = 0; y < 16; y++) for (let x = 0; x < 16; x++) {
+    const n = (Math.random() * 2 - 1) * 16 + (Math.random() * 2 - 1) * 8;
+    const v = base + n;
+    ctx.fillStyle = `rgb(${v | 0},${(v + 1) | 0},${(v + 2) | 0})`;
+    if (Math.random() < 0.58) ctx.fillRect(x, y, 1, 1);
+  }
+  const crater = (x, y, r, shade) => {
+    const g = ctx.createRadialGradient(x - r * 0.32, y - r * 0.32, r * 0.12, x, y, r);
+    g.addColorStop(0, `rgba(${shade[0] + 14},${shade[1] + 14},${shade[2] + 14},0.92)`);
+    g.addColorStop(0.30, `rgba(${shade[0]},${shade[1]},${shade[2]},0.95)`);
+    g.addColorStop(0.62, `rgba(${shade[0] - 8},${shade[1] - 8},${shade[2] - 8},0.96)`);
+    g.addColorStop(0.85, `rgba(${shade[0] - 14},${shade[1] - 14},${shade[2] - 14},0.97)`);
+    g.addColorStop(1, `rgba(${shade[0] + 8},${shade[1] + 8},${shade[2] + 8},0.88)`);
+    ctx.fillStyle = g; ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = "rgba(0,0,0,0.08)"; ctx.beginPath(); ctx.arc(x + r * 0.20, y + r * 0.22, r * 0.48, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = "rgba(255,255,255,0.06)"; ctx.beginPath(); ctx.arc(x - r * 0.26, y - r * 0.28, r * 0.16, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = `rgba(${base - 20},${base - 18},${base - 16},0.30)`; ctx.lineWidth = 0.8; ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.stroke();
+  };
+  const sh = (d) => [base + d, base + d + 2, base + d + 4];
+  const shades = [sh(-6), sh(-10), sh(-3), sh(-14)];
+  crater(4.4, 4.7, 3.2, shades[0]);
+  crater(12.0, 5.1, 2.7, shades[1]);
+  crater(8.6, 11.0, 3.5, shades[2]);
+  crater(3.0, 12.4, 2.0, shades[3]);
+  crater(13.4, 11.8, 1.8, shades[0]);
+  crater(6.4, 8.4, 1.5, shades[1]);
+  crater(9.2, 3.4, 1.2, shades[2]);
+  for (let i = 0; i < 22; i++) {
+    const x = Math.random() * 16, y = Math.random() * 16;
+    const v = (base - 36) + Math.random() * 32;
+    ctx.fillStyle = `rgba(${v | 0},${v | 0},${(v + 1) | 0},${0.14 + Math.random() * 0.16})`;
+    ctx.fillRect(x | 0, y | 0, 1, 1);
+  }
+}
+// Diver's-window style for the open-air backs (role "inside"): opacity,
+// transparency and fog come from the entry's insideRole override when
+// present, color and texture always stay the outside sheet's. Lets the eye
+// inside the liquid see out through open water faces while the exterior
+// reads solid.
+function insideRoleStyle(id) {
+  const entry = liquidSpecById.get(id) || {};
+  return entry.insideRole || {};
+}
+// Runtime fog override per liquid (eye-medium driver in main.js): consulted
+// at material creation so streamed chunks follow the live state; null clears
+// back to the spec default. Existing shared materials flip in place with a
+// recompile (one program per fog variant, then cached); region clones flip
+// through mesher.setRegionLiquidFog.
+const liquidFogOverride = new Map();
+export function setLiquidFogOverride(id, on) {
+  if (on == null) liquidFogOverride.delete(id);
+  else liquidFogOverride.set(id, on);
+  for (const [k, m] of liquidMatCache) {
+    if (!k.startsWith(id + ":")) continue;
+    const want = roleFog(id, k.slice((id + ":").length), on);
+    if (m.fog !== want) { m.fog = want; m.needsUpdate = true; }
+  }
+}
+// Effective fog flag for one liquid role: eye override first, then the
+// inside-role window override, then the spec default.
+function roleFog(id, role, on) {
+  const style = ROLE_STYLE[role];
+  const spec = liquidSpec(id, style.spec);
+  const roleOver = role === "inside" ? insideRoleStyle(id) : {};
+  return on ?? roleOver.fog ?? spec.fog ?? true;
+}
+
+
 // Glowstone palettes: lift the registry's base/bright triples brighter along
 // their dominant channels only (thresholded per entry), so each hue stays
 // pure instead of washing toward white. `flat` entries skip the lift with
@@ -176,41 +247,7 @@ export const TEX = {
     ctx.fillStyle = "rgba(150,150,160,0.28)";
     for (let i = 0; i < 5; i++) ctx.fillRect(Math.random() * 13, Math.random() * 13, 2 + Math.random() * 2, 1 + Math.random() * 2);
   }),
-  moon: canvasTex((ctx) => {
-    ctx.fillStyle = "#7a7e82"; ctx.fillRect(0, 0, 16, 16);
-    for (let y = 0; y < 16; y++) for (let x = 0; x < 16; x++) {
-      const n = (Math.random() * 2 - 1) * 16 + (Math.random() * 2 - 1) * 8;
-      const v = 122 + n;
-      ctx.fillStyle = `rgb(${v | 0},${(v + 1) | 0},${(v + 2) | 0})`;
-      if (Math.random() < 0.58) ctx.fillRect(x, y, 1, 1);
-    }
-    const crater = (x, y, r, shade) => {
-      const g = ctx.createRadialGradient(x - r * 0.32, y - r * 0.32, r * 0.12, x, y, r);
-      g.addColorStop(0, `rgba(${shade[0] + 14},${shade[1] + 14},${shade[2] + 14},0.92)`);
-      g.addColorStop(0.30, `rgba(${shade[0]},${shade[1]},${shade[2]},0.95)`);
-      g.addColorStop(0.62, `rgba(${shade[0] - 16},${shade[1] - 16},${shade[2] - 16},0.96)`);
-      g.addColorStop(0.85, `rgba(${shade[0] - 28},${shade[1] - 28},${shade[2] - 28},0.97)`);
-      g.addColorStop(1, `rgba(${shade[0] + 8},${shade[1] + 8},${shade[2] + 8},0.88)`);
-      ctx.fillStyle = g; ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fill();
-      ctx.fillStyle = "rgba(0,0,0,0.22)"; ctx.beginPath(); ctx.arc(x + r * 0.20, y + r * 0.22, r * 0.48, 0, Math.PI * 2); ctx.fill();
-      ctx.fillStyle = "rgba(255,255,255,0.06)"; ctx.beginPath(); ctx.arc(x - r * 0.26, y - r * 0.28, r * 0.16, 0, Math.PI * 2); ctx.fill();
-      ctx.strokeStyle = "rgba(70,72,74,0.42)"; ctx.lineWidth = 0.8; ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.stroke();
-    };
-    const shades = [[110,112,114],[104,106,108],[116,118,120],[98,100,102]];
-    crater(4.4, 4.7, 3.2, shades[0]);
-    crater(12.0, 5.1, 2.7, shades[1]);
-    crater(8.6, 11.0, 3.5, shades[2]);
-    crater(3.0, 12.4, 2.0, shades[3]);
-    crater(13.4, 11.8, 1.8, shades[0]);
-    crater(6.4, 8.4, 1.5, shades[1]);
-    crater(9.2, 3.4, 1.2, shades[2]);
-    for (let i = 0; i < 22; i++) {
-      const x = Math.random() * 16, y = Math.random() * 16;
-      const v = 86 + Math.random() * 32;
-      ctx.fillStyle = `rgba(${v | 0},${v | 0},${(v + 1) | 0},${0.14 + Math.random() * 0.16})`;
-      ctx.fillRect(x | 0, y | 0, 1, 1);
-    }
-  }),
+  moon: canvasTex((ctx) => paintMoonLight(ctx, 160)),
   obsidian: canvasTex((ctx) => {
     ctx.fillStyle = "#12070f"; ctx.fillRect(0, 0, 16, 16);
     pxNoise(ctx, [24, 12, 20], 18);
@@ -328,8 +365,11 @@ export const LIQUID_SURFACE = [
   { liquid: WATER, key: "water" },
   {
     liquid: MOON_WATER, key: "moonwater",
-    outside: { color: "#7a7e82" },
-    inside: { color: "#a8adb2" },
+    // Fog-free opaque walls (no black columns at distance); the open-air
+    // backs stay a 0.93 see-through window for the submerged eye.
+    outside: { color: "#95999d", opacity: 1, transparent: false, fog: false },
+    insideRole: { opacity: 0.93, transparent: true, fog: false },
+    inside: { color: "#b0b4b9", opacity: 0.8, transparent: true, fog: false },
   },
   {
     liquid: LAVA, key: "lava",
@@ -344,7 +384,10 @@ const liquidSpecById = new Map(LIQUID_SURFACE.map((s) => [s.liquid, s]));
 // registry spec supplies color/opacity (`spec`), and which painted texture
 // (`tex`, keyed `<liquid>_<tex>` below). Fronts and open-air backs read the
 // outside color; only trapped-air backs read the inside color — new liquids
-// register a spec without framework forks.
+// register a spec without framework forks. The open-air backs additionally
+// honor an entry-level `insideRole` {opacity, transparent, fog} override
+// (the diver's window; color and texture stay the outside sheet's), so the
+// eye inside the liquid can see out while the exterior reads solid.
 const ROLE_STYLE = {
   outside: { side: THREE.FrontSide, spec: "outside", tex: "outside", depthWrite: true },
   inside: { side: THREE.BackSide, spec: "outside", tex: "outside", depthWrite: true },
@@ -394,13 +437,15 @@ export function liquidSurfaceMat(id, role) {
     const entry = liquidSpecById.get(id) || liquidSpecById.get(WATER);
     const style = ROLE_STYLE[role];
     const spec = liquidSpec(id, style.spec);
+    const roleOver = role === "inside" ? insideRoleStyle(id) : {};
     const texKey = entry.key + "_" + style.tex;
     liquidMatCache.set(k, new THREE.MeshBasicMaterial({
       map: TEX[texKey],
-      transparent: true,
-      opacity: spec.opacity,
+      transparent: roleOver.transparent ?? spec.transparent ?? true,
+      opacity: roleOver.opacity ?? spec.opacity,
       depthWrite: style.depthWrite,
       side: style.side,
+      fog: liquidFogOverride.has(id) ? liquidFogOverride.get(id) : roleFog(id, role, null),
     }));
   }
   return liquidMatCache.get(k);
@@ -416,14 +461,14 @@ export function glowstoneMats(v) {
 }
 
 // Moon rock: lit Lambert so glowstone pools read on it, plus an emissive
-// copy of the same texture (~0.85) so faces away from the sun (notably the
+// copy of the same texture (0.9) so faces away from the sun (notably the
 // underside) stay readable instead of going black.
 let moonMatsCache = null;
 export function moonMats() {
   if (!moonMatsCache) {
     const m = new THREE.MeshLambertMaterial({
       map: TEX.moon, emissiveMap: TEX.moon,
-      emissive: new THREE.Color(0xffffff), emissiveIntensity: 0.85, fog: false,
+      emissive: new THREE.Color(0xffffff), emissiveIntensity: 0.9, fog: false,
     });
     moonMatsCache = [m, m, m, m, m, m];
   }

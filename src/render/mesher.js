@@ -195,6 +195,21 @@ export function setRegionFade(key, o, skyColor) {
   if (region && region.onFade) region.onFade(o, skyColor, ctxFor(region));
 }
 
+// Eye-medium fog flip: set the fog flag on a region's liquid clones in
+// place (recompile once per fog variant, then cached), so the eye-medium
+// driver in main.js can swap the moon-water sheets between fixed exterior
+// (fog-free in air) and classic interior (fogged while submerged).
+export function setRegionLiquidFog(regionKey, liquidId, on) {
+  const owned = regionMatCache.get(regionKey);
+  if (!owned) return;
+  const prefix = "l:" + liquidId + ":";
+  for (const [handle, mats] of owned) {
+    if (!handle.startsWith(prefix)) continue;
+    const list = Array.isArray(mats) ? mats : [mats];
+    for (const m of list) if (m.fog !== on) { m.fog = on; m.needsUpdate = true; }
+  }
+}
+
 // Split an instance/quad list by region membership: `rest` stays with the
 // shared, always-visible materials; each group becomes a region mesh. Also
 // tracks the rest interval (lowest..highest rest cell), which bounds the
