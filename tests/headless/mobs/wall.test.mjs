@@ -17,10 +17,10 @@
 // genuinely continuing 1-wide corridor hands over to the rail.
 // Blue = touch ride (wallFollow).
 import assert from "node:assert/strict";
-import { AIR, STONE } from "../../../src/core/blocks.js";
+import { AIR, STONE, LOG, PORTAL, OBSIDIAN } from "../../../src/core/blocks.js";
 import { setDimension, resetWorld, setBlock } from "../../../src/core/store.js";
 import { LIVESTOCK_SPECS, specCircles } from "../../../src/mobs/livestock.js";
-import { FARM_WALK, tickFarmMob, aabbIntersectsSolid } from "../../../src/mobs/mover.js";
+import { FARM_WALK, tickFarmMob, aabbIntersectsSolid, TURN_HOLD_TICKS } from "../../../src/mobs/mover.js";
 import { NO_EXPIRY } from "../../../src/mobs/step.js";
 import { makeCellFree } from "../../../src/mobs/step.js";
 import { FOLLOW_RANGE, SPAN_MIN, SPAN_MAX, latchTouchWall, latchFlankTouch, wallQuitHeading } from "../../../src/mobs/roam.js";
@@ -372,6 +372,82 @@ console.log("PASS inner-nose-blocked");
     `outer-west: cruised down the column face`);
 }
 console.log("PASS outer-corner-west");
+
+// --- roof outer corner: hug the outgoing angle. Stepped-pyramid roof
+// (floor + 5x5 lower ring + 3x3 upper block): the mob rides the lower ring
+// following the upper wall with a legal drop on the far side. The
+// perpendicular take fires at the wall tip (not marched out to the line
+// intersection): the ride rounds the corner hugging it, closes quickly,
+// never swings out past its line toward the void. ---
+{
+  resetWorld("over");
+  clearEntryClaims();
+  setDimension("over");
+  for (let x = -10; x <= 10; x++) for (let z = -10; z <= 10; z++) setBlock(x, 0, z, STONE);
+  for (let x = -2; x <= 2; x++) for (let z = -2; z <= 2; z++) setBlock(x, 1, z, STONE);
+  for (let x = -1; x <= 1; x++) for (let z = -1; z <= 1; z++) setBlock(x, 2, z, STONE);
+  const mob = makeMob(-0.5, 2.5, Math.PI / 2, mulberry32(7));
+  mob.pos.y = 2; mob.fallFrom = 2; // ride the lower ring (top y=2), not the floor
+  const trace = run(mob, { x: 30, z: 2.5 }, 220);
+  // First corner: east along the south face, then north up the east face.
+  const flip = trace.findIndex((p) => p.lane != null && Math.abs(p.lane - Math.PI) < 1e-9);
+  assert.ok(flip > 30 && flip < 160, `roof: rounded the corner (flip tick ${flip})`);
+  for (let i = Math.max(0, flip - 30); i < flip; i++) {
+    assert.ok(trace[i].blue, `roof: blue unbroken into the corner (tick ${i})`);
+  }
+  assert.ok(trace[flip].x >= 1.9 && trace[flip].x <= 2.25,
+    `roof: turned AT the tip, hugging it (x=${trace[flip].x.toFixed(2)})`);
+  const leg = trace.slice(flip, flip + 90);
+  assert.ok(leg.length === 90, `roof: full leg traced (${leg.length} ticks)`);
+  let over = 0, close = -1;
+  for (let i = 0; i < leg.length; i++) {
+    const p = leg[i];
+    assert.ok(p.blue, `roof: blue unbroken out of the corner (x=${p.x.toFixed(2)},z=${p.z.toFixed(2)})`);
+    assert.ok(p.lane != null && Math.abs(p.lane - Math.PI) < 1e-9,
+      `roof: no U-turn mid-corner (lane=${p.lane})`);
+    over = Math.max(over, p.x - 2.5);
+    if (close < 0 && Math.abs(p.x - 2.5) < 0.06) close = i;
+  }
+  assert.ok(over <= 0.1, `roof: never swung past the line toward the void (over=${over.toFixed(2)})`);
+  assert.ok(close >= 0 && close <= 25, `roof: closed quickly AT the corner (close tick ${close})`);
+  for (const p of leg.slice(-30)) {
+    assert.ok(Math.abs(p.x - 2.5) < 0.06, `roof: glued 0.5 off the face (x=${p.x.toFixed(2)})`);
+  }
+  assert.ok(leg.some((p) => p.z < 0), `roof: cruised the face (no stall, no U-turn)`);
+}
+console.log("PASS roof-outer-tight");
+
+// --- tight-arc: fresh diagonal turns with a lateral gap close faster instead
+// of ballooning. A northbound wall ride is frozen mid-turn facing away from
+// its line (yaw +0.7 east of north, 0.4 gap east of the line — exactly what
+// a diagonal tip-fired take leaves), then released: the doubled pull
+// dominates the drive, closing the gap in ~10 ticks with no outward push
+// (gap10 0.10 vs 0.16 unthrottled, exact replay). ---
+{
+  resetWorld("over");
+  clearEntryClaims();
+  setDimension("over");
+  for (let x = -8; x <= 8; x++) for (let z = -8; z <= 8; z++) setBlock(x, 0, z, STONE);
+  for (let z = -6; z <= 6; z++) { setBlock(-1, 1, z, STONE); setBlock(-1, 2, z, STONE); } // west wall, face x=0
+  const mob = makeMob(0.5, -4.5, 0, mulberry32(11));
+  let latched = false;
+  for (let t = 0; t < 200 && !latched; t++) {
+    tickFarmMob(mob, DT, () => ({ x: 0.5, z: 30 }), mob.rand);
+    if (mob.lane) latched = true;
+  }
+  assert.ok(latched, "arc: latched the wall ride");
+  mob.yaw = 0.7; // facing away from the line, as a diagonal take leaves it
+  mob.pos.x += 0.4; // 0.4 lateral gap east of the line
+  mob.turnHold = TURN_HOLD_TICKS;
+  const trace = run(mob, { x: 0.5, z: 30 }, 25);
+  assert.ok(trace.every((p) => p.blue), "arc: blue unbroken");
+  assert.ok(Math.abs(trace[9].x - 0.5) <= 0.15,
+    `arc: gap closed fast AT the turn (gap10=${Math.abs(trace[9].x - 0.5).toFixed(2)})`);
+  assert.ok(Math.max(...trace.map((p) => p.x)) <= 1.0,
+    `arc: never pushed further out (maxX=${Math.max(...trace.map((p) => p.x)).toFixed(2)})`);
+  assert.ok(yawDiff(trace[trace.length - 1].yaw, 0) < 0.15, "arc: aligned north");
+}
+console.log("PASS tight-arc");
 
 // --- inner corner southbound: mirror of inner-nose-blocked — ride west,
 // nose blocked by the column, turn south into the arm (no U-turn) ---
@@ -980,5 +1056,96 @@ console.log("PASS sealed-room");
   assert.deepEqual(a, b, `determinism: same seed, same ride`);
 }
 console.log("PASS determinism");
+
+// --- roof-tip-early-take: stepped-pyramid roof corner (live-session
+// faithful: decorative 1-high parapet ring, 1-step drop right, outer L
+// corner). The wall-follow take must fire with the body straddling the tip
+// (over <= ~0.7) instead of parading a full block past it: the straight
+// keep shadows the perpendicular take until the wall ends beside the mob,
+// so the take is adopted early via the tip cell as soon as the wall ends
+// within lookahead. Both below-box variants (solid foundation ring vs
+// void) behave identically — the take fires off probed voxels only. ---
+function buildRoofTip(below) {
+  resetWorld("over");
+  clearEntryClaims();
+  setDimension("over");
+  for (let x = 59; x <= 65; x++) for (let z = 29; z <= 35; z++) {
+    const edge = x === 59 || x === 65 || z === 29 || z === 35;
+    if (!edge) continue;
+    const corner = (x === 59 || x === 65) && (z === 29 || z === 35);
+    setBlock(x, 37, z, corner ? LOG : STONE);
+    if (below === "ring") setBlock(x, 36, z, STONE);
+  }
+  for (let x = 59; x <= 65; x++) for (let z = 29; z <= 35; z++) {
+    const edge = x === 59 || x === 65 || z === 29 || z === 35;
+    setBlock(x, 38, z, edge ? PORTAL : OBSIDIAN);
+  }
+  for (let x = 60; x <= 64; x++) for (let z = 30; z <= 34; z++) {
+    const edge = x === 60 || x === 64 || z === 30 || z === 34;
+    const anomaly = x === 62 && z === 33;
+    setBlock(x, 39, z, edge || anomaly ? PORTAL : OBSIDIAN);
+  }
+  for (const [x, z] of [[61, 31], [62, 31], [63, 31], [61, 32], [63, 32], [61, 33], [62, 33], [63, 33]])
+    setBlock(x, 40, z, PORTAL);
+  setBlock(62, 40, 32, OBSIDIAN);
+  setBlock(62, 41, 32, PORTAL);
+}
+function makeRoofCow(x, y, z, yaw, rand) {
+  const spec = LIVESTOCK_SPECS["cow"];
+  const shape = specCircles(spec);
+  return {
+    type: "cow", dim: "over", pos: { x, y, z }, vel: { y: 0 },
+    hw: shape.hw, h: shape.h, nose: shape.nose, tail: shape.tail,
+    maxDrop: spec.drop ?? 1, alive: true, root: null,
+    yaw, yawTarget: yaw, target: { x: x - 30, z }, wanderT: NO_EXPIRY,
+    legPhase: 0, speed: FARM_WALK, rand,
+    stuckT: 0, lastX: x, lastZ: z, fallFrom: y, lane: null, servoStall: 0,
+    blendFrom: null, blendT: 0, roam: null, followLine: null, followCool: 0,
+    turnHold: 0,
+    entryScanT: 0, jrng: null, wallFollow: false, oneWide: false, tunnelPass: false, inPassage: false, passage: null,
+    entryCoolT: 0, entryCoolKey: null,
+    pinWallRide: true,
+  };
+}
+for (const below of ["ring", "void"]) {
+  buildRoofTip(below);
+  const mob = makeRoofCow(62.5, 40, 34.5, 5.13, mulberry32(7));
+  const flips = [];
+  let lastLane = "null";
+  let maxHold = 0;
+  for (let t = 0; t < 620; t++) {
+    tickFarmMob(mob, DT, () => mob.target, mob.rand);
+    assert.ok(!aabbIntersectsSolid(mob.pos.x, mob.pos.y, mob.pos.z, 0.32, 1.3),
+      `roof-tip [${below}]: body in solid @tick${t} (${mob.pos.x.toFixed(2)},${mob.pos.y.toFixed(2)},${mob.pos.z.toFixed(2)})`);
+    const lane = mob.lane ? mob.lane.axis.toFixed(3) : "null";
+    if (mob.turnHold > maxHold) maxHold = mob.turnHold;
+    if (t > 0 && lane !== lastLane) {
+      if (lastLane !== "null") flips.push({ from: lastLane, to: lane, x: mob.pos.x, z: mob.pos.z });
+      lastLane = lane;
+    }
+    if (t === 0) lastLane = lane;
+    assert.ok(mob.lane != null && mob.followLine != null && mob.wallFollow === true,
+      `roof-tip [${below}]: blue ride holds @tick${t} (lane=${lane})`);
+  }
+  assert.ok(flips.length >= 4, `roof-tip [${below}]: rounded all four corners (${flips.length} flips)`);
+  for (const f of flips) {
+    assert.ok(Math.abs(yawDiff(+f.to, +f.from) - Math.PI / 2) < 0.05,
+      `roof-tip [${below}]: every flip is a 90° take, never a U-turn (${f.from}>${f.to})`);
+  }
+  const west = flips.find((f) => Math.abs(yawDiff(+f.to, -Math.PI)) < 0.01);
+  assert.ok(west && west.x > 60.3 && west.x <= 61.0,
+    `roof-tip [${below}]: west take straddles the tip (x=${west ? west.x.toFixed(2) : "none"})`);
+  const north = flips.find((f) => Math.abs(yawDiff(+f.to, Math.PI / 2)) < 0.01);
+  assert.ok(north && north.z > 30.3 && north.z <= 31.0,
+    `roof-tip [${below}]: north take straddles the tip (z=${north ? north.z.toFixed(2) : "none"})`);
+  const east = flips.find((f) => Math.abs(yawDiff(+f.to, 0)) < 0.01);
+  assert.ok(east && east.x >= 64.0 && east.x < 64.7,
+    `roof-tip [${below}]: east take before the platform edge (x=${east ? east.x.toFixed(2) : "none"})`);
+  const south = flips.find((f) => Math.abs(yawDiff(+f.to, -Math.PI / 2)) < 0.01 && f.x > 62);
+  assert.ok(south && south.z >= 34.0 && south.z < 34.7,
+    `roof-tip [${below}]: south take before the moat lip (z=${south ? south.z.toFixed(2) : "none"})`);
+  assert.ok(maxHold > 0, `roof-tip [${below}]: takes hold the new lane (turnHold fired)`);
+}
+console.log("PASS roof-tip-early-take");
 
 console.log("wall.test.mjs: ALL PASS");
