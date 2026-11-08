@@ -21,6 +21,14 @@ export function isCarried(mob) {
   return !!mob?._carried;
 }
 
+// Hull-pin vs grab-hold arbitration: a carried mob is hook-owned — it
+// never boards a vehicle hull, and a rider that gets grabbed is released
+// to the hold pose instead of staying pinned. Both directions of the
+// vehicle rider loop go through this one predicate.
+export function staysHullPinned(mob) {
+  return mob?._riding === true && !isCarried(mob);
+}
+
 export function holdMob(mob) {
   if (held && held !== mob) held._carried = false;
   held = mob;

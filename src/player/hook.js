@@ -521,12 +521,16 @@ function clearHook() {
 
 // Sever: instant silent teardown for teleports (out-of-level respawn, New
 // World) — no fling, no retract ride across the jump. Release paths use
-// cancelHook instead.
+// cancelHook instead. Mob kinds abort through their own path instead of
+// orphaning: a flying grab frees its (never frozen) mob, a ferry re-holds
+// it — so a countdown liftoff never strands a carried mob with no holder.
 export function severHook() {
+  const h = hook;
   hook = null;
   line = null;
   hideRope();
   setGhostPass(null);
+  if (h && (h.kind === "mob" || h.kind === "mobRelease") && h.onAbort) h.onAbort(h);
 }
 
 // True when a player body fits at (tx, ty, tz): feet + head cells free.

@@ -951,13 +951,15 @@ document.addEventListener("keydown", (e) => {
   // Mob grab / release (ENTER): empty hands grab the aimed mob through the
   // mob-grab hook kind; holding hands release through the mob-release kind
   // toward the aimed block's face cell. Refusals (busy hook, no aim) fizzle.
+  // No release while the rocket takes over (countdown/flight): ENTER is the
+  // takeoff key there, and a held mob stays held for the whole trip.
   if ((e.code === "Enter" || e.code === "NumpadEnter") && !e.repeat && started && !isHelpOpen() && isLocked() && !building) {
     if (!hookActive()) {
       camera.getWorldDirection(_hookDir);
       const held = heldMob();
       if (held) {
         const aim = updateTarget(camera, selectedId());
-        if (aim) {
+        if (aim && !rocketTakesOver()) {
           fireHookTarget(
             () => mobReleaseTarget(held, aim.x, aim.y, aim.z, aim.face),
             camera.position, _hookDir, "mob-release");
