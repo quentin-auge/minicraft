@@ -32,7 +32,7 @@ import { WATER, FLOWER, GLOWSTONE, MOON_WATER, TNT, BLOCK_INFO } from "./src/cor
 import { resetGlowstoneMemory, clearGlowstoneDim, setGlowSeed } from "./src/world/glowstone.js";
 import { resetFlowerMemory, clearFlowerDim, setFlowerSeed } from "./src/world/flowers.js";
 import { initPoolLights, tickPoolLights, resetPoolLightMemory, notePoolEdit } from "./src/render/poollights.js";
-import { initRenderer, rebuildAll, maybeStream, streamChunks, drainChunkQueue, beginDispose, disposeSome, refreshBlocks, queueRefreshBlocks, queueRefreshKeys, takeSuspendedBuilt, setEyeMedium, setRegionFade, nearestMissingDist, tickChunkFades, UNLOAD_MARGIN } from "./src/render/mesher.js";
+import { initRenderer, rebuildAll, maybeStream, streamChunks, drainChunkQueue, beginDispose, disposeSome, refreshBlocks, queueRefreshBlocks, queueRefreshKeys, takeSuspendedBuilt, setRegionFade, nearestMissingDist, tickChunkFades, UNLOAD_MARGIN } from "./src/render/mesher.js";
 import { setHaloSuspended } from "./src/render/halobake.js";
 import { initChainProxy, proxyNote, proxyCull, proxyClear } from "./src/render/chainproxy.js";
 import { applyRegions } from "./src/render/regions.js";
@@ -1044,18 +1044,15 @@ function loop(now) {
     if (!chainBridgeActive(chain)) tickPoolLights(sdt, camera);
     tickHookFx(dt);
     // Streaming fog first, so the loader sees the tightened range; dive murk
-    // after, restoring the tracked air baseline on resurface. The pocket
-    // veil gate rides along: water-side white shows only for divers, the
-    // tinted veil only for open-air eyes, flipping together with the murk.
+    // after, restoring the tracked air baseline on resurface.
     updateStreamingFog();
     tickSky(scene, camera, sun, hemi, envAir, dimEnv(dim), simActive ? sdt : 0);
     tickAmbient(simActive ? sdt : 0, simTime, camera, dimSpec(dim)?.ambient);
     applyRegions(camera.position, scene.background, setRegionFade);
-    // One eye-medium lookup per frame, shared by the murk and the veil gate
-    // (it used to run twice, with a bounded air flood each time in pockets).
     const medium = eyeMediumId(camera.position.x, camera.position.y, camera.position.z);
     tickWaterFog(scene, camera, dt, envAir, medium);
-    setEyeMedium(medium);
+    // Static pocket colors (airpocket.js, decided at mesh build): trapped air
+    // reads light blue, open air standard blue — no per-frame work here.
     // Moon-band hotbar: 8 below the Moon's lower end the water slot becomes
     // moon water and the flower slot becomes glowstone; both restore on
     // descent. Moon dimensions only.

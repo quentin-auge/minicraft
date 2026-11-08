@@ -2,13 +2,13 @@
 // only for exposed blocks. Rebuilds stay local via refreshBlocks().
 import * as THREE from "three";
 import { AIR, BLOCK_INFO, FLOWER, GLASS, GLOWSTONE, isLiquid } from "../core/blocks.js";
-import { WORLD_RADIUS, CHUNK, renderDist, getBlock, topAt, colTopIdx, colOcc, dim, dimInfinite, chunkOf, isEnclosedAir, ensureChunkSource, key } from "../core/store.js";
+import { WORLD_RADIUS, CHUNK, renderDist, getBlock, topAt, colTopIdx, colOcc, dim, dimInfinite, chunkOf, ensureChunkSource, key } from "../core/store.js";
+import { createPocketCache, isPocketAir } from "../core/airpocket.js";
 import { materialsFor, liquidSurfaceMat, glowstoneMats } from "../core/textures.js";
 import { FLOWER_GEOS, FLOWER_MAT } from "./flowers.js";
 import { haloRadius, bakeHaloTint, isHaloSuspended } from "./halobake.js";
 import { flowerVariantAt, flowerAngleAt } from "../world/flowers.js";
 import { GLOW_VARIANT_COUNT, glowVariantAt } from "../world/glowstone.js";
-import { MOON_SURFACE_Y } from "../world/moon.js";
 import { regionOf, regionByKey } from "./regions.js";
 
 const boxGeo = new THREE.BoxGeometry(1, 1, 1);
@@ -43,62 +43,15 @@ function liquidFaceVisible(x, y, z, id, dx, dy, dz) {
   if (!info) return true;
   return !info.opaque;
 }
-// A surface liquid cell with a broken sheet around it (player bump, edge:
-// open air above, air sitting on liquid on at least one side) seals its
-// underside with a blue BackSide shutter so the bump reads solid from above
-// instead of showing the depths through the transparent stack. Air sitting on
-// solid (shores) or continuing down (shafts) gets no floor: shores read like
-// open sea, shafts read hollow. Unbroken sheet water stays merged. Companion
-// of the pocket rule below: floors key on what sits beneath the side air
-// (liquid), veils on what hems it laterally. The shutter goes at the foot
-// of the exposed run (deepest same-liquid cell below the surface that
-// still sees lateral air), so N-high bumps cap exactly the plane 1-high
-// ones do instead of floating mid-column.
-function hasAirSide(x, y, z) {
-  return getBlock(x + 1, y, z) === AIR || getBlock(x - 1, y, z) === AIR ||
-    getBlock(x, y, z + 1) === AIR || getBlock(x, y, z - 1) === AIR;
-}
-// Foot test half of the seal: a lateral air column starting at (x, yy, z)
-// footing on liquid. The caller judges open sky on the surface cell and
-// walks yy down to the exposed foot first; the air is followed down to its
-// own foot, so the test holds at any height. Floored by y > 0.
-function sealFootAt(x, yy, z) {
-  const sides = [[1, 0, 0], [-1, 0, 0], [0, 0, 1], [0, 0, -1]];
-  for (const [dx, , dz] of sides) {
-    if (getBlock(x + dx, yy, z + dz) !== AIR) continue;
-    let sy = yy;
-    while (sy > 0 && getBlock(x + dx, sy, z + dz) === AIR) sy--;
-    if (isLiquid(getBlock(x + dx, sy, z + dz))) return true;
-  }
-  return false;
-}
-// Pocket air is hemmed-in air: the same liquid on two *opposite* same-level
-// sides (east+west or north+south), or on 3+ sides. Two merely adjacent
-// sides (an L corner, e.g. the air cells between diagonally placed liquid
-// blocks) read as open air and stay plain blue. Shafts and bubbles qualify
-// from every ring; bumps, shores, diagonals, and open sky stay plain blue.
-function hemmedAir(x, y, z, id) {
-  const e = getBlock(x + 1, y, z) === id;
-  const w = getBlock(x - 1, y, z) === id;
-  const pz = getBlock(x, y, z + 1) === id;
-  const nz = getBlock(x, y, z - 1) === id;
-  if ((e && w) || (pz && nz)) return true;
-  return (e ? 1 : 0) + (w ? 1 : 0) + (pz ? 1 : 0) + (nz ? 1 : 0) >= 3;
-}
-// Liquid rendering follows three rules with one mechanism each. (1) Water
-// reads regular blue from everywhere: every liquid bound carries the full
-// blue pair (FrontSide + BackSide), pocket bounds included — the original
-// material is never replaced, veils only overlay. (2) Pockets read white
-// for divers and light blue through water: a plain white BackSide veil shows
-// only while the eye sits inside the same liquid, always over its unchanged
-// blue backing, so every ring composites identically (uniform water filter,
-// never bare white on bright backdrops); a tinted DoubleSide veil shows only
-// while the eye sits in open air. (3) Water reads regular blue from
-// inside pockets: both veils hide there, leaving pure blue. Pocket-bound
-// sheets write depth (open-sea sheets do not), so the near wall occludes the
-// far wall and each pocket shows exactly one face. Veil flips happen only
-// when the eye medium changes (`setEyeMedium`, fed per frame), so
-// steady-state cost is zero.
+// Liquid rendering: every bound emits the coplanar pair — a FrontSide quad
+// (renderOrder 10, always standard blue) plus a BackSide quad
+// (renderOrder 11). Each viewpoint sees exactly one sheet per quad
+// (backface culling). Both sheets write depth, so the nearest interface
+// occludes block undersides and far walls instead of composing through in
+// transparency; stacked boundaries still blend in a fixed deterministic
+// order instead of re-sorting by viewpoint. One rule picks the back color:
+// trapped air (airpocket.js: bubble, well, mixed liquid + solid cavity)
+// reads light blue, open air (surface, detached cubes) standard blue.
 // Chunks load within the dimension's render distance (RENDER_DIST overworld,
 // TNT_RENDER_DIST in the infinite sky) but unload three rings later, so fog far
 // stays inside the nearest evictable slab and border crossings never
@@ -112,41 +65,17 @@ const DISPOSE_MARGIN = 10;
 // so a high camera's distance to one is horizontal offset plus vertical drop
 // below the eye. Column tops refine it per chunk; this floors the estimate.
 const TERRAIN_REF_Y = 20;
-const gatedVeils = new Map(); // "in:"+lid -> Set<diver white>, "out" -> Set<open-air tint>
-let eyeMedium = { type: "air", liquid: 0 };
-export function setEyeMedium(m) {
-  const prevIn = eyeMedium.type === "liquid" ? eyeMedium.liquid : 0;
-  const nextIn = m.type === "liquid" ? m.liquid : 0;
-  if (prevIn !== nextIn) {
-    for (const [key, set] of gatedVeils) {
-      if (!key.startsWith("in:")) continue;
-      const vis = Number(key.slice(3)) === nextIn;
-      for (const mesh of set) { mesh.userData.veilVisible = vis; refreshVisible(mesh); }
-    }
-  }
-  if ((eyeMedium.type === "air") !== (m.type === "air")) {
-    const set = gatedVeils.get("out");
-    if (set) for (const mesh of set) { mesh.userData.veilVisible = m.type === "air"; refreshVisible(mesh); }
-  }
-  eyeMedium = m;
-}
-function registerVeil(key, mesh, visible) {
-  mesh.userData.veilKey = key;
-  mesh.userData.veilVisible = visible;
-  refreshVisible(mesh);
-  let set = gatedVeils.get(key);
-  if (!set) { set = new Set(); gatedVeils.set(key, set); }
-  set.add(mesh);
-}
-function unregisterVeils(meshes) {
-  for (const m of meshes.values()) {
-    const k = m.userData.veilKey;
-    if (k === undefined) continue;
-    const set = gatedVeils.get(k);
-    if (set) { set.delete(m); if (!set.size) gatedVeils.delete(k); }
-  }
-}
 const chunkMeshes = new Map(); // "cx_cz" -> Map<id, InstancedMesh>
+function writeLiquidQuad(mesh, i, quad) {
+  const [lx, ly, lz, d] = quad;
+  const [rx, ry] = LIQUID_DIRS[d];
+  const [ox, oy, oz] = LIQUID_OFF[d];
+  dummy.position.set(lx + 0.5 + ox * 0.5, ly + 0.5 + oy * 0.5, lz + 0.5 + oz * 0.5);
+  dummy.rotation.set(rx, ry, 0);
+  dummy.scale.set(1, 1, 1);
+  dummy.updateMatrix();
+  mesh.setMatrixAt(i, dummy.matrix);
+}
 // Per-chunk rebuild counter for the optimistic chain proxy (`chainproxy.js`):
 // bumped on every rebuild and every dispose, cleared with the rest on
 // beginDispose, so transient overlay cells know exactly when their real mesh
@@ -178,14 +107,10 @@ function getMats(id) {
   return matCache.get(id);
 }
 
-// A mesh's visibility is the AND of the two gates that can touch it: its
-// region's fade (undefined = no region) and a liquid veil's eye-medium gate
-// (undefined = not a veil). Combining them keeps a pocket sheet from flashing
-// when the eye medium flips while its region is hidden.
+// A region mesh shows only while its region fade is up (undefined = no region).
 function refreshVisible(mesh) {
   const rv = mesh.userData.regionVisible;
-  const vv = mesh.userData.veilVisible;
-  mesh.visible = (rv === undefined || rv) && (vv === undefined || vv);
+  mesh.visible = rv === undefined || rv;
 }
 
 function registerRegionMesh(region, mesh) {
@@ -236,8 +161,8 @@ function ctxFor(region) {
   return {
     mats: (id) => regionMaterials(region, "b:" + id, () => getMats(id)),
     glowMats: (v) => regionMaterials(region, "g:" + v, () => glowstoneMats(v)),
-    liquidMat: (id, role, top) =>
-      regionMaterials(region, "l:" + id + ":" + role + ":" + top, () => liquidSurfaceMat(id, role, top)),
+    liquidMat: (id, role) =>
+      regionMaterials(region, "l:" + id + ":" + role, () => liquidSurfaceMat(id, role)),
   };
 }
 
@@ -351,7 +276,6 @@ export function beginDispose() {
   cullVersion++;
   chunkVersions.clear();
   suspendedBuilt.clear(); // geometry-only chunks are gone; nothing to re-tint
-  gatedVeils.clear();
   topMaxCache.clear();
   regionMeshes.clear();
   for (const owned of regionMatCache.values()) {
@@ -411,7 +335,6 @@ function disposeChunk(ck) {
     const rk = m.userData.regionKey;
     if (rk) { const set = regionMeshes.get(rk); if (set) { set.delete(m); if (!set.size) regionMeshes.delete(rk); } }
   }
-  unregisterVeils(meshes);
   chunkMeshes.delete(ck);
 }
 
@@ -430,13 +353,10 @@ export function rebuildChunk(cx, cz, fade = false) {
   const flowers = [];
   const glows = [];
   const liquids = new Map();
-  const liquidsTop = new Map();
+  const liquidsIn = new Map();
   const liquidsPocket = new Map();
-  const liquidsPocketBlue = new Map();
-  const liquidsPocketBlueTop = new Map();
-  const liquidsPocketBlueBack = new Map();
-  const liquidsSeal = new Map();
-  const liquidMaps = [liquids, liquidsTop, liquidsPocket, liquidsPocketBlue, liquidsPocketBlueTop, liquidsPocketBlueBack, liquidsSeal];
+  const liquidMaps = [liquids, liquidsIn, liquidsPocket];
+  const pocketCache = createPocketCache();
   const pushQuad = (map, id, quad) => {
     let arr = map.get(id);
     if (!arr) { arr = []; map.set(id, arr); }
@@ -447,28 +367,7 @@ export function rebuildChunk(cx, cz, fade = false) {
   // below) drives the fog-cull box of the rest group.
   let chunkTop = -1, chunkBottom = Infinity;
   let restTop = -1, restBottom = Infinity;
-  // Pocket-test memo per build: neighboring liquid faces re-query the same
-  // air cells (lake rims, shaft rims), and each miss used to pay a full
-  // bounded flood. Keys pack the column index and y (full key range).
-  const enclosedMemo = new Map();
-  const hemmedMemo = new Map();
-  const memoKey = (x, y, z) => colTopIdx(x, z) * 262144 + (y + 131072);
-  const memoEnclosed = (x, y, z) => {
-    const k = memoKey(x, y, z);
-    let v = enclosedMemo.get(k);
-    // Below-cap queries use the bare-tops escape (moon rock excluded): lake
-    // bottoms and ground air exit in column height instead of exhausting the
-    // budget in the hollow under-cap volume; at- and above-cap queries keep
-    // the exact old behavior.
-    if (v === undefined) { v = isEnclosedAir(x, y, z, y < MOON_SURFACE_Y); enclosedMemo.set(k, v); }
-    return v;
-  };
-  const memoHemmed = (x, y, z, id) => {
-    const k = memoKey(x, y, z) * 32 + id;
-    let v = hemmedMemo.get(k);
-    if (v === undefined) { v = hemmedAir(x, y, z, id); hemmedMemo.set(k, v); }
-    return v;
-  };
+
   for (let x = x0; x <= x1; x++) {
     for (let z = z0; z <= z1; z++) {
       // Sparse column walk: only occupied cells are visited (ascending, as
@@ -490,50 +389,16 @@ export function rebuildChunk(cx, cz, fade = false) {
         if (isLiquid(id)) {
           for (let d = 0; d < LIQUID_DIRS.length; d++) {
             const [dx, dy, dz] = LIQUID_OFF[d];
-            if (!liquidFaceVisible(x, y, z, id, dx, dy, dz)) {
-              // Seal floor: same-liquid underside capping a surface column
-              // that stands on a broken sheet. One-sided shutter facing up
-              // (inner sheet only): bumps read solid from above, while
-              // divers below see the uniform surface backs with no
-              // doubling rectangles. The shutter goes at the foot of the
-              // exposed run (deepest same-liquid cell below the surface
-              // that still sees lateral air), so N-high bumps cap exactly
-              // the plane 1-high ones do instead of floating mid-column.
-              if (dy !== -1) continue;
-              if (getBlock(x, y - 1, z) !== id) continue;
-              if (getBlock(x, y + 1, z) !== AIR || memoEnclosed(x, y + 1, z)) continue;
-              let sealY = y;
-              while (getBlock(x, sealY - 1, z) === id && hasAirSide(x, sealY - 1, z)) sealY--;
-              if (!sealFootAt(x, sealY, z)) continue;
-              pushQuad(liquidsSeal, id, [x, sealY, z, d]);
-              continue;
-            }
-            // Every bound keeps its blue pair (original material, never
-            // replaced): regular bounds feed the FrontSide outside sheet and
-            // the coplanar blue BackSide sheet, pocket bounds their
-            // depth-writing variants. Top faces split off for the stronger
-            // tone. Pocket bounds (hemmed-in shaft air or enclosed bubbles)
-            // additionally feed the gated white veils, which overlay without
-            // replacing: white for divers, tint for open-air eyes.
-            // Pocket-bound sheets write depth so the near wall occludes the
-            // far wall and each pocket shows exactly one face; open-sea sheets
-            // stay depthless to keep see-through shallows.
+            if (!liquidFaceVisible(x, y, z, id, dx, dy, dz)) continue;
+            // Static pair: the front is always standard blue; only the
+            // back of trapped air reads light blue (airpocket.js).
             const quad = [x, y, z, d];
-            // Pocket bound: opposite-hemmed shaft air (full column top ring
-            // included) or enclosed air (bubbles). Open air — sky, bump
-            // surroundings, shores, diagonal L corners — stays plain blue.
-            // Opposite pairs first; the flood runs only when that falls
-            // short and fast-paths sky itself.
-            const n = getBlock(x + dx, y + dy, z + dz);
-            const pocketed = n === AIR && (memoHemmed(x + dx, y + dy, z + dz, id) ||
-              memoEnclosed(x + dx, y + dy, z + dz));
-            if (pocketed) {
-              pushQuad(dy === 1 ? liquidsPocketBlueTop : liquidsPocketBlue, id, quad);
-              pushQuad(liquidsPocketBlueBack, id, quad);
+            pushQuad(liquids, id, quad);
+            if (isPocketAir(x + dx, y + dy, z + dz, pocketCache)) {
               pushQuad(liquidsPocket, id, quad);
-              continue;
+            } else {
+              pushQuad(liquidsIn, id, quad);
             }
-            pushQuad(dy === 1 ? liquidsTop : liquids, id, quad);
           }
           continue;
         }
@@ -676,69 +541,40 @@ export function rebuildChunk(cx, cz, fade = false) {
       }
     }
   }
-  // Boundary faces only: every bound emits the blue pair — an outside
-  // FrontSide quad (renderOrder 10) plus a coplanar blue BackSide quad
-  // (renderOrder 11). Each viewpoint sees exactly one blue sheet per quad
-  // (backface culling), so the pair never z-fights; stacked boundaries
-  // compose through blending in a fixed, deterministic order instead of
-  // re-sorting by viewpoint, so nothing flickers. Pocket bounds (hemmed shaft
-  // air, enclosed bubbles) use depth-writing blue variants plus gated white
-  // veils (renderOrder 12, after the blue): the near wall depth-occludes the
-  // far wall, so each pocket shows exactly one face, always over its unchanged
-  // blue backing — every ring composites identically. Seal floors
-  // (same-liquid undersides under broken surface sheets) emit only the blue
-  // BackSide shutter, so bumps read solid from above while divers see no
-  // doubling rectangles. Pocket veils gate on the eye medium: plain white
-  // only for divers in the same liquid, tinted veil only for open-air eyes;
-  // pocket interiors see pure blue. Glass draws last (renderOrder 13).
+  // Boundary faces only: every bound emits the coplanar pair — a FrontSide
+  // quad (renderOrder 10, always standard blue) plus a BackSide quad
+  // (renderOrder 11). Each viewpoint sees exactly one sheet per quad
+  // (backface culling); the sheets write depth, so the nearest interface
+  // occludes what sits behind it instead of composing through in
+  // transparency. Back color is static per quad: trapped air (bubble,
+  // well, mixed cavity) light blue, open air (surface, detached cube)
+  // standard blue. Glass draws last (renderOrder 13).
   const quadMesh = (mat, quads, order) => {
     const mesh = new THREE.InstancedMesh(liquidGeo, mat, quads.length);
-    for (let i = 0; i < quads.length; i++) {
-      const [lx, ly, lz, d] = quads[i];
-      const [rx, ry] = LIQUID_DIRS[d];
-      const [ox, oy, oz] = LIQUID_OFF[d];
-      dummy.position.set(lx + 0.5 + ox * 0.5, ly + 0.5 + oy * 0.5, lz + 0.5 + oz * 0.5);
-      dummy.rotation.set(rx, ry, 0);
-      dummy.scale.set(1, 1, 1);
-      dummy.updateMatrix();
-      mesh.setMatrixAt(i, dummy.matrix);
-    }
+    for (let i = 0; i < quads.length; i++) writeLiquidQuad(mesh, i, quads[i]);
     mesh.instanceMatrix.needsUpdate = true;
     stampStatic(mesh, x0, x1, z0, z1, chunkTop, chunkBottom);
     mesh.renderOrder = order;
     return mesh;
   };
-  const gateVeil = (gate, lid, mesh) => {
-    if (gate === "in") registerVeil("in:" + lid, mesh, eyeMedium.type === "liquid" && eyeMedium.liquid === lid);
-    else if (gate === "out") registerVeil("out", mesh, eyeMedium.type === "air");
-  };
-  for (const { map, role, top, order, suffix, gate } of [
-    { map: liquids, role: "outside", top: false, order: 10, suffix: "_out" },
-    { map: liquidsTop, role: "outside", top: true, order: 10, suffix: "_top" },
-    { map: liquids, role: "inner", top: false, order: 11, suffix: "_bin" },
-    { map: liquidsTop, role: "inner", top: true, order: 11, suffix: "_btp" },
-    { map: liquidsSeal, role: "inner", top: false, order: 11, suffix: "_seal" },
-    { map: liquidsPocketBlue, role: "pocketblue", top: false, order: 10, suffix: "_pb" },
-    { map: liquidsPocketBlueTop, role: "pocketblue", top: true, order: 10, suffix: "_pbt" },
-    { map: liquidsPocketBlueBack, role: "pocketblueback", top: false, order: 11, suffix: "_pbb" },
-    { map: liquidsPocket, role: "pocket-out", top: false, order: 12, suffix: "_pout", gate: "out" },
-    { map: liquidsPocket, role: "pocket-in", top: false, order: 12, suffix: "_pin", gate: "in" },
+  for (const { map, role, order, suffix } of [
+    { map: liquids, role: "outside", order: 10, suffix: "_out" },
+    { map: liquidsIn, role: "inside", order: 11, suffix: "_in" },
+    { map: liquidsPocket, role: "pocket", order: 11, suffix: "_pocket" },
   ]) {
     for (const [lid, list] of map) {
       const { rest, groups, restTop: rt, restBottom: rb } = partitionRegion(lid, list);
       if (rt > restTop) restTop = rt;
     if (rb < restBottom) restBottom = rb;
       if (rest.length) {
-        const mesh = quadMesh(liquidSurfaceMat(lid, role, top), rest, order);
-        gateVeil(gate, lid, mesh);
+        const mesh = quadMesh(liquidSurfaceMat(lid, role), rest, order);
         restGroup.add(mesh);
         meshes.set("liquid_" + lid + suffix, mesh);
       }
       for (const g of groups.values()) {
         const mesh = quadMesh(
-          regionMaterials(g.region, "l:" + lid + ":" + role + ":" + top, () => liquidSurfaceMat(lid, role, top)),
+          regionMaterials(g.region, "l:" + lid + ":" + role, () => liquidSurfaceMat(lid, role)),
           g.list, order);
-        gateVeil(gate, lid, mesh);
         registerRegionMesh(g.region, mesh);
         sceneRef.add(mesh);
         meshes.set("liquid_" + g.region.key + "_" + lid + suffix, mesh);
@@ -762,8 +598,7 @@ export function rebuildChunk(cx, cz, fade = false) {
 // materials at opacity 0, ramped to their base over FADE_T, then the shared
 // materials are restored and the clones disposed — steady state keeps zero
 // clones, and only a few chunks ever fade at once. Region meshes are
-// excluded (their reveal owns opacity); gated veils fade like any rest
-// mesh (only `visible` gates on the eye medium, never opacity).
+// excluded (their reveal owns opacity).
 const FADE_T = 0.35;
 const fading = []; // { ck, cx, cz, mesh, shared, clones:[{m, base}], t }
 function fadeChunkIn(ck, cx, cz, group) {
