@@ -334,7 +334,7 @@ function setLookThrust(speed, sprintSpeed) {
   if (keys["KeyS"] || keys["ArrowDown"]) _move.sub(_fwd);
   if (keys["KeyD"] || keys["ArrowRight"]) _move.add(_right);
   if (keys["KeyA"] || keys["ArrowLeft"]) _move.sub(_right);
-  const sprint = keys["Slash"] || keys["/"];
+  const sprint = keys["ShiftLeft"] || keys["ShiftRight"] || keys["Shift"];
   if (_move.lengthSq() > 0) _move.normalize().multiplyScalar(sprint ? sprintSpeed : speed);
   vel.set(_move.x, _move.y, _move.z);
   // Blast knockback rides on top of the thrust and decays away.
@@ -395,7 +395,7 @@ export function updatePlayer(dt) {
   const s = keys["KeyS"] || keys["ArrowDown"];
   const d = keys["KeyD"] || keys["ArrowRight"];
   const a = keys["KeyA"] || keys["ArrowLeft"];
-  const sprintKey = !!(keys["Slash"] || keys["/"]);
+  const sprintKey = !!(keys["ShiftLeft"] || keys["ShiftRight"] || keys["Shift"]);
   if (w) _move.add(_fwd);
   if (s) _move.sub(_fwd);
   if (d) _move.add(_right);
@@ -403,7 +403,7 @@ export function updatePlayer(dt) {
 
   let inWater = headInWater();
   const enteredWater = inWater && !wasInWater;
-  const spaceNow = !!(keys["ShiftLeft"] || keys["ShiftRight"] || keys["Space"] || keys[" "]);
+  const spaceNow = !!(keys["Space"] || keys[" "] || keys["/"]);
   const spaceJustPressed = spaceNow && !prevSpace;
   const spaceJustReleased = !spaceNow && prevSpace;
   jumpBuffer = Math.max(0, jumpBuffer - dt);

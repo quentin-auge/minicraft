@@ -436,7 +436,12 @@ export function carryRiders() {
 }
 
 function holdTakeoff() {
-  return !!keys["Enter"] && !flyOn;
+  // Takeoff chord: SHIFT + ENTER held, never in fly mode. The chord never
+  // fires the grab hook (main.js skips ENTER fire while Shift is down), so
+  // launching and grabbing share no input.
+  const shift = keys["ShiftLeft"] || keys["ShiftRight"] || keys["Shift"];
+  const enter = keys["Enter"] || keys["NumpadEnter"];
+  return !!shift && !!enter && !flyOn;
 }
 
 function placeAtStand() {
@@ -463,7 +468,7 @@ function setPrompt(t) {
 function updatePrompt() {
   let t = "";
   if (!piloting && !flyOn && dim === "over" && rocketSite.placed && phase === "parked" && rocketInsidePlayer()) {
-    t = "Hold ENTER to take off";
+    t = "Hold SHIFT + ENTER to take off";
   }
   setPrompt(t);
 }
@@ -740,9 +745,9 @@ function tickFlight(dt) {
   _fwd.set(-Math.sin(yaw), 0, -Math.cos(yaw));
   _right.set(Math.cos(yaw), 0, -Math.sin(yaw));
   thrustLevel = 0;
-  // Ramped "/" factor: acceleration, caps, and flames glide instead of
+  // Ramped boost factor: acceleration, caps, and flames glide instead of
   // stepping, so the camera never feels a pop.
-  const boostTarget = (keys["Slash"] || keys["/"]) ? 1 : 0;
+  const boostTarget = (keys["ShiftLeft"] || keys["ShiftRight"] || keys["Shift"]) ? 1 : 0;
   boostF += (boostTarget - boostF) * Math.min(1, BOOST_RAMP * dt);
   if (Math.abs(boostF - boostTarget) < 0.001) boostF = boostTarget;
   const cap = MAX_SPEED + (BOOST_SPEED - MAX_SPEED) * boostF;
