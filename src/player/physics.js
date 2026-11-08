@@ -132,8 +132,8 @@ export function headInWater() {
   return headInWaterAt(pos.x, pos.y, pos.z);
 }
 
-// Body-span liquid test at a candidate feet position, so the grapple pull
-// can tell whether a landing would leave the water without moving there.
+// Body-span liquid test at a candidate feet position, backing headInWater
+// (whole body column counts, so a chin above the surface still reads wet).
 export function headInWaterAt(x, y, z) {
   const y0 = Math.floor(y + 0.01);
   const y1 = Math.floor(y + PLAYER_H - 0.01);
