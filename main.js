@@ -32,14 +32,15 @@ import { WATER, FLOWER, GLOWSTONE, MOON_WATER, TNT, BLOCK_INFO } from "./src/cor
 import { resetGlowstoneMemory, clearGlowstoneDim, setGlowSeed } from "./src/world/glowstone.js";
 import { resetFlowerMemory, clearFlowerDim, setFlowerSeed } from "./src/world/flowers.js";
 import { initPoolLights, tickPoolLights, resetPoolLightMemory, notePoolEdit } from "./src/render/poollights.js";
-import { initRenderer, rebuildAll, maybeStream, streamChunks, drainChunkQueue, beginDispose, disposeSome, refreshBlocks, queueRefreshBlocks, queueRefreshKeys, takeSuspendedBuilt, setRegionFade, nearestMissingDist, tickChunkFades, UNLOAD_MARGIN } from "./src/render/mesher.js";
+import { initRenderer, rebuildAll, maybeStream, streamChunks, drainChunkQueue, beginDispose, disposeSome, refreshBlocks, queueRefreshBlocks, queueRefreshKeys, takeSuspendedBuilt, setRegionFade, setRegionLiquidFog, nearestMissingDist, tickChunkFades, UNLOAD_MARGIN } from "./src/render/mesher.js";
 import { setHaloSuspended } from "./src/render/halobake.js";
 import { initChainProxy, proxyNote, proxyCull, proxyClear } from "./src/render/chainproxy.js";
 import { applyRegions } from "./src/render/regions.js";
 import { resetItems, select, selected, selectedId, initHotbarInput, setItem, getItems } from "./src/ui/hotbar.js";
 import { initMenu, enterGame, started, isLocked } from "./src/ui/menu.js";
 import { initHelp, openHelp, closeHelp, isHelpOpen } from "./src/ui/help.js";
-import { toggleDebug, tickDebug } from "./src/ui/debug.js";
+import { toggleDebug, tickDebug, debugHud } from "./src/ui/debug.js";
+import { setLiquidFogOverride } from "./src/core/textures.js";
 import { tickWaterFog, eyeMediumId } from "./src/render/waterfog.js";
 import { initSky, tickSky } from "./src/render/sky.js";
 import { initAmbient, tickAmbient, exitAmbient } from "./src/fx/ambient.js";
@@ -328,6 +329,8 @@ let buildToken = 0;
 let bandDpr = false;
 // Moon-band hotbar (slots flip at the Moon's lower end); reset per world.
 let moonBand = false;
+// Moon-water eye medium (fog override off = air, on = submerged).
+let lastMoonEyeFog = null;
 // V (cheat only) cycles the world simulation speed. Player, camera, chain
 // editing, and loader/visual transitions stay on real dt (world ticks use sdt).
 const GAME_SPEEDS = [1, 2, 4, 8, 16];
@@ -1052,6 +1055,15 @@ function loop(now) {
     applyRegions(camera.position, scene.background, setRegionFade);
     const medium = eyeMediumId(camera.position.x, camera.position.y, camera.position.z);
     tickWaterFog(scene, camera, dt, envAir, medium);
+    // Moon-water eye fog: sheets read fog-free in air (fixed exterior, no
+    // black at distance) and fogged while the eye is submerged (classic
+    // interior). Transition-only flips; the murk itself is untouched.
+    const inMoonWater = medium.type === "liquid" && medium.liquid === MOON_WATER;
+    if (inMoonWater !== lastMoonEyeFog) {
+      lastMoonEyeFog = inMoonWater;
+      setLiquidFogOverride(MOON_WATER, inMoonWater);
+      setRegionLiquidFog("moon", MOON_WATER, inMoonWater);
+    }
     // Static pocket colors (airpocket.js, decided at mesh build): trapped air
     // reads the inside color, open air the outside — no per-frame work here.
     // Moon-band hotbar: 8 below the Moon's lower end the water slot becomes

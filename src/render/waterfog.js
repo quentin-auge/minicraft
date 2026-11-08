@@ -11,7 +11,9 @@ import { getBlock } from "../core/store.js";
 const LIQUID_FOG = {
   [WATER]: { tint: 0x0d3b7a, near: 2, far: 30 },
   [LAVA]: { tint: 0x14145a, near: 1, far: 1.5 },
-  [MOON_WATER]: { tint: 0x7a7e82, near: 2, far: 13 },
+  // Long shaft view: the far plane stays open so the submerged eye reads
+  // down the whole moon-water column.
+  [MOON_WATER]: { tint: 0x7a7e82, near: 2, far: 45 },
 };
 const TINT_MIX = 0.55;
 
