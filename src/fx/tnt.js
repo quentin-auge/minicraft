@@ -13,9 +13,9 @@
 // The floor level (y = 0) is always spared; liquids survive unless the kind sets
 // clearsLiquids (mega). A non-clearing TNT placed in liquid restores that
 // liquid in its cell after its blast; a clearing kind leaves air behind.
-// After every blast, liquids left with no solid 6-neighbor are purged back
-// to air through an injected callback (set via onLiquidPurge), so blasts
-// never strand floating remnants.
+// After every blast, face-or-edge-connected liquid groups left with no solid
+// face- or edge-neighbor are purged back to air through an injected callback
+// (set via onLiquidPurge), so blasts never strand floating remnants.
 import { AIR, TNT, MEGA_TNT, ULTRA_TNT, FLOWER, GLOWSTONE, LOG, LEAVES, isLiquid, isTntLike } from "../core/blocks.js";
 import { WORLD_RADIUS, topAt, dimInfinite, dimBound, dim, getBlock, setBlock, isCellProtected, colOcc, colTopIdx } from "../core/store.js";
 import { dimUltra } from "../world/dimensions.js";
