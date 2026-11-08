@@ -35,11 +35,11 @@ import { initPoolLights, tickPoolLights, resetPoolLightMemory, notePoolEdit } fr
 import { initRenderer, rebuildAll, maybeStream, streamChunks, drainChunkQueue, beginDispose, disposeSome, refreshBlocks, queueRefreshBlocks, queueRefreshKeys, takeSuspendedBuilt, setRegionFade, setRegionLiquidFog, nearestMissingDist, tickChunkFades, UNLOAD_MARGIN } from "./src/render/mesher.js";
 import { setHaloSuspended } from "./src/render/halobake.js";
 import { initChainProxy, proxyNote, proxyCull, proxyClear } from "./src/render/chainproxy.js";
-import { applyRegions } from "./src/render/regions.js";
+import { applyRegions, regionByKey, MOON_FADE_Y } from "./src/render/regions.js";
 import { resetItems, select, selected, selectedId, initHotbarInput, setItem, getItems } from "./src/ui/hotbar.js";
 import { initMenu, enterGame, started, isLocked } from "./src/ui/menu.js";
 import { initHelp, openHelp, closeHelp, isHelpOpen } from "./src/ui/help.js";
-import { toggleDebug, tickDebug, debugHud } from "./src/ui/debug.js";
+import { toggleDebug, tickDebug } from "./src/ui/debug.js";
 import { setLiquidFogOverride } from "./src/core/textures.js";
 import { tickWaterFog, eyeMediumId } from "./src/render/waterfog.js";
 import { initSky, tickSky } from "./src/render/sky.js";
@@ -327,8 +327,8 @@ let revealT = 1;
 let buildToken = 0;
 // DPR-dip state for band wipes (false = full resolution).
 let bandDpr = false;
-// Moon-band hotbar (slots flip at the Moon's lower end); reset per world.
-let moonBand = false;
+// Moon hotbar state: true while the reveal shows the disc.
+let moonRevealed = false;
 // Moon-water eye medium (fog override off = air, on = submerged).
 let lastMoonEyeFog = null;
 // V (cheat only) cycles the world simulation speed. Player, camera, chain
@@ -448,7 +448,7 @@ async function buildWorld() {
     }
     if (dim === "end") enterEndMobs(scene);
     if (dim === "over") enterFarmMobs(scene, "over");
-    moonBand = false;
+    moonRevealed = false;
     resetItems(dimHotbar(dim));
     select(0);
     updateCamera();
@@ -634,7 +634,7 @@ async function runTravel(dest, msg) {
     if (!alive()) return;
     // Every fill relights behind the spiral, so its cost never shows.
     scanWorldPortals();
-    moonBand = false;
+    moonRevealed = false;
     // Per-dimension bar: the TNT cube holds TNT tiers only. Selection follows
     // by id, so a held TNT survives the trip; anything else clamps.
     resetItems(dimHotbar(dim));
@@ -838,7 +838,7 @@ document.addEventListener("mousedown", (e) => {
     chainSavePaintRay(chain, camera);
     const face = currentBlock ? currentBlock.face : null;
     const base = currentBlock ? [currentBlock.x, currentBlock.y, currentBlock.z] : null;
-    const changed = placeAtSelection(id);
+    const changed = placeAtSelection(id, camera.position.y);
     if (changed) {
       refreshBlocks(changed);
       if (dim === "end") notifyEndermanVoxelChange(changed, camera);
@@ -850,7 +850,7 @@ document.addEventListener("mousedown", (e) => {
     chainSaveDigRay(chain, camera);
     const bt = breakTarget(camera);
     if (bt) {
-      const changed = breakBlockAt(bt.x, bt.y, bt.z);
+      const changed = breakBlockAt(bt.x, bt.y, bt.z, { eyeY: camera.position.y });
       if (changed.length) {
         refreshBlocks(changed);
         if (dim === "end") notifyEndermanVoxelChange(changed, camera);
@@ -1058,12 +1058,13 @@ function loop(now) {
     }
     // Static pocket colors (airpocket.js, decided at mesh build): trapped air
     // reads the inside color, open air the outside — no per-frame work here.
-    // Moon-band hotbar: 8 below the Moon's lower end the water slot becomes
-    // moon water and the flower slot becomes glowstone; both restore on
-    // descent. Moon dimensions only.
-    const moonNow = dimHasMoon(dim) && pos.y >= MOON_MIN_Y - 8;
-    if (moonNow !== moonBand) {
-      moonBand = moonNow;
+    // Moon hotbar: while the reveal shows the disc the water slot becomes
+    // moon water and the flower slot becomes glowstone; both restore when
+    // the moon hides again. Follows the region factor (not a duplicated
+    // threshold), so the bar and the disc always agree. Moon dimensions only.
+    const moonNow = dimHasMoon(dim) && regionByKey("moon").factor(camera.position) > 0;
+    if (moonNow !== moonRevealed) {
+      moonRevealed = moonNow;
       if (moonNow) {
         const wi = getItems().indexOf(WATER);
         if (wi >= 0) setItem(wi, MOON_WATER);
@@ -1234,7 +1235,17 @@ function loop(now) {
     const hit = rocketFlying()
       ? null
       : (rocketEditingBlocked() ? null : updateTarget(camera, selectedId()));
+    // No cursor across the moon frontier: hide the highlight when the
+    // placement cell (hit + face, like tryPlace's target) lies on the other
+    // side of the reveal plane from the eye. Visual only — hit still feeds
+    // tickChain (exempt engaged chains) and tryPlace still refuses discrete
+    // taps, so the missing cursor exactly predicts the refusal.
+    let showHit = !!hit;
     if (hit) {
+      const py = hit.y + hit.face[1];
+      if (dimHasMoon(dim) && (py >= MOON_FADE_Y) !== (camera.position.y >= MOON_FADE_Y)) showHit = false;
+    }
+    if (showHit) {
       highlight.visible = true;
       highlight.position.set(hit.x + 0.5, hit.y + 0.5, hit.z + 0.5);
     } else {
