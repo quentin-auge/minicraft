@@ -72,64 +72,19 @@ function intersectsPlayer(bx, by, bz) {
          by + 1 > pos.y && by < pos.y + PLAYER_H;
 }
 
-// Live edits never leave free-floating liquid: any same-liquid group left
-// without a solid 6-neighbor is purged back to air.
-import { key } from "../core/store.js";
-const LIQUID_NB = [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]];
-
-function liquidTouchesSolid(x, y, z) {
-  for (const [dx, dy, dz] of LIQUID_NB) {
-    const id = getBlock(x + dx, y + dy, z + dz);
-    if (id !== AIR && BLOCK_INFO[id] && BLOCK_INFO[id].solid) return true;
-  }
-  return false;
-}
+// Live edits never leave free-floating liquid: any same-liquid group
+// (face-or-edge-connected, corners excluded) left without a solid face-
+// or edge-neighbor is purged back to air. Rule + discovery live in
+// core/liquid (three-free, headless-tested); this module only applies
+// the writes.
+import { findFloatingLiquids } from "../core/liquid.js";
 
 export function purgeFloatingLiquidsAround(coords) {
-  const seen = new Set();
   const purged = [];
-  const seeds = [];
-  for (const [x, y, z] of coords) {
-    if (isLiquid(getBlock(x, y, z))) seeds.push([x, y, z]);
-    for (const [dx, dy, dz] of LIQUID_NB) {
-      const nx = x + dx, ny = y + dy, nz = z + dz;
-      if (ny < 0) continue;
-      if (isLiquid(getBlock(nx, ny, nz))) seeds.push([nx, ny, nz]);
-    }
-  }
-  for (const [sx, sy, sz] of seeds) {
-    const lid = getBlock(sx, sy, sz);
-    if (!isLiquid(lid)) continue;
-    const sk = key(sx, sy, sz);
-    if (seen.has(sk)) continue;
-    const cells = [];
-    const stack = [[sx, sy, sz]];
-    seen.add(sk);
-    let grounded = false;
-    let guard = 0;
-    while (stack.length) {
-      if (++guard > 60000) { grounded = true; break; }
-      const [x, y, z] = stack.pop();
-      cells.push([x, y, z]);
-      if (liquidTouchesSolid(x, y, z)) { grounded = true; break; }
-      for (const [dx, dy, dz] of LIQUID_NB) {
-        const nx = x + dx, ny = y + dy, nz = z + dz;
-        if (ny < 0) continue;
-        if (getBlock(nx, ny, nz) !== lid) continue;
-        const nk = key(nx, ny, nz);
-        if (seen.has(nk)) continue;
-        seen.add(nk);
-        stack.push([nx, ny, nz]);
-      }
-    }
-    if (grounded) continue;
-    for (const [x, y, z] of cells) {
-      if (y === 0) continue;
-      if (getBlock(x, y, z) !== lid) continue;
-      setBlock(x, y, z, AIR);
-      notePortalEdit(x, y, z);
-      purged.push([x, y, z]);
-    }
+  for (const [x, y, z] of findFloatingLiquids(getBlock, coords)) {
+    setBlock(x, y, z, AIR);
+    notePortalEdit(x, y, z);
+    purged.push([x, y, z]);
   }
   return purged;
 }
