@@ -7,6 +7,7 @@
 // hook for bespoke material work (the Moon rock tints sky-colour→texture).
 import * as THREE from "three";
 import { MOON, MOON_WATER } from "../core/blocks.js";
+import { CLOUD_MAX_Y } from "../world/clouds.js";
 import { dim } from "../core/store.js";
 import { MOON_MIN_Y } from "../world/moon.js";
 
@@ -17,11 +18,17 @@ const smooth = (t) => {
   return t * t * (3 - 2 * t);
 };
 
-// Fade band, hand-picked: the disc ramps invisible→solid between 495 and 515,
-// starting once the sky is fully black. Driven every frame — no remeshing, so
-// nothing can pop in chunk by chunk.
-const MOON_FADE_Y = 495;
-const MOON_FADE_END = 515;
+// Fade band: the disc ramps invisible→solid from 620 to 640. The start is
+// CLOUD_MAX_Y plus the steady-state fog far (160: overworld env is null, so
+// the compiled-in scene fog caps it and the altitude-based horizon never
+// binds): at 620 even a puff right underfoot is fully fog color, everything
+// else vanished earlier. Puff spill past CLOUD_MAX_Y and view direction are
+// absorbed — the start itself is invisible (factor 0 tints sky-color) and
+// visible emergence lags it by several blocks. Driven every frame — no
+// remeshing, so nothing can pop in chunk by chunk. Exported: the moon
+// hotbar follows the same gate instead of duplicating the threshold.
+export const MOON_FADE_Y = CLOUD_MAX_Y + 160;
+const MOON_FADE_END = 640;
 
 export const REGIONS = [
   {
