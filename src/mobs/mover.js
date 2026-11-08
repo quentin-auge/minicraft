@@ -22,7 +22,7 @@ import {
 import {
   upkeepFollowLine, roamStep, roamSpan, ARRIVE_D, FOLLOW_COOL,
   latchTouchWall, latchFlankTouch, measureWallTake, cornerTurn,
-  sameWallFace, connectedTake, wallQuitHeading, wallQuitCommit,
+  sameWallFace, connectedTake, tipOuterCorner, wallQuitHeading, wallQuitCommit,
   exitMouth, tryGuidedErect, guidedDock, entryStallLatch,
   GENTLE_RATE, GENTLE_FRESH_TICKS,
 } from "./roam.js";
@@ -330,7 +330,25 @@ function centerPull(mob, dt, supported, floating, holdLine) {
   const e = (ccx - mob.pos.x) * -az + (ccz - mob.pos.z) * ax;
   // Gentle exit rides converge instead of yanking: same line target, a
   // fraction of the stride per tick (see GENTLE_RATE in roam.js).
-  const cap = mob.speed * dt * (vw?.gentle === true ? GENTLE_RATE : 0.9);
+  // Pull-up: a touch ride crabbing far off its line (diagonal placement
+  // latch, spawn drop) with open room ahead converges at double rate, so
+  // the drive never outruns the pull into a wide arc — the ride re-glues
+  // before the corner instead of sliding past it. Only with a real gap:
+  // glued takes, threading (noSlide) and hole-ward (guided) lines keep
+  // their exact legacy pull, and anything with a wall soon ahead stays
+  // untouched. The axisOk probe below still gates every slide, so no pull
+  // ever enters a wall.
+  let pullScale = 1;
+  if (vw?.touch === true && vw.noSlide !== true && vw.guideKey == null && mob.lane) {
+    const [tax2] = dirVec(mob.lane.axis);
+    const gap = Math.abs(vw.line - (tax2 !== 0 ? mob.pos.z : mob.pos.x));
+    if (gap > 0.3) {
+      const [lax, laz] = dirVec(mob.lane.axis);
+      if (segmentWalkable(mob, mob.pos.x, mob.pos.z,
+        mob.pos.x + lax * 2.0, mob.pos.z + laz * 2.0)) pullScale = 2;
+    }
+  }
+  const cap = mob.speed * dt * (vw?.gentle === true ? GENTLE_RATE : 0.9) * pullScale;
   const c = Math.max(-cap, Math.min(cap, e));
   if (Math.abs(c) <= 1e-4) return 0;
   const centerBase = makeStepOk(mob, supported, floating, 0, mob.lane.axis, 0);
@@ -623,30 +641,13 @@ export function servoTick(mob, dt, supported, floating, rand = Math.random, pick
     const keep = followExit(mob, prevAxis);
   if (!keep) {
     let corner = sense.fwdOpen ? cornerTurn(mob, prevAxis) : null;
-      // Same wall only: corner rounding onto a disconnected wall (past
-      // the tip, across open field) is a switch — refuse it and let the
-      // in-place U-turn below keep the ride on its own wall instead.
-      if (corner != null && !connectedTake(mob, prevAxis, corner.cell)) corner = null;
-        if (corner != null) {
-        const { axis, face, dirSign, sideDir } = corner;
-        const rel = yawDiff(sideDir, normYaw(axis - Math.PI / 2)) < 1e-9 ? 1 : -1;
-        mob.lane = { axis, entry: oppositeYaw(axis), lockX: cx, lockZ: cz };
-        // Gentle rides stay gentle across the rounding (a full fresh here
-        // would reintroduce mid-ride the yank the latch softened), and so do
-        // hole-ward (guide-carrying) lines mid-commit.
-        const cornerGentle = mob.followLine.gentle === true || mob.followLine.guideKey != null;
-        mob.followLine = {
-          axis, line: face - dirSign * (VIRTUAL_W / 2), side: -dirSign,
-          rel, virtual: true, touch: true,
-          fresh: cornerGentle ? GENTLE_FRESH_TICKS : TURN_HOLD_TICKS, face,
-          ...carriedRide(mob),
-          gentle: cornerGentle,
-        };
-        mob.stuckT = 0;
-        mob.turnHold = TURN_HOLD_TICKS;
-        res.event = "junction";
-        res.lane = mob.lane;
-      } else if (sense.fwdOpen) {
+    // Same wall only: corner rounding onto a disconnected wall (past
+    // the tip, across open field) is a switch — refuse it and let the
+    // in-place U-turn below keep the ride on its own wall instead.
+    if (corner != null && !connectedTake(mob, prevAxis, corner.cell)) corner = null;
+    if (corner != null) {
+      adoptCornerTurn(mob, corner, cx, cz, res);
+    } else if (sense.fwdOpen) {
         // A guided (violet) ride that lost its wall never U-turns in
         // place. Rides can never turn into a hole (no wall to hug past the
         // jamb), so a hole within stride reach on a walkable segment docks:
@@ -674,16 +675,16 @@ export function servoTick(mob, dt, supported, floating, rand = Math.random, pick
           res.event = "lock-turn";
           res.lane = mob.lane;
         } else {
-        // No solution with the way ahead open: U-turn in place and keep
-        // the line (never drop) — the way back re-measures every tick, so
-        // a face back in range turns the ride around again instead of
-        // pacing or leaving.
-        // The cell lock forces at least one cell of travel before the next
-        // decision (no same-tick flip-flop).
-        mob.lane = { axis: oppositeYaw(prevAxis), entry: prevAxis, lockX: cx, lockZ: cz };
-        mob.stuckT = 0;
-        res.event = "uturn";
-        res.lane = mob.lane;
+          // No solution with the way ahead open: U-turn in place and keep
+          // the line (never drop) — the way back re-measures every tick, so
+          // a face back in range turns the ride around again instead of
+          // pacing or leaving.
+          // The cell lock forces at least one cell of travel before the next
+          // decision (no same-tick flip-flop).
+          mob.lane = { axis: oppositeYaw(prevAxis), entry: prevAxis, lockX: cx, lockZ: cz };
+          mob.stuckT = 0;
+          res.event = "uturn";
+          res.lane = mob.lane;
         }
       } else {
         dropFollowLine(mob);
@@ -699,8 +700,24 @@ export function servoTick(mob, dt, supported, floating, rand = Math.random, pick
         }
       }
     } else {
-      mob.lane = { axis: keep.axis, entry: oppositeYaw(keep.axis), lockX: cx, lockZ: cz };
-      mob.followLine = keep.followLine;
+      // Wall ends within lookahead while still alongside: round the tip
+      // now (body straddling it) instead of parading to the walkability
+      // edge — the straight-keep would otherwise hold until the wall
+      // physically ends beside the mob. tipOuterCorner only admits the
+      // exact take the late path would adopt (same line, same continuity
+      // gates) plus a walkability probe; anything else keeps the legacy
+      // straight.
+      let corner = null;
+      if (keep.axis === prevAxis && wallEndsAhead(mob, prevAxis) && sense.fwdOpen) {
+        const early = tipOuterCorner(mob, prevAxis);
+        if (early != null && takeWalkable(mob, early.axis)) corner = early;
+      }
+      if (corner != null) {
+        adoptCornerTurn(mob, corner, cx, cz, res);
+      } else {
+        mob.lane = { axis: keep.axis, entry: oppositeYaw(keep.axis), lockX: cx, lockZ: cz };
+        mob.followLine = keep.followLine;
+      }
     }
   }
   blendTurn(mob, dt, res);
@@ -821,6 +838,63 @@ function innerTurn(mob, prevAxis) {
   return null;
 }
 
+// Corner-rounding adoption shared by the late tip release and the early
+// tip take: carry the line onto the perpendicular and hold the new lane
+// while the blend arc completes (the router would otherwise re-decide
+// mid-arc and flip back onto the old wall).
+function adoptCornerTurn(mob, corner, cx, cz, res) {
+  const { axis, face, dirSign, sideDir } = corner;
+  const rel = yawDiff(sideDir, normYaw(axis - Math.PI / 2)) < 1e-9 ? 1 : -1;
+  mob.lane = { axis, entry: oppositeYaw(axis), lockX: cx, lockZ: cz };
+  // Gentle rides stay gentle across the rounding (a full fresh here
+  // would reintroduce mid-ride the yank the latch softened), and so do
+  // hole-ward (guide-carrying) lines mid-commit.
+  const cornerGentle = mob.followLine.gentle === true || mob.followLine.guideKey != null;
+  mob.followLine = {
+    axis, line: face - dirSign * (VIRTUAL_W / 2), side: -dirSign,
+    rel, virtual: true, touch: true,
+    fresh: cornerGentle ? GENTLE_FRESH_TICKS : TURN_HOLD_TICKS, face,
+    ...carriedRide(mob),
+    gentle: cornerGentle,
+  };
+  mob.stuckT = 0;
+  mob.turnHold = TURN_HOLD_TICKS;
+  res.event = "junction";
+  res.lane = mob.lane;
+}
+
+// Take walkability behind every touch-ride exit (also the early tip take
+// below): the body fits a step ahead with no pit drop — the wall
+// measurement alone can keep a straight the nose is already grinding into,
+// wedging the ride instead of turning.
+function takeWalkable(mob, E) {
+  const [ex, ez] = dirVec(E);
+  const nx = mob.pos.x + ex * PROBE_DIST, nz = mob.pos.z + ez * PROBE_DIST;
+  return makeStepOk(mob, true, false, 0, E, 0)(nx, nz) && descendOk(mob, nx, nz);
+}
+
+// The followed wall ends within lookahead: the straight reads nothing from
+// the current cell nor one cell ahead. A wall resuming two cells ahead is
+// a door or gap to parade, not a true end — but only when it is a real
+// wall: a void or pit lip reads as a wall for the lateral scan while
+// nothing stands there to hug past the tip.
+function wallEndsAhead(mob, axis) {
+  const rel = mob.followLine?.rel ?? 1;
+  const check = normYaw(axis - rel * Math.PI / 2);
+  const [ax, az] = dirVec(axis);
+  const m0 = measureWallTake(mob, axis, check,
+    { x: mob.pos.x, z: mob.pos.z });
+  if (m0 != null) return false;
+  const m1 = measureWallTake(mob, axis, check,
+    { x: mob.pos.x + ax * 1.0, z: mob.pos.z + az * 1.0 });
+  if (m1 != null) return false;
+  const m2 = measureWallTake(mob, axis, check,
+    { x: mob.pos.x + ax * 2.0, z: mob.pos.z + az * 2.0 });
+  if (m2 == null) return true;
+  const solidAt = makeCellSolid(mob);
+  return !solidAt(m2.cell.x, m2.cell.z);
+}
+
 // Forced exit choice on a touch ride: keep the same physical wall.
 // Every open direction but the entry way is measured on the real wall
 // (never the phantom-masked classifier votes) — straights first for
@@ -860,11 +934,6 @@ function followExit(mob, prevAxis) {
     const [ex, ez] = dirVec(E);
     return { x: mob.pos.x + ex * 2.0, z: mob.pos.z + ez * 2.0 };
   };
-  const walkable = (E) => {
-    const [ex, ez] = dirVec(E);
-    const nx = mob.pos.x + ex * PROBE_DIST, nz = mob.pos.z + ez * PROBE_DIST;
-    return makeStepOk(mob, true, false, 0, E, 0)(nx, nz) && descendOk(mob, nx, nz);
-  };
   const straight = [], turns = [];
   for (const E of options) (E === prevAxis ? straight : turns).push(E);
   // A guided stall slide prefers the hole-ward take among the legal ones
@@ -882,7 +951,7 @@ function followExit(mob, prevAxis) {
     // connectedTake below still verify the plane and the tip, so true ends
     // and rooms keep releasing.
     const win = measure(E, null) ?? measure(E, ahead(E)) ?? measure(E, ahead2(E));
-    if (!win || !walkable(E)) continue;
+    if (!win || !takeWalkable(mob, E)) continue;
     // Cooled mouth: never TURN back into it (the entry-draw gate alone would
     // let a servo turn stroll straight back in). Straight continuations stay
     // exempt: the arrival's own exit threads through on the same line, and a
@@ -986,7 +1055,14 @@ function seekDeadEnd(mob, dt, supported, floating) {
 // honest. Every other tick holds the lane axis directly.
 function blendTurn(mob, dt, res) {
   if (res.event === "junction" || res.event === "lock-turn") {
-    if (res.event === "junction") { mob.blendFrom = mob.yaw; mob.blendT = 0; }
+    // Restart the swing only for a fresh junction (blend finished or never
+    // started): re-resetting from the live yaw every tick turns the 0.3 s
+    // ease into a permanent creep, so the drive marches diagonally instead
+    // of turning — open-field wall rides would parade instead of rounding.
+    // A persistent junction rides out one single blend, like a one-tick one.
+    if (res.event === "junction" && ((mob.blendT ?? 0) >= 1 || mob.blendFrom == null)) {
+      mob.blendFrom = mob.yaw; mob.blendT = 0;
+    }
     const from = mob.blendFrom ?? mob.yaw;
     const t = Math.min(1, (mob.blendT ?? 0) + dt / BLEND_T);
     mob.blendT = t;

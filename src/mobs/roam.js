@@ -592,6 +592,37 @@ export function cornerTurn(mob, prevAxis) {
   return null;
 }
 
+// Early outer-corner take: the perpendicular rounding measured from one
+// cell ahead, admitted only when its cell IS the wall tip — the exact take
+// the late straight-shadowed path would adopt a block later, fired while
+// the body still straddles the tip instead of after fully passing it. Both
+// flank sides are tried (the void edge past the tip measures first and is
+// refused); anything else (straight wall, gap parade, wide arm, dead end)
+// returns null and callers keep the legacy keep-then-release path unchanged.
+export function tipOuterCorner(mob, travelAxis) {
+  const tip = wallTip(mob, travelAxis);
+  if (tip == null) return null;
+  const rel = mob.followLine?.rel ?? 1;
+  const [fx, fz] = dirVec(travelAxis);
+  const ax = mob.pos.x + fx * 1.0, az = mob.pos.z + fz * 1.0;
+  const perps = [normYaw(travelAxis + Math.PI / 2), normYaw(travelAxis - Math.PI / 2)];
+  if (rel > 0) perps.reverse(); // wall was left → new face likelier right, and vice versa
+  for (const Q of perps) {
+    const [qx, qz] = dirVec(Q);
+    for (const s of [1, -1]) {
+      const sideDir = normYaw(Q + s * Math.PI / 2);
+      const m = measureWallTake(mob, Q, sideDir, { x: ax + qx * 1.0, z: az + qz * 1.0 }, 1.75);
+      if (m == null) continue;
+      // The take must round the tip itself — not a void edge, not a
+      // setback face, not the neighbouring plane: exact tip cell only.
+      if (m.cell.x !== tip.x || m.cell.z !== tip.z) continue;
+      if (!connectedTake(mob, travelAxis, m.cell)) continue;
+      return { axis: Q, face: m.face, dirSign: m.dirSign, sideDir, cell: m.cell };
+    }
+  }
+  return null;
+}
+
 // Same-wall continuity for touch rides: a ride never switches walls.
 // Straights keep the same face plane (a hole shares the plane, so doors
 // and holes ride through); a 1-cell step onto a neighbouring plane still
