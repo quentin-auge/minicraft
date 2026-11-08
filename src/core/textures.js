@@ -362,7 +362,11 @@ const LIQUID_DEFAULTS = {
   inside: { color: "#6fa9e7", opacity: 0.8, grain: 16 },
 };
 export const LIQUID_SURFACE = [
-  { liquid: WATER, key: "water" },
+  {
+    liquid: WATER, key: "water",
+    // Baked pick: surface sheets read slightly under opaque.
+    outside: { opacity: 0.95 },
+  },
   {
     liquid: MOON_WATER, key: "moonwater",
     // Fog-free opaque walls (no black columns at distance); the open-air
