@@ -5,8 +5,8 @@
 // the only murk. Tints parallel LIQUID_SURFACE in textures.js without
 // importing it (render-side tuning lives here).
 import * as THREE from "three";
-import { AIR, WATER, LAVA, MOON_WATER, isLiquid } from "../core/blocks.js";
-import { getBlock, isEyePocketed } from "../core/store.js";
+import { WATER, LAVA, MOON_WATER, isLiquid } from "../core/blocks.js";
+import { getBlock } from "../core/store.js";
 
 const LIQUID_FOG = {
   [WATER]: { tint: 0x0d3b7a, near: 2, far: 30 },
@@ -18,34 +18,17 @@ const TINT_MIX = 0.55;
 const _tint = new THREE.Color();
 let subSmooth = 0;
 
-// Eye medium for pocket-veil gating (mesher.js `setEyeMedium`): liquid
-// (with id), air pocketed by liquid (with the hemming liquid's id, both
-// veils hidden there so pockets read pure blue), or open air. The fog tick
-// below only murks liquid eyes; pocket eyes stay clear. The enclosed test
-// rides the colTop fast path,
-// so open sky resolves in O(1) per frame. A pocket eye reads its liquid
-// from its direct neighbors first (exact near walls); deeper inside, where
-// no liquid touches the eye cell, it reuses the last liquid seen (kept for
-// the veil gate; the fog itself stays clear there).
-let lastPocketLiquid = 0;
+// Eye medium: liquid (with id) or air. One interface type = one color, so
+// the fog only needs to know whether the eye itself sits in liquid.
 export function eyeMediumId(ex, ey, ez) {
-  const x = Math.floor(ex), y = Math.floor(ey), z = Math.floor(ez);
-  const id = getBlock(x, y, z);
-  if (isLiquid(id)) { lastPocketLiquid = id; return { type: "liquid", liquid: id }; }
-  if (id === AIR && isEyePocketed(x, y, z)) {
-    const ns = [[0, 1, 0], [0, -1, 0], [1, 0, 0], [-1, 0, 0], [0, 0, 1], [0, 0, -1]];
-    for (const [dx, dy, dz] of ns) {
-      const n = getBlock(x + dx, y + dy, z + dz);
-      if (isLiquid(n)) { lastPocketLiquid = n; return { type: "pocket", liquid: n }; }
-    }
-    return { type: "pocket", liquid: lastPocketLiquid };
-  }
+  const id = getBlock(Math.floor(ex), Math.floor(ey), Math.floor(ez));
+  if (isLiquid(id)) return { type: "liquid", liquid: id };
   return { type: "air", liquid: 0 };
 }
 
 export function tickWaterFog(scene, camera, dt, envAir, medium) {
-  // The caller (main.js) computes the eye medium once per frame and shares it
-  // with the veil gate; the fallback keeps direct calls working.
+  // The caller (main.js) computes the eye medium once per frame; the
+  // fallback keeps direct calls working.
   const m = medium ?? eyeMediumId(camera.position.x, camera.position.y, camera.position.z);
   const target = m.type === "liquid" ? 1 : 0;
   subSmooth += (target - subSmooth) * (1 - Math.exp(-dt * 8));
