@@ -73,8 +73,7 @@ import { EYE, setFlyStepAllow, updateFreeSwim } from "./src/player/physics.js";
 import { setExtraSolid } from "./src/player/physics.js";
 import {
   initRocket, resetRocket, tickRocket, rocketPiloting, rocketTakesOver,
-  rocketEditingBlocked, rocketSolidAt, rocketFlying,
-  rocketAimHit, rocketPlaceExtra, rocketBreakExtra, carryRiders,
+  rocketEditingBlocked, rocketSolidAt, rocketFlying, carryRiders,
 } from "./src/vehicles/rocket.js";
 import { initHomingTnt, fireHomingTnt, tickHomingTnt, clearHomingTnt } from "./src/mobs/homing.js";
 import { enterEndMobs, clearEndMobs, tickEndMobs, notifyEndermanVoxelChange, dragonHealth, setDragonVictoryHook, setMobSeed } from "./src/mobs/end.js";
@@ -826,19 +825,9 @@ document.addEventListener("mousemove", (e) => {
 document.addEventListener("mousedown", (e) => {
   if (!isLocked() || isHelpOpen() || !started) return;
   if (rocketEditingBlocked()) return;
-  // In flight the pilot edits the moving hull directly: discrete taps join
-  // or leave the riding set (no chain strokes, no grapple).
-  if (rocketFlying()) {
-    camera.getWorldDirection(_hookDir);
-    if (e.button === 0) {
-      const hit = rocketAimHit(camera.position, _hookDir);
-      if (hit) rocketPlaceExtra(hit, selectedId());
-    } else if (e.button === 2) {
-      const hit = rocketAimHit(camera.position, _hookDir);
-      if (hit) rocketBreakExtra(hit);
-    }
-    return;
-  }
+  // In flight no editing at all: no hull taps, no store taps — clicks are
+  // inert (chain strokes are skipped separately in the tick below).
+  if (rocketFlying()) return;
   if (e.button === 0) {
     const id = selectedId();
     if (id === TNT && fireHomingTnt(camera)) return;
@@ -964,7 +953,8 @@ document.addEventListener("keydown", (e) => {
             () => mobReleaseTarget(held, aim.x, aim.y, aim.z, aim.face),
             camera.position, _hookDir, "mob-release");
         }
-      } else {
+      } else if (!rocketFlying()) {
+        // No mob grab while flying (a hook already out resolves normally).
         fireHookTarget(mobGrabTarget, camera.position, _hookDir, "mob-grab");
       }
     }
@@ -1227,10 +1217,10 @@ function loop(now) {
       }
     }
     tickPortals(sdt, true);
-    // In flight the highlight tracks the moving hull (voxel DDA would sail
-    // through it); held chain strokes are skipped there, discrete taps only.
+    // No aiming in flight: no highlight, no target (chain strokes are
+    // skipped below on the same gate).
     const hit = rocketFlying()
-      ? rocketAimHit(camera.position, camera.getWorldDirection(_hookDir))
+      ? null
       : (rocketEditingBlocked() ? null : updateTarget(camera, selectedId()));
     if (hit) {
       highlight.visible = true;
@@ -1243,7 +1233,7 @@ function loop(now) {
     // Held edits queue (budgeted drain) instead of rebuilding inline, so a
     // max-rate bridge never pays a synchronous rebuildChunk per frame;
     // discrete taps keep the sync path in the mousedown handlers above.
-    // Skipped in flight: hull edits are discrete taps on the moving model.
+    // Skipped in flight (no editing or aiming there at all).
     const touched = rocketFlying() ? [] : tickChain(chain, dt, {
       camera,
       currentBlock: hit,

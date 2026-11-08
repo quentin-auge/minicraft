@@ -8,6 +8,7 @@ import { isCellProtected } from "../../../src/core/store.js";
 import { resetGlowstoneMemory, glowVariantAt, GLOW_VARIANTS } from "../../../src/world/glowstone.js";
 import {
   ROCKET_SPEC, PAD_SPEC, PAD_LIGHTS, RIDE_BOX, rideBoardable,
+  partitionStampCells,
   buildRocketGrid, choosePadSite, placeRocketSite, rocketSite,
 } from "../../../src/world/rocketpad.js";
 import { rectsOverlap, computeLayout, village } from "../../../src/world/village.js";
@@ -209,6 +210,31 @@ function stubMaps() {
   // reads solid and refuses boarding forever — the countdown-start
   // boarding exists so cabin mobs never reach that state.
   assert.ok(!rideBoardable(3, 0, 3, solid), "sunk-to-plate feet stay behind");
+}
+
+// --- landing stamp: only structural hull comes back protected ------------
+{
+  const g = buildRocketGrid();
+  const structural = new Set(g.cells.map((c) => c.x + "," + c.y + "," + c.z));
+  const cell = (lx, ly, lz, id, extra = false) => ({ lx, ly, lz, id, v: -1, extra });
+  // Structural hull cells keep protection (indestructible).
+  const hull = cell(0, 0, 0, HULL);
+  // A pre-takeoff player build scanned into the box stamps back plain.
+  const prebuilt = cell(3, 2, 3, HULL);
+  // Flight extras stay plain even on structural coordinates.
+  const extra = cell(0, 0, 0, GLASS, true);
+  const { keep, plain } = partitionStampCells([hull, prebuilt, extra], structural);
+  assert.deepEqual(keep, [hull], "structural hull only");
+  assert.deepEqual(plain, [prebuilt, extra], "player builds stay deletable");
+  // Empty structural set (site lost): nothing protected, nothing lost.
+  const all = partitionStampCells([hull, prebuilt], new Set());
+  assert.deepEqual(all.keep, []);
+  assert.deepEqual(all.plain, [hull, prebuilt]);
+  // Full-grid scan: every grid cell keeps, nothing else qualifies.
+  const scanned = g.cells.map((c) => cell(c.x, c.y, c.z, c.id));
+  const full = partitionStampCells(scanned, structural);
+  assert.equal(full.keep.length, scanned.length);
+  assert.equal(full.plain.length, 0);
 }
 
 console.log("rocketpad.test.mjs: ok");

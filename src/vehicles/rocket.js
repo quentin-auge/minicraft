@@ -13,7 +13,7 @@ import {
   unprotectCell, WORLD_RADIUS, key,
 } from "../core/store.js";
 import { materialsFor } from "../core/textures.js";
-import { ROCKET_SPEC, rocketSite, RIDE_BOX as RIDE, rideBoardable } from "../world/rocketpad.js";
+import { ROCKET_SPEC, rocketSite, RIDE_BOX as RIDE, rideBoardable, partitionStampCells } from "../world/rocketpad.js";
 import { registerVehicleType } from "./registry.js";
 import {
   pos, vel, keys, yaw, pitch, setOnGround,
@@ -231,7 +231,7 @@ export function rocketInsidePlayer() {
 
 export function rocketEditingBlocked() {
   // Only the transitional phases block edits: parked voxels edit normally
-  // (the liftoff scan picks them up), flight edits ride the hull.
+  // (the liftoff scan picks them up). Flight edits nothing (see main.js).
   return phase === "countdown" || phase === "landing";
 }
 
@@ -280,8 +280,9 @@ function rayHullCell(o, d, x0, y0, z0, maxDist) {
   return { t: tmin, face };
 }
 
-// Aim hit on the moving hull for the flight editing path: world cell +
-// face shaped like an edit.js pick, plus the riding local cell.
+// Aim hit on the moving hull (dormant: flight editing is disabled, the
+// main loop never aims in flight): world cell + face shaped like an
+// edit.js pick, plus the riding local cell.
 export function rocketAimHit(o, d, maxDist = 64) {
   if (!rocketFlying() || !moving) return null;
   let best = null;
@@ -299,9 +300,10 @@ export function rocketAimHit(o, d, maxDist = 64) {
   };
 }
 
-// Place a block onto the flying hull: it joins the riding set, renders in
-// the model, fades with it, and stamps back on landing. Structure cells
-// themselves are never editable in flight.
+// Place a block onto the flying hull (dormant: flight editing is disabled,
+// the main loop never calls this in flight): it joins the riding set,
+// renders in the model, fades with it, and stamps back on landing.
+// Structure cells themselves are never editable in flight.
 export function rocketPlaceExtra(hit, id) {
   if (!rocketFlying() || !hit?._cell) return false;
   const info = BLOCK_INFO[id];
@@ -917,6 +919,12 @@ function stamp() {
   const carry = { x: pos.x - origin.x, y: pos.y - origin.y, z: pos.z - origin.z };
   const cleared = clearBox(ox + RIDE.x0, oy + RIDE.y0, oz + RIDE.z0, ox + RIDE.x1, oy + RIDE.y1, oz + RIDE.z1);
   const worldCells = [];
+  // Only the structural hull comes back protected (indestructible);
+  // player placements scanned into the ride box stamp back plain so they
+  // stay deletable.
+  const grid = layout();
+  const structural = new Set((grid?.cells ?? []).map((c) => c.x + "," + c.y + "," + c.z));
+  const keepSet = new Set(partitionStampCells(modelCells, structural).keep);
   for (const c of modelCells) {
     const x = ox + c.lx, y = oy + c.ly, z = oz + c.lz;
     setBlock(x, y, z, c.id);
@@ -926,7 +934,7 @@ function stamp() {
     } else if (c.id === FLOWER) {
       noteFlowerPlace(x, y, z);
     }
-    protectCell(x, y, z);
+    if (keepSet.has(c)) protectCell(x, y, z);
     worldCells.push([x, y, z]);
   }
   pos.set(ox + carry.x, oy + carry.y, oz + carry.z);
