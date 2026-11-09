@@ -351,7 +351,8 @@ export function material(map, opts = {}) {
 // look-down, detached cubes); the liquid-side sheet keeps the outside color
 // except when the air side is a pocket (airpocket.js: bubbles, wells, mixed
 // liquid + solid cavities — the diver's read), where it reads the inside
-// color (water light blue, moon water ash gray, lava light blue).
+// color (water light blue, moon water ash gray) — lava excepted, whose
+// pockets reuse the surface fire motif at 0.8 (entry `pocket` override).
 // Backface culling shows exactly one sheet per viewpoint. Both sheets write
 // depth, so the nearest interface occludes block undersides and far walls.
 // New liquids register a spec; the mesher dispatches through it without forks.
@@ -381,6 +382,9 @@ export const LIQUID_SURFACE = [
     // fog-free so it stays vivid past the dark haze.
     outside: { color: "#1d1d5e", opacity: 1, grain: 26, fog: false },
     inside: { color: "#5e8fd4", opacity: 1, grain: 12, fog: false },
+    // Trapped-air backs read the surface motif instead of the inside
+    // grain, only more transparent: same fire, alpha 0.4.
+    pocket: { tex: "outside", opacity: 0.4 },
   },
 ];
 const liquidSpecById = new Map(LIQUID_SURFACE.map((s) => [s.liquid, s]));
@@ -442,11 +446,16 @@ export function liquidSurfaceMat(id, role) {
     const style = ROLE_STYLE[role];
     const spec = liquidSpec(id, style.spec);
     const roleOver = role === "inside" ? insideRoleStyle(id) : {};
-    const texKey = entry.key + "_" + style.tex;
+    // Per-liquid pocket override (lava only): trapped-air backs may reuse
+    // another role's motif at their own opacity instead of the inside
+    // grain — same texture object, so shared, region and veil materials
+    // follow with no per-material walk.
+    const pock = role === "pocket" ? entry.pocket || {} : {};
+    const texKey = entry.key + "_" + (pock.tex ?? style.tex);
     liquidMatCache.set(k, new THREE.MeshBasicMaterial({
       map: TEX[texKey],
       transparent: roleOver.transparent ?? spec.transparent ?? true,
-      opacity: roleOver.opacity ?? spec.opacity,
+      opacity: roleOver.opacity ?? pock.opacity ?? spec.opacity,
       depthWrite: style.depthWrite,
       side: style.side,
       fog: liquidFogOverride.has(id) ? liquidFogOverride.get(id) : roleFog(id, role, null),

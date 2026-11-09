@@ -9,9 +9,12 @@ import { NETHER_FIRE_LEVEL, netherVolcanoes } from "../world/nether.js";
 
 const EMBER_COUNT = 220;
 const VOLCANO_EMBER_COUNT = 340;
-const LAVA_MOTE_COUNT = 900;
+// Camera-local blue motes while the eye is submerged in lava: dense, slow
+// suspension (1600 strong-blue points, no dimming) for the thick-ink read.
+const LAVA_MOTE_COUNT = 1600;
 const LAVA_MOTE_RANGE = 15;
 const LAVA_MOTE_BLUES = [
+  [0.05, 0.15, 0.7],
   [0.10, 0.30, 1.0],
   [0.25, 0.50, 1.0],
   [0.45, 0.85, 1.0],
@@ -182,14 +185,15 @@ function seedMote(s, i, camera) {
   s.posA[i * 3] = camera.position.x + (Math.random() * 2 - 1) * R;
   s.posA[i * 3 + 1] = camera.position.y + (Math.random() * 2 - 1) * R;
   s.posA[i * 3 + 2] = camera.position.z + (Math.random() * 2 - 1) * R;
+  // Dense suspension drifts up slowly instead of rising like bubbles.
   s.vel[i * 3] = (Math.random() * 2 - 1) * 0.4;
-  s.vel[i * 3 + 1] = 0.5 + Math.random();
+  s.vel[i * 3 + 1] = 0.15 + Math.random() * 0.35;
   s.vel[i * 3 + 2] = (Math.random() * 2 - 1) * 0.4;
 }
 
 function ensureMotes(scene, camera) {
   if (motes) return;
-  const base = makePoints(LAVA_MOTE_COUNT, 0.07, false);
+  const base = makePoints(LAVA_MOTE_COUNT, 0.16, false);
   motes = {
     ...base,
     vel: new Float32Array(LAVA_MOTE_COUNT * 3),
@@ -198,12 +202,17 @@ function ensureMotes(scene, camera) {
   for (let i = 0; i < LAVA_MOTE_COUNT; i++) {
     seedMote(motes, i, camera);
     const c = LAVA_MOTE_BLUES[(Math.random() * LAVA_MOTE_BLUES.length) | 0];
-    motes.colA[i * 3] = c[0] * 0.55;
-    motes.colA[i * 3 + 1] = c[1] * 0.55;
-    motes.colA[i * 3 + 2] = c[2] * 0.55;
+    motes.colA[i * 3] = c[0];
+    motes.colA[i * 3 + 1] = c[1];
+    motes.colA[i * 3 + 2] = c[2];
   }
   motes.pts.geometry.attributes.color.needsUpdate = true;
   motes.pts.visible = false;
+  // Drawn after the liquid sheets (renderOrder 10/11), so submerged motes
+  // read over the surface blue instead of being painted over by it; depth
+  // test stays on, so rock still occludes and motes above the surface stay
+  // hidden. Below glass (13), which keeps drawing last.
+  motes.pts.renderOrder = 12;
   scene.add(motes.pts);
 }
 
