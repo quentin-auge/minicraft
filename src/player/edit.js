@@ -15,6 +15,8 @@ import { noteFlowerPlace, clearFlowerAt } from "../world/flowers.js";
 import { notePoolEdit } from "../render/poollights.js";
 import { MOON_FADE_Y } from "../render/regions.js";
 import { notePortalEdit, notePortalEdits, notePortalFramesOnly } from "../world/portals.js";
+import { allMobs } from "../mobs/registry.js";
+import { cellBlockedByMob } from "../mobs/carry.js";
 
 export let currentBlock = null;
 const _dir = new THREE.Vector3();
@@ -71,6 +73,14 @@ function intersectsPlayer(bx, by, bz) {
   return bx + 1 > pos.x - PLAYER_HW && bx < pos.x + PLAYER_HW &&
          bz + 1 > pos.z - PLAYER_HW && bz < pos.z + PLAYER_HW &&
          by + 1 > pos.y && by < pos.y + PLAYER_H;
+}
+
+// Solid blocks never embed a live mob body: same AABB overlap as the
+// player check, over the simple hw/h box. The rule itself is pure and
+// three-free (cellBlockedByMob in carry.js, headless-tested); here only
+// the live list (registry sources, or opts.mobs in tests) is wired in.
+function intersectsMob(bx, by, bz, opts) {
+  return cellBlockedByMob(opts?.mobs ?? allMobs(), dim, bx, by, bz);
 }
 
 // Live edits never leave free-floating liquid: any same-liquid group
@@ -173,6 +183,7 @@ export function tryPlace(id, px, py, pz, opts) {
   const target = getBlock(px, py, pz);
   if (!(target === AIR || isLiquid(target))) return null;
   if (BLOCK_INFO[id].solid && intersectsPlayer(px, py, pz)) return null;
+  if (BLOCK_INFO[id].solid && intersectsMob(px, py, pz, opts)) return null;
   setBlock(px, py, pz, id);
   if (batched && isLiquid(id)) pendingLiquidCells.push([px, py, pz]);
   notePoolEdit();

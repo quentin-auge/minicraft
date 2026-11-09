@@ -221,3 +221,24 @@ export function releasePeerFree(peers, mob, x, y, z, gap = 0.1) {
   }
   return true;
 }
+
+// Placement rule: true when the solid 1x1x1 cell [bx,bx+1[×[by,by+1[×[bz,bz+1[
+// overlaps a live same-dim body box (simple hw/h AABB, same overlap as the
+// player-place guard in edit.js). Dead, other-dim, and carried (hook-owned,
+// glued to the eye) mobs never block; bodies without coordinates are
+// skipped. Duck-typed mobs, pure, headless-testable — tryPlace wires the
+// live registry list through this.
+export function cellBlockedByMob(peers, dimName, bx, by, bz) {
+  for (const m of peers) {
+    if (!m?.alive || m._carried) continue;
+    if ((m.dim ?? "over") !== dimName) continue;
+    const p = m.pos ?? m;
+    const x = p.x, y = p.y, z = p.z;
+    if (x == null || y == null || z == null) continue;
+    const hw = m.hw ?? 0.32, h = m.h ?? 1;
+    if (bx + 1 > x - hw && bx < x + hw &&
+        bz + 1 > z - hw && bz < z + hw &&
+        by + 1 > y && by < y + h) return true;
+  }
+  return false;
+}
