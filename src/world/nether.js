@@ -18,8 +18,9 @@
 // a rock shell (2 thick while buried, 1 thick where exposed), closed by a
 // glowstone ring sized on the carved mouth columns and an open view corridor
 // (10 wide to the exit, sill sight row included). Every chunk pass runs three
-// phases — clear bores and corridors, seal shells, collars and doorsteps,
-// place frames last — so walkways stay open and rings stay exposed.
+// phases — clear bores and corridors, seal shells, collars, doorsteps and
+// the flat inner lava face, place frames last — so walkways stay open,
+// rings stay exposed, and each bore ends on a lava rectangle.
 //
 // The volcano shell follows master's hollow result without the fill-then-
 // hollow cost: every cone column is filled down to the lowest surface within
@@ -764,6 +765,15 @@ function finishTunnel(v, vi, dir, r, k, minD, plat, dOut) {
   // shaft's own lava is ever met (a lateral pre-gate would only add false
   // rejections where a high walkway threads over a low fall).
   const bore0 = v.craterR - 1;
+  // Flat inner lava face: the walkway ends on the tunnel-frame plane
+  // d = dPlane, so the lava reads as one true rectangle from the bore —
+  // dead flat on cardinal headings, regular crenellation on diagonals. The
+  // plane sits 1.5 past bore0 so the whole ±1.5 face slice lies on carved
+  // walkway (carve starts exactly at bore0). Shaft columns are never
+  // touched: inside the lava cylinder the mouth follows the natural rock
+  // relief, and the sill stays dry rock everywhere (never lava on the
+  // ground).
+  const dPlane = bore0 + 1.5;
   // Exposed run, if any: 1-thick shell from the first d whose remainder to
   // the mouth stands clear of rock above the floor. Flush mouths stay fully
   // buried (2-thick throughout); protruding pipes go thin where they emerge.
@@ -781,6 +791,7 @@ function finishTunnel(v, vi, dir, r, k, minD, plat, dOut) {
     v, vi, k, dir,
     dx: r.dx, dz: r.dz, mx: r.mx, mz: r.mz,
     minD, bore0, dOut, plat, exitD, apronEnd, thinFrom,
+    dPlane,
     doorV: Math.floor(hash2(vi * (FAN_TUNNELS + GROUND_BRIDGES) + k, 31, netherSeed) * GLOW_VARIANT_COUNT),
     bounds: tunnelBounds(v, r.dx, r.dz, r.mx, r.mz, bore0, apronEnd),
   };
@@ -1751,8 +1762,8 @@ function generateNetherChunk(cx, cz) {
   applyReturnPlatform(x0, x1, z0, z1);
 
   // Tunnels in three phases per chunk: first every bore and corridor is
-  // cleared, then every shell, rock collar and doorstep is sealed, then
-  // every frame is placed last. Shells only fill air or lava outside the shaft (never an
+  // cleared, then every shell, rock collar, doorstep and inner lava face is
+  // sealed, then every frame is placed last. Shells only fill air or lava outside the shaft (never an
   // interior, a frame, the pad or another tube's interior), so the last
   // word is always open walkways, solid 2-thick (1-thick exposed) shells
   // and fully exposed rings. The frame sits glued at the wall face, rock
@@ -1765,6 +1776,7 @@ function generateNetherChunk(cx, cz) {
   for (const t of tunnels) {
     if (x1 < t.bounds.x0 || x0 > t.bounds.x1 || z1 < t.bounds.z0 || z0 > t.bounds.z1) continue;
     sealTunnelShell(t, x0, x1, z0, z1);
+    squareInnerFace(t, x0, x1, z0, z1);
     sealFrameCollar(t, x0, x1, z0, z1);
     sealDoorstep(t, x0, x1, z0, z1);
   }
@@ -1822,6 +1834,71 @@ function carveTunnelBore(t, x0, x1, z0, z1) {
         if (cur === GLOWSTONE || cur === OBSIDIAN) continue;
         if (cur === LAVA && inShaft) continue;
         if (cur !== AIR) setBlock(wx, y, wz, AIR);
+      }
+    }
+  }
+}
+
+// Flat lava face at the bore's inner end: every face-slice column (bore
+// width, within 1.5 of dPlane) is squared in the tunnel frame — lava wall
+// behind the plane over a dry rock sill, open walkway + rock sill/lintel
+// ahead of it — so the tunnel ends on a true rectangle (flat on cardinal
+// headings, regular crenellation on diagonals). Shaft columns are skipped
+// like the shell skips them: inside the lava cylinder the mouth follows
+// the natural rock relief, untouched. Pure descriptor geometry, no
+// neighbour reads: chunk order never matters and reruns are idempotent.
+// Runs in the seal phase — the shell skips shaft columns and never touches
+// walkway rows, so neither pass can undo the other.
+function squareInnerFace(t, x0, x1, z0, z1) {
+  const v = t.v;
+  const { plat, dPlane } = t;
+  const lx0 = Math.max(x0, t.bounds.x0), lx1 = Math.min(x1, t.bounds.x1);
+  const lz0 = Math.max(z0, t.bounds.z0), lz1 = Math.min(z1, t.bounds.z1);
+  // Same ownership rule as the shell's clearOf, mirrored from the siting
+  // veto (tubesCross): never touch another tube's interior, corridor or
+  // shell, nor any frame — the siting guarantee makes this a no-op in
+  // practice, but the face must not punch what the vetoes kept apart.
+  const clearOf = (wx, y, wz) => {
+    const cur = getBlock(wx, y, wz);
+    if (cur === GLOWSTONE || cur === OBSIDIAN) return false;
+    if (ringCells.has(wx + "," + y + "," + wz)) return false;
+    for (const u of tunnels) {
+      if (u === t) continue;
+      if (tubeInteriorAt(u, wx, y, wz) || tubeCorridorAt(u, wx, y, wz) ||
+          tubeShellAt(u, wx, y, wz)) return false;
+    }
+    return true;
+  };
+  for (let wx = lx0; wx <= lx1; wx++) {
+    for (let wz = lz0; wz <= lz1; wz++) {
+      if (!inWorld(wx, wz) || inReturnPad(wx, wz, 0)) continue;
+      const rx = wx - v.x, rz = wz - v.z;
+      if (rx * rx + rz * rz <= v.craterR * v.craterR) continue;
+      const d = rx * t.dx + rz * t.dz;
+      if (Math.abs(d - dPlane) > 1.5) continue;
+      const f = rx * t.mx + rz * t.mz + 4;
+      if (f < 0 || f >= 8) continue;
+      if (d < dPlane) {
+        // Dry sill under the lava wall: never lava on the ground.
+        for (let y = plat + 1; y <= plat + 8; y++) {
+          if (getBlock(wx, y, wz) !== LAVA && clearOf(wx, y, wz)) setBlock(wx, y, wz, LAVA);
+        }
+      } else {
+        // Air-clearing defers like everything else: another tube's kept
+        // shaft lava is its own doorway, and its future shell rocks its own
+        // lava cells identically whether it still reads lava or air here.
+        for (let y = plat + 1; y <= plat + 6; y++) {
+          if (getBlock(wx, y, wz) === LAVA && clearOf(wx, y, wz)) setBlock(wx, y, wz, AIR);
+        }
+        for (let y = plat + 7; y <= plat + 8; y++) {
+          if (getBlock(wx, y, wz) !== NETHERRACK && clearOf(wx, y, wz)) {
+            setBlock(wx, y, wz, NETHERRACK);
+          }
+        }
+      }
+      // Dry sill across the whole slice, both sides: never lava on the ground.
+      if (getBlock(wx, plat, wz) !== NETHERRACK && clearOf(wx, plat, wz)) {
+        setBlock(wx, plat, wz, NETHERRACK);
       }
     }
   }
