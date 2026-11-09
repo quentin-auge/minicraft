@@ -28,6 +28,7 @@ import { tickTNT, initTNTFx, resetTNTMemory, clearRegularTntDim, onExplode, onLi
 import { initFx, tickFx, tickDenseFx, denseFxActive, prewarmDenseFx, spawnDense, flushDense, noteDenseSpawn } from "./src/fx/particles.js";
 import { initPrecip, tickSnow } from "./src/fx/precip.js";
 import { MOON_MIN_Y, MOON_R, generateMoon, generateMoonUnderRows, joinMoonLakeWater, markMoonBuilt, moonReady, moonChunkCenters, findMoonSpawn } from "./src/world/moon.js";
+import { findPenOverwatch } from "./src/world/spawn.js";
 import { WATER, FLOWER, GLOWSTONE, MOON_WATER, LAVA, TNT, BLOCK_INFO } from "./src/core/blocks.js";
 import { resetGlowstoneMemory, clearGlowstoneDim, setGlowSeed } from "./src/world/glowstone.js";
 import { resetFlowerMemory, clearFlowerDim, setFlowerSeed } from "./src/world/flowers.js";
@@ -340,10 +341,13 @@ let gameSpeed = 1;
 // Boot dimension: the overworld by default; ?startdim=<dimension key> builds
 // that registered dimension directly. Unknown values fall back to overworld.
 // ?startdim=moon is an alias, not a dimension: it boots the overworld but
-// spawns on the Moon surface (respawns stay on ground spawn).
+// spawns on the Moon surface (respawns stay on ground spawn). ?startdim=pen
+// is the same kind of alias: overworld boot with the pen overwatch spawn
+// (hovering above the pen in fly mode, respawns stay on ground spawn).
 const _rawStartDim = new URLSearchParams(location.search).get("startdim");
 const isMoonBoot = _rawStartDim === "moon";
-const BOOT_DIM = isMoonBoot ? "over" : (dimSpec(_rawStartDim) ? _rawStartDim : "over");
+const isPenBoot = _rawStartDim === "pen";
+const BOOT_DIM = (isMoonBoot || isPenBoot) ? "over" : (dimSpec(_rawStartDim) ? _rawStartDim : "over");
 // Reproducible worlds: ?seed=<integer> reuses that world seed instead of
 // rolling a fresh one every boot. Without it every build rolls fresh.
 const _seedParam = new URLSearchParams(location.search).get("seed");
@@ -430,6 +434,18 @@ async function buildWorld() {
       vel.set(0, 0, 0);
       setYaw(m.yaw);
       setPitch(0);
+    }
+    // Pen alias: override the ground spawn with the pen overwatch pick
+    // before meshing the neighborhood, so the first built chunks are the pen.
+    if (isPenBoot) {
+      const p = findPenOverwatch();
+      if (p) {
+        pos.set(p.x + 0.5, p.y + 1.01, p.z + 0.5);
+        vel.set(0, 0, 0);
+        setYaw(p.yaw);
+        setPitch(p.pitch);
+        setFly(true);
+      }
     }
     // No glowstone rescan: worldgen places none and the live index starts
     // empty (player edits track themselves).
