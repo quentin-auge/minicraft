@@ -8,9 +8,15 @@ import * as THREE from "three";
 import { WATER, LAVA, MOON_WATER, isLiquid } from "../core/blocks.js";
 import { getBlock } from "../core/store.js";
 
-const LIQUID_FOG = {
+// Per-liquid murk, exported so the tuning stays pinnable headless.
+// Lava runs far while submerged: the murk carries far landmarks (volcanoes,
+// falls read tinted blue at a distance) and melts everything before the cull
+// ever touches it — no pop by construction, steering by landmarks instead of
+// a blind wall. Only consulted while the eye itself sits in that liquid, so
+// overworld water/air paths never read this entry.
+export const LIQUID_FOG = {
   [WATER]: { tint: 0x0d3b7a, near: 2, far: 30 },
-  [LAVA]: { tint: 0x14145a, near: 1, far: 1.5 },
+  [LAVA]: { tint: 0x14145a, near: 10, far: 120 },
   // Long shaft view: the far plane stays open so the submerged eye reads
   // down the whole moon-water column.
   [MOON_WATER]: { tint: 0x7a7e82, near: 2, far: 45 },
