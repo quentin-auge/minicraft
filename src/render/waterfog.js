@@ -8,18 +8,15 @@ import * as THREE from "three";
 import { WATER, LAVA, MOON_WATER, isLiquid } from "../core/blocks.js";
 import { getBlock } from "../core/store.js";
 
-// Per-liquid murk, exported so the tuning stays pinnable headless.
-// Lava runs far while submerged: the murk carries far landmarks (volcanoes,
-// falls read tinted blue at a distance) and melts everything before the cull
-// ever touches it — no pop by construction, steering by landmarks instead of
-// a blind wall. Only consulted while the eye itself sits in that liquid, so
-// overworld water/air paths never read this entry.
+// Per-liquid murk: the mix factor eases the background toward the tint.
+// Lava runs dense and dark: short far plane and strong mix so the
+// submerged eye reads a thick blue ink instead of distant landmarks.
 export const LIQUID_FOG = {
-  [WATER]: { tint: 0x0d3b7a, near: 2, far: 30 },
-  [LAVA]: { tint: 0x14145a, near: 10, far: 120 },
+  [WATER]: { tint: 0x0d3b7a, near: 2, far: 30, mix: 0.55 },
+  [LAVA]: { tint: 0x05051f, near: 1.5, far: 35, mix: 0.88 },
   // Long shaft view: the far plane stays open so the submerged eye reads
   // down the whole moon-water column.
-  [MOON_WATER]: { tint: 0x7a7e82, near: 2, far: 45 },
+  [MOON_WATER]: { tint: 0x7a7e82, near: 2, far: 45, mix: 0.55 },
 };
 const TINT_MIX = 0.55;
 
@@ -50,9 +47,10 @@ export function tickWaterFog(scene, camera, dt, envAir, medium) {
     return;
   }
   const spec = LIQUID_FOG[m.liquid] || LIQUID_FOG[WATER];
+  const mix = spec.mix ?? TINT_MIX;
   const k = subSmooth;
   _tint.setHex(spec.tint);
-  scene.background.copy(envAir.background).lerp(_tint, k * TINT_MIX);
+  scene.background.copy(envAir.background).lerp(_tint, k * mix);
   scene.fog.color.copy(scene.background);
   scene.fog.near = envAir.near + (spec.near - envAir.near) * k;
   scene.fog.far = envAir.far + (spec.far - envAir.far) * k;

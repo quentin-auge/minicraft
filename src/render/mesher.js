@@ -424,7 +424,8 @@ export function rebuildChunk(cx, cz, fade = false) {
             const [dx, dy, dz] = LIQUID_OFF[d];
             if (!liquidFaceVisible(x, y, z, id, dx, dy, dz)) continue;
             // Static pair: the front reads the outside color; only the
-            // back of trapped air reads the inside color (airpocket.js).
+            // back of trapped air reads the pocket look (airpocket.js —
+            // inside color, except lava which reuses the surface motif).
             const quad = [x, y, z, d];
             pushQuad(liquids, id, quad);
             if (isPocketAir(x + dx, y + dy, z + dz, pocketCache)) {
