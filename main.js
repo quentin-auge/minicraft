@@ -28,7 +28,7 @@ import { tickTNT, initTNTFx, resetTNTMemory, clearRegularTntDim, onExplode, onLi
 import { initFx, tickFx, tickDenseFx, denseFxActive, prewarmDenseFx, spawnDense, flushDense, noteDenseSpawn } from "./src/fx/particles.js";
 import { initPrecip, tickSnow } from "./src/fx/precip.js";
 import { MOON_MIN_Y, MOON_R, generateMoon, generateMoonUnderRows, joinMoonLakeWater, markMoonBuilt, moonReady, moonChunkCenters, findMoonSpawn } from "./src/world/moon.js";
-import { WATER, FLOWER, GLOWSTONE, MOON_WATER, TNT, BLOCK_INFO } from "./src/core/blocks.js";
+import { WATER, FLOWER, GLOWSTONE, MOON_WATER, LAVA, TNT, BLOCK_INFO } from "./src/core/blocks.js";
 import { resetGlowstoneMemory, clearGlowstoneDim, setGlowSeed } from "./src/world/glowstone.js";
 import { resetFlowerMemory, clearFlowerDim, setFlowerSeed } from "./src/world/flowers.js";
 import { initPoolLights, tickPoolLights, resetPoolLightMemory, notePoolEdit } from "./src/render/poollights.js";
@@ -331,6 +331,8 @@ let bandDpr = false;
 let moonRevealed = false;
 // Moon-water eye medium (fog override off = air, on = submerged).
 let lastMoonEyeFog = null;
+// Lava eye medium (fog override off = air, on = submerged).
+let lastLavaEyeFog = null;
 // V (cheat only) cycles the world simulation speed. Player, camera, chain
 // editing, and loader/visual transitions stay on real dt (world ticks use sdt).
 const GAME_SPEEDS = [1, 2, 4, 8, 16];
@@ -1055,6 +1057,16 @@ function loop(now) {
       lastMoonEyeFog = inMoonWater;
       setLiquidFogOverride(MOON_WATER, inMoonWater);
       setRegionLiquidFog("moon", MOON_WATER, inMoonWater);
+    }
+    // Lava eye fog: sheets read fog-free in air (vivid sea vista at distance)
+    // and fogged while the eye is submerged, so the murk — not the cull —
+    // hides distant sheets and nothing pops at the cull edge while diving.
+    // Only fires inside lava, so overworld water/air paths never reach it.
+    // Transition-only flips; the murk itself is untouched.
+    const inLava = medium.type === "liquid" && medium.liquid === LAVA;
+    if (inLava !== lastLavaEyeFog) {
+      lastLavaEyeFog = inLava;
+      setLiquidFogOverride(LAVA, inLava);
     }
     // Static pocket colors (airpocket.js, decided at mesh build): trapped air
     // reads the inside color, open air the outside — no per-frame work here.

@@ -36,6 +36,46 @@ export function ensureChunkSource(cx, cz, name = dim) {
   return fn ? fn(cx, cz) : false;
 }
 
+// Lazy-area ensure for streaming dimensions: materialize the whole (2r+1)^2
+// square around (cx, cz) before a chunk build reads across its borders.
+// Returns the keys freshly generated (empty when nothing was new) — the
+// caller (mesher rebuildChunk) requeues only built neighbours adjacent to
+// those, whose border faces may have been emitted against default AIR.
+// Dimensions without a source stay a no-op ([]) — in practice only the
+// Nether registers one, so every other dimension pays nothing here and
+// needs no gate: the early return below is the proof.
+// Surgical rim refresh (three-free, pure): built chunks adjacent to freshly
+// generated ones, excluding the chunk under build (exact already: it reads
+// the final voxels). A fresh self still stales its older built neighbours —
+// only itself is skipped from the output, never from the cause set.
+// Rebuilding anything else replays an identical mesh at full cost.
+export function ensureChunkArea(cx, cz, radius = 1, name = dim) {
+  const fresh = [];
+  const fn = chunkSources.get(name);
+  if (!fn) return fresh;
+  for (let dz = -radius; dz <= radius; dz++) {
+    for (let dx = -radius; dx <= radius; dx++) {
+      if (fn(cx + dx, cz + dz)) fresh.push((cx + dx) + "_" + (cz + dz));
+    }
+  }
+  return fresh;
+}
+export function rimRefreshKeys(freshKeys, selfCk, hasBuilt) {
+  const out = new Set();
+  for (const fk of freshKeys) {
+    const sep = fk.lastIndexOf("_");
+    const fx = +fk.slice(0, sep), fz = +fk.slice(sep + 1);
+    for (let dz = -1; dz <= 1; dz++) {
+      for (let dx = -1; dx <= 1; dx++) {
+        if (dx === 0 && dz === 0) continue;
+        const nk = fx + dx + "_" + (fz + dz);
+        if (nk !== selfCk && hasBuilt(nk)) out.add(nk);
+      }
+    }
+  }
+  return [...out];
+}
+
 // Coordinate packing covers ±65535 on every axis (2^16 offset into 17-bit
 // fields, exact under 2^53: X stride 2^34 keeps the whole key below 2^52).
 // Bounded dimensions use a ±96 slice of it; infinite dimensions roam the

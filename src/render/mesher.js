@@ -2,7 +2,7 @@
 // only for exposed blocks. Rebuilds stay local via refreshBlocks().
 import * as THREE from "three";
 import { AIR, BLOCK_INFO, FLOWER, GLASS, GLOWSTONE, isLiquid } from "../core/blocks.js";
-import { WORLD_RADIUS, CHUNK, renderDist, getBlock, topAt, colTopIdx, colOcc, dim, dimInfinite, chunkOf, ensureChunkSource, key } from "../core/store.js";
+import { WORLD_RADIUS, CHUNK, renderDist, getBlock, topAt, colTopIdx, colOcc, dim, dimInfinite, chunkOf, ensureChunkArea, rimRefreshKeys, key } from "../core/store.js";
 import { createPocketCache, isPocketAir } from "../core/airpocket.js";
 import { materialsFor, liquidSurfaceMat, glowstoneMats } from "../core/textures.js";
 import { FLOWER_GEOS, FLOWER_MAT } from "./flowers.js";
@@ -302,6 +302,10 @@ export function beginDispose() {
   regionMatCache.clear();
   for (const f of fading) for (const c of f.clones) c.m.dispose();
   fading.length = 0;
+  fadingCks.clear();
+  for (const e of veiled.values()) for (const it of e.items) for (const c of it.clones) c.m.dispose();
+  veiled.clear();
+  lastVeil.clear();
 }
 // Disposes up to `count` snapshotted chunks; returns true while work remains.
 export function disposeSome(count) {
@@ -336,6 +340,8 @@ function disposeChunk(ck) {
     for (const c of fading[i].clones) c.m.dispose();
     fading.splice(i, 1);
   }
+  if (!fading.some((e) => e.ck === ck)) fadingCks.delete(ck);
+  releaseVeil(ck, false); // meshes die below; free the veil clones too
   // Dropping the rest group removes its whole subtree at once; per-mesh
   // dispose below still frees the instance buffers.
   const rest = chunkRest.get(ck);
@@ -355,7 +361,19 @@ function disposeChunk(ck) {
 
 export function rebuildChunk(cx, cz, fade = false) {
   const ck = cx + "_" + cz;
-  ensureChunkSource(cx, cz);
+  // Streaming dims (Nether sea): neighbours must exist before border faces
+  // are read, else a liquid-liquid boundary emits a seam against default AIR
+  // and the already-built neighbour is never revisited. Ensuring the 3x3
+  // keeps this build exact; only neighbours adjacent to freshly generated
+  // voxels refresh (surgical: rebuilding anything else replays an identical
+  // mesh at full cost while holes wait).
+  const fresh = ensureChunkArea(cx, cz, 1);
+  if (fresh.length) {
+    for (const fk of fresh) topMaxCache.delete(fk);
+    const rim = rimRefreshKeys(fresh, ck, (k) => chunkMeshes.has(k));
+    for (const nk of rim) topMaxCache.delete(nk);
+    if (rim.length) queueRefreshKeys(rim);
+  }
   topMaxCache.delete(ck);
   disposeChunk(ck);
   bumpVersion(ck); // the fresh mesh covers every proxied cell of this chunk
@@ -616,19 +634,27 @@ export function rebuildChunk(cx, cz, fade = false) {
 // excluded (their reveal owns opacity).
 const FADE_T = 0.35;
 const fading = []; // { ck, cx, cz, mesh, shared, clones:[{m, base}], t }
+const fadingCks = new Set(); // chunk keys with an active time fade
+// Clone a mesh's materials for opacity blending (shared base kept for
+// restore); the caller owns the initial opacity ramp.
+function cloneMats(mesh) {
+  const shared = mesh.material;
+  const clones = [];
+  const wrap = (m) => {
+    const c = m.clone();
+    clones.push({ m: c, base: m.opacity });
+    c.transparent = true;
+    return c;
+  };
+  mesh.material = Array.isArray(shared) ? shared.map(wrap) : wrap(shared);
+  return { shared, clones };
+}
 function fadeChunkIn(ck, cx, cz, group) {
   for (const mesh of group.children) {
-    const shared = mesh.material;
-    const clones = [];
-    const wrap = (m) => {
-      const c = m.clone();
-      clones.push({ m: c, base: m.opacity });
-      c.transparent = true;
-      c.opacity = 0;
-      return c;
-    };
-    mesh.material = Array.isArray(shared) ? shared.map(wrap) : wrap(shared);
+    const { shared, clones } = cloneMats(mesh);
+    for (const c of clones) c.m.opacity = 0;
     fading.push({ ck, cx, cz, mesh, shared, clones, t: 0 });
+    fadingCks.add(ck);
   }
 }
 function finishFade(i) {
@@ -636,6 +662,18 @@ function finishFade(i) {
   f.mesh.material = f.shared;
   for (const c of f.clones) c.m.dispose();
   fading.splice(i, 1);
+  if (!fading.some((e) => e.ck === f.ck)) fadingCks.delete(f.ck);
+  // Hand over to the distance veil only once the LAST time entry of the
+  // chunk completes: handing over earlier would clone sibling meshes
+  // mid-ramp, baking a mid-ramp base into their veil clones (double wrap —
+  // permanently wrong opacity, no error). Siblings keep ramping meanwhile.
+  // Outside the Nether lastVeil never holds the chunk, so this is a no-op.
+  if (fadingCks.has(f.ck)) return;
+  const v = lastVeil.get(f.ck) ?? 1;
+  if (v > 0 && v < 1) {
+    const rest = chunkRest.get(f.ck);
+    if (rest) ensureVeiled(f.ck, rest.group, v);
+  }
 }
 // Loader-exempt wall clock (see Pause contract): runs in every loop branch
 // next to maybeStream, paused or not.
@@ -772,21 +810,100 @@ const lastStream = { cx: Infinity, cz: Infinity };
 // transit it skips both ends. Conservative by construction: the box bounds
 // every rest fragment, so a visible group always contains something closer.
 // Region meshes keep their own fade gate and stay scene-level.
+// Distance veil past the cull limit, Nether only: fog-free sheets (lava)
+// would snap on a boolean hide, so the band fades them out instead. Gated on
+// the active dimension because the band clones every chunk's materials
+// (depthWrite off) — overworld water keeps the exact boolean cull it had.
+// Fogged geometry stays doubly hidden at no extra cost either way.
 const CULL_MARGIN = 2;
+const VEIL_M = 8;
+const veiled = new Map(); // ck -> { group, items: [{mesh, shared, clones}], f }
+const lastVeil = new Map(); // ck -> last band factor (drives fade handover)
+// Nether veil factor (pure): 1 inside the cull limit, smoothstep to 0 across
+// the band beyond, so fog-free sheets dissolve instead of snapping.
+function veilOpacity(dist, lim, width) {
+  if (dist <= lim) return 1;
+  if (width <= 0 || dist >= lim + width) return 0;
+  const t = (lim + width - dist) / width;
+  return t * t * (3 - 2 * t);
+}
+function ensureVeiled(ck, group, f) {
+  let e = veiled.get(ck);
+  if (!e) {
+    const items = [];
+    for (const mesh of group.children) {
+      const { shared, clones } = cloneMats(mesh);
+      // Blended sheets must not write depth: with depthWrite on, instance
+      // order (never depth-sorted) discards sheets behind earlier quads and
+      // whole pans vanish by viewpoint. Water already does depthWrite:false;
+      // releaseVeil restores the depth-writing shared material on exit.
+      for (const c of clones) { c.m.depthWrite = false; c.m.fog = shared.fog; }
+      items.push({ mesh, shared, clones });
+    }
+    e = { group, items, f: -1 };
+    veiled.set(ck, e);
+  }
+  if (e.f === f) return;
+  for (const it of e.items) {
+    for (const c of it.clones) {
+      c.m.opacity = c.base * f;
+      // Eye-medium fog flips land on the shared material (needsUpdate paths);
+      // clones track it so a chunk veiled before the flip never sticks out.
+      if (c.m.fog !== it.shared.fog) { c.m.fog = it.shared.fog; c.m.needsUpdate = true; }
+    }
+  }
+  e.f = f;
+}
+function releaseVeil(ck, restore = true) {
+  const e = veiled.get(ck);
+  if (!e) { lastVeil.delete(ck); return; }
+  if (restore) for (const it of e.items) it.mesh.material = it.shared;
+  for (const it of e.items) for (const c of it.clones) c.m.dispose();
+  veiled.delete(ck);
+  lastVeil.delete(ck);
+}
 let lastCull = { v: -1, px: Infinity, eyeY: Infinity, pz: Infinity, far: Infinity };
 export function updateChunkCulling(px, eyeY, pz, fogFar) {
   const L = lastCull;
   if (L.v === cullVersion && L.px === px && L.eyeY === eyeY && L.pz === pz && L.far === fogFar) return;
   lastCull = { v: cullVersion, px, eyeY, pz, far: fogFar };
   const lim = fogFar + CULL_MARGIN, lim2 = lim * lim;
-  for (const r of chunkRest.values()) {
+  // The veil band only runs in the Nether; every other dimension keeps the
+  // boolean cull below, bit-for-bit the old behavior.
+  const veilOn = dim === "nether";
+  for (const [ck, r] of chunkRest) {
     const dx = px < r.x0 ? r.x0 - px : px > r.x1 + 1 ? px - (r.x1 + 1) : 0;
     const dz = pz < r.z0 ? r.z0 - pz : pz > r.z1 + 1 ? pz - (r.z1 + 1) : 0;
     // Interval distance: geometry fills [bottom, top], so a surrounded eye
     // counts as near. The old floor-based form culled everything around a
     // below-zero eye in unbounded dimensions.
     const dy = eyeY > r.top + 1 ? eyeY - (r.top + 1) : eyeY < r.bottom ? r.bottom - eyeY : 0;
-    r.group.visible = dx * dx + dy * dy + dz * dz <= lim2;
+    if (!veilOn) {
+      r.group.visible = dx * dx + dy * dy + dz * dz <= lim2;
+      continue;
+    }
+    const d = Math.sqrt(dx * dx + dy * dy + dz * dz);
+    if (d > lim + VEIL_M) {
+      // Fully past the veil band: hide and free the clones.
+      r.group.visible = false;
+      releaseVeil(ck);
+      continue;
+    }
+    const f = veilOpacity(d, lim, VEIL_M);
+    lastVeil.set(ck, f);
+    r.group.visible = f > 0;
+    if (f <= 0) { releaseVeil(ck); continue; }
+    if (f >= 1) { releaseVeil(ck); continue; }
+    // Inside the band: blend, unless a time fade owns the opacity (it hands
+    // over on completion).
+    if (!fadingCks.has(ck)) ensureVeiled(ck, r.group, f);
+    else if (veiled.has(ck)) {
+      const e = veiled.get(ck);
+      if (e.f !== f) {
+        for (const it of e.items) for (const c of it.clones) c.m.opacity = c.base * f;
+        e.f = f;
+      }
+    }
   }
 }
 
