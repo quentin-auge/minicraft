@@ -1,7 +1,7 @@
 // Chunked streaming renderer: one InstancedMesh per block id per chunk,
 // only for exposed blocks. Rebuilds stay local via refreshBlocks().
 import * as THREE from "three";
-import { AIR, BLOCK_INFO, FLOWER, GLASS, GLOWSTONE, isLiquid } from "../core/blocks.js";
+import { AIR, BLOCK_INFO, DIRT, FLOWER, GLASS, GLOWSTONE, isLiquid } from "../core/blocks.js";
 import { WORLD_RADIUS, CHUNK, renderDist, getBlock, topAt, colTopIdx, colOcc, dim, dimInfinite, chunkOf, ensureChunkArea, rimRefreshKeys, key } from "../core/store.js";
 import { createPocketCache, isPocketAir } from "../core/airpocket.js";
 import { materialsFor, liquidSurfaceMat, glowstoneMats } from "../core/textures.js";
@@ -9,6 +9,8 @@ import { FLOWER_GEOS, FLOWER_MAT } from "./flowers.js";
 import { haloRadius, bakeHaloTint, isHaloSuspended } from "./halobake.js";
 import { flowerVariantAt, flowerAngleAt } from "../world/flowers.js";
 import { GLOW_VARIANT_COUNT, glowVariantAt } from "../world/glowstone.js";
+import { variantAt, VARIANT_BLOCKS } from "../world/reactions.js";
+import { variantMaterials, shellMaterial, shellGeometry, trackShellMaterial, syncShellFade, untrackShellMaterials } from "./reactions.js";
 import { regionOf, regionByKey } from "./regions.js";
 
 const boxGeo = new THREE.BoxGeometry(1, 1, 1);
@@ -17,6 +19,9 @@ const dummy = new THREE.Object3D();
 // all faces of a liquid share a single merged mesh per side (no per-face
 // lighting, no per-direction draw splits that re-sort by viewpoint).
 const liquidGeo = new THREE.PlaneGeometry(1, 1);
+// Shell meshes wrap their cells by 0.03 a side: pad the static sphere so
+// the cull bound still contains them.
+const SHELL_PAD = 0.05;
 // Rotation (rx, ry) plus outward normal per direction; instance position is
 // the cell center pushed half a block along the normal so every face lands
 // exactly on the cell bound at full-block height (stacked liquid merges).
@@ -183,13 +188,16 @@ export function setRegionFade(key, o, skyColor) {
     if (region && region.onFade) region.onFade(o, skyColor, ctxFor(region));
     return;
   }
+  // Reaction shells breathe through the pulse tick, composed with this fade
+  // — so the generic fade below skips them: one opacity, one writer.
+  syncShellFade(key, o);
   const set = regionMeshes.get(key);
   if (set) for (const mesh of set) { mesh.userData.regionVisible = o > 0; refreshVisible(mesh); }
   const owned = regionMatCache.get(key);
   if (owned) {
     for (const mats of owned.values()) {
-      if (Array.isArray(mats)) for (const m of mats) applyMatFade(m, o);
-      else applyMatFade(mats, o);
+      if (Array.isArray(mats)) for (const m of mats) { if (!m.userData.shellPulse) applyMatFade(m, o); }
+      else if (!mats.userData.shellPulse) applyMatFade(mats, o);
     }
   }
   if (region && region.onFade) region.onFade(o, skyColor, ctxFor(region));
@@ -253,10 +261,10 @@ const EXPOSE_DIRS = [[0, 1, 0], [0, -1, 0], [1, 0, 0], [-1, 0, 0], [0, 0, 1], [0
 // exact (never hides visible geometry). The sphere spans the true instance
 // interval [bottom, top + 1] — a floor-based sphere culled everything below
 // zero in unbounded dimensions, hiding the whole sky when looking down.
-function stampStatic(mesh, x0, x1, z0, z1, top, bottom) {
+function stampStatic(mesh, x0, x1, z0, z1, top, bottom, pad = 0) {
   const bot = bottom === Infinity ? 0 : bottom;
   const cx = (x0 + x1 + 1) / 2, cy = (top + 1 + bot) / 2, cz = (z0 + z1 + 1) / 2;
-  const r = 0.5 * Math.sqrt((x1 - x0 + 1) ** 2 + (top + 1 - bot) ** 2 + (z1 - z0 + 1) ** 2) + 0.01;
+  const r = 0.5 * Math.sqrt((x1 - x0 + 1) ** 2 + (top + 1 - bot) ** 2 + (z1 - z0 + 1) ** 2) + 0.01 + pad;
   mesh.boundingSphere = new THREE.Sphere(new THREE.Vector3(cx, cy, cz), r);
   mesh.matrixAutoUpdate = false;
 }
@@ -300,6 +308,7 @@ export function beginDispose() {
     }
   }
   regionMatCache.clear();
+  untrackShellMaterials(); // region-owned shell clones died with the cache
   for (const f of fading) for (const c of f.clones) c.m.dispose();
   fading.length = 0;
   fadingCks.clear();
@@ -383,6 +392,7 @@ export function rebuildChunk(cx, cz, fade = false) {
   const z0 = Math.max(cz * CHUNK, -B);
   const z1 = Math.min(cz * CHUNK + CHUNK - 1, B);
   const perId = new Map();
+  const variantCells = new Map(); // variant key -> marked cells
   const flowers = [];
   const glows = [];
   const liquids = new Map();
@@ -437,13 +447,25 @@ export function rebuildChunk(cx, cz, fade = false) {
           continue;
         }
         if (!isExposed(x, y, z)) continue;
+        // Settled reaction variants (wet soil): drawn in their own look,
+        // never in the block's plain bucket. Only marked cells pay the
+        // lookup; everything else keeps the old path bit-for-bit.
+        if (VARIANT_BLOCKS.has(id)) {
+          const v = variantAt(x, y, z);
+          if (v) {
+            let arr = variantCells.get(v);
+            if (!arr) { arr = []; variantCells.set(v, arr); }
+            arr.push([x, y, z]);
+            continue;
+          }
+        }
         let arr = perId.get(id);
         if (!arr) { arr = []; perId.set(id, arr); }
         arr.push([x, y, z]);
       }
     }
   }
-  if (!perId.size && !flowers.length && !glows.length && !liquidMaps.some((m) => m.size)) {
+  if (!perId.size && !variantCells.size && !flowers.length && !glows.length && !liquidMaps.some((m) => m.size)) {
     // Keep empty chunks registered as built so deferred edits can remesh them.
     chunkMeshes.set(ck, new Map());
     return;
@@ -457,8 +479,8 @@ export function rebuildChunk(cx, cz, fade = false) {
   // Baked halo scratch: one color, reused for every tinted instance (chunk
   // builds are budgeted, so no per-instance allocation here).
   const tintScratch = new THREE.Color();
-  const buildBoxes = (list, mats, tintMap) => {
-    const mesh = new THREE.InstancedMesh(boxGeo, mats, list.length);
+  const buildBoxes = (list, mats, tintMap, geo = boxGeo, pad = 0) => {
+    const mesh = new THREE.InstancedMesh(geo, mats, list.length);
     // Translation-only instances: write the column-major matrix directly
     // instead of composing through the shared dummy Object3D.
     const a = mesh.instanceMatrix.array;
@@ -482,16 +504,16 @@ export function rebuildChunk(cx, cz, fade = false) {
       }
       mesh.instanceColor.needsUpdate = true;
     }
-    stampStatic(mesh, x0, x1, z0, z1, chunkTop, chunkBottom);
+    stampStatic(mesh, x0, x1, z0, z1, chunkTop, chunkBottom, pad);
     return mesh;
   };
   // One halo map per chunk build: sources are read R past the chunk in every
   // axis, so border cells pick up their neighbor chunk's sources too. Skipped
   // when the chunk holds no tintable blocks (glowstone-only chunks).
-  const tintMap = perId.size ? bakeHaloTint(dim, x0, x1, z0, z1, chunkBottom, chunkTop) : null;
+  const tintMap = (perId.size || variantCells.size) ? bakeHaloTint(dim, x0, x1, z0, z1, chunkBottom, chunkTop) : null;
   // Halo suspended (still-hold bridge stroke): this chunk built geometry-only
   // and needs a tint pass on release. Tracked only when a bake would have run.
-  if (perId.size && isHaloSuspended()) suspendedBuilt.add(ck);
+  if ((perId.size || variantCells.size) && isHaloSuspended()) suspendedBuilt.add(ck);
   for (const [id, list] of perId) {
     const { rest, groups, restTop: rt, restBottom: rb } = partitionRegion(id, list);
     if (rt > restTop) restTop = rt;
@@ -510,6 +532,39 @@ export function rebuildChunk(cx, cz, fade = false) {
       registerRegionMesh(g.region, mesh);
       sceneRef.add(mesh);
       meshes.set(g.region.key + ":" + id, mesh);
+    }
+  }
+  // Settled reaction variants (wet soil): one box mesh per variant in its
+  // own look, plus one translucent shell mesh wrapping the same cells (the
+  // shell breathes on sim time via pulseReactionShells).
+  for (const [variant, list] of variantCells) {
+    const { rest, groups, restTop: rt, restBottom: rb } = partitionRegion(DIRT, list);
+    if (rt > restTop) restTop = rt;
+    if (rb < restBottom) restBottom = rb;
+    const shellMats = (r) => r
+      ? trackShellMaterial(regionMaterials(r, "v:" + variant + ":shell", () => shellMaterial(variant)), variant, r.key)
+      : shellMaterial(variant);
+    const buildPair = (cells, region) => [
+      buildBoxes(cells,
+        region ? regionMaterials(region, "v:" + variant, () => variantMaterials(variant)) : variantMaterials(variant),
+        tintMap),
+      buildBoxes(cells, shellMats(region), null, shellGeometry(), SHELL_PAD),
+    ];
+    if (rest.length) {
+      const [box, shell] = buildPair(rest, null);
+      restGroup.add(box);
+      restGroup.add(shell);
+      meshes.set("variant_" + variant, box);
+      meshes.set("variant_" + variant + "_shell", shell);
+    }
+    for (const g of groups.values()) {
+      const [box, shell] = buildPair(g.list, g.region);
+      for (const mesh of [box, shell]) {
+        registerRegionMesh(g.region, mesh);
+        sceneRef.add(mesh);
+      }
+      meshes.set("variant_" + g.region.key + "_" + variant, box);
+      meshes.set("variant_" + g.region.key + "_" + variant + "_shell", shell);
     }
   }
   if (flowers.length) {

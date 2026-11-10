@@ -12,6 +12,7 @@ import { PLAYER_HW, PLAYER_H, pos } from "./physics.js";
 import { igniteTNT, isLitTNT, detonateNow, noteTntPlaced, kindOfBlock, trackMegaPlaced, trackRegularTntPlaced } from "../fx/tnt.js";
 import { noteGlowstonePlace, noteGlowstonePlaceShared, glowVariantAt, clearGlowstoneAt } from "../world/glowstone.js";
 import { noteFlowerPlace, clearFlowerAt } from "../world/flowers.js";
+import { armReaction, clearReactionAt } from "../world/reactions.js";
 import { notePoolEdit } from "../render/poollights.js";
 import { MOON_FADE_Y } from "../render/regions.js";
 import { notePortalEdit, notePortalEdits, notePortalFramesOnly } from "../world/portals.js";
@@ -153,6 +154,9 @@ export function breakBlockAt(x, y, z, opts) {
   }
   if (bid === GLOWSTONE) clearGlowstoneAt(x, y, z);
   if (bid === FLOWER) clearFlowerAt(x, y, z);
+  // Reaction state is id-agnostic by design (any future base clears through
+  // the same call), so unlike the looks above it is dropped unconditionally.
+  clearReactionAt(x, y, z);
   setBlock(x, y, z, AIR);
   if (dimInfinite()) pinTntCellAt(x, y, z);
   notePoolEdit();
@@ -185,7 +189,19 @@ export function tryPlace(id, px, py, pz, opts) {
   if (BLOCK_INFO[id].solid && intersectsPlayer(px, py, pz)) return null;
   if (BLOCK_INFO[id].solid && intersectsMob(px, py, pz, opts)) return null;
   setBlock(px, py, pz, id);
-  if (batched && isLiquid(id)) pendingLiquidCells.push([px, py, pz]);
+  // Block reactions (world/reactions.js): a liquid trigger placed on a
+  // reacting base is drunk at once — before portal/purge/narrow-liquid
+  // bookkeeping sees it as liquid, so the drunk cell returns to air with a
+  // single purge and never enters the liquid-transition set.
+  let drunk = null;
+  if (isLiquid(id)) {
+    const arm = armReaction(px, py - 1, pz, id);
+    if (arm && arm.consumed) {
+      setBlock(px, py, pz, AIR);
+      drunk = [[px, py, pz], ...purgeFloatingLiquidsAround([[px, py, pz]])];
+    }
+  }
+  if (batched && isLiquid(id) && !drunk) pendingLiquidCells.push([px, py, pz]);
   notePoolEdit();
   if (id === TNT) trackRegularTntPlaced(px, py, pz);
   // Player content pins its stream cell: edits (and portal frames built
@@ -202,8 +218,11 @@ export function tryPlace(id, px, py, pz, opts) {
   if (id === FLOWER) noteFlowerPlace(px, py, pz);
   if (kindOfBlock(id).pool) trackMegaPlaced(px, py, pz);
   if (isTntLike(id) && isLiquid(target)) noteTntPlaced(px, py, pz, target);
-  if (batched) return [[px, py, pz]];
+  if (batched) return drunk ?? [[px, py, pz]];
   notePortalEdit(px, py, pz);
+  // A drunk trigger already purged on the way to air: return its cells as
+  // they are instead of purging the same neighborhood twice.
+  if (drunk) return drunk;
   const purged = purgeFloatingLiquidsAround([[px, py, pz]]);
   return [[px, py, pz], ...purged];
 }

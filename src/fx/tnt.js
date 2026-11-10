@@ -27,6 +27,7 @@ import { flyOn } from "../player/fly.js";
 import { spawnBurst, spawnBurstBatch, spawnFlash, spawnFlashBatch, spawnFireballBatch, sharedFlashGeo, initBandShell, updateBandShell, hideBandShell, spawnDense, denseCount, noteDenseSpawn, resetDenseFx, flushDense } from "./particles.js";
 import { clearGlowstoneAt } from "../world/glowstone.js";
 import { clearFlowerAt } from "../world/flowers.js";
+import { clearReactionAt } from "../world/reactions.js";
 import { notePoolEdit } from "../render/poollights.js";
 import * as THREE from "three";
 
@@ -1805,6 +1806,7 @@ function clearCell(x, y, z, touched) {
   if (id === FLOWER) clearFlowerAt(x, y, z);
   if (id === TNT) untrackRegularTnt(x, y, z);
   if (kindOfBlock(id).pool) untrackMega(x, y, z);
+  clearReactionAt(x, y, z);
   setBlock(x, y, z, AIR);
   touched.push([x, y, z]);
   return true;
@@ -2342,6 +2344,7 @@ function carvePoolCellContents(x, y, z, kind, touched, pool) {
     else if (bid === FLOWER) clearFlowerAt(x, y, z);
     else if (bid === TNT) untrackRegularTnt(x, y, z);
     else if (victimKind) untrackMega(x, y, z);
+    clearReactionAt(x, y, z);
     touched.push([x, y, z]);
   }
 }

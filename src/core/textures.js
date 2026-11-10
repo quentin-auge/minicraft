@@ -148,6 +148,7 @@ export const TEX = {
     for (let x = 0; x < 16; x++) if (Math.random() < 0.35) { ctx.fillStyle = "#8fce6b"; ctx.fillRect(x, 3, 1, 1); }
   }),
   dirt: makeTex([138, 90, 53], 26),
+  dirtWet: makeTex([76, 49, 29], 26),
   stone: canvasTex((ctx) => {
     ctx.fillStyle = "#8d8d8d"; ctx.fillRect(0, 0, 16, 16);
     pxNoise(ctx, [141, 141, 141], 16);

@@ -29,9 +29,11 @@ import { initFx, tickFx, tickDenseFx, denseFxActive, prewarmDenseFx, spawnDense,
 import { initPrecip, tickSnow } from "./src/fx/precip.js";
 import { MOON_MIN_Y, MOON_R, generateMoon, generateMoonUnderRows, joinMoonLakeWater, markMoonBuilt, moonReady, moonChunkCenters, findMoonSpawn } from "./src/world/moon.js";
 import { findPenOverwatch } from "./src/world/spawn.js";
-import { WATER, FLOWER, GLOWSTONE, MOON_WATER, LAVA, TNT, BLOCK_INFO } from "./src/core/blocks.js";
+import { AIR, WATER, FLOWER, GLOWSTONE, MOON_WATER, LAVA, TNT, BLOCK_INFO } from "./src/core/blocks.js";
 import { resetGlowstoneMemory, clearGlowstoneDim, setGlowSeed } from "./src/world/glowstone.js";
 import { resetFlowerMemory, clearFlowerDim, setFlowerSeed } from "./src/world/flowers.js";
+import { tickReactions, resetReactionMemory, clearReactionsDim } from "./src/world/reactions.js";
+import { initReactionFx, tickReactionFx, clearReactionFx } from "./src/render/reactions.js";
 import { initPoolLights, tickPoolLights, resetPoolLightMemory, notePoolEdit } from "./src/render/poollights.js";
 import { initRenderer, rebuildAll, maybeStream, streamChunks, drainChunkQueue, beginDispose, disposeSome, refreshBlocks, queueRefreshBlocks, queueRefreshKeys, takeSuspendedBuilt, setRegionFade, setRegionLiquidFog, nearestMissingDist, tickChunkFades, UNLOAD_MARGIN } from "./src/render/mesher.js";
 import { setHaloSuspended } from "./src/render/halobake.js";
@@ -125,6 +127,7 @@ scene.add(hemi);
 initRenderer(scene);
 initChainProxy(scene);
 initFx(scene);
+initReactionFx(scene);
 initSky(scene);
 initPrecip(scene);
 initTNTFx(scene);
@@ -395,6 +398,8 @@ async function buildWorld() {
   renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
   resetGlowstoneMemory();
   resetFlowerMemory();
+  resetReactionMemory();
+  clearReactionFx();
   resetPoolLightMemory();
   proxyClear();
   // A world reset ends any chain stroke: drop its pending tint pass and
@@ -552,6 +557,7 @@ async function runTravel(dest, msg) {
   // 2 re-queues it (renders skipped, sim frozen, queue cleared last).
   beginDispose();
   proxyClear(); // versions reset with the mesher; drop the overlay with them
+  clearReactionFx(); // run cubes die with the chunks; the new dim re-syncs them
   // Travel ends any chain stroke: drop its pending tint pass and its
   // deferred liquid-purge union (coordinates are meaningless across dims).
   setHaloSuspended(null);
@@ -583,6 +589,7 @@ async function runTravel(dest, msg) {
     if (dimSpec(dest)?.persistence === "regenerate") {
       clearGlowstoneDim(dest);
       clearFlowerDim(dest);
+      clearReactionsDim(dest);
       clearRegularTntDim(dest);
     }
     if (dest === 'tnt') {
@@ -1045,6 +1052,7 @@ function loop(now) {
     simTime += sdt;
     tickFx(sdt);
     tickDenseFx(sdt);
+    tickReactionFx(simTime);
     // Anticipated DPR dip: a lit mega within 0.6 s of detonation drops to
     // full-low before the blast frame, so the resize hitch never stacks on
     // top of carve + seeding + uploads.
@@ -1171,6 +1179,32 @@ function loop(now) {
     // gravity never pulls them through the moving (voxel-less) hull.
     carryRiders();
     drainBlastRemesh(pos.x, pos.y, pos.z, scene.fog.far);
+    // Block reactions (world/reactions.js): advance the running soaks on sim
+    // time. Settled cells refresh for their new look, and a liquid standing
+    // above is drunk with them; released cells (base broken mid-run) refresh
+    // so no stale visual lingers. Same split refresh as the blast path above.
+    const react = tickReactions(sdt);
+    if (react.settled.length || react.released.length) {
+      const touched = [];
+      for (const s of react.settled) {
+        touched.push([s.x, s.y, s.z]);
+        if (s.absorb) {
+          setBlock(s.x, s.y + 1, s.z, AIR);
+          touched.push([s.x, s.y + 1, s.z]);
+          for (const p of purgeFloatingLiquidsAround([[s.x, s.y + 1, s.z]])) touched.push(p);
+        }
+        for (const c of s.touched) touched.push(c);
+      }
+      for (const c of react.released) touched.push(c);
+      if (bandActive()) {
+        notePortalFramesOnly(touched);
+        queueBlastRefresh(touched);
+      } else {
+        notePortalEdits(touched);
+        refreshBlocks(touched);
+      }
+      if (dim === "end" && touched.length) notifyEndermanVoxelChange(touched, camera);
+    }
     // GPU relief while a wipe, dense mega, or sliced carve runs (master's
     // quality-tier dip): full resolution restores the frame the queues
     // empty. fxDip latches early (imminent fuse) or in onExplode so the

@@ -21,6 +21,7 @@ import {
 import { FLY, flyOn } from "../player/fly.js";
 import { clearGlowstoneAt, noteGlowstonePlace, noteGlowstonePlaceShared, glowVariantAt } from "../world/glowstone.js";
 import { clearFlowerAt, noteFlowerPlace } from "../world/flowers.js";
+import { clearReactionAt } from "../world/reactions.js";
 import { clearTNTBox } from "../fx/tnt.js";
 import { notePortalEdits } from "../world/portals.js";
 import { severHook } from "../player/hook.js";
@@ -619,6 +620,7 @@ function snapshot() {
         } else if (id === FLOWER) {
           clearFlowerAt(x, y, z);
         }
+        clearReactionAt(x, y, z);
         setBlock(x, y, z, AIR);
         scanned.push({ lx: x - ox, ly: y - oy, lz: z - oz, id, v, extra: false });
         cleared.push([x, y, z]);
@@ -644,6 +646,7 @@ function snapshot() {
           if (id === GLOWSTONE) clearGlowstoneAt(x, y, z);
           else if (id === FLOWER) clearFlowerAt(x, y, z);
           else if (isTntLike(id)) tntUp = true;
+          clearReactionAt(x, y, z);
           setBlock(x, y, z, AIR);
           upCleared.push([x, y, z]);
         }
@@ -868,6 +871,7 @@ function carveAt(o) {
         if (id === GLOWSTONE) clearGlowstoneAt(x, y, z);
         else if (id === FLOWER) clearFlowerAt(x, y, z);
         else if (isTntLike(id)) tntHit = true;
+        clearReactionAt(x, y, z);
         setBlock(x, y, z, AIR);
         cleared.push([x, y, z]);
         if (--budget <= 0) { rvel.set(0, 0, 0); break outer; }
@@ -912,6 +916,7 @@ function clearBox(x0, y0, z0, x1, y1, z1) {
         if (keepFrames.has(key(x, y, z))) continue;
         if (id === GLOWSTONE) clearGlowstoneAt(x, y, z);
         else if (id === FLOWER) clearFlowerAt(x, y, z);
+        clearReactionAt(x, y, z);
         setBlock(x, y, z, AIR);
         cleared.push([x, y, z]);
       }
