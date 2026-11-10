@@ -272,14 +272,15 @@ export function makeCellSolid(mob) {
 // footNose overrides the circle offset for the void probes: the corridor
 // classifier passes 0 (body-only direction sensing, so 1-cell arms ending
 // in a wall still read open), the drive passes the real nose reach.
-// hwShrink (1-wide passing only) narrows the body box against voxels —
+// hwShrink (rail-mate grace only, see mover.js railGrace) narrows the body
+// box against voxels —
 // an offset shoulder may graze the wall face by a bounded depth instead
 // of refusing every stride on float-exact face contact. Peer math, nose
 // probe, footing, and headroom stay exact.
 export function makeStepOk(mob, supported, floating, noseAlong, yaw, footNose = null, hwShrink = 0) {
   const foot = footNose ?? noseAlong;
   const hw = hwShrink > 0 ? Math.max(0.05, mob.hw - hwShrink) : mob.hw;
-  // Same shrink on the nose disc (passing only): at noseAlong 0 the disc
+  // Same shrink on the nose disc (rail grace only): at noseAlong 0 the disc
   // sits inside the body box, so an unshrunk nose would veto the very
   // shoulder graze the shrunk body allows. shrink 0 keeps legacy exact.
   const nr = hwShrink > 0 ? Math.max(0.05, mob.nose.r - hwShrink) : mob.nose.r;
