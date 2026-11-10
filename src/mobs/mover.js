@@ -4,6 +4,8 @@
 // Shared step physics live in step.js (R0), the directional policy and
 // the gap scan in corridor.js; farm.js owns the meshes, spawning,
 // and lifecycle. Headless rigs drive this module on live voxels.
+import { SEP_GAP, CROSS_BUDGET, PASS_OFF, PASS_BUDGET, WALL_ALLOW, worstPairPenAt } from "./collide.js";
+import { narrowPoseOk, narrowSide, narrowSense, activeNarrowPeer } from "./narrow.js";
 import { FARM_WALK_DIVISOR } from "./livestock.js";
 import {
   PROBE_DIST, normYaw, yawDiff, dirVec, cellCenter, oppositeYaw, snapCardinal, snap8,
@@ -71,7 +73,7 @@ export const PUSH_T = 0.07;
 export const PUSH_CAP = 0.025;
 // Separation gap added to every circle-pair need, and vertical gate:
 // mobs more than this far apart in Y never interact.
-export const SEP_GAP = 0.1;
+export { SEP_GAP, worstPairPenAt };
 export const SEP_Y = 1.2;
 // Progress watchdog: a mob shuffling without closing on its target is
 // stuck even when its feet move — slides and separation shoves reset the
@@ -99,7 +101,7 @@ export const GATE_ALLOW = 0.05;
 // (forecast.js). Shipped at 0.15: shoulders brush past, the backstop
 // clearing every residue. Turn maneuvers tolerate a small give past it
 // (see TURN_GIVE) — bounded, never a walk-through.
-export const CROSS_BUDGET = 0.15;
+export { CROSS_BUDGET };
 export const TURN_GIVE = 0.05;
 // 1-wide passing: two opposed red rails offset lane-relative just before
 // contact (same rotational side each, so opposite world sides) and brush
@@ -111,8 +113,7 @@ export const TURN_GIVE = 0.05;
 // inside PASS_BUDGET; the drives own the meeting (the backstop skips a
 // mutually passing pair — its tangential slide would push both back apart
 // and read as a crawl), then clears the residue once the window drops.
-export const PASS_OFF = 0.26;
-export const PASS_BUDGET = 0.5;
+export { PASS_OFF, PASS_BUDGET };
 // Engage range (signed along-track): first nose touch reads ~2.1 m on
 // centers, so the window must open just before that — the offset lands
 // right at contact, never metres early. Hold while abreast, drop past
@@ -123,7 +124,7 @@ export const PASS_BACK = 0.4;
 export const PASS_SLIDE = 2.5;
 export const PASS_SETTLE_T = 0.15;
 export const PASS_AGE_MAX = 3.0;
-export const WALL_ALLOW = 0.1;
+export { WALL_ALLOW };
 // Anticipation: a predicted meeting arms a pre-window before any yaw
 // reads opposed — around corners the yaws never oppose, so geometry
 // (closing courses on the same flood-connected 1-wide stretch, see
@@ -274,7 +275,7 @@ export function followSlow(mob, peers, grid = null) {
   const fx = Math.sin(mob.yaw), fz = Math.cos(mob.yaw);
   for (let k = 0; k < list.length; k++) {
     const o = list[k];
-    if (!followsPace(mob, o)) continue;
+    if (activeNarrowPeer(mob) === o || !followsPace(mob, o)) continue;
     // Pace the leader's real advance, not its speed field: a leader stalled
     // mid-U-turn (full stride on paper, zero underfoot) must stop its
     // gate-exempt follower — the file exemption hands tailgating to this
@@ -296,40 +297,6 @@ export function followSlow(mob, peers, grid = null) {
   return Math.min(slow, 1);
 }
 
-// Worst circle-pair penetration between a body posed at (ax, az) with the
-// given yaw-oriented circles and mob b's live body circles: null when
-// clear. Lets the step gate test a candidate position without moving
-// anything. Exported for the group planner (forecast.js), which poses
-// trajectory samples through the same math. i/j feed the deterministic
-// coincident-center fallback.
-export function worstPairPenAt(ax, az, asx, asz, ahw, anose, atail, b, i, j) {
-  const bsx = Math.sin(b.yaw), bsz = Math.cos(b.yaw);
-  let wPen = 0, wNx = 0, wNz = 0, wD = 0, wNeed = 0;
-  for (let ai = 0; ai < 3; ai++) {
-    const aa = ai === 0 ? 0 : ai === 1 ? anose.along : atail.along;
-    const ar = ai === 0 ? ahw : ai === 1 ? anose.r : atail.r;
-    const cx = ax + asx * aa, cz = az + asz * aa;
-    for (let bi = 0; bi < 3; bi++) {
-      const ba = bi === 0 ? 0 : bi === 1 ? b.nose.along : b.tail.along;
-      const br = bi === 0 ? b.hw : bi === 1 ? b.nose.r : b.tail.r;
-      const ox = cx - (b.pos.x + bsx * ba), oz = cz - (b.pos.z + bsz * ba);
-      const need = ar + br + SEP_GAP;
-      const d2 = ox * ox + oz * oz;
-      if (d2 >= need * need) continue;
-      // Coincident centers have no normal: deterministic fallback
-      // direction from the pair indices (recomputed next tick, so
-      // any axis unstacks exact overlaps instead of skipping them).
-      if (d2 < 1e-8) {
-        const fa = (i * 2.39996 + j * 1.2345) % (Math.PI * 2);
-        if (need > wPen) { wPen = need; wNx = Math.sin(fa); wNz = Math.cos(fa); wD = 0; wNeed = need; }
-        continue;
-      }
-      const d = Math.sqrt(d2), pen = need - d;
-      if (pen > wPen) { wPen = pen; wNx = ox / d; wNz = oz / d; wD = d; wNeed = need; }
-    }
-  }
-  return wPen <= 0 ? null : { pen: wPen, nx: wNx, nz: wNz, d: wD, need: wNeed };
-}
 export function worstPairPen(a, b, i = 0, j = 1) {
   if (Math.abs(a.pos.y - b.pos.y) > SEP_Y) return null;
   return worstPairPenAt(a.pos.x, a.pos.z, Math.sin(a.yaw), Math.cos(a.yaw),
@@ -388,6 +355,12 @@ export function mobBlockedAt(mob, x, z, y, peers, extra = 0, grid = null, allow 
 // direction. Pure: reads positions only.
 export function peerStepOk(mob, nx, nz, y, peers, grid, exempt, budget) {
   const sx = Math.sin(mob.yaw), sz = Math.cos(mob.yaw);
+  const partner = activeNarrowPeer(mob);
+  if (partner) {
+    if (!narrowPoseOk(mob, nx, nz, mob.yaw)) return false;
+    const original = exempt;
+    exempt = o => o === partner || original?.(o);
+  }
   const cand = peerPenAt(mob, nx, nz, sx, sz, y, peers, grid, 0, exempt);
   if (cand <= budget) return true;
   const cur = peerPenAt(mob, mob.pos.x, mob.pos.z, sx, sz, y, peers, grid, 0, exempt);
@@ -409,17 +382,21 @@ export function peerStepOk(mob, nx, nz, y, peers, grid, exempt, budget) {
 export function makeTurnGate(mob, peers, grid = null, give = 0) {
   const meetingOnly = (o) => Math.cos(normYaw(o.yaw - mob.yaw)) >= 0.5;
   return (yaw) => {
+    const partner = activeNarrowPeer(mob);
+    if (partner && !narrowPoseOk(mob, mob.pos.x, mob.pos.z, yaw)) return false;
+    const skipPartner = o => o === partner;
+    const skipFile = o => o === partner || meetingOnly(o);
     const curAll = peerPenAt(mob, mob.pos.x, mob.pos.z,
-      Math.sin(mob.yaw), Math.cos(mob.yaw), mob.pos.y, peers, grid);
+      Math.sin(mob.yaw), Math.cos(mob.yaw), mob.pos.y, peers, grid, 0, skipPartner);
     if (curAll > CROSS_BUDGET) return true;
     const nextAll = peerPenAt(mob, mob.pos.x, mob.pos.z,
-      Math.sin(yaw), Math.cos(yaw), mob.pos.y, peers, grid);
+      Math.sin(yaw), Math.cos(yaw), mob.pos.y, peers, grid, 0, skipPartner);
     if (nextAll > CROSS_BUDGET + give) return false;
     const cur = peerPenAt(mob, mob.pos.x, mob.pos.z,
-      Math.sin(mob.yaw), Math.cos(mob.yaw), mob.pos.y, peers, grid, 0, meetingOnly);
+      Math.sin(mob.yaw), Math.cos(mob.yaw), mob.pos.y, peers, grid, 0, skipFile);
     if (cur > CROSS_BUDGET) return true;
     const next = peerPenAt(mob, mob.pos.x, mob.pos.z,
-      Math.sin(yaw), Math.cos(yaw), mob.pos.y, peers, grid, 0, meetingOnly);
+      Math.sin(yaw), Math.cos(yaw), mob.pos.y, peers, grid, 0, skipFile);
     // Middle band (brush already engaged): rotate out, never in — a sweep
     // the planner never predicted (nose lever outruns the stride) must not
     // deepen contact, while clear-air turns keep the landing budget.
@@ -565,6 +542,7 @@ export function sweepDiscOk(mob, nx, nz, peers, grid = null) {
   for (const o of list) {
     if (o === mob || !o.alive) continue;
     if (Math.abs(o.pos.y - mob.pos.y) > SEP_Y) continue;
+    if (activeNarrowPeer(mob) === o) continue;
     if (!yieldTurnPeer(mob, o)) continue;
     const w = worstPairPenAt(nx, nz, msx, msz, mob.hw, mob.nose, mob.tail, o, 0, 0);
     if (w != null && w.pen > CROSS_BUDGET) continue;
@@ -594,6 +572,7 @@ export function turnYieldHold(mob, peers) {
   for (const o of peers) {
     if (o === mob || !o.alive) continue;
     if (Math.abs(o.pos.y - mob.pos.y) > SEP_Y) continue;
+    if (activeNarrowPeer(mob) === o) continue;
     if (!yieldTurnPeer(mob, o)) continue;
     const w = worstPairPenAt(mob.pos.x, mob.pos.z, msx, msz,
       mob.hw, mob.nose, mob.tail, o, 0, 0);
@@ -707,6 +686,20 @@ function passScan(mob, peers) {
 // gone) drops the offset immediately and settles back to centre — never a
 // stale parallel. Idempotent per tick.
 function upkeepPassing(mob, dt, supported, floating, peers) {
+  if (mob._narrow) {
+    const partner = activeNarrowPeer(mob);
+    if (partner && isRedRail(mob)) {
+      mob._passT = 0.3; mob._passPeer = partner; mob._passAge = 0;
+      mob._passSide = narrowSide(mob);
+      mob._lineOffAxis = mob.lane.axis;
+      return;
+    }
+    if (!partner) {
+      if (mob._passT > 0) dropPassing(mob);
+      mob._passPreT = 0;
+      return;
+    }
+  }
   if (!isRedRail(mob) || !peers) return;
   // Anticipation first: a predicted meeting ramps the offset into place
   // before the scan below ever fires.
@@ -811,7 +804,8 @@ function erectPassOffset(mob, supported, floating) {
 // magnitude, stepping down (never into the wall) on refusal.
 function validPassMag(mob, supported, floating, side, want) {
   if (want <= 0) return 0;
-  const cands = [...new Set([want, PASS_OFF, PASS_MIN])].sort((a, b) => b - a);
+  const cap = mob._narrow ? Math.min(want, 0.5 - mob.hw + WALL_ALLOW - 0.001) : want;
+  const cands = [...new Set([cap, PASS_OFF, PASS_MIN])].filter(mag => !mob._narrow || mag <= cap).sort((a, b) => b - a);
   const [ax, az] = dirVec(mob.lane.axis);
   const latX = -az, latZ = ax;
   const cx0 = cellCenter(mob.pos.x), cz0 = cellCenter(mob.pos.z);
@@ -1086,12 +1080,14 @@ function centerPull(mob, dt, supported, floating, holdLine, peers = null) {
   // scan): slides are rare per tick and the peer set is small; the math
   // matches the gated drives exactly.
   if (peers) {
-    const msx = Math.sin(mob.yaw), msz = Math.cos(mob.yaw);
     const budget = peerBudget(mob);
     let guard = 0;
     while (guard++ < 10) {
       const tx = mob.pos.x + -az * c, tz = mob.pos.z + ax * c;
-      if (peerPenAt(mob, tx, tz, msx, msz, mob.pos.y, peers, null) <= budget) break;
+      const clear = mob._narrow
+        ? peerStepOk(mob, tx, tz, mob.pos.y, peers, null, null, budget)
+        : !mobBlockedAt(mob, tx, tz, mob.pos.y, peers, 0, null, budget);
+      if (clear) break;
       c /= 2;
       if (Math.abs(c) <= 1e-4) return 0;
     }
@@ -1244,6 +1240,7 @@ function wrapStepOk(mob, stepOk) {
 export function servoTick(mob, dt, supported, floating, rand = Math.random, pickTarget = null, peerGate = null, peers = null, turnGate = null) {
   if (!supported || floating) { mob.lane = null; return false; }
   // R2 upkeep first: the latched line below biases this very tick's pull.
+  if (mob._narrow) mob.followLine = null;
   upkeepFollowLine(mob, dt);
   // A turn-away leave flies lane-less open-loop for its span: re-engaging
   // a rail mid-maneuver would kill the away commit the very next tick and
@@ -1254,7 +1251,7 @@ export function servoTick(mob, dt, supported, floating, rand = Math.random, pick
   // commit, no pivot toward the mouth.
   if (mob.lane && mob.roam?.entry) tryGuidedErect(mob, dt, supported, floating, rand);
   let sense = senseLane(mob);
-  const pre = tryPreLane(mob, dt, supported, floating, sense, rand);
+  const pre = mob._narrow ? undefined : tryPreLane(mob, dt, supported, floating, sense, rand);
   if (pre === "touch") {
     // Contact latch erected the lane: sense again along it, virtual wall up.
     sense = senseLane(mob);
@@ -1275,7 +1272,19 @@ export function servoTick(mob, dt, supported, floating, rand = Math.random, pick
   const jrng = mob.jrng ?? (mob.jrng = spawnRng(rand));
   const cx = Math.floor(mob.pos.x), cz = Math.floor(mob.pos.z);
   const prevAxis = mob.lane ? mob.lane.axis : null;
-  const res = updateLane(mob.lane, cx, cz, mob.yaw, sense.opens, sense.walled, jrng);
+  if (mob._narrow && !mob.lane && sense.opens.length > 0) {
+    const axis = sense.opens.reduce((a,b) => yawDiff(a,mob.yaw) < yawDiff(b,mob.yaw) ? a : b);
+    mob.lane = {axis, entry: oppositeYaw(axis), lockX: null, lockZ: null};
+  }
+  // A one-cell jog can enter its next corner before the old lock expires.
+  // Null cannot collide with a real negative-coordinate junction cell.
+  if (mob._narrow && mob.lane && !sense.opens.some(d => yawDiff(d, mob.lane.axis) < 1e-6)) {
+    mob.lane.lockX = null; mob.lane.lockZ = null;
+  }
+  const turning = mob._narrow && mob.noseTurn && mob.lane && yawDiff(mob.yaw, mob.noseTurn.axis) > 0.1;
+  const res = turning
+    ? { lane: { ...mob.lane, axis: mob.noseTurn.axis, entry: oppositeYaw(mob.noseTurn.axis) }, event: "lock-turn" }
+    : updateLane(mob.lane, cx, cz, mob.yaw, sense.opens, sense.walled, jrng);
   if (!res.lane) { dropLane(mob); return false; }
   mob.lane = res.lane;
   // Engagement needs true flanks: both adjacent lateral cells blocked.
@@ -1549,11 +1558,26 @@ function senseLane(mob) {
   const cellFree = v
     ? (bx, bz) => (v.side * ((v.latIsX ? bx : bz) + 0.5 - v.V) > 0 ? false : cellFreeReal(bx, bz))
     : cellFreeReal;
-  const opens = classifyExits(mob.pos.x, mob.pos.z, axisProbe, pointFree, cellFree);
+  const closed = narrowSense(mob);
+  const opens = closed ? [...closed.opens] : classifyExits(mob.pos.x, mob.pos.z, axisProbe, pointFree, cellFree);
+  if (closed && mob.lane && yawDiff(mob.yaw, mob.lane.axis) < 0.1 && !hasTurnAhead(mob, axisProbe)) {
+    const [fx, fz] = dirVec(axisProbe);
+    if (noseBlockedAt(mob, mob.pos.x + fx * mob.speed * SERVO_STEP, mob.pos.z + fz * mob.speed * SERVO_STEP, axisProbe)) {
+      const i = opens.findIndex(d => yawDiff(d, axisProbe) < 1e-6);
+      if (i >= 0) opens.splice(i, 1);
+    }
+  }
   if (mob.noseTurn) {
-    // Hold the nose-triggered reversal until it has moved one cell away.
-    if (mob.lane && Math.floor(mob.pos.x) === mob.noseTurn.lockX && Math.floor(mob.pos.z) === mob.noseTurn.lockZ) {
-      if (!opens.some((d) => yawDiff(d, mob.noseTurn.axis) < 1e-6)) opens.push(mob.noseTurn.axis);
+    const turn = mob.noseTurn;
+    const sameCell = Math.floor(mob.pos.x) === turn.lockX && Math.floor(mob.pos.z) === turn.lockZ;
+    // A short corridor can put both nose stops in the same cell. Hold the
+    // actual reversal, then release on travel rather than requiring a cell
+    // that the animal's nose cannot reach. Entering a corner releases early.
+    const hold = mob._narrow
+      ? yawDiff(mob.yaw, turn.axis) > 0.1 || (sameCell && Math.hypot(mob.pos.x - turn.x, mob.pos.z - turn.z) < 0.2)
+      : sameCell;
+    if (mob.lane && hold) {
+      if (!opens.some(d => yawDiff(d, turn.axis) < 1e-6)) opens.push(turn.axis);
     } else mob.noseTurn = null;
   }
   const [pax, paz] = dirVec(axisProbe);
@@ -1565,7 +1589,7 @@ function senseLane(mob) {
     const [dx, dz] = dirVec(d);
     if (!pointFree(mob.pos.x + dx * PROBE_DIST, mob.pos.z + dz * PROBE_DIST, d)) walled.push(d);
   }
-  return { axisProbe, cellFree, opens, fwdOpen, walled };
+  return { axisProbe, cellFree, opens, fwdOpen, walled: closed ? closed.walled : walled };
 }
 
 // Pre-lane flow: a 50/50 touch latch on a plain wall when the way ahead is
@@ -1931,7 +1955,7 @@ function seekDeadEnd(mob, dt, supported, floating, peers = null) {
   if (noseStopped) {
     mob.lane.lockX = Math.floor(mob.pos.x);
     mob.lane.lockZ = Math.floor(mob.pos.z);
-    mob.noseTurn = { axis: mob.lane.axis, lockX: mob.lane.lockX, lockZ: mob.lane.lockZ };
+    mob.noseTurn = { axis: mob.lane.axis, lockX: mob.lane.lockX, lockZ: mob.lane.lockZ, x: mob.pos.x, z: mob.pos.z };
   }
   mob.yawTarget = mob.lane.axis;
   // Bounded sweep give while a waiter holds outside the disc: the rotation
@@ -2925,7 +2949,8 @@ export function separateFarmMobs(list, grid = null) {
         // to PASS_BUDGET) — the tangential wall-sandwich slide below would
         // push both back apart along the corridor and read as a crawl. The
         // backstop resumes the residue the tick the window drops.
-        if (passingActive(a) && passingActive(b) && a._passPeer === b && b._passPeer === a) continue;
+        if (passingActive(a) && passingActive(b) && a._passPeer === b && b._passPeer === a &&
+          (!a._narrow || (narrowPoseOk(a,a.pos.x,a.pos.z,a.yaw,false) && narrowPoseOk(b,b.pos.x,b.pos.z,b.yaw,false)))) continue;
         const w = worstPairPen(a, b, i, inner ? (idx.get(b) ?? 0) : i + 1 + k);
         if (!w || w.pen <= PUSH_T) continue;
         // Center-to-center axis (see header): strictly grows body distance.

@@ -85,6 +85,9 @@ export function resetMobMotion(mob) {
   mob.blockedT = 0;
   mob.wanderT = 2 + Math.random() * 3;
   mob.lane = null;
+  mob._narrow = null;
+  mob._passT = 0; mob._passPeer = null; mob._passPreT = 0; mob._passPrePeer = null;
+  mob._passSide = 0; mob._lineOff = 0; mob._passSettle = 0; mob.noseTurn = null;
   mob.passage = null;
   mob.inPassage = false;
   mob.oneWide = false;

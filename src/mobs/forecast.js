@@ -27,6 +27,7 @@
 // Evasions scope: only forced maneuvers (plan/detour) hold a heading;
 // free roam/wander stays raw (see roam.js, mover.js).
 // Deterministic: fixed order, no rand stream. Headless-testable.
+import { prepareNarrowPairs } from "./narrow.js";
 import { normYaw, mobHeadsToCooledMouth } from "./corridor.js";
 import { segmentWalkable } from "./step.js";
 import { queryMobGrid } from "./grid.js";
@@ -943,6 +944,7 @@ function engagePhase(cx, intent, hit) {
 // (blue → free-roam commit) / _wantAbort (wedged 1-wide committer →
 // giveUp path) flags consumed by the mover this same tick.
 export function planGroup(peers, dt, grid = null) {
+  prepareNarrowPairs(peers, dt);
   const reservations = new Map();
   for (const m of peers) {
     if (!m.alive) continue;
