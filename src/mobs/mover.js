@@ -101,21 +101,22 @@ export const GATE_ALLOW = 0.05;
 // (see TURN_GIVE) — bounded, never a walk-through.
 export const CROSS_BUDGET = 0.15;
 export const TURN_GIVE = 0.05;
-// 1-wide rail mates: two true 1-wide rails (red, see isRedRail) on the
-// same level ghost through each other — no step/turn gate, courtesy hold,
-// grind watch, file pacing, or backstop between them. A 1-wide corridor
-// has no room for two bodies, so overlap is the price of never blocking,
-// freezing, or slowing. While a mate is within body reach plus RAIL_LEAD
-// (released past RAIL_HOLD more), each keeps right of its own lane axis:
-// opposed rails sit on opposite world sides, same-direction files share
-// one, and a U-turn flips the side, sliding across at the centring rate.
-// The offset (corridor half − hw + RAIL_GRAZE, any body size) lets the
-// shoulder graze the wall face; voxel probes shrink by WALL_ALLOW while a
-// rail sits offset (peer math, pits, and headroom stay exact).
+// 1-wide rail crossing: two mobile true 1-wide rails (red, see isRedRail)
+// closing on each other within both body reaches plus RAIL_LEAD cross
+// side by side — each keeps right of its own lane axis (opposed rails on
+// opposite world sides; a rail turned round by a U-turn crosses whoever
+// followed it) and the pair ghosts: no step/turn gate, courtesy hold,
+// grind watch, file pacing, yield, or backstop between them, since a
+// 1-wide corridor has no room for two bodies abreast. Held while closing
+// or within combined body reach, then both re-centre and every
+// collision rule is back: files, parted pairs, and lone rails keep the
+// plain centred ride. The offset (corridor half − hw + RAIL_GRAZE, any
+// body size, straight cells only) lets the shoulder graze the wall face;
+// voxel probes admit WALL_ALLOW of wall depth while crossing (see
+// makeStepOk graze; peer math, pits, and headroom stay exact).
 export const RAIL_GRAZE = 0.08;
 export const WALL_ALLOW = 0.1;
 export const RAIL_LEAD = 1.0;
-export const RAIL_HOLD = 0.5;
 // Maneuver turn give (m): how far past the brush budget a turn-away
 // escape may sweep while unwinding nose-to-nose contact. Broad snouts
 // veto every partial yaw under the strict rule, freezing the escape in
@@ -198,7 +199,7 @@ const ACUTE_PACE_COS = 0.5;
 function followsPace(mob, o) {
   if (o === mob || !o.alive) return false;
   if (Math.abs(o.pos.y - mob.pos.y) > SEP_Y) return false;
-  if (railMates(mob, o)) return false;
+  if (railCrossing(mob, o)) return false;
   const fx = Math.sin(mob.yaw), fz = Math.cos(mob.yaw);
   const rx = -Math.cos(mob.yaw), rz = Math.sin(mob.yaw);
   const ox = o.pos.x - mob.pos.x, oz = o.pos.z - mob.pos.z;
@@ -310,8 +311,8 @@ export function worstPairPen(a, b, i = 0, j = 1) {
 // budget, same math — only the pose and the verdict differ). extra inflates
 // the core half-width (comfort margin for picks); exempt skips peers whose
 // spacing another discipline owns (paced file peers, same-direction pairs).
-// Rail mates never count (see RAIL_GRAZE): every gate built on this reads
-// them as air. Pure: reads positions only.
+// A crossing rail pair never counts (see RAIL_GRAZE): every gate built on
+// this reads it as air. Pure: reads positions only.
 const _penNear = [];
 export function peerPenAt(mob, x, z, sx, sz, y, peers, grid = null, extra = 0, exempt = null) {
   // 3.5 m query covers the 3 m skip below (steps move cm per tick), so the
@@ -322,7 +323,7 @@ export function peerPenAt(mob, x, z, sx, sz, y, peers, grid = null, extra = 0, e
     if (o === mob || !o.alive) continue;
     if (Math.abs(o.pos.y - y) > SEP_Y) continue;
     if (exempt != null && exempt(o)) continue;
-    if (railMates(mob, o)) continue;
+    if (railCrossing(mob, o)) continue;
     const ox = o.pos.x - x, oz = o.pos.z - z;
     if (ox * ox + oz * oz > 3 * 3) continue;
     const w = worstPairPenAt(x, z, sx, sz, mob.hw + extra, mob.nose, mob.tail, o, 0, 0);
@@ -468,18 +469,52 @@ export function pickDetourTarget(mob, rand, peers, grid = null) {
 function isRedRail(mob) {
   return mob.lane != null && mob.followLine?.touch !== true;
 }
-// Rail mates (see RAIL_GRAZE): both mobile true 1-wide rails on the same
-// level. The one exemption every peer scan applies — gates, pacing, grind,
-// yield, backstop — so two rails in one corridor never constrain each
-// other. Frozen bodies (parked, carried, riding) stay plain obstacles.
-// Pure: reads flags and positions only.
+// Rail pair: both mobile true 1-wide rails on the same level. Frozen
+// bodies (parked, carried, riding) stay plain obstacles. Pure: reads flags
+// and positions only.
 function railMobile(mob) {
   return isRedRail(mob) && (mob.speed ?? 0) > 0 && !mob._carried && !mob._riding;
 }
-export function railMates(a, b) {
+function railPair(a, b) {
   if (a === b || !a.alive || !b.alive) return false;
   if (Math.abs(a.pos.y - b.pos.y) > SEP_Y) return false;
   return railMobile(a) && railMobile(b);
+}
+// Closing: the axes converge along the pair's separation — head-on on a
+// straight, both rounding into one corner, or a rail turned round
+// (U-turn) toward the one behind it. Files (same axis) never close.
+function axesClose(a, b, aAxis, bAxis) {
+  const [ax, az] = dirVec(aAxis), [bx, bz] = dirVec(bAxis);
+  return (b.pos.x - a.pos.x) * (ax - bx) + (b.pos.z - a.pos.z) * (az - bz) > 1e-3;
+}
+// A dead-end seek reads both ways: on its lane (still walking the last
+// stretch — a staircase "dead end" may yet resolve into a turn) and on
+// its post-turn axis (the U-turn toward whoever follows it is decided).
+function railClosing(a, b) {
+  if (axesClose(a, b, a.lane.axis, b.lane.axis)) return true;
+  if (a._seekAxis == null && b._seekAxis == null) return false;
+  return axesClose(a, b, a._seekAxis ?? a.lane.axis, b._seekAxis ?? b.lane.axis);
+}
+// Within combined body reach: the bodies could still interlock once both
+// re-centre (nose/tail contact also flickers tick to tick mid-pass), so a
+// crossing ends only past it — collision rules never resume on a pair
+// that could touch.
+function withinReach(a, b) {
+  return Math.hypot(a.pos.x - b.pos.x, a.pos.z - b.pos.z) < bodyReach(a) + bodyReach(b) + SEP_GAP;
+}
+// Rail crossing (see RAIL_GRAZE): the one exemption every peer scan
+// applies — gates, pacing, grind, yield, backstop — so a crossing pair
+// never constrains itself. Symmetric: either side's memory holds it. A
+// rail may cross several at once (three-way junction meetings).
+const NO_MATES = Object.freeze([]);
+function matesOf(mob) {
+  return mob._crossMates ?? NO_MATES;
+}
+export function railCrossing(a, b) {
+  return railPair(a, b) && (matesOf(a).includes(b) || matesOf(b).includes(a));
+}
+function crossingNow(mob) {
+  return matesOf(mob).length > 0;
 }
 // Farthest body extent from the centre (nose, tail, or core).
 function bodyReach(mob) {
@@ -490,37 +525,53 @@ function bodyReach(mob) {
 export function railOff(mob) {
   return Math.max(0, 0.5 - mob.hw) + RAIL_GRAZE;
 }
-// Nearest rail mate within reach (hysteresis: engage at both reaches plus
-// RAIL_LEAD, release past RAIL_HOLD more). Once per drive tick.
-function updateRailMate(mob, peers) {
-  let best = null, bestD = Infinity;
-  if (peers && isRedRail(mob)) {
+// Crossing upkeep, once per drive tick: keep each mate while still
+// closing or within reach; engage every closing rail within both body
+// reaches plus RAIL_LEAD.
+function updateRailCrossing(mob, peers) {
+  const mates = matesOf(mob).filter((o) =>
+    railPair(mob, o) && (railClosing(mob, o) || withinReach(mob, o)));
+  if (peers && railMobile(mob)) {
     for (const o of peers) {
-      if (!railMates(mob, o)) continue;
+      if (mates.includes(o) || !railPair(mob, o) || !railClosing(mob, o)) continue;
       const d = Math.hypot(o.pos.x - mob.pos.x, o.pos.z - mob.pos.z);
-      const r = bodyReach(mob) + bodyReach(o) + RAIL_LEAD + (mob._railMate ? RAIL_HOLD : 0);
-      if (d < r && d < bestD) { best = o; bestD = d; }
+      if (d < bodyReach(mob) + bodyReach(o) + RAIL_LEAD) mates.push(o);
     }
   }
-  mob._railMate = best;
-  // Settle: the grace outlives the mate until the body is back inside the
-  // wall-free slack (never on a rail that never had a mate).
-  if (best) mob._railSettle = true;
-  else if (mob._railSettle && !(isRedRail(mob) && Math.abs(railLateral(mob)) > 0.5 - mob.hw - 1e-3)) {
+  mob._crossMates = mates;
+  const mate = mates.length > 0;
+  // Settle: the grace outlives the crossing until the body is back on its
+  // line — inside the wall-free lateral slack (an offset body reads every
+  // corner exit blocked on exact probes) and clear of every wall (the graze
+  // may sit along-track in corner cells, where exact probes refuse every
+  // stride). Never on a rail that never crossed.
+  if (mate) mob._railSettle = true;
+  else if (mob._railSettle && !(isRedRail(mob) && Math.abs(railLateral(mob)) > 0.5 - mob.hw - 1e-3) &&
+    !aabbIntersectsSolid(mob.pos.x, mob.pos.y, mob.pos.z, mob.hw, mob.h)) {
     mob._railSettle = false;
   }
+}
+// True straight 1-wide cell: both lateral neighbours of the current cell
+// (relative to the lane axis) are walls.
+function railStraightCell(mob) {
+  const [ax, az] = dirVec(mob.lane.axis);
+  const cellFree = makeCellFree(mob);
+  const cx = Math.floor(mob.pos.x), cz = Math.floor(mob.pos.z);
+  return !cellFree(cx + az, cz - ax) && !cellFree(cx - az, cz + ax);
 }
 // Lateral distance from the cell-centre line of the lane axis.
 function railLateral(mob) {
   const [ax, az] = dirVec(mob.lane.axis);
   return (mob.pos.x - cellCenter(mob.pos.x)) * -az + (mob.pos.z - cellCenter(mob.pos.z)) * ax;
 }
-// Voxel probe shrink for an offset rail: while a mate holds it right, and
-// through the settle after the meeting (exact probes would read the
-// grazing shoulder as a wall and refuse every stride). Exact everywhere
-// else — a rail that never met a mate never grazes.
+// Voxel graze for a crossing rail (see makeStepOk): WALL_ALLOW while the
+// crossing holds it right; 0 (step out, never deeper) through the settle
+// until the exact body clears every wall again; null (exact) otherwise —
+// a rail that never crossed never grazes.
 function railGrace(mob) {
-  return isRedRail(mob) && (mob._railMate || mob._railSettle) ? WALL_ALLOW : 0;
+  if (!isRedRail(mob)) return null;
+  if (crossingNow(mob)) return WALL_ALLOW;
+  return mob._railSettle ? 0 : null;
 }
 // In-place turn: laned with the yaw far off the lane axis and no real
 // advance (dead-end seek rotation, flip in place, nose-turn expression).
@@ -545,11 +596,11 @@ function midSweepTurn(mob) {
 // Peers a waiter yields to: in-place turners always; mid-sweep blenders
 // only across corridor lines (same-line pairs — files pacing a turning
 // leader, head-on straights — keep their pace discipline instead of
-// accordion-stopping every junction). Rail mates never yield: they ghost
+// accordion-stopping every junction). A crossing rail pair never yields: it ghosts
 // (see RAIL_GRAZE), so a U-turn and a crossing share one corridor. Pure:
 // reads lanes and yaws only.
 function yieldTurnPeer(mob, o) {
-  if (railMates(mob, o)) return false;
+  if (railCrossing(mob, o)) return false;
   if (inPlaceTurn(o)) return true;
   if (!midSweepTurn(o)) return false;
   if (mob.lane == null || o.lane == null) return true;
@@ -643,9 +694,12 @@ function centerPull(mob, dt, supported, floating, holdLine, peers = null) {
   if (mob.followLine?.noSlide === true) return 0;
   let ccx = cellCenter(mob.pos.x), ccz = cellCenter(mob.pos.z);
   const vw = mob.followLine;
-  // A red rail with a mate keeps right of its own lane axis (see
-  // RAIL_GRAZE): opposed mates land on opposite world sides.
-  if (!vw && mob._railMate) {
+  // A crossing red rail keeps right of its own lane axis (see RAIL_GRAZE):
+  // opposed rails land on opposite world sides. Straight cells only: an
+  // offset carried into a corner turns along-track with the lane and
+  // pushes the corridor probes past a short arm's end wall (both ways read
+  // dead end), so turns are always taken from the centre line.
+  if (!vw && crossingNow(mob) && railStraightCell(mob)) {
     const off = railOff(mob);
     ccx += -az * off; ccz += ax * off;
   }
@@ -703,7 +757,7 @@ function centerPull(mob, dt, supported, floating, holdLine, peers = null) {
   const axisOk = wrapStepOk(mob, (nx, nz) => centerBase(nx, nz) && descendOk(mob, nx, nz));
   // Peer-aware slide: the lateral pull converges every ride onto its line —
   // two abreast rides would grind onto one body. Halve the slide down to the
-  // largest peer-free lateral (rail mates exempt, see peerPenAt), refusing
+  // largest peer-free lateral (crossing rails exempt, see peerPenAt), refusing
   // it when even a hair stays overlapped:
   // the file keeps its lateral offset instead of merging. Null grid (legacy
   // scan): slides are rare per tick and the peer set is small; the math
@@ -1459,7 +1513,8 @@ function noseBlockedAt(mob, x, z, yaw) {
   // Leave a small clearance so bounded move subdivision cannot end in a
   // barely-intersecting pose; an offset rail's nose grazes the side wall
   // by the same grace as its body (only the end wall stops it).
-  return aabbIntersectsSolid(nx, mob.pos.y, nz, mob.nose.r + 0.03 - railGrace(mob), mob.h);
+  const graze = isRedRail(mob) && (crossingNow(mob) || mob._railSettle) ? WALL_ALLOW : 0;
+  return aabbIntersectsSolid(nx, mob.pos.y, nz, mob.nose.r + 0.03 - graze, mob.h);
 }
 
 // A nearby corner is not a dead end: its body turn arc owns clearance, not
@@ -1500,11 +1555,12 @@ function hasTurnAhead(mob, forward) {
 // turns and any angle away from a true dead end.
 function seekDeadEnd(mob, dt, supported, floating, peers = null) {
   const forward = mob.lane.entry; // pre-flip axis: updateLane already swapped
+  mob._seekAxis = mob.lane.axis;
   // Recentre first (no corridor gate: a corner wedge is never a true
   // 1-wide cell, and that is exactly when the seek needs centring —
   // the axisOk probe below refuses any slide into a wall, and a stale
   // flipped follow line still pins the lateral via modulo-π).
-  updateRailMate(mob, peers);
+  updateRailCrossing(mob, peers);
   mob._yieldHold = peers != null && turnYieldHold(mob, peers);
   const recentered = centerPull(mob, dt, supported, floating, true, peers);
   // Dead-end seek refuses pit descents (see descendOk): the pit lip is
@@ -1699,7 +1755,7 @@ function grindScan(mob, peers, grid = null) {
   for (const o of list) {
     if (o === mob || !o.alive) continue;
     if (Math.abs(o.pos.y - mob.pos.y) > SEP_Y) continue;
-    if (railMates(mob, o)) continue;
+    if (railCrossing(mob, o)) continue;
     const dx = o.pos.x - mob.pos.x, dz = o.pos.z - mob.pos.z;
     const d2 = dx * dx + dz * dz;
     const d = Math.sqrt(d2);
@@ -1940,9 +1996,10 @@ function cruiseLane(mob, dt, supported, floating, res, rand = Math.random, peerG
   // walkable continuation pass through, local minima read as walls. The
   // probe below captures the pre-turn facing exactly like the inline drive
   // did; the move itself runs post-turn.
-  updateRailMate(mob, peers);
+  mob._seekAxis = null;
+  updateRailCrossing(mob, peers);
   // U-turn yield: hold the rail (no stall release below) while a turner
-  // rotates ahead (see turnYieldHold; rail mates never yield).
+  // rotates ahead (see turnYieldHold; a crossing never yields).
   mob._yieldHold = peers != null && turnYieldHold(mob, peers);
   const cruiseBase = makeStepOk(mob, supported, floating, 0, mob.yaw, 0, railGrace(mob));
   const cruiseOk = wrapStepOk(mob, cruiseBase);
@@ -1956,7 +2013,7 @@ function cruiseLane(mob, dt, supported, floating, res, rand = Math.random, peerG
   // stall below still accrues (dist reads 0) and trips the
   // escape, so a wait never parks forever, and the waiter stops travelling.
   // No state: the quiet hold below owns persistence, this only refuses the
-  // push. Rail mates never hold (grindScan skips them). Mutual courtesy
+  // push. A crossing never holds (grindScan skips it). Mutual courtesy
   // breaks by peer rank: when two mobiles hold for
   // each other nose-to-nose, nobody would ever move — the lower index
   // proceeds (strict gates still refuse true overlaps) while the higher
@@ -2009,8 +2066,8 @@ function cruiseLane(mob, dt, supported, floating, res, rand = Math.random, peerG
     }
   }
   const driveRes = held ? null : driveToward(mob, dt, mob.yawTarget, () => {
-    // Peer gate (crossing budget, rail mates exempt): laned drives stop at deep peer contact instead of grinding
-    // through — brushes walk through, paced files are exempt (followSlow
+    // Peer gate (crossing budget, crossing rails exempt): laned drives
+    // stop at deep peer contact instead of grinding through — brushes walk through, paced files are exempt (followSlow
     // paces them), and the stall path owns the escape (U-turn/release),
     // exactly like the lane-less stuck path. No freeze: the drive only ever
     // refuses, never reverses by itself.
@@ -2073,7 +2130,7 @@ export function tickFarmMob(mob, dt, pickTarget, rand = mob.rand ?? Math.random,
   mob._grindCool = Math.max(0, (mob._grindCool ?? 0) - dt);
   mob._turnAway = Math.max(0, (mob._turnAway ?? 0) - dt);
   // Off the rail, no mate is held (updateRailMate runs in the drives).
-  if (!mob.lane) { mob._railMate = null; mob._railSettle = false; mob._yieldHold = false; mob._courtesyPeer = null; }
+  if (!mob.lane) { mob._seekAxis = null; mob._crossMates = NO_MATES; mob._yieldHold = false; mob._courtesyPeer = null; }
   const entryHold = supported && !floating ? entryTick(mob, dt, rand, { supported, floating, pickTarget }) : false;
   // 2-wide crossing state: maintained while the mouth holds, draws the exit
   // at the first hold tick and closes with cooldown at the leave
@@ -2192,7 +2249,9 @@ export function tickFarmMob(mob, dt, pickTarget, rand = mob.rand ?? Math.random,
       } // end peer path (solo legacy above keeps the old draw stream)
     } else {
       mob.stuckT = 0;
-      mob._adv = 0;
+      // Real advance even without a target: rails walk their lane with
+      // none, and a fake 0 reads a walking leader as stalled to its file.
+      mob._adv = Math.hypot(mob.pos.x - mob.lastX, mob.pos.z - mob.lastZ);
       mob._progTgt = null; mob._progBad = 0; mob._progAge = 0;
     }
     mob.lastX = mob.pos.x;
@@ -2224,7 +2283,7 @@ export function tickFarmMob(mob, dt, pickTarget, rand = mob.rand ?? Math.random,
     ? (nx, nz) => !(peerStepOk(mob, nx, nz, mob.pos.y, peersEff, grid, null, CROSS_BUDGET) &&
       sweepDiscOk(mob, nx, nz, peersEff, grid))
     : null;
-  // Laned peer gate (crossing budget; rail mates ghost, see RAIL_GRAZE): a
+  // Laned peer gate (crossing budget; crossing rails ghost, see RAIL_GRAZE): a
   // rail never overlaps a non-mate peer past the budget either —
   // the drive stops at contact range and the stall path owns the escape
   // (U-turn/release), exactly like the lane-less stuck path. Settled files
@@ -2247,7 +2306,7 @@ export function tickFarmMob(mob, dt, pickTarget, rand = mob.rand ?? Math.random,
   // deepening unfreezes broad-snount deadlocks without freeing sweeps.
   // Laned flip turns stay strict — the line re-measures every tick, so a
   // strict turn converges instead of freezing, and the sweep stays clean.
-  // Rail mates never veto each other's turns (peerPenAt skips them).
+  // Crossing rails never veto each other's turns (peerPenAt skips them).
   const turnGate = peersEff
     ? makeTurnGate(mob, peersEff, grid, 0)
     : null;
@@ -2479,9 +2538,9 @@ export function separateFarmMobs(list, grid = null) {
       for (let k = 0; k < (inner ? n : list.length - i - 1); k++) {
         const b = inner ? inner[k] : list[i + 1 + k];
         if (!b.alive) continue;
-        // Rail mates ghost (see RAIL_GRAZE): the backstop resumes the
-        // residue the tick either leaves its rail.
-        if (railMates(a, b)) continue;
+        // A crossing rail pair ghosts (see RAIL_GRAZE): the backstop resumes the
+        // residue the tick the crossing ends.
+        if (railCrossing(a, b)) continue;
         const w = worstPairPen(a, b, i, inner ? (idx.get(b) ?? 0) : i + 1 + k);
         if (!w || w.pen <= PUSH_T) continue;
         // Center-to-center axis (see header): strictly grows body distance.

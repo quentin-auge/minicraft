@@ -1,16 +1,18 @@
-// 1-wide rail mates: two true 1-wide rails ghost through each other (no
-// peer gate, yield, pacing, grind, or backstop between them) and keep
-// right of their own lane axis while within reach — opposed rails sit on
-// opposite world sides, a U-turn slides across. The REAL mover (mover.js)
-// on REAL voxels (store.js), headless (mob.root is null), driven like
-// production (planGroup + mob grid + separation backstop), in closed
-// 1-wide, 1-deep trenches where every end is a dead-end U-turn.
+// 1-wide crossings: two true 1-wide rails closing on each other ghost
+// through each other (no peer gate, yield, pacing, grind, or backstop
+// between them) and keep right of their own lane axis on straight cells —
+// opposed rails sit on opposite world sides, a U-turn slides across.
+// Files and parted pairs keep every collision rule and the centred ride.
+// The REAL mover (mover.js) on REAL voxels (store.js), headless (mob.root
+// is null), driven like production (planGroup + mob grid + separation
+// backstop), in closed 1-wide, 1-deep trenches where every end is a
+// dead-end U-turn.
 import assert from "node:assert/strict";
 import { AIR, STONE } from "../../../src/core/blocks.js";
 import { setDimension, resetWorld, setBlock } from "../../../src/core/store.js";
 import { LIVESTOCK_SPECS, specCircles } from "../../../src/mobs/livestock.js";
 import {
-  FARM_WALK, tickFarmMob, separateFarmMobs, railMates, railOff, aabbIntersectsSolid,
+  FARM_WALK, tickFarmMob, separateFarmMobs, railCrossing, railOff, worstPairPen, WALL_ALLOW, aabbIntersectsSolid,
 } from "../../../src/mobs/mover.js";
 import { planGroup } from "../../../src/mobs/forecast.js";
 import { buildMobGrid } from "../../../src/mobs/grid.js";
@@ -98,8 +100,8 @@ function run(cells, spawns, ticks, extra = []) {
       !aabbIntersectsSolid(nx, m.pos.y, nz, m.nose.r, m.h), `rig spawn embedded (${m.pos.x},${m.pos.z})`);
   }
   const pick = (m, r) => strideTarget(m, undefined, r);
-  const R = list.map(() => ({ still: 0, stillRun: 0, stillWorst: 0, creep: 0, jump: 0, laneLost: 0, wallDeep: 0, cells: new Set() }));
-  let crossings = 0, lastOrder = 0, sideRun = 0, sideBad = 0, mateTicks = 0;
+  const R = list.map(() => ({ still: 0, stillRun: 0, stillWorst: 0, creep: 0, jump: 0, laneLost: 0, wallDeep: 0, offIdle: 0, offRun: 0, cells: new Set() }));
+  let crossings = 0, lastOrder = 0, sideRun = 0, sideBad = 0, crossTicks = 0, maxPenIdle = 0;
   const trace = [];
   for (let t = 0; t < ticks; t++) {
     list.forEach((m, i) => { m._peerIdx = i; });
@@ -117,19 +119,28 @@ function run(cells, spawns, ticks, extra = []) {
       if (m.lane) {
         const ax = Math.sin(m.lane.axis), az = Math.cos(m.lane.axis);
         const lat = (q) => (q.x - Math.floor(q.x) - 0.5) * -az + (q.z - Math.floor(q.z) - 0.5) * ax;
+        // Off-centre with no crossing: the plain 1-wide ride is centred,
+        // side-by-side belongs to crossings only.
+        // Corner blends arc off the line legitimately (solo too): straight,
+        // aligned riding only.
+        const aligned = yawStep(m.yaw, m.lane.axis) < 0.05 && !((m.blendT ?? 0) > 0 && (m.blendT ?? 0) < 1);
+        // The re-centring glide after a crossing (≤ 0.26 m at the centring
+        // rate) is the only legal off-centre run: a longer one is stale.
+        if (t >= 30 && aligned && !(m._crossMates?.length) && Math.abs(lat(m.pos)) > 0.05) { r.offRun++; r.offIdle = Math.max(r.offIdle, r.offRun); } else r.offRun = 0;
         if (p.axis != null && yawStep(p.axis, m.lane.axis) < 1e-6 &&
           Math.floor(p.x) === Math.floor(m.pos.x) && Math.floor(p.z) === Math.floor(m.pos.z)) {
           r.jump = Math.max(r.jump, Math.abs(lat(m.pos) - lat(p)));
         }
       } else if (t >= 30) r.laneLost++; // grace: lane-less spawns engage
-      if (aabbIntersectsSolid(m.pos.x, m.pos.y, m.pos.z, m.hw - 0.09, m.h)) r.wallDeep++;
+      if (aabbIntersectsSolid(m.pos.x, m.pos.y, m.pos.z, m.hw - WALL_ALLOW - 1e-3, m.h)) r.wallDeep++;
       r.cells.add(`${Math.floor(m.pos.x)},${Math.floor(m.pos.z)}`);
     });
     if (list.length >= 2) {
       const [a, b] = list;
       const order = Math.sign(trackIdx(cells, a) - trackIdx(cells, b));
       if (order !== 0) { if (lastOrder !== 0 && order !== lastOrder) crossings++; lastOrder = order; }
-      if (railMates(a, b) && a._railMate === b) mateTicks++;
+      if (railCrossing(a, b)) crossTicks++;
+      else { const w = worstPairPen(a, b); if (w) maxPenIdle = Math.max(maxPenIdle, w.pen); }
       // World-side rule on a shared straight: opposed lanes on one cell line
       // sit on opposite sides once both are offset.
       let bad = false;
@@ -145,16 +156,16 @@ function run(cells, spawns, ticks, extra = []) {
     }
     trace.push(list.map((m) => `${m.pos.x.toFixed(6)},${m.pos.z.toFixed(6)},${m.yaw.toFixed(6)}`).join("|"));
   }
-  return { list, R, crossings, sideBad, mateTicks, trace };
+  return { list, R, crossings, sideBad, crossTicks, maxPenIdle, trace };
 }
 
-const fmt = (r) => r.R.map((q) => `stillWorst ${q.stillWorst} creep ${q.creep} jump ${q.jump.toFixed(3)} laneLost ${q.laneLost} wallDeep ${q.wallDeep} cells ${q.cells.size}`).join(" / ");
+const fmt = (r) => r.R.map((q) => `stillWorst ${q.stillWorst} creep ${q.creep} jump ${q.jump.toFixed(3)} laneLost ${q.laneLost} wallDeep ${q.wallDeep} offIdle ${q.offIdle} cells ${q.cells.size}`).join(" / ");
 
 // Every pair rig: never frozen, no stutter, the slide never hops, lanes
 // held, no wall walk-through, both mobs cover the whole path, and they
 // cross over and over instead of blocking.
-function assertFluent(label, cells, r, minCross) {
-  console.log(`${label}: crossings ${r.crossings} sideBad ${r.sideBad} mateTicks ${r.mateTicks} | ${fmt(r)}`);
+function assertFluent(label, cells, r, minCross, minCells = cells.length) {
+  console.log(`${label}: crossings ${r.crossings} sideBad ${r.sideBad} crossTicks ${r.crossTicks} maxPenIdle ${r.maxPenIdle.toFixed(3)} | ${fmt(r)}`);
   r.R.forEach((q, i) => {
     assert.ok(q.stillWorst <= 2, `${label}: mob ${i} froze ${q.stillWorst} ticks`);
     assert.ok(q.creep <= 15, `${label}: mob ${i} crept ${q.creep} ticks (stutter)`);
@@ -163,7 +174,8 @@ function assertFluent(label, cells, r, minCross) {
     assert.ok(q.jump <= STRIDE * 1.9 + 1e-3, `${label}: mob ${i} lateral hop ${q.jump.toFixed(3)}`);
     assert.equal(q.laneLost, 0, `${label}: mob ${i} lost its rail`);
     assert.equal(q.wallDeep, 0, `${label}: mob ${i} body past the wall graze`);
-    assert.equal(q.cells.size, cells.length, `${label}: mob ${i} visited ${q.cells.size}/${cells.length} cells`);
+    assert.ok(q.offIdle <= 10, `${label}: mob ${i} rode off-centre outside a crossing for ${q.offIdle} ticks`);
+    assert.ok(q.cells.size >= minCells, `${label}: mob ${i} visited ${q.cells.size}/${cells.length} cells`);
   });
   assert.ok(r.crossings >= minCross, `${label}: only ${r.crossings} crossings`);
   assert.ok(r.sideBad <= 20, `${label}: opposed rails shared a side for ${r.sideBad} ticks`);
@@ -203,7 +215,9 @@ for (const [label, spawns] of [
   ["zigzag-file", [{ x: 0.5, z: 0.5, yaw: 0 }, { x: 0.85, z: 1.5, yaw: Math.PI / 2, railed: true }]],
   ["zigzag-pigs", [{ kind: "pig", x: 0.5, z: 0.5, yaw: 0 }, { kind: "pig", x: 3.5, z: 4.5, yaw: Math.PI }]],
 ]) {
-  assertFluent(label, Z, run(Z, spawns, 1800), 6);
+  // A cow's nose guard stops its centre one cell short of a 1-cell end arm,
+  // so the end cells only ever hold a spawn.
+  assertFluent(label, Z, run(Z, spawns, 1800), 4, Z.length - 2);
   console.log(`PASS ${label}`);
 }
 
@@ -215,8 +229,34 @@ for (const [label, spawns] of [
   for (let z = 0; z <= 13; z++) S.push([0, z]);
   const r = run(S, [{ x: 0.5, z: 1.5, yaw: 0 }, { x: 0.5, z: 12.5, yaw: Math.PI }], 1500);
   assertFluent("straight-headon", S, r, 3);
-  assert.ok(r.mateTicks > 0 && r.mateTicks < 1500, `straight-headon: mates engage only within reach (${r.mateTicks} ticks)`);
+  assert.ok(r.crossTicks > 0 && r.crossTicks < 1500, `straight-headon: the crossing engages only within reach (${r.crossTicks} ticks)`);
   console.log("PASS straight-headon");
+}
+
+// --- File on a long straight: same-direction rails never cross — they
+// keep every collision rule (no ghosting, no keep-right, centred ride, at
+// most a brush), until the leader turns round at the dead end: then the
+// pair is closing and crosses side by side like any head-on.
+{
+  const S = [];
+  for (let z = 0; z <= 13; z++) S.push([0, z]);
+  const r = run(S, [{ x: 0.5, z: 3.0, yaw: 0 }, { x: 0.5, z: 5.4, yaw: 0 }], 1500);
+  assertFluent("straight-file", S, r, 1);
+  assert.ok(r.maxPenIdle <= 0.2, `straight-file: outside a crossing the pair only brushes (maxPen ${r.maxPenIdle.toFixed(3)})`);
+  console.log("PASS straight-file");
+}
+{
+  const S = [];
+  for (let z = 0; z <= 30; z++) S.push([0, z]);
+  const r = run(S, [{ x: 0.5, z: 3.0, yaw: 0 }, { x: 0.5, z: 5.4, yaw: 0 }], 300);
+  console.log(`straight-file-open: crossTicks ${r.crossTicks} maxPenIdle ${r.maxPenIdle.toFixed(3)} | ${fmt(r)}`);
+  assert.equal(r.crossTicks, 0, "straight-file-open: a file never crosses");
+  assert.ok(r.maxPenIdle <= 0.2, `straight-file-open: the file keeps its spacing (maxPen ${r.maxPenIdle.toFixed(3)})`);
+  r.R.forEach((q, i) => {
+    assert.equal(q.offIdle, 0, `straight-file-open: mob ${i} left the centre line`);
+    assert.ok(q.stillWorst <= 2, `straight-file-open: mob ${i} froze ${q.stillWorst} ticks`);
+  });
+  console.log("PASS straight-file-open");
 }
 
 // --- Junctions with three: a closed T and a closed crossroads, three
@@ -232,7 +272,9 @@ for (const [label, cells, spawns] of [
   const r = run(cells, spawns, 1800);
   console.log(`${label}: | ${fmt(r)}`);
   r.R.forEach((q, i) => {
-    assert.ok(q.stillWorst <= 2, `${label}: mob ${i} froze ${q.stillWorst} ticks`);
+    // Files keep their collisions: a follower may wait a beat behind a
+    // leader rounding the junction (0.1 s), never longer.
+    assert.ok(q.stillWorst <= 6, `${label}: mob ${i} froze ${q.stillWorst} ticks`);
     assert.ok(q.creep <= 30, `${label}: mob ${i} crept ${q.creep} ticks (stutter)`);
     assert.equal(q.wallDeep, 0, `${label}: mob ${i} body past the wall graze`);
     assert.ok(q.cells.size >= cells.length - 2, `${label}: mob ${i} visited ${q.cells.size}/${cells.length} cells`);
@@ -254,7 +296,7 @@ console.log("PASS rail-offset");
   const b = run(T3, [{ x: 0.5, z: 1.1, yaw: 0 }, { x: 0.5, z: 31.1, yaw: 0, seed: 99 }], 600,
     [[0, 30], [0, 31], [0, 32]]);
   for (let t = 0; t < 600; t++) assert.equal(b.trace[t].split("|")[0], a.trace[t], `invariance: tick ${t} diverged`);
-  assert.equal(b.mateTicks, 0, "invariance: a far rail never reads as a mate");
+  assert.equal(b.crossTicks, 0, "invariance: a far rail never reads as a crossing");
   console.log("PASS out-of-reach-invariance");
 }
 

@@ -143,6 +143,27 @@ export function aabbIntersectsSolid(px, py, pz, hw, h) {
   return false;
 }
 
+// Deepest wall penetration of a body box (0 when clear): per solid cell,
+// the shallower of its x/z overlaps (the push-out distance), max over the
+// cells the box touches. Same cell walk as aabbIntersectsSolid.
+export function solidPen(px, py, pz, hw, h) {
+  const x0 = Math.floor(px - hw), x1 = Math.floor(px + hw);
+  const z0 = Math.floor(pz - hw), z1 = Math.floor(pz + hw);
+  const y0 = Math.floor(py), y1 = Math.floor(py + h - 1e-4);
+  let worst = 0;
+  for (let by = y0; by <= y1; by++)
+    for (let bx = x0; bx <= x1; bx++)
+      for (let bz = z0; bz <= z1; bz++) {
+        const ox = Math.min(bx + 1, px + hw) - Math.max(bx, px - hw);
+        const oz = Math.min(bz + 1, pz + hw) - Math.max(bz, pz - hw);
+        if (ox <= 0 || oz <= 0 || by + 1 <= py || by >= py + h) continue;
+        if (!isSolidCell(bx, by, bz)) continue;
+        const d = Math.min(ox, oz);
+        if (d > worst) worst = d;
+      }
+  return worst;
+}
+
 // Destination headroom on the center column only: catches a wall standing
 // on the lower ground ahead without overlapping the step being descended
 // (a full body box at the lower level always would, rejecting all drops).
@@ -272,22 +293,29 @@ export function makeCellSolid(mob) {
 // footNose overrides the circle offset for the void probes: the corridor
 // classifier passes 0 (body-only direction sensing, so 1-cell arms ending
 // in a wall still read open), the drive passes the real nose reach.
-// hwShrink (rail-mate grace only, see mover.js railGrace) narrows the body
-// box against voxels —
-// an offset shoulder may graze the wall face by a bounded depth instead
-// of refusing every stride on float-exact face contact. Peer math, nose
-// probe, footing, and headroom stay exact.
-export function makeStepOk(mob, supported, floating, noseAlong, yaw, footNose = null, hwShrink = 0) {
+// graze (rail crossing only, see mover.js railGrace; null = exact) admits
+// wall penetration up to max(graze, the current pose's own): a crossing
+// shoulder grazes the wall face by a bounded depth instead of refusing
+// every stride on float-exact contact, and a body still grazing after the
+// crossing (graze 0) may always step out, never deeper — whatever the
+// axis, corner cells included. Peer math, footing, and headroom stay exact.
+export function makeStepOk(mob, supported, floating, noseAlong, yaw, footNose = null, graze = null) {
   const foot = footNose ?? noseAlong;
-  const hw = hwShrink > 0 ? Math.max(0.05, mob.hw - hwShrink) : mob.hw;
-  // Same shrink on the nose disc (rail grace only): at noseAlong 0 the disc
-  // sits inside the body box, so an unshrunk nose would veto the very
-  // shoulder graze the shrunk body allows. shrink 0 keeps legacy exact.
-  const nr = hwShrink > 0 ? Math.max(0.05, mob.nose.r - hwShrink) : mob.nose.r;
+  const sy = Math.sin(yaw), cy = Math.cos(yaw);
+  let bodyOk, noseOk;
+  if (graze == null) {
+    bodyOk = (x, z) => !aabbIntersectsSolid(x, mob.pos.y, z, mob.hw, mob.h);
+    noseOk = (x, z) => !aabbIntersectsSolid(x, mob.pos.y, z, mob.nose.r, mob.h);
+  } else {
+    const bodyCap = Math.max(graze, solidPen(mob.pos.x, mob.pos.y, mob.pos.z, mob.hw, mob.h)) + 1e-9;
+    const noseCap = Math.max(graze, solidPen(mob.pos.x + sy * noseAlong, mob.pos.y,
+      mob.pos.z + cy * noseAlong, mob.nose.r, mob.h)) + 1e-9;
+    bodyOk = (x, z) => solidPen(x, mob.pos.y, z, mob.hw, mob.h) <= bodyCap;
+    noseOk = (x, z) => solidPen(x, mob.pos.y, z, mob.nose.r, mob.h) <= noseCap;
+  }
   return (nx, nz) => {
-    if (aabbIntersectsSolid(nx, mob.pos.y, nz, hw, mob.h)) return false;
-    const gx = nx + Math.sin(yaw) * noseAlong, gz = nz + Math.cos(yaw) * noseAlong;
-    if (aabbIntersectsSolid(gx, mob.pos.y, gz, nr, mob.h)) return false;
+    if (!bodyOk(nx, nz)) return false;
+    if (!noseOk(nx + sy * noseAlong, nz + cy * noseAlong)) return false;
     if (floating) return true;
     // Bounded drift, gated on the takeoff level: legal descents keep
     // their glide, falls over void drop straight from the first tick.
