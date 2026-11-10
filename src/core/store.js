@@ -133,13 +133,17 @@ const protectedCells = fromKeys(() => new Set());
 
 export let dim = "over";
 export let world = worlds.over;
+// Invalidates read-only geometry caches after writes, resets and dimension switches.
+export let worldRevision = 0;
 
 export function setDimension(name) {
+  worldRevision++;
   dim = name;
   world = worlds[name];
 }
 
 export function resetWorld(name) {
+  worldRevision++;
   worlds[name].clear();
   colTops[name].clear();
   colOcc[name].clear();
@@ -194,6 +198,7 @@ export function getBlockIn(name, x, y, z) {
 export function setBlock(x, y, z, id) {
   const k = key(x, y, z);
   if (id === AIR && protectedCells[dim].has(k)) return false;
+  worldRevision++;
   const ci = colTopIdx(x, z);
   const tops = colTops[dim];
   const occ = colOcc[dim];
@@ -243,6 +248,7 @@ export function setBlock(x, y, z, id) {
 // and blasts keep setBlock.
 export function fillColumn(x, z, y0, y1, id) {
   if (y0 > y1) return;
+  worldRevision++;
   const ci = colTopIdx(x, z);
   const occ = colOcc[dim];
   let set = occ.get(ci);

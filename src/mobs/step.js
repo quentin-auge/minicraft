@@ -136,6 +136,7 @@ export const isSolidCell = (x, y, z) => !!BLOCK_INFO[getBlock(x, y, z)]?.solid;
 // blend state (blend is only ever read under a lane, so resetting it here
 // is invisible everywhere else).
 export function dropLane(mob) {
+
   mob.lane = null; mob.blendFrom = null; mob.blendT = 0;
 }
 
@@ -150,6 +151,38 @@ export function aabbIntersectsSolid(px, py, pz, hw, h) {
         if (bz + 1 <= pz - hw || bz >= pz + hw) continue;
         if (by + 1 <= py || by >= py + h) continue;
         if (isSolidCell(bx, by, bz)) return true;
+      }
+  return false;
+}
+
+// Nose box against the voxels, with the passing grace on the SIDE walls
+// only. A wall in front of the nose blocks it exactly as before — the head
+// must stop before it enters the wall ahead, dead ends included. A wall
+// BESIDE the nose is a graze: the passing offset pushes the nose against
+// the corridor wall the same way it pushes the shoulder, so it is
+// tolerated up to `grace` deep. Without that, a legal passing pose reads
+// as a dead end and the lane flips under it.
+export function noseHitsSolid(px, py, pz, box, h, dx, dz, grace) {
+  const x0 = Math.floor(px - box), x1 = Math.floor(px + box);
+  const z0 = Math.floor(pz - box), z1 = Math.floor(pz + box);
+  const y0 = Math.floor(py), y1 = Math.floor(py + h - 1e-4);
+  for (let by = y0; by <= y1; by++)
+    for (let bx = x0; bx <= x1; bx++)
+      for (let bz = z0; bz <= z1; bz++) {
+        const ox = Math.min(px + box, bx + 1) - Math.max(px - box, bx);
+        if (ox <= 0) continue;
+        const oz = Math.min(pz + box, bz + 1) - Math.max(pz - box, bz);
+        if (oz <= 0) continue;
+        if (by + 1 <= py || by >= py + h) continue;
+        if (!isSolidCell(bx, by, bz)) continue;
+        // Lateral offset of the cell from the nose's line: beside the nose
+        // means a graze, in front of it means a block.
+        const lat = Math.abs(-(bz + 0.5 - pz) * dx + (bx + 0.5 - px) * dz);
+        if (lat > box) {
+          if (Math.min(ox, oz) > grace) return true;
+          continue;
+        }
+        return true;
       }
   return false;
 }
@@ -283,12 +316,17 @@ export function makeCellSolid(mob) {
 // footNose overrides the circle offset for the void probes: the corridor
 // classifier passes 0 (body-only direction sensing, so 1-cell arms ending
 // in a wall still read open), the drive passes the real nose reach.
-export function makeStepOk(mob, supported, floating, noseAlong, yaw, footNose = null) {
+export function makeStepOk(mob, supported, floating, noseAlong, yaw, footNose = null, hwShrink = 0) {
   const foot = footNose ?? noseAlong;
+  const hw = hwShrink > 0 ? Math.max(0.05, mob.hw - hwShrink) : mob.hw;
+  // Same shrink on the nose disc (passing only): at noseAlong 0 the disc
+  // sits inside the body box, so an unshrunk nose would veto the very
+  // shoulder graze the shrunk body allows. shrink 0 keeps legacy exact.
+  const nr = hwShrink > 0 ? Math.max(0.05, mob.nose.r - hwShrink) : mob.nose.r;
   return (nx, nz) => {
-    if (aabbIntersectsSolid(nx, mob.pos.y, nz, mob.hw, mob.h)) return false;
+    if (aabbIntersectsSolid(nx, mob.pos.y, nz, hw, mob.h)) return false;
     const gx = nx + Math.sin(yaw) * noseAlong, gz = nz + Math.cos(yaw) * noseAlong;
-    if (aabbIntersectsSolid(gx, mob.pos.y, gz, mob.nose.r, mob.h)) return false;
+    if (aabbIntersectsSolid(gx, mob.pos.y, gz, nr, mob.h)) return false;
     if (floating) return true;
     // Bounded drift, gated on the takeoff level: legal descents keep
     // their glide, falls over void drop straight from the first tick.

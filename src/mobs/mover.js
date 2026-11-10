@@ -4,6 +4,8 @@
 // Shared step physics live in step.js (R0), the directional policy and
 // the gap scan in corridor.js; farm.js owns the meshes, spawning,
 // and lifecycle. Headless rigs drive this module on live voxels.
+import { SEP_GAP, CROSS_BUDGET, PASS_OFF, PASS_BUDGET, WALL_ALLOW, worstPairPenAt } from "./collide.js";
+import { narrowPoseOk, narrowSide, narrowSense, activeNarrowPeer } from "./narrow.js";
 import { FARM_WALK_DIVISOR } from "./livestock.js";
 import {
   PROBE_DIST, normYaw, yawDiff, dirVec, cellCenter, oppositeYaw, snapCardinal, snap8,
@@ -14,7 +16,7 @@ import { entryTick, passageTick } from "./entry.js";
 import { navTick, navCommit, navPlanAllows, navPathDistance, navCellOnPath, NAV_BAND } from "./nav.js";
 import { queryMobGrid, buildMobGrid } from "./grid.js";
 import {
-  aabbIntersectsSolid, hasSupport,
+  aabbIntersectsSolid, noseHitsSolid, hasSupport,
   liquidSurface, footingOk, groundBelow, headroomOk,
   makeCellFree, makeCellSolid, makeStepOk, descendOk, turnTo,
   moveClamped, moveVector, driveToward, dropLane, spawnRng, stepVertical,
@@ -72,7 +74,7 @@ export const PUSH_T = 0.07;
 export const PUSH_CAP = 0.025;
 // Separation gap added to every circle-pair need, and vertical gate:
 // mobs more than this far apart in Y never interact.
-export const SEP_GAP = 0.1;
+export { SEP_GAP, worstPairPenAt };
 export const SEP_Y = 1.2;
 // Progress watchdog: a mob shuffling without closing on its target is
 // stuck even when its feet move — slides and separation shoves reset the
@@ -100,8 +102,55 @@ export const GATE_ALLOW = 0.05;
 // (forecast.js). Shipped at 0.15: shoulders brush past, the backstop
 // clearing every residue. Turn maneuvers tolerate a small give past it
 // (see TURN_GIVE) — bounded, never a walk-through.
-export const CROSS_BUDGET = 0.15;
+export { CROSS_BUDGET };
 export const TURN_GIVE = 0.05;
+// 1-wide passing: two opposed red rails offset lane-relative just before
+// contact (same rotational side each, so opposite world sides) and brush
+// past at full stride, re-centering the moment the peer is behind. PASS_OFF
+// (0.26) exceeds the wall-free slack (corridor half 0.5 − hw 0.32 = 0.18),
+// so the offset shoulder may graze the wall up to WALL_ALLOW deep —
+// accepted, never a walk-through (voxel probes only shrink by that bound,
+// peer math and pits stay exact). The transient core-core overlap fits
+// inside PASS_BUDGET; the drives own the meeting (the backstop skips a
+// mutually passing pair — its tangential slide would push both back apart
+// and read as a crawl), then clears the residue once the window drops.
+export { PASS_OFF, PASS_BUDGET };
+// Engage range (signed along-track): first nose touch reads ~2.1 m on
+// centers, so the window must open just before that — the offset lands
+// right at contact, never metres early. Hold while abreast, drop past
+// −PASS_BACK (peer behind), with a budget-only tail hold below while
+// circle residue (tails) still brushes.
+export const PASS_HIT = 2.5;
+export const PASS_BACK = 0.4;
+export const PASS_SLIDE = 2.5;
+export const PASS_SETTLE_T = 0.15;
+export const PASS_AGE_MAX = 3.0;
+export { WALL_ALLOW };
+// Anticipation: a predicted meeting arms a pre-window before any yaw
+// reads opposed — around corners the yaws never oppose, so geometry
+// (closing courses on the same flood-connected 1-wide stretch, see
+// anticipateConnected) predicts instead of the instant pose. The
+// pre-window only places the body laterally (the offset ramps below);
+// no budget relaxes until the window itself holds, so a false positive
+// costs a sidle, never a walk-through. PRE_HIT is the crowd census
+// horizon (a converging crowd blocks anticipation before anyone
+// commits); ARM_HIT is deliberately short: the offset ramps fully only
+// once the meeting is committed, keeping the approach choreography (and
+// the junction dance) on legacy rails — an earlier arm would steer
+// bodies into poses the escape machinery was never tuned for. PRE_FULL
+// lands the full offset with room to spare; PRE_LAT stays wide because
+// corner meetings converge far off-axis (the flood fill still gates
+// through-wall pairs, and the lonely-pair census gates crowds).
+export const PRE_HIT = 4.0;
+export const ARM_HIT = 2.5;
+export const PRE_FULL = 1.2;
+export const PRE_LAT = 2.0;
+export const PRE_CREEP = 0.5;
+export const PASS_MIN = 0.12;
+// Wall-hug offset at turns: the reachable wall stop (corridor half −
+// body + voxel grace), held early through junctions instead of a
+// mid-corridor hover — the meeting rounds the bend already separated.
+export const PASS_HUG = 0.28;
 // Maneuver turn give (m): how far past the brush budget a turn-away
 // escape may sweep while unwinding nose-to-nose contact. Broad snouts
 // veto every partial yaw under the strict rule, freezing the escape in
@@ -121,6 +170,20 @@ export const GRIND_T = 0.25;
 // geometry shifts as the peer maneuvers, so a hold that never re-checks
 // would freeze a meeting the next sidestep could have resolved.
 export const HOLD_FUSE = 0.15;
+// A wedged mob is freed within a tenth of a second: the lane is released
+// and the mob takes another way out. The counter only accrues on an ALIGNED
+// mob that does not advance (a rotation in place is not a wedge), and the
+// trip stays muted while a passing window holds (the squeeze of a crossing
+// is not a wedge either).
+export const SERVO_STALL_T = 0.1;
+// Stall-release gate, shared by the cruise and dead-end-seek guards: a held
+// passing window and a U-turn yield hold their rail, and a narrow rail
+// frees its own — the jam opens the agreement in a tenth of a second, and
+// releasing the lane there would drop the mob out of the one-cell corridor
+// (and churn the rail on the spot).
+function stallReleaseArmed(mob) {
+  return mob.servoStall > SERVO_STALL_T && !passSlideActive(mob) && !mob._yieldHold && !mob._narrow;
+}
 // Grind-episode window (s): re-grinding the same peer inside this counts
 // the next episode (escalating yield); past it the slate is clean.
 export const GRIND_WINDOW = 4;
@@ -227,7 +290,7 @@ export function followSlow(mob, peers, grid = null) {
   const fx = Math.sin(mob.yaw), fz = Math.cos(mob.yaw);
   for (let k = 0; k < list.length; k++) {
     const o = list[k];
-    if (!followsPace(mob, o)) continue;
+    if (activeNarrowPeer(mob) === o || !followsPace(mob, o)) continue;
     // Pace the leader's real advance, not its speed field: a leader stalled
     // mid-U-turn (full stride on paper, zero underfoot) must stop its
     // gate-exempt follower — the file exemption hands tailgating to this
@@ -249,40 +312,6 @@ export function followSlow(mob, peers, grid = null) {
   return Math.min(slow, 1);
 }
 
-// Worst circle-pair penetration between a body posed at (ax, az) with the
-// given yaw-oriented circles and mob b's live body circles: null when
-// clear. Lets the step gate test a candidate position without moving
-// anything. Exported for the group planner (forecast.js), which poses
-// trajectory samples through the same math. i/j feed the deterministic
-// coincident-center fallback.
-export function worstPairPenAt(ax, az, asx, asz, ahw, anose, atail, b, i, j) {
-  const bsx = Math.sin(b.yaw), bsz = Math.cos(b.yaw);
-  let wPen = 0, wNx = 0, wNz = 0, wD = 0, wNeed = 0;
-  for (let ai = 0; ai < 3; ai++) {
-    const aa = ai === 0 ? 0 : ai === 1 ? anose.along : atail.along;
-    const ar = ai === 0 ? ahw : ai === 1 ? anose.r : atail.r;
-    const cx = ax + asx * aa, cz = az + asz * aa;
-    for (let bi = 0; bi < 3; bi++) {
-      const ba = bi === 0 ? 0 : bi === 1 ? b.nose.along : b.tail.along;
-      const br = bi === 0 ? b.hw : bi === 1 ? b.nose.r : b.tail.r;
-      const ox = cx - (b.pos.x + bsx * ba), oz = cz - (b.pos.z + bsz * ba);
-      const need = ar + br + SEP_GAP;
-      const d2 = ox * ox + oz * oz;
-      if (d2 >= need * need) continue;
-      // Coincident centers have no normal: deterministic fallback
-      // direction from the pair indices (recomputed next tick, so
-      // any axis unstacks exact overlaps instead of skipping them).
-      if (d2 < 1e-8) {
-        const fa = (i * 2.39996 + j * 1.2345) % (Math.PI * 2);
-        if (need > wPen) { wPen = need; wNx = Math.sin(fa); wNz = Math.cos(fa); wD = 0; wNeed = need; }
-        continue;
-      }
-      const d = Math.sqrt(d2), pen = need - d;
-      if (pen > wPen) { wPen = pen; wNx = ox / d; wNz = oz / d; wD = d; wNeed = need; }
-    }
-  }
-  return wPen <= 0 ? null : { pen: wPen, nx: wNx, nz: wNz, d: wD, need: wNeed };
-}
 export function worstPairPen(a, b, i = 0, j = 1) {
   if (Math.abs(a.pos.y - b.pos.y) > SEP_Y) return null;
   return worstPairPenAt(a.pos.x, a.pos.z, Math.sin(a.yaw), Math.cos(a.yaw),
@@ -329,6 +358,30 @@ export function mobBlockedAt(mob, x, z, y, peers, extra = 0, grid = null, allow 
   return peerPenAt(mob, x, z, Math.sin(mob.yaw), Math.cos(mob.yaw), y, peers, grid, extra, exempt) > allow;
 }
 
+// Separating-aware motion gate (drives only — detection above stays
+// exact): a step is refused only if it lands past the budget WITHOUT
+// improving on the current pose. Approaching contact reads exactly like
+// before (a clear pose refuses anything past the budget); walking out of
+// an overlap is always allowed. Freezing inside contact is never the
+// gate's job — the stall/grind paths own true wedges — and where the
+// backstop is vetoed (wall sandwiches) its tangential slide would
+// otherwise fight the walk-out stride for stride. Same circles, same
+// budget, same exemptions; only the verdict gains the separating
+// direction. Pure: reads positions only.
+export function peerStepOk(mob, nx, nz, y, peers, grid, exempt, budget) {
+  const sx = Math.sin(mob.yaw), sz = Math.cos(mob.yaw);
+  const partner = activeNarrowPeer(mob);
+  if (partner) {
+    if (!narrowPoseOk(mob, nx, nz, mob.yaw, true, true)) return false;
+    const original = exempt;
+    exempt = o => o === partner || original?.(o);
+  }
+  const cand = peerPenAt(mob, nx, nz, sx, sz, y, peers, grid, 0, exempt);
+  if (cand <= budget) return true;
+  const cur = peerPenAt(mob, mob.pos.x, mob.pos.z, sx, sz, y, peers, grid, 0, exempt);
+  return cand <= cur + 1e-9;
+}
+
 // Turn gate factory (see tickFarmMob): poses the body at a candidate yaw
 // through the same circle math as the step gate. A turn landing past the
 // brush budget is refused; an already-deep pose stays free so escape turns
@@ -344,17 +397,24 @@ export function mobBlockedAt(mob, x, z, y, peers, extra = 0, grid = null, allow 
 export function makeTurnGate(mob, peers, grid = null, give = 0) {
   const meetingOnly = (o) => Math.cos(normYaw(o.yaw - mob.yaw)) >= 0.5;
   return (yaw) => {
+    const partner = activeNarrowPeer(mob);
+    // The crossing allowance (the relaxed overlap) belongs to the STEP:
+    // the pair squeezes THROUGH each other. A turn does not get it — a turn
+    // must never sweep the head deep into the peer.
+    if (partner && !narrowPoseOk(mob, mob.pos.x, mob.pos.z, yaw, true, false)) return false;
+    const skipPartner = o => o === partner;
+    const skipFile = o => o === partner || meetingOnly(o);
     const curAll = peerPenAt(mob, mob.pos.x, mob.pos.z,
-      Math.sin(mob.yaw), Math.cos(mob.yaw), mob.pos.y, peers, grid);
+      Math.sin(mob.yaw), Math.cos(mob.yaw), mob.pos.y, peers, grid, 0, skipPartner);
     if (curAll > CROSS_BUDGET) return true;
     const nextAll = peerPenAt(mob, mob.pos.x, mob.pos.z,
-      Math.sin(yaw), Math.cos(yaw), mob.pos.y, peers, grid);
+      Math.sin(yaw), Math.cos(yaw), mob.pos.y, peers, grid, 0, skipPartner);
     if (nextAll > CROSS_BUDGET + give) return false;
     const cur = peerPenAt(mob, mob.pos.x, mob.pos.z,
-      Math.sin(mob.yaw), Math.cos(mob.yaw), mob.pos.y, peers, grid, 0, meetingOnly);
+      Math.sin(mob.yaw), Math.cos(mob.yaw), mob.pos.y, peers, grid, 0, skipFile);
     if (cur > CROSS_BUDGET) return true;
     const next = peerPenAt(mob, mob.pos.x, mob.pos.z,
-      Math.sin(yaw), Math.cos(yaw), mob.pos.y, peers, grid, 0, meetingOnly);
+      Math.sin(yaw), Math.cos(yaw), mob.pos.y, peers, grid, 0, skipFile);
     // Middle band (brush already engaged): rotate out, never in — a sweep
     // the planner never predicted (nose lever outruns the stride) must not
     // deepen contact, while clear-air turns keep the landing budget.
@@ -429,6 +489,566 @@ export function pickDetourTarget(mob, rand, peers, grid = null) {
 // Stride validation (imported from step.js): destination rules plus the
 // whole segment, so fences, house walls, and troughs bound targets
 // emergently — no pen fork.
+// True 1-wide rail (red): laned without a touch follow line. Passing below
+// only ever engages these — touch rides keep their own sidestep discipline.
+function isRedRail(mob) {
+  return mob.lane != null && mob.followLine?.touch !== true;
+}
+// Meeting candidate: a live red rail on the same level that can move.
+// Every passing scan (engage, anticipate, brush-hold) filters peers
+// through this one rule; mobility and course reads stay per-call.
+// Pure: reads flags and positions only.
+function redPeer(mob, o) {
+  if (o === mob || !o.alive) return false;
+  if (Math.abs(o.pos.y - mob.pos.y) > SEP_Y) return false;
+  if (!isRedRail(o)) return false;
+  return (o.speed ?? 0) > 0;
+}
+// In-place turn: laned with the yaw far off the lane axis and no real
+// advance (dead-end seek rotation, flip in place, nose-turn expression).
+// Junction blends are excluded — they advance while they swing — so this
+// only reads genuine rotations sur place, whatever the ride kind. Pure:
+// yaw, lane axis and last measured advance only.
+function inPlaceTurn(mob) {
+  if (mob.lane == null) return false;
+  if (Math.abs(normYaw(mob.yaw - mob.lane.axis)) <= 0.6) return false;
+  return (mob._adv ?? 1) < (mob.speed ?? 1) * SERVO_STEP * 0.3;
+}
+// Mid-sweep junction turn: laned, blending through the corner, yaw far
+// off the exit axis. Unlike in-place turns these advance — but the nose
+// still sweeps a metre-wide arc through whoever waits ahead, so waiters
+// yield to them exactly like a rotation sur place (see yieldTurnPeer).
+// Pure: yaw, lane axis and blend state only.
+function midSweepTurn(mob) {
+  if (mob.lane == null) return false;
+  if (!((mob.blendT ?? 0) > 0 && (mob.blendT ?? 0) < 1)) return false;
+  return Math.abs(normYaw(mob.yaw - mob.lane.axis)) > 0.6;
+}
+// Peers a waiter yields to: in-place turners always; mid-sweep blenders
+// only across corridor lines (same-line pairs — files pacing a turning
+// leader, head-on straights — keep their pace/pass discipline instead of
+// accordion-stopping every junction). Pure: reads lanes and yaws only.
+function yieldTurnPeer(mob, o) {
+  if (inPlaceTurn(o)) return true;
+  if (!midSweepTurn(o)) return false;
+  if (mob.lane == null || o.lane == null) return true;
+  const d = yawDiff(mob.lane.axis, o.lane.axis);
+  return d >= 0.3 && d <= Math.PI - 0.3;
+}
+// Sweep-disc hold radius (center to center): the nose sweep reaches about
+// a body length, plus the waiter's own body and a margin — a waiter held
+// here never constrains the rotation, so the turn always completes.
+export const TURN_HOLD_R = 1.5;
+// U-turn yield gate (drives only — detection stays exact): never step
+// into a turning peer's sweep disc while the pair is still clean; inside
+// the disc only separating moves walk (same spirit as peerStepOk). Lets
+// any waiter — railed or lane-less — hold outside the rotation instead
+// of stopping nose-to-brush inside it, where the turn gate would veto
+// the turner forever. Junction blends count like rotations sur place
+// (their nose sweeps the same arc); same-line pairs never trigger (see
+// yieldTurnPeer). Once the pair brushes, the legacy machinery
+// (separating gates + grind escape + stall release) owns the meeting —
+// a 1.5 m exclusion zone per grinder would paralyse a scrum. The
+// turner's own leave/detour paths stay ungated (departure always walks).
+// Pure: reads positions only.
+const _sweepNear = [];
+export function sweepDiscOk(mob, nx, nz, peers, grid = null) {
+  const R2 = TURN_HOLD_R * TURN_HOLD_R;
+  const msx = Math.sin(mob.yaw), msz = Math.cos(mob.yaw);
+  const list = grid ? queryMobGrid(grid, nx, nz, 3.5, _sweepNear) : peers;
+  if (!list) return true;
+  for (const o of list) {
+    if (o === mob || !o.alive) continue;
+    if (Math.abs(o.pos.y - mob.pos.y) > SEP_Y) continue;
+    if (activeNarrowPeer(mob) === o) continue;
+    if (!yieldTurnPeer(mob, o)) continue;
+    const w = worstPairPenAt(nx, nz, msx, msz, mob.hw, mob.nose, mob.tail, o, 0, 0);
+    if (w != null && w.pen > CROSS_BUDGET) continue;
+    const cdx = nx - o.pos.x, cdz = nz - o.pos.z;
+    if (cdx * cdx + cdz * cdz >= R2) continue;
+    const odx = mob.pos.x - o.pos.x, odz = mob.pos.z - o.pos.z;
+    // Inside the disc only separating moves walk; entering it never does.
+    if (odx * odx + odz * odz < R2 &&
+      cdx * cdx + cdz * cdz >= odx * odx + odz * odz - 1e-9) return false;
+    if (odx * odx + odz * odz >= R2) return false;
+  }
+  return true;
+}
+// Yield hold for a turn ahead: a rotating peer in the waiter's track
+// (signed along, narrow lateral) while the pair is still clean — any
+// ride kind on either side. While held the waiter keeps its rail (no
+// stall release) and the turner rotates unconstrained; the post-turn
+// handoff is the ordinary passing (or file) that follows. Junction
+// blends count like rotations sur place; same-line pairs never trigger.
+// Once brushing, the legacy machinery owns the meeting instead. Pure:
+// reads positions only.
+export function turnYieldHold(mob, peers) {
+  if (!peers) return false;
+  const yaw = mob.lane ? mob.lane.axis : mob.yaw;
+  const [ax, az] = dirVec(yaw);
+  const msx = Math.sin(mob.yaw), msz = Math.cos(mob.yaw);
+  for (const o of peers) {
+    if (o === mob || !o.alive) continue;
+    if (Math.abs(o.pos.y - mob.pos.y) > SEP_Y) continue;
+    // Narrow partners never yield: the agreement coordinates sidesteps,
+    // and a yield would accordion-stop the crossing.
+    if (activeNarrowPeer(mob) === o) continue;
+    if (!yieldTurnPeer(mob, o)) continue;
+    const w = worstPairPenAt(mob.pos.x, mob.pos.z, msx, msz,
+      mob.hw, mob.nose, mob.tail, o, 0, 0);
+    if (w != null && w.pen > CROSS_BUDGET) continue;
+    const dx = o.pos.x - mob.pos.x, dz = o.pos.z - mob.pos.z;
+    const along = dx * ax + dz * az;
+    if (along <= 0 || along > TURN_HOLD_R + 0.5) continue;
+    if (Math.abs(dx * -az + dz * ax) > 0.8) continue;
+    return true;
+  }
+  return false;
+}
+// Passing window: a head-on meeting held open. Settle tail: the brief
+// re-centering after the crossing (fast slide + wall grace, no peer
+// budget needed any more — the peer is already behind).
+export function passingActive(mob) {
+  return (mob._passT ?? 0) > 0;
+}
+export function passSlideActive(mob) {
+  return passingActive(mob) || (mob._passSettle ?? 0) > 0;
+}
+function peerBudget(mob) {
+  return passSlideActive(mob) ? PASS_BUDGET : CROSS_BUDGET;
+}
+// Voxel grace for passing slides and strides: the offset shoulder may
+// graze the wall face up to WALL_ALLOW deep. Everywhere else the probes
+// stay exact. A narrow rail holds it too: a one-cell corridor is exactly
+// where the body grazes the wall by nature, and without the grace a wide
+// body wedges against the side wall and stops the whole pair (and a mob
+// that has just slid back to the centre can still be a centimetre into
+// the wall, which the exact probe would refuse to move).
+function wallShrink(mob) {
+  // An offset body reads its probes shrunk, whatever erected the offset:
+  // the window, a narrow meeting — or a stale offset outliving both. A
+  // sidestepped shoulder grazes the wall face by design (up to WALL_ALLOW
+  // deep); reading the unshrunk body would fake a dead end and flip the
+  // lane under the crossing (or wedge a lane-less roam that inherited a
+  // stale parallel).
+  if (passSlideActive(mob) || activeNarrowPeer(mob) || (mob._lineOff ?? 0) !== 0) return WALL_ALLOW;
+  // The graze band itself is ground truth: the ramp can outrun the slide,
+  // so the number may clear while the body still grazes — without grace
+  // here no probe could ever approve the step out. A body overlapping
+  // past the shrink reads exact, so walls are never walked through.
+  if (aabbIntersectsSolid(mob.pos.x, mob.pos.y, mob.pos.z, mob.hw, mob.h) &&
+      !aabbIntersectsSolid(mob.pos.x, mob.pos.y, mob.pos.z, Math.max(0.05, mob.hw - WALL_ALLOW), mob.h))
+    return WALL_ALLOW;
+  return 0;
+}
+// Lonely-pair guard for passing windows (engage and hold): no third red
+// rail near the pair's midpoint that converges with BOTH members. File
+// mates share one member's course, so files never count; scrum
+// bystanders cross both. Yaw-based (not lane-based): lanes flip at
+// junctions while yaws read the live course — and a same-frame read
+// cannot flicker open, since all three yaws are sampled on the same
+// tick. Crowds keep legacy dynamics, lonely pairs own the window.
+// Pure: reads positions and yaws only.
+function lonelyMeeting(mob, o, peers) {
+  const midX = (mob.pos.x + o.pos.x) / 2, midZ = (mob.pos.z + o.pos.z) / 2;
+  for (const q of peers) {
+    if (q === mob || q === o || !q.alive) continue;
+    if (Math.abs(q.pos.y - mob.pos.y) > SEP_Y) continue;
+    if (!isRedRail(q)) continue;
+    const qdx = q.pos.x - midX, qdz = q.pos.z - midZ;
+    if (qdx * qdx + qdz * qdz > 1.5 * 1.5) continue;
+    if (Math.cos(normYaw(q.yaw - mob.yaw)) >= 0.3) continue;
+    if (Math.cos(normYaw(q.yaw - o.yaw)) >= 0.3) continue;
+    return false;
+  }
+  return true;
+}
+// Head-on scan in the same 1-wide: both on red rails (both sides commit to
+// opposite laterals — blue rides, violet commits, holders and lane-less
+// roamers keep their legacy matrix behavior), both mobile, the peer
+// actually advancing and opposed in yaw (a stalled or parked waiter is
+// paced/held around, never passed through — see the courtesy hold and
+// M5/M8/M9; a mid-blend turner counts as advancing so junctions never
+// flicker the engagement). Engage just before contact (PASS_HIT ahead on
+// the signed along-track), hold while abreast, drop the moment the peer
+// is behind (past −PASS_BACK) — the offset then clears immediately
+// instead of parading a stale parallel. A second brush-band clause
+// engages lonely nose-kiss meetings whose yaws never oppose (T-bones,
+// tight corners): same gates, contact-proven instead of yaw-proven, with
+// the lonely-pair guard above keeping scrums on legacy.
+function passScan(mob, peers) {
+  if (!isRedRail(mob) || !peers) return null;
+  if ((mob.speed ?? 0) <= 0) return null;
+  const [ax, az] = dirVec(mob.lane.axis);
+  let best = null;
+  for (const o of peers) {
+    if (!redPeer(mob, o)) continue;
+    const dx = o.pos.x - mob.pos.x, dz = o.pos.z - mob.pos.z;
+    const d2 = dx * dx + dz * dz;
+    const along = dx * ax + dz * az;
+    if (along > PASS_HIT || along < -PASS_BACK) continue;
+    const lat = Math.abs(dx * -az + dz * ax);
+    const oa = o._adv;
+    const blending = (o.blendT ?? 0) > 0 && (o.blendT ?? 0) < 1;
+    const inTurn = inPlaceTurn(o);
+    const advancing = oa == null || oa >= (o.speed ?? mob.speed) * SERVO_STEP * 0.1;
+    const mobile = blending || inTurn || advancing;
+    const course = Math.cos(normYaw(o.yaw - mob.yaw));
+    if (course <= -0.5) {
+      if (!mobile || lat > 0.6) continue;
+    } else {
+      // Brush band: crossing courses (never files) already in nose
+      // contact, mobile, lonely, and connected — the T-bone meeting the
+      // opposed clause can never see. Same window, same budget, same
+      // drops; the contact is the proof of meeting.
+      if (course >= 0.3 || !mobile || lat > PRE_LAT) continue;
+      const w = worstPairPenAt(mob.pos.x, mob.pos.z,
+        Math.sin(mob.yaw), Math.cos(mob.yaw), mob.hw, mob.nose, mob.tail, o, 0, 0);
+      if (w == null || w.pen <= GATE_ALLOW || w.pen > CROSS_BUDGET) continue;
+      if (!anticipateConnected(mob, o)) continue;
+    }
+    // Lonely pairs only — a meeting with a converging bystander belongs
+    // to legacy, not to the window.
+    if (!lonelyMeeting(mob, o, peers)) continue;
+    if (best != null && d2 >= best.d2) continue;
+    best = { peer: o, d2 };
+  }
+  return best?.peer ?? null;
+}
+// Passing upkeep: hold the window while the meeting lasts, erect the
+// lateral on first sight (lane-relative + side first, so opposed lanes
+// land on opposite world sides with no negotiation; − side fallback,
+// voxel-validated with the passing grace). Deep wedges past the budget or
+// a window older than PASS_AGE_MAX clear it so the legacy stall/grind
+// escape still owns true blockages. A meeting that ends (peer behind or
+// gone) drops the offset immediately and settles back to centre — never a
+// stale parallel. Idempotent per tick.
+// Narrow-rail sidestep gate: the offset belongs to a crossing alone (a file
+// keeps the agreement's relaxed budget so a jammed file can step apart, but
+// never an offset — a shared offset would aim both bodies at the same side
+// of a one-cell corridor). The offset rides the approach (up while the pair
+// close, down once swapped and bodies clear — two bodies a body-length apart
+// cannot both sit on the centre line; the agreement itself stays open as
+// the relaxed budget the pair needs). Centre distance grows while a head-on
+// pair approaches, so it cannot decide the down.
+function narrowSidestepEngaged(mob, partner) {
+  if (!partner || !mob._narrow.meeting.crossing || !isRedRail(mob)) return false;
+  const swapped = mob._narrow.meeting.swapped === true;
+  const closing = mob._narrow.meeting.closing === true;
+  const cleared = Math.hypot(mob.pos.x - partner.pos.x, mob.pos.z - partner.pos.z)
+    > mob.hw + partner.hw + SEP_GAP + 0.3;
+  return !swapped || closing || !cleared;
+}
+function upkeepPassing(mob, dt, supported, floating, peers) {
+  if (mob._narrow) {
+    const partner = activeNarrowPeer(mob);
+    if (partner && narrowSidestepEngaged(mob, partner)) {
+      mob._passT = 0.3; mob._passPeer = partner; mob._passAge = 0;
+      mob._passSide = narrowSide(mob);
+      mob._lineOffAxis = mob.lane.axis;
+      return;
+    }
+    if (partner) {
+      mob._passT = 0; mob._passPeer = null; mob._passAge = 0; mob._passPreT = 0;
+    } else {
+      if (mob._passT > 0) dropPassing(mob);
+      mob._passPreT = 0;
+    }
+    return;
+  }
+  if (!isRedRail(mob) || !peers) return;
+  // Anticipation first: a predicted meeting ramps the offset into place
+  // before the scan below ever fires.
+  passAnticipate(mob, dt, peers);
+  const peer = passScan(mob, peers);
+  if (peer) {
+    mob._passT = 0.5;
+    mob._passAge = (mob._passAge ?? 0) + dt;
+    mob._passPeer = peer;
+    if (mob._passAge > PASS_AGE_MAX) { dropPassing(mob, true); return; }
+    const msx = Math.sin(mob.yaw), msz = Math.cos(mob.yaw);
+    const w = worstPairPenAt(mob.pos.x, mob.pos.z, msx, msz,
+      mob.hw, mob.nose, mob.tail, peer, 0, 0);
+    // Over-budget hysteresis: a single simultaneous-step overshoot past
+    // the budget is transient (both drives step the same tick) — only a
+    // sustained wedge drops the window, so a passing brush never snaps
+    // the offset home mid-crossing.
+    if (w != null && w.pen > PASS_BUDGET) mob._passOver = (mob._passOver ?? 0) + 1;
+    else mob._passOver = 0;
+    if ((mob._passOver ?? 0) >= 3) { dropPassing(mob, true); return; }
+    if (!mob._lineOff && !mob._passSide) erectPassOffset(mob, supported, floating);
+    return;
+  }
+  // Meeting held open: the peer left the geometric window (crossed
+  // behind, turn yaw flicker) but circles still brush — keep window AND
+  // offset, never re-erect. Window-born only (`_passT`, never a bare
+  // pre-ramped `_lineOff`): a pre-placed offset plus a brush must not
+  // self-ignite a window the scan never engaged — that drags bystanders
+  // into mutual-window equilibria. No yaw read here: bends sweep it, and
+  // files never reach the pen threshold by design, so only real meetings
+  // hold. A held-but-motionless meeting drops fast so the legacy stall
+  // owns true wedges; a lone null tick (circle-pair alternation flicker)
+  // bridges on the fuse instead of ending the meeting.
+  if (mob._passT > 0) {
+    const br = passBrush(mob, peers);
+    if (br) {
+      // A held window that stops moving inside a crowd is a scrum
+      // forming, not a crossing: drop it at once so legacy owns the
+      // wedge. Flowing meetings (and lonely gated creeps like T-bone
+      // mills) keep the window — the drop below only fires on true
+      // stillness inside a crowd, never on a moving crossing.
+      const crowded = !lonelyMeeting(mob, br, peers);
+      const stalled = (mob._adv ?? 1) < (mob.speed ?? 1) * SERVO_STEP * 0.5;
+      if (crowded && stalled) { dropPassing(mob, true); return; }
+      mob._passT = Math.max(mob._passT, 0.2);
+      mob._passNull = 0;
+      mob._passAge = (mob._passAge ?? 0) + dt;
+      mob._passPeer = br;
+      const adv = mob._adv ?? 1;
+      mob._passStill = adv < (mob.speed ?? 1) * SERVO_STEP * 0.1 ? (mob._passStill ?? 0) + dt : 0;
+      // A held-but-motionless meeting drops so the legacy stall owns true
+      // wedges — softly (the offset glides home instead of snapping: the
+      // stall below already holds the drive, so there is no geometry that
+      // needs clearing in one tick).
+      if ((mob._passStill ?? 0) > 0.5) dropPassing(mob);
+      if ((mob._passAge ?? 0) > PASS_AGE_MAX) dropPassing(mob, true);
+      return;
+    }
+    mob._passNull = (mob._passNull ?? 0) + dt;
+    if (mob._passNull > 0.1) dropPassing(mob);
+    else mob._passT = Math.max(mob._passT, 0.2);
+  }
+}
+// Brush hold (window AND offset, never an erection): a red mobile peer
+// within 2.5 m whose circles still overlap past CROSS_BUDGET. No yaw
+// read — bends sweep it mid-blend; files never reach the pen threshold
+// by design, so only real meetings hold. Covers turn flicker and the
+// crossing's tail residue alike.
+function passBrush(mob, peers) {
+  if (!isRedRail(mob) || !peers) return null;
+  if ((mob.speed ?? 0) <= 0) return null;
+  const msx = Math.sin(mob.yaw), msz = Math.cos(mob.yaw);
+  for (const o of peers) {
+    if (!redPeer(mob, o)) continue;
+    const dx = o.pos.x - mob.pos.x, dz = o.pos.z - mob.pos.z;
+    if (dx * dx + dz * dz > 2.5 * 2.5) continue;
+    const w = worstPairPenAt(mob.pos.x, mob.pos.z, msx, msz,
+      mob.hw, mob.nose, mob.tail, o, 0, 0);
+    if (w != null && w.pen > CROSS_BUDGET) return o;
+  }
+  return null;
+}
+// Offset erection for a fresh engagement (the hold path above never
+// erects — it only keeps an existing offset alive). Selects the agreed
+// side (voxel-validated at full reach) and places the first quarter
+// step; the ramp below completes it the same tick when anticipation
+// missed the meeting (the offset must outrun the pile-up), and skips
+// ahead harmlessly when anticipation pre-placed the body.
+function erectPassOffset(mob, supported, floating) {
+  const [ax, az] = dirVec(mob.lane.axis);
+  const latX = -az, latZ = ax;
+  const cx0 = cellCenter(mob.pos.x), cz0 = cellCenter(mob.pos.z);
+  const base = makeStepOk(mob, supported, floating, 0, mob.lane.axis, 0, WALL_ALLOW);
+  for (const s of [1, -1]) {
+    const off = s * PASS_OFF;
+    const px = cx0 + latX * off, pz = cz0 + latZ * off;
+    if (!base(px, pz)) continue;
+    if (!descendOk(mob, px, pz)) continue;
+    mob._passSide = s;
+  mob._lineOff = off * 0.25;
+  mob._lineOffAxis = mob.lane.axis;
+  return;
+  }
+}
+
+// Voxel validation for a ramp target: the agreed side at the wanted
+// magnitude, stepping down (never into the wall) on refusal.
+function validPassMag(mob, supported, floating, side, want) {
+  if (want <= 0) return 0;
+  const cap = mob._narrow ? Math.min(want, 0.5 - mob.hw + WALL_ALLOW - 0.001) : want;
+  const cands = [...new Set([cap, PASS_OFF, PASS_MIN])].filter(mag => !mob._narrow || mag <= cap).sort((a, b) => b - a);
+  const [ax, az] = dirVec(mob.lane.axis);
+  const latX = -az, latZ = ax;
+  const cx0 = cellCenter(mob.pos.x), cz0 = cellCenter(mob.pos.z);
+  const base = makeStepOk(mob, supported, floating, 0, mob.lane.axis, 0, WALL_ALLOW);
+  for (const mag of cands) {
+    const px = cx0 + latX * side * mag, pz = cz0 + latZ * side * mag;
+    if (!base(px, pz)) continue;
+    if (!descendOk(mob, px, pz)) continue;
+    return mag;
+  }
+  return 0;
+}
+
+// Progressive offset: the agreed side ramps to its wanted magnitude —
+// creep while anticipating, fast once the window holds, gliding home on
+// the settle tail. The body slides (see centerPull); the value never
+// jumps.
+function applyPassRamp(mob, dt, supported, floating) {
+  // No per-tick clamp against the erection step: when anticipation
+  // missed, the window engages onto a centered body and the offset must
+  // outrun the pile-up (a single gradual step knots — see the melee rig
+  // history). When anticipation placed the body first, the erection is
+  // skipped entirely and every step is gradual.
+  const side = mob._passSide ?? 0;
+  const windowHeld = (mob._passT ?? 0) > 0;
+  const settling = (mob._passSettle ?? 0) > 0;
+  const pre = (mob._passPreT ?? 0) > 0;
+  if (!side) {
+    if (mob._lineOff) { mob._lineOff = 0; mob._passSettle = PASS_SETTLE_T; }
+    return;
+  }
+  // A lapsed pre-window (or a dead window past its settle) decays below
+  // at creep rate with NO settle tail: no budget was ever relaxed, so
+  // there is nothing to settle — arming one here would suppress the
+  // grind escape on every flap in a scrum. The side persists through the
+  // decay so the stale guard below reads it as a live offset lifecycle.
+  let want = 0;
+  if (windowHeld) want = PASS_OFF;
+  else if (pre) {
+    const d = mob._passPreD ?? ARM_HIT;
+    want = PASS_OFF * Math.min(1, Math.max(0, (ARM_HIT - d) / (ARM_HIT - PRE_FULL)));
+    if (mob._passHug === true && d <= PRE_FULL + 0.5) want = Math.max(want, PASS_HUG);
+  }
+  const mag = validPassMag(mob, supported, floating, side, want);
+  const target = side * mag;
+  const rate = (windowHeld || settling ? PASS_SLIDE : PRE_CREEP) * (mob.speed ?? 1) * dt;
+  const cur = mob._lineOff ?? 0;
+  const next = cur + Math.max(-rate, Math.min(rate, target - cur));
+  mob._lineOff = (want === 0 && Math.abs(next) < 1e-4) ? 0 : next;
+  if (!mob._lineOff) mob._passSide = 0;
+}
+
+// Same-stretch check: flood-fill of walkable cells from the mob's feet
+// (depth-limited, body-scale walkability). A peer around an inner corner
+// reads connected even though the straight line between them clips the
+// corner block; a peer behind a wall never does. Pure: reads voxels only.
+function anticipateConnected(mob, o) {
+  const free = makeCellFree(mob);
+  const sx = Math.floor(mob.pos.x), sz = Math.floor(mob.pos.z);
+  const tx = Math.floor(o.pos.x), tz = Math.floor(o.pos.z);
+  if (sx === tx && sz === tz) return true;
+  let frontier = [[sx, sz]];
+  const seen = new Set([sx + "," + sz]);
+  for (let depth = 0; depth < 6 && frontier.length; depth++) {
+    const next = [];
+    for (const [cx, cz] of frontier) {
+      for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+        const nx = cx + dx, nz = cz + dz, k = nx + "," + nz;
+        if (seen.has(k)) continue;
+        seen.add(k);
+        if (nx === tx && nz === tz) return true;
+        if (free(nx, nz)) next.push([nx, nz]);
+      }
+    }
+    frontier = next;
+  }
+  return false;
+}
+
+// Meeting anticipation: a converging red pair on the same 1-wide stretch
+// arms a pre-window before contact — the offset ramps into place early,
+// so the contact itself only brushes. Pure closing-course geometry, no
+// yaw opposition required: corner meetings never oppose. Parked/stalled
+// peers never anticipate (paced/held around, never passed through);
+// blending and in-place-turning peers count as converging (transient
+// rotations). Crowded pairs stay legacy: scrums own their machinery.
+// Idempotent per tick.
+function passAnticipate(mob, dt, peers) {
+  mob._passPreT = Math.max(0, (mob._passPreT ?? 0) - dt);
+  if (!isRedRail(mob) || !peers) return;
+  if ((mob.speed ?? 0) <= 0) return;
+  // Yield sustain: while holding for a still-turning peer ahead, keep
+  // the placed offset instead of letting it decay — the post-turn
+  // handoff (scan engage) then finds the body already separated. The
+  // waiter stopped advancing, so without this the closing read lapses
+  // the pre-window mid-yield and the meeting restarts from zero.
+  if ((mob._yieldHold === true) && mob._passSide && mob._passPrePeer != null) {
+    const o = mob._passPrePeer;
+    if (o.alive !== false && Math.abs(o.pos.y - mob.pos.y) <= SEP_Y && yieldTurnPeer(mob, o)) {
+      mob._passPreT = 0.5;
+      mob._passPreD = Math.hypot(o.pos.x - mob.pos.x, o.pos.z - mob.pos.z);
+      return;
+    }
+  }
+  const [ax, az] = dirVec(mob.lane.axis);
+  const stride = (mob.speed ?? 1) * SERVO_STEP;
+  const armed = (mob._passPreT ?? 0) > 0 ? mob._passPrePeer : null;
+  // Single peer pass: the lonely-pair census and the candidate pick read
+  // each peer once. The census counts converging courses inside the full
+  // prediction range (no mobility/closing read — over-counting merely
+  // defers to legacy); with two or more convergers anticipation is a
+  // crowd, so the pre-window lapses and legacy owns it. File mates never
+  // count (same direction is pacing, not a meeting), so files and
+  // dead-end followers stay anticipatable.
+  let convergers = 0;
+  let best = null, armedEntry = null;
+  for (const o of peers) {
+    if (!redPeer(mob, o)) continue;
+    const dx = o.pos.x - mob.pos.x, dz = o.pos.z - mob.pos.z;
+    const d2 = dx * dx + dz * dz;
+    // Converging course by yaw OR by lane: yaws sweep through
+    // same-direction readings mid-turn, so a yaw-only census flickers
+    // open in the middle of a scrum; lanes (where held) do not sweep.
+    const yawConv = Math.cos(normYaw(o.yaw - mob.yaw)) < 0.3;
+    const laneConv = mob.lane != null && o.lane != null &&
+      Math.cos(normYaw(o.lane.axis - mob.lane.axis)) < 0.3;
+    if ((yawConv || laneConv) && d2 <= PRE_HIT * PRE_HIT && ++convergers >= 2) return;
+    // Files and formations never anticipate: same-direction courses own
+    // their pacing, not a passing offset.
+    if (!yawConv && !laneConv) continue;
+    // Arm range is the commit range: the offset ramps fully inside it.
+    if (d2 > ARM_HIT * ARM_HIT) continue;
+    const along = dx * ax + dz * az;
+    if (along < -0.5) continue;
+    // Wide lateral gate: corner meetings converge far off-axis (the
+    // flood-fill connectivity below still gates through-wall pairs).
+    if (Math.abs(dx * -az + dz * ax) > PRE_LAT) continue;
+    const blending = (o.blendT ?? 0) > 0 && (o.blendT ?? 0) < 1;
+    const oa = o._adv;
+    if (!blending && !inPlaceTurn(o) && oa != null && oa < (o.speed ?? mob.speed) * SERVO_STEP * 0.1) continue;
+    // Closing courses: each approach projected on its own heading, so a
+    // waiter closing on a rotating turner still reads as converging.
+    const d = Math.sqrt(d2) || 1e-6;
+    const myAppr = (mob._adv ?? 0) * Math.cos(normYaw(Math.atan2(dx, dz) - mob.yaw));
+    const peerAppr = (oa ?? 0) * Math.cos(normYaw(Math.atan2(-dx, -dz) - o.yaw));
+    if (myAppr + peerAppr < stride * 0.15) continue;
+    if (o === armed) armedEntry = { peer: o, d2, d };
+    else if (best == null || d2 < best.d2) best = { peer: o, d2, d };
+  }
+  // Sticky peer: an armed meeting that still holds refreshes instead of
+  // re-picking every tick, so two alternating candidates never flap the
+  // offset side to side. A lapsed arm (candidate gone) simply decays: the
+  // loop above re-arms only onto a fresh candidate below.
+  if (armedEntry) best = armedEntry;
+  if (best == null) return;
+  // Same stretch only: a peer sideways behind a wall is parallel
+  // traffic, never a meeting.
+  if (!anticipateConnected(mob, best.peer)) return;
+  mob._passPreT = 0.5;
+  mob._passPreD = best.d;
+  mob._passPrePeer = best.peer;
+  if (!mob._passSide) mob._passSide = 1;
+  // Turn meeting: hug the wall early; open corridor: hover mid. Blends,
+  // dead-end tips, corners ahead, or a rotating peer all read as turn.
+  const peerBlending = (best.peer.blendT ?? 0) > 0 && (best.peer.blendT ?? 0) < 1;
+  mob._passHug = ((mob.blendT ?? 0) > 0 && (mob.blendT ?? 0) < 1) || peerBlending ||
+    inPlaceTurn(best.peer) || mob.noseTurn != null || hasTurnAhead(mob, mob.lane.axis);
+}
+// Meeting over: drop the window (the settle tail below glides the body
+// home); the next legacy tick owns whatever is left. Hard drops (true
+// blockages — over-budget wedges, age cap, motionless holds) zero the
+// offset at once so the legacy escape owns clean geometry; soft drops
+// (meeting ended) keep it and let the ramp below glide it home.
+function dropPassing(mob, hard = false) {
+  mob._passT = 0; mob._passAge = 0; mob._passPeer = null;
+  mob._passNull = 0; mob._passStill = 0; mob._passOver = 0;
+  mob._passPreT = 0; mob._passPrePeer = null; mob._passHug = false;
+  if (mob._lineOff) {
+    if (hard) { mob._lineOff = 0; mob._passSide = 0; }
+    mob._passSettle = PASS_SETTLE_T;
+  } else mob._passSide = 0;
+}
 // Permanent 1-path centering: the single lateral pull behind every lane
 // event (engage/junction/lock-turn, dead-end seek) and every cruise tick —
 // so blend arcs exit centered and turns never slide sideways. Same target
@@ -448,6 +1068,14 @@ function centerPull(mob, dt, supported, floating, holdLine, peers = null) {
   if (mob.followLine?.noSlide === true) return 0;
   let ccx = cellCenter(mob.pos.x), ccz = cellCenter(mob.pos.z);
   const vw = mob.followLine;
+  // Passing red rails aim at the offset parallel (cell centre + lateral
+  // offset), exactly like sidestepped touch rides aim off their line.
+  if (!vw && mob._lineOff) {
+    const [lax, laz] = dirVec(mob.lane.axis);
+    if ((mob._lineOffAxis ?? mob.lane.axis) === mob.lane.axis) {
+      ccx += -laz * mob._lineOff; ccz += lax * mob._lineOff;
+    }
+  }
   // Sidestepped rides aim at the offset parallel, not the measured line.
   const lineT = vw ? vw.line + (mob._lineOff ?? 0) : 0;
   if (vw) {
@@ -498,7 +1126,7 @@ function centerPull(mob, dt, supported, floating, holdLine, peers = null) {
   const cap = mob.speed * dt * rate * pullScale;
   let c = Math.max(-cap, Math.min(cap, e));
   if (Math.abs(c) <= 1e-4) return 0;
-  const centerBase = makeStepOk(mob, supported, floating, 0, mob.lane.axis, 0);
+  const centerBase = makeStepOk(mob, supported, floating, 0, mob.lane.axis, 0, wallShrink(mob));
   const axisOk = wrapStepOk(mob, (nx, nz) => centerBase(nx, nz) && descendOk(mob, nx, nz));
   // Peer-aware slide: the lateral pull converges every ride onto its line —
   // two abreast rides would grind onto one body. Halve the slide down to the
@@ -507,11 +1135,14 @@ function centerPull(mob, dt, supported, floating, holdLine, peers = null) {
   // instead of merging. Null grid (legacy scan): slides are rare per tick
   // and the peer set is small; the math matches the gated drives exactly.
   if (peers) {
-    const msx = Math.sin(mob.yaw), msz = Math.cos(mob.yaw);
+    const budget = peerBudget(mob);
     let guard = 0;
     while (guard++ < 10) {
       const tx = mob.pos.x + -az * c, tz = mob.pos.z + ax * c;
-      if (peerPenAt(mob, tx, tz, msx, msz, mob.pos.y, peers, null) <= CROSS_BUDGET) break;
+      const clear = mob._narrow
+        ? peerStepOk(mob, tx, tz, mob.pos.y, peers, null, null, budget)
+        : !mobBlockedAt(mob, tx, tz, mob.pos.y, peers, 0, null, budget);
+      if (clear) break;
       c /= 2;
       if (Math.abs(c) <= 1e-4) return 0;
     }
@@ -668,6 +1299,7 @@ function wrapStepOk(mob, stepOk) {
 export function servoTick(mob, dt, supported, floating, rand = Math.random, pickTarget = null, peerGate = null, peers = null, turnGate = null) {
   if (!supported || floating) { mob.lane = null; return false; }
   // R2 upkeep first: the latched line below biases this very tick's pull.
+  if (mob._narrow) mob.followLine = null;
   upkeepFollowLine(mob, dt);
   // A turn-away leave flies lane-less open-loop for its span: re-engaging
   // a rail mid-maneuver would kill the away commit the very next tick and
@@ -678,7 +1310,7 @@ export function servoTick(mob, dt, supported, floating, rand = Math.random, pick
   // commit, no pivot toward the mouth.
   if (mob.lane && mob.roam?.entry) tryGuidedErect(mob, dt, supported, floating, rand);
   let sense = senseLane(mob);
-  const pre = tryPreLane(mob, dt, supported, floating, sense, rand);
+  const pre = mob._narrow ? undefined : tryPreLane(mob, dt, supported, floating, sense, rand);
   if (pre === "touch") {
     // Contact latch erected the lane: sense again along it, virtual wall up.
     sense = senseLane(mob);
@@ -705,7 +1337,19 @@ export function servoTick(mob, dt, supported, floating, rand = Math.random, pick
   const jrng = mob.jrng ?? (mob.jrng = spawnRng(rand));
   const cx = Math.floor(mob.pos.x), cz = Math.floor(mob.pos.z);
   const prevAxis = mob.lane ? mob.lane.axis : null;
-  const res = updateLane(mob.lane, cx, cz, mob.yaw, sense.opens, sense.walled, jrng,
+  if (mob._narrow && !mob.lane && sense.opens.length > 0) {
+    const axis = sense.opens.reduce((a,b) => yawDiff(a,mob.yaw) < yawDiff(b,mob.yaw) ? a : b);
+    mob.lane = {axis, entry: oppositeYaw(axis), lockX: null, lockZ: null};
+  }
+  // A one-cell jog can enter its next corner before the old lock expires.
+  // Null cannot collide with a real negative-coordinate junction cell.
+  if (mob._narrow && mob.lane && !sense.opens.some(d => yawDiff(d, mob.lane.axis) < 1e-6)) {
+    mob.lane.lockX = null; mob.lane.lockZ = null;
+  }
+  const turning = mob._narrow && mob.noseTurn && mob.lane && yawDiff(mob.yaw, mob.noseTurn.axis) > 0.1;
+  const res = turning
+    ? { lane: { ...mob.lane, axis: mob.noseTurn.axis, entry: oppositeYaw(mob.noseTurn.axis) }, event: "lock-turn" }
+    : updateLane(mob.lane, cx, cz, mob.yaw, sense.opens, sense.walled, jrng,
     mob.nav?.plan ?? null);
   if (!res.lane) { dropLane(mob); return false; }
   mob.lane = res.lane;
@@ -780,7 +1424,17 @@ export function servoTick(mob, dt, supported, floating, rand = Math.random, pick
     // Strict 1-wide hold (see above): a lane cruising where neither flank
     // reads blocked (single-wall walks, widenings, room crossings) drops
     // to roam instead of persisting.
-    if (!tunneledFor(res.event, res.lane.axis)) {
+    // A closed 1-wide rail has no mouth: its ends are dead ends, not exits
+    // into open ground. Releasing it there would drop the mob out of the
+    // corridor (and take the 1-wide red with it), so the rail stays and
+    // the dead-end seek turns the mob around inside it. A live 1-wide
+    // meeting holds the rail the same way: the window (or its settle
+    // tail, or a narrow agreement) owns the crossing, and releasing
+    // mid-brush would strand the sidestepped body where no roam step can
+    // leave — the offset clears through the ordinary ramp once the pair
+    // parts, and the next tick's hold re-polls the release.
+    if (!tunneledFor(res.event, res.lane.axis) && !mob._narrow &&
+        !passSlideActive(mob) && !(mob._passSide ?? 0)) {
       dropLane(mob);
       mob.followLine = null;
       // Hold the next latch off so the exit walks clear of the wall
@@ -1000,7 +1654,12 @@ export function servoTick(mob, dt, supported, floating, rand = Math.random, pick
 function senseLane(mob) {
   const axisProbe = mob.lane ? mob.lane.axis : snapCardinal(mob.yaw);
   const fitBody = (yaw) => {
-    const base = makeStepOk(mob, true, false, 0, yaw, 0);
+    // Same passing grace as the drives: an offset shoulder grazes the
+    // wall, so the classifier must read the shrunk body too — otherwise
+    // the grazed forward probe fakes a dead end and the lane U-turns
+    // mid-crossing (rail flip-flop). Window/settle state comes from the
+    // last tick, which is exactly the pose being sensed.
+    const base = makeStepOk(mob, true, false, 0, yaw, 0, wallShrink(mob));
     return wrapStepOk(mob, (nx, nz) => base(nx, nz) && descendOk(mob, nx, nz));
   };
   const pointFree = (nx, nz, dirYaw) => fitBody(dirYaw)(nx, nz);
@@ -1009,11 +1668,26 @@ function senseLane(mob) {
   const cellFree = v
     ? (bx, bz) => (v.side * ((v.latIsX ? bx : bz) + 0.5 - v.V) > 0 ? false : cellFreeReal(bx, bz))
     : cellFreeReal;
-  const opens = classifyExits(mob.pos.x, mob.pos.z, axisProbe, pointFree, cellFree);
+  const closed = narrowSense(mob);
+  const opens = closed ? [...closed.opens] : classifyExits(mob.pos.x, mob.pos.z, axisProbe, pointFree, cellFree);
+  if (closed && mob.lane && yawDiff(mob.yaw, mob.lane.axis) < 0.1 && !hasTurnAhead(mob, axisProbe)) {
+    const [fx, fz] = dirVec(axisProbe);
+    if (noseBlockedAt(mob, mob.pos.x + fx * mob.speed * SERVO_STEP, mob.pos.z + fz * mob.speed * SERVO_STEP, axisProbe)) {
+      const i = opens.findIndex(d => yawDiff(d, axisProbe) < 1e-6);
+      if (i >= 0) opens.splice(i, 1);
+    }
+  }
   if (mob.noseTurn) {
-    // Hold the nose-triggered reversal until it has moved one cell away.
-    if (mob.lane && Math.floor(mob.pos.x) === mob.noseTurn.lockX && Math.floor(mob.pos.z) === mob.noseTurn.lockZ) {
-      if (!opens.some((d) => yawDiff(d, mob.noseTurn.axis) < 1e-6)) opens.push(mob.noseTurn.axis);
+    const turn = mob.noseTurn;
+    const sameCell = Math.floor(mob.pos.x) === turn.lockX && Math.floor(mob.pos.z) === turn.lockZ;
+    // A short corridor can put both nose stops in the same cell. Hold the
+    // actual reversal, then release on travel rather than requiring a cell
+    // that the animal's nose cannot reach. Entering a corner releases early.
+    const hold = mob._narrow
+      ? yawDiff(mob.yaw, turn.axis) > 0.1 || (sameCell && Math.hypot(mob.pos.x - turn.x, mob.pos.z - turn.z) < 0.2)
+      : sameCell;
+    if (mob.lane && hold) {
+      if (!opens.some(d => yawDiff(d, turn.axis) < 1e-6)) opens.push(turn.axis);
     } else mob.noseTurn = null;
   }
   const [pax, paz] = dirVec(axisProbe);
@@ -1025,7 +1699,7 @@ function senseLane(mob) {
     const [dx, dz] = dirVec(d);
     if (!pointFree(mob.pos.x + dx * PROBE_DIST, mob.pos.z + dz * PROBE_DIST, d)) walled.push(d);
   }
-  return { axisProbe, cellFree, opens, fwdOpen, walled };
+  return { axisProbe, cellFree, opens, fwdOpen, walled: closed ? closed.walled : walled };
 }
 
 // Pre-lane flow: a 50/50 touch latch on a plain wall when the way ahead is
@@ -1321,9 +1995,17 @@ function noseBlockedAt(mob, x, z, yaw) {
     if (groundBelow(x + dx * t, mob.pos.y + 1, z + dz * t) !== mob.pos.y) return false;
   }
   const nx = x + dx * mob.nose.along, nz = z + dz * mob.nose.along;
+  // The passing grace, on the SIDE walls only: the offset shoulder already
+  // grazes the wall face up to WALL_ALLOW deep, and the offset carries the
+  // nose with it. Without the same grace here, a legal passing pose reads
+  // as a wall ahead — the lane flips (a dead end) and the pair's sidestep
+  // side inverts with it: the mob trembles sideways, and the flipped axis
+  // latched into the nose turn spins it 180° at the crossing. The wall
+  // ahead stays exact: the head still stops before it enters it.
   // Leave a small clearance so bounded move subdivision cannot end in a
   // barely-intersecting pose.
-  return aabbIntersectsSolid(nx, mob.pos.y, nz, mob.nose.r + 0.03, mob.h);
+  const box = mob.nose.r + 0.03;
+  return noseHitsSolid(nx, mob.pos.y, nz, box, mob.h, dx, dz, wallShrink(mob));
 }
 
 // A nearby corner is not a dead end: its body turn arc owns clearance, not
@@ -1368,6 +2050,14 @@ function seekDeadEnd(mob, dt, supported, floating, peers = null) {
   // 1-wide cell, and that is exactly when the seek needs centring —
   // the axisOk probe below refuses any slide into a wall, and a stale
   // flipped follow line still pins the lateral via modulo-π).
+  // A meeting at the dead-end tip still passes: hold the offset window so
+  // the seek brushes past instead of releasing straight into a roam.
+  // The ramp runs once per tick per drive (never in the grind-escape
+  // refresh below, which shares upkeepPassing — a second step per tick
+  // would double the slide speed).
+  upkeepPassing(mob, dt, supported, floating, peers);
+  applyPassRamp(mob, dt, supported, floating);
+  mob._yieldHold = peers != null && turnYieldHold(mob, peers);
   const recentered = centerPull(mob, dt, supported, floating, true, peers);
   // Dead-end seek refuses pit descents (see descendOk): the pit lip is
   // the end of the line — touch it, turn, leave. Peer-gated like every
@@ -1375,13 +2065,14 @@ function seekDeadEnd(mob, dt, supported, floating, peers = null) {
   // walks nose-through-the-peer standing there.
   let noseStopped = false;
   const makeSeek = () => {
-    const sdriveBase = makeStepOk(mob, supported, floating, 0, mob.yaw, 0);
+    const sdriveBase = makeStepOk(mob, supported, floating, 0, mob.yaw, 0, wallShrink(mob));
     const wrapped = wrapStepOk(mob, sdriveBase);
     const noseGate = !hasTurnAhead(mob, forward) && yawDiff(mob.yaw, forward) < 0.1;
     return (nx, nz) => {
       const voxelOk = wrapped(nx, nz) && descendOk(mob, nx, nz);
       if (!voxelOk) return false;
-      if (peers && mobBlockedAt(mob, nx, nz, mob.pos.y, peers, 0, null, CROSS_BUDGET)) return false;
+      if (peers && (!peerStepOk(mob, nx, nz, mob.pos.y, peers, null, null, peerBudget(mob)) ||
+        !sweepDiscOk(mob, nx, nz, peers, null))) return false;
       const noseBlocked = noseGate && noseBlockedAt(mob, nx, nz, forward);
       if (noseBlocked) noseStopped = true;
       return !noseBlocked;
@@ -1401,13 +2092,13 @@ function seekDeadEnd(mob, dt, supported, floating, peers = null) {
   if (recentered === 0 && seek.err < SERVO_SPIN && peers && mobBlocksAhead(mob, peers, null)) {
     mob.servoStall = (mob.servoStall ?? 0) + dt;
   }
-  if (mob.servoStall > 0.75) return releaseStalledLane(mob);
+  if (stallReleaseArmed(mob)) return releaseStalledLane(mob);
   // Nose contact: keep the flipped lane, rotate in place below (gated: the
   // flip must not sweep the nose discs through an adjacent peer).
   if (noseStopped) {
     mob.lane.lockX = Math.floor(mob.pos.x);
     mob.lane.lockZ = Math.floor(mob.pos.z);
-    mob.noseTurn = { axis: mob.lane.axis, lockX: mob.lane.lockX, lockZ: mob.lane.lockZ };
+    mob.noseTurn = { axis: mob.lane.axis, lockX: mob.lane.lockX, lockZ: mob.lane.lockZ, x: mob.pos.x, z: mob.pos.z };
   }
   mob.yawTarget = mob.lane.axis;
   driveToward(mob, dt, mob.lane.axis, () => () => false, moveVector, {
@@ -1533,7 +2224,7 @@ function tryLaneSidestep(mob, supported, floating, peers) {
     // Unwrapped voxel probe: the sidestep leaves the virtual corridor on
     // purpose, so the complementary wall must not veto it — only real
     // walls, pits, and live peers gate the escape.
-    const base = makeStepOk(mob, supported, floating, 0, mob.lane.axis, 0);
+    const base = makeStepOk(mob, supported, floating, 0, mob.lane.axis, 0, wallShrink(mob));
     if (!base(px, pz)) continue;
     if (!descendOk(mob, px, pz)) continue;
     const pen = peerPenAt(mob, px, pz, msx, msz, mob.pos.y, peers, null);
@@ -1641,6 +2332,37 @@ function leaveAndYield(mob, dt, supported, floating, peers, grid, peer, extended
 function peerGrindEscape(mob, dt, supported, floating, peers, grid, knownGrinder = null) {
   const grinder = knownGrinder ?? grindScan(mob, peers, grid).peer;
   if (!grinder) { mob._peerStall = 0; return false; }
+  // A live narrow agreement owns the meeting: the grind escape would fight
+  // the sidestep (dropping the rail the crossing rides on), so it never
+  // runs while the agreement holds — closed-rail meetings sort themselves
+  // out through the agreement alone. Re-arm the window and keep driving.
+  const narrowPartner = activeNarrowPeer(mob);
+  if (narrowPartner && narrowSidestepEngaged(mob, narrowPartner)) {
+    mob._peerStall = 0; mob.servoStall = 0;
+    upkeepPassing(mob, dt, supported, floating, peers);
+    return false;
+  }
+  // Held 1-wide passing (or its settle tail) never escalates: brushes
+  // inside the passing budget are the crossing working, not a grind —
+  // keep driving instead of flipping or leaving. Past the budget the
+  // upkeep already dropped the window, so reaching here means a true
+  // wedge: fall through to legacy.
+  if (passSlideActive(mob)) {
+    const msx = Math.sin(mob.yaw), msz = Math.cos(mob.yaw);
+    const w = worstPairPenAt(mob.pos.x, mob.pos.z, msx, msz,
+      mob.hw, mob.nose, mob.tail, grinder, 0, 0);
+    if (w == null || w.pen <= PASS_BUDGET) {
+      mob._peerStall = 0; mob.servoStall = 0;
+      upkeepPassing(mob, dt, supported, floating, peers);
+      return false;
+    }
+    // Over the budget: true wedge, not a crossing — close the window so
+    // no stale parallel survives the handoff to the legacy escape below.
+    // Soft close (the offset glides home instead of snapping): the escape
+    // below runs open-loop and never steers off the offset number, so a
+    // snap would only teleport the slide target for no reason.
+    dropPassing(mob);
+  }
   const touch = mob.followLine?.touch === true && mob.lane != null;
   if (touch && tryLaneSidestep(mob, supported, floating, peers)) {
     mob._peerStall = 0; mob.servoStall = 0;
@@ -1761,17 +2483,19 @@ function grindWatchTick(mob, dt, supported, floating, peers, grid) {
 // files pace, crossers pass. Measured at the current pose, never on
 // forward probes: the metre-long snout reads brushes two metres out,
 // while only established contact may freeze the drive.
-function passiveAhead(mob, peers, dt) {
+function passiveAhead(mob, peers, dt, except = null) {
   const msx = Math.sin(mob.yaw), msz = Math.cos(mob.yaw);
   const s = grindScan(mob, peers, null);
-  if (s.pen <= 0.03 || s.dist >= 1.0) return false;
+  if (s.pen <= 0.03 || s.dist >= 1.0) { mob._courtesyPeer = null; return false; }
   const g = s.peer;
-  if (!g) return false;
+  if (!g || g === except) { mob._courtesyPeer = null; return false; }
   const dx = g.pos.x - mob.pos.x, dz = g.pos.z - mob.pos.z;
   const d = Math.hypot(dx, dz) || 1;
-  if ((dx * msx + dz * msz) / d < 0.3) return false;
+  if ((dx * msx + dz * msz) / d < 0.3) { mob._courtesyPeer = null; return false; }
   const osp = g.speed ?? mob.speed;
-  return osp <= 0 || (g._adv ?? 0) < osp * dt * 0.1;
+  const passive = osp <= 0 || (g._adv ?? 0) < osp * dt * 0.1;
+  mob._courtesyPeer = passive ? g : null;
+  return passive;
 }
 
 // Corridor cruise: locked-yaw drive with the lateral centre slide, plus
@@ -1783,7 +2507,17 @@ function cruiseLane(mob, dt, supported, floating, res, rand = Math.random, peerG
   // walkable continuation pass through, local minima read as walls. The
   // probe below captures the pre-turn facing exactly like the inline drive
   // did; the move itself runs post-turn.
-  const cruiseBase = makeStepOk(mob, supported, floating, 0, mob.yaw, 0);
+  // 1-wide passing first: the window and the pass partner below must read
+  // this tick's meeting (the courtesy hold behind ignores that peer — it
+  // advances by construction, so holding for it would be a full stop).
+  // The offset ramp runs here, once per tick (see seekDeadEnd).
+  upkeepPassing(mob, dt, supported, floating, peers);
+  applyPassRamp(mob, dt, supported, floating);
+  // U-turn yield: hold the rail (no stall release below) while a turner
+  // rotates ahead — the waiter keeps its line so the post-turn handoff is
+  // the ordinary passing instead of a re-rail lottery.
+  mob._yieldHold = peers != null && turnYieldHold(mob, peers);
+  const cruiseBase = makeStepOk(mob, supported, floating, 0, mob.yaw, 0, wallShrink(mob));
   const cruiseOk = wrapStepOk(mob, cruiseBase);
   // Peer-stall discipline: a sustained grind breaks into the mutual
   // turn-away below instead of parking in contact (see peerGrindEscape);
@@ -1795,7 +2529,16 @@ function cruiseLane(mob, dt, supported, floating, res, rand = Math.random, peerG
   // stall below still accrues (dist reads 0) and trips the escape, so a
   // wait never parks forever, and the waiter stops travelling. No state:
   // the quiet hold below owns persistence, this only refuses the push.
-  const held = peers != null && passiveAhead(mob, peers, dt);
+  // The passing partner is exempt (it advances — holding for it would be a
+  // full stop); two polite mobs meeting head-on hold each other nose-to-nose,
+  // nobody would ever move — the lower index proceeds (strict gates still
+  // refuse true overlaps) while the higher keeps holding. One-sided holds
+  // (a truly parked peer) never break.
+  const courtesyPeer = peers != null && passiveAhead(mob, peers, dt, mob._passPeer ?? null)
+    ? mob._courtesyPeer : null;
+  const mutualHold = courtesyPeer != null && courtesyPeer._courtesyPeer === mob &&
+    (mob._peerIdx ?? 0) < (courtesyPeer._peerIdx ?? 0);
+  const held = courtesyPeer != null && !mutualHold;
   // Quiet hold from a previous trip: skip the forward drive while a peer
   // still touches the body, keep sliding laterally. Clears the tick the
   // body reads free or the lane axis changes (flip/release). A turn still
@@ -1823,18 +2566,24 @@ function cruiseLane(mob, dt, supported, floating, res, rand = Math.random, peerG
   }
   // Sidestep offset expiry: a turn onto a new axis drops it outright; once
   // no peer holds the line nearby the ride re-converges onto its measured
-  // line instead of parading a stale parallel.
+  // line instead of parading a stale parallel. A live 1-wide passing
+  // meeting (window, pre-window, or settle glide) re-bases instead — road
+  // discipline survives junctions, which is exactly where the offset
+  // matters most; blue sidesteps never hold meetings, so their expiry is
+  // unchanged.
   if (mob._lineOff) {
     const [lax, laz] = dirVec(mob.lane.axis);
-    if ((mob._lineOffAxis ?? mob.lane.axis) !== mob.lane.axis) mob._lineOff = 0;
-    else {
+    if ((mob._lineOffAxis ?? mob.lane.axis) !== mob.lane.axis) {
+      if (passSlideActive(mob) || (mob._passPreT ?? 0) > 0 || (mob._passSide ?? 0) !== 0) mob._lineOffAxis = mob.lane.axis;
+      else mob._lineOff = 0;
+    } else {
       let near = false;
       for (const o of peers ?? []) {
         if (o === mob || !o.alive || Math.abs(o.pos.y - mob.pos.y) > SEP_Y) continue;
         const ox = o.pos.x - mob.pos.x, oz = o.pos.z - mob.pos.z;
         if (Math.abs(ox * lax + oz * laz) < 2.5 && Math.abs(ox * -laz + oz * lax) < 1.5) { near = true; break; }
       }
-      if (!near) mob._lineOff = 0;
+      if (!near && !(passSlideActive(mob) || (mob._passPreT ?? 0) > 0 || (mob._passSide ?? 0) !== 0)) mob._lineOff = 0;
       else mob._lineOffAxis = mob.lane.axis;
     }
   }
@@ -1859,7 +2608,14 @@ function cruiseLane(mob, dt, supported, floating, res, rand = Math.random, peerG
     : centerPull(mob, dt, supported, floating, true, peers);
   if (dist === 0 && recentered === 0 && err < SERVO_SPIN) mob.servoStall = (mob.servoStall ?? 0) + dt;
   else mob.servoStall = 0;
-  if (mob.servoStall > 0.75) return releaseStalledLane(mob);
+  // A held passing meeting (or its settle tail) never trips the stall
+  // release: refusing a brush inside the passing budget is the crossing
+  // working, not a wedge — the upkeep above already drops the window past
+  // the budget (or the age cap), re-arming this. Same for a U-turn yield:
+  // the waiter holds its rail until the rotation finishes.
+  // A stall owned by a live peer contact never releases either (see
+  // stallReleaseArmed): the grind pipeline below owns peer wedges.
+  if (stallReleaseArmed(mob)) return releaseStalledLane(mob);
   // Peer grind past the trip (see grindWatchTick): both parties turn away
   // and leave in appropriate directions instead of parking in contact —
   // the shared escape owns the maneuver, the stall below owns the state
@@ -1909,6 +2665,37 @@ export function tickFarmMob(mob, dt, pickTarget, rand = mob.rand ?? Math.random,
   mob.entryCoolT = Math.max(0, (mob.entryCoolT ?? 0) - dt);
   mob._grindCool = Math.max(0, (mob._grindCool ?? 0) - dt);
   mob._turnAway = Math.max(0, (mob._turnAway ?? 0) - dt);
+  // 1-wide passing window: decays unless a cruise/seek tick re-arms it
+  // above; the settle tail re-centers fast after the crossing. Losing
+  // the lane drops the window but glides a live offset home instead of
+  // snapping it (junction cells have no lane — a mid-corner snap would
+  // teleport the slide target every crossing); the offset decays through
+  // the ramp below on re-rail, never parading stale.
+  mob._passT = Math.max(0, (mob._passT ?? 0) - dt);
+  mob._passSettle = Math.max(0, (mob._passSettle ?? 0) - dt);
+  if (!mob.lane) {
+    const hadWindow = (mob._passT ?? 0) > 0;
+    mob._passT = 0; mob._passAge = 0; mob._passPeer = null;
+    mob._passNull = 0; mob._passStill = 0; mob._passOver = 0;
+    mob._passPreT = 0; mob._passPreD = 0; mob._passPrePeer = null;
+    mob._passHug = false; mob._yieldHold = false; mob._courtesyPeer = null;
+    if (mob._lineOff && hadWindow) mob._passSettle = PASS_SETTLE_T;
+    else if (!mob._lineOff) mob._passSide = 0;
+    // Stale parallel with no lane, no window, no settle, and no live
+    // meeting decays instead of parading forever: a roam that inherited
+    // a sidestep walks out through the same grace the rail ran (see
+    // wallShrink) and re-centers, instead of wedging on the wall its
+    // offset grazes. Junction re-rails keep a held window, so their offset
+    // glide is untouched. The side clears with the offset (never alone —
+    // a one-sided zero offset reads as centered).
+    if (!hadWindow && !(mob._passSettle > 0) &&
+        !activeNarrowPeer(mob) && mob._lineOff) {
+      const step = PASS_SLIDE * (mob.speed ?? 1) * dt;
+      const next = mob._lineOff > 0 ? Math.max(0, mob._lineOff - step) : Math.min(0, mob._lineOff + step);
+      mob._lineOff = Math.abs(next) < 1e-4 ? 0 : next;
+      if (!mob._lineOff) mob._passSide = 0;
+    }
+  }
   const entryHold = supported && !floating ? entryTick(mob, dt, rand, { supported, floating, pickTarget }) : false;
   // 2-wide crossing state: maintained while the mouth holds, draws the exit
   // at the first hold tick and closes with cooldown at the leave
@@ -2056,19 +2843,31 @@ export function tickFarmMob(mob, dt, pickTarget, rand = mob.rand ?? Math.random,
   // past the brush budget, and the stuck re-pick below routes around true
   // blockers. Picks and detection stay exact; only real steps may brush.
   const blockedByMob = peersEff && !mob.lane
-    ? (nx, nz) => mobBlockedAt(mob, nx, nz, mob.pos.y, peersEff, 0, grid, CROSS_BUDGET)
+    ? (nx, nz) => {
+        if (!mobBlockedAt(mob, nx, nz, mob.pos.y, peersEff, 0, grid, CROSS_BUDGET)) return false;
+        // Already overlapped: a step that separates (or holds depth) walks —
+        // refusing every step of a brushed body freezes it inside the peer
+        // until the peer clears, instead of sliding out of the contact.
+        // Steps that deepen the overlap stay refused, so nothing walks
+        // through a peer — same separating rule as the laned step gate.
+        const msx = Math.sin(mob.yaw), msz = Math.cos(mob.yaw);
+        const cur = peerPenAt(mob, mob.pos.x, mob.pos.z, msx, msz, mob.pos.y, peersEff, grid);
+        const cand = peerPenAt(mob, nx, nz, msx, msz, mob.pos.y, peersEff, grid);
+        return cand > cur + 1e-9;
+      }
     : null;
-  // Laned peer gate (same budget as above): a rail never overlaps a peer
-  // past the brush budget either — the drive stops at contact range and
-  // the stall path owns the escape (U-turn/release), exactly like the
-  // lane-less stuck path. Settled files are exempt (followSlow paces them);
-  // acute catch-ups at a yaw angle re-arm the gate (same circles, same
-  // budget — only the exemption narrows), so a follower arriving at ~20°
-  // stops at contact range instead of walking through its leader.
+  // Laned peer gate (passing budget while a 1-wide meeting holds, strict
+  // budget otherwise): a rail never overlaps a peer past the budget either —
+  // the drive stops at contact range and the stall path owns the escape
+  // (U-turn/release), exactly like the lane-less stuck path. Settled files
+  // are exempt (followSlow paces them); acute catch-ups at a yaw angle
+  // re-arm the gate (same circles, same budget — only the exemption
+  // narrows), so a follower arriving at ~20° stops at contact range instead
+  // of walking through its leader.
   const lanePeerGate = peersEff && mob.lane
-    ? (nx, nz) => peerPenAt(mob, nx, nz, Math.sin(mob.yaw), Math.cos(mob.yaw),
-      mob.pos.y, peersEff, grid, 0,
-      (o) => followsPace(mob, o) && Math.abs(normYaw(o.yaw - mob.yaw)) < 0.3) > CROSS_BUDGET
+    ? (nx, nz) => !(peerStepOk(mob, nx, nz, mob.pos.y, peersEff, grid,
+      (o) => followsPace(mob, o) && Math.abs(normYaw(o.yaw - mob.yaw)) < 0.3, peerBudget(mob)) &&
+      sweepDiscOk(mob, nx, nz, peersEff, grid))
     : null;
   // Turn gate (same budget as the step gates): a yaw step that would swing
   // the nose/tail discs into a peer past the brush budget is refused —
@@ -2144,8 +2943,14 @@ export function tickFarmMob(mob, dt, pickTarget, rand = mob.rand ?? Math.random,
       // Validate the new parallel against voxels AND peers: rebasing onto
       // another mob just moves the meeting. Falls back to the old goal
       // (the resume logic re-aims at it) when the parallel doesn't walk.
+      // Strict contact rule here (not the separating drive gate): a goal
+      // sitting on another body is never adopted, even when the mob
+      // itself currently brushes someone.
       const voxOk = segmentWalkable(mob, mob.pos.x, mob.pos.z, gx, gz);
-      const peerOk = !blockedByMob || (!blockedByMob((mob.pos.x + gx) / 2, (mob.pos.z + gz) / 2) && !blockedByMob(gx, gz));
+      const strictBlocked = peersEff && !mob.lane
+        ? (qx, qz) => mobBlockedAt(mob, qx, qz, mob.pos.y, peersEff, 0, grid, CROSS_BUDGET)
+        : null;
+      const peerOk = !strictBlocked || (!strictBlocked((mob.pos.x + gx) / 2, (mob.pos.z + gz) / 2) && !strictBlocked(gx, gz));
       if (voxOk && peerOk) {
         const g = { x: gx, z: gz };
         mob.target = g;
@@ -2203,7 +3008,7 @@ export function tickFarmMob(mob, dt, pickTarget, rand = mob.rand ?? Math.random,
     // through shallow contact on the committed heading (the backstop clears
     // the residue), and only true blockers earn a stuck re-pick below.
     const makeWander = () => {
-      const base = makeStepOk(mob, supported, floating, mob.nose.along, mob.yaw);
+      const base = makeStepOk(mob, supported, floating, mob.nose.along, mob.yaw, 0, wallShrink(mob));
       return blockedByMob ? (nx, nz) => base(nx, nz) && !blockedByMob(nx, nz) : base;
     };
     // Forced headings cruise open-loop (plan or detour alike); free
@@ -2317,6 +3122,21 @@ export function separateFarmMobs(list, grid = null) {
       for (let k = 0; k < (inner ? n : list.length - i - 1); k++) {
         const b = inner ? inner[k] : list[i + 1 + k];
         if (!b.alive) continue;
+        // Mutually passing pair: the drives own the meeting (gates bound it
+        // to PASS_BUDGET) — the tangential wall-sandwich slide below would
+        // push both back apart along the corridor and read as a crawl. The
+        // backstop resumes the residue the tick the window drops.
+        // A pair that no longer advances is NOT skipped: the crossing
+        // budget is deliberately relaxed (the two bodies may overlap), so a
+        // pair wedged inside each other would be skipped for good and
+        // freeze where it stands. A stuck pair is pushed apart instead — the
+        // mob backs out of the interlock and the pair re-approaches. (This
+        // holds for open meetings too, not just narrow rails: a stalled
+        // window is a wedge, not a working crossing.)
+        const wedged = (a._adv ?? 1) < 1e-9 && (b._adv ?? 1) < 1e-9;
+        if (!wedged && passingActive(a) && passingActive(b) && a._passPeer === b && b._passPeer === a &&
+          (!a._narrow ||
+            (narrowPoseOk(a,a.pos.x,a.pos.z,a.yaw,false,true) && narrowPoseOk(b,b.pos.x,b.pos.z,b.yaw,false,true)))) continue;
         const w = worstPairPen(a, b, i, inner ? (idx.get(b) ?? 0) : i + 1 + k);
         if (!w || w.pen <= PUSH_T) continue;
         // Center-to-center axis (see header): strictly grows body distance.

@@ -20,8 +20,10 @@ import {
 import {
   makeStepOk, makeCellFree, makeCellSolid, turnTo, moveClamped, driveToward, strideTarget,
   dropLane, TURN_RATE, VIRTUAL_W, NO_EXPIRY, SPIN, descendOk, slideDeflect,
-  segmentWalkable,
+  segmentWalkable, aabbIntersectsSolid,
 } from "./step.js";
+import { activeNarrowPeer } from "./narrow.js";
+import { WALL_ALLOW } from "./collide.js";
 
 // Wall face within this engages following.
 // Touch rides run on a roam-clock budget (wallSpan, sampled per latch),
@@ -135,6 +137,10 @@ export function measureWallTake(mob, axis, sideDir, origin = null, range = FOLLO
 // owns it alone — latching a line there would ping-pong the lateral
 // target with the real centre slide and hijack junction draws.
 function latchVirtual(mob, axis, sideDir, range = FOLLOW_RANGE + 0.05) {
+  // A closed 1-wide rail owns the navigation: there is no exterior wall to
+  // hug inside it, and a wall-follow ride there reads blue, stealing the
+  // 1-wide red for as long as it lasts.
+  if (mob._narrow) return false;
   const m = measureWallTake(mob, axis, sideDir, null, range);
   if (!m) return false;
   const [lax, laz] = dirVec(axis);
@@ -447,6 +453,9 @@ function exitArmTake(mob, exitAxis, sideDir, supported, floating, sense, cellFre
 // with opts.noSlide the ride travels parallel and never slides laterally
 // onto its line (mouth exits: no sideways step while threading).
 function erectExitRide(mob, exitAxis, sideDir, take, dt, kind, cellFree, supported, floating, rand, opts = {}) {
+  // A closed 1-wide rail has no mouth: its ends are dead ends, not exits
+  // into open ground.
+  if (mob._narrow) return false;
   const gentle = kind === 2;
   const kindTake = typeof take === "string" ? take : take?.kind;
   if (kindTake === "straight") {
@@ -872,8 +881,20 @@ export function roamStep(mob, dt, supported, floating, rand = Math.random, pickT
   // the mouth centre itself.
   const c = mob.roam;
   if (!c || !c.mode) return false;
+  // Passing grace for the commit stride: a roam that inherited a 1-wide
+  // sidestep walks out through the same wall graze the rail ran (the
+  // offset decays separately once the meeting is over). A body parked
+  // inside the graze band keeps graze rights until it walks clear (an
+  // unshrunk overlap with a free shrunk pose reads as graze, never as a
+  // wall — without this a stale sidestep parks the body where no strict
+  // step can ever leave). Unoffset bodies outside the band read exact, as
+  // before.
+  const inGrazeBand = aabbIntersectsSolid(mob.pos.x, mob.pos.y, mob.pos.z, mob.hw, mob.h) &&
+    !aabbIntersectsSolid(mob.pos.x, mob.pos.y, mob.pos.z, Math.max(0.05, mob.hw - WALL_ALLOW), mob.h);
+  const shrink = (mob._passT ?? 0) > 0 || (mob._passSettle ?? 0) > 0 ||
+    activeNarrowPeer(mob) || (mob._lineOff ?? 0) !== 0 || inGrazeBand ? WALL_ALLOW : 0;
   const makeCommit = () => {
-    const base = makeStepOk(mob, supported, floating, mob.nose.along, mob.yaw);
+    const base = makeStepOk(mob, supported, floating, mob.nose.along, mob.yaw, 0, shrink);
     return blocked ? (nx, nz) => base(nx, nz) && !blocked(nx, nz) : base;
   };
   // Detour arrival: reached the approach cell — drop the waypoint and push
