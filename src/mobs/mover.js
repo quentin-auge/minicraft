@@ -11,6 +11,7 @@ import {
   ENTRY_COOL_T, LEAVE_FRESH_T, mobHeadsToCooledMouth, insideCooledMouth,
 } from "./corridor.js";
 import { entryTick, passageTick } from "./entry.js";
+import { navTick, navCommit, navPlanAllows, navPathDistance, navCellOnPath, NAV_BAND } from "./nav.js";
 import { queryMobGrid, buildMobGrid } from "./grid.js";
 import {
   aabbIntersectsSolid, hasSupport,
@@ -551,6 +552,10 @@ export function exitFresh1(mob) {
 // FREE roam yields to everyone (0, legacy cascade, never flags). Pure
 // reads, no rand stream.
 export function mobRank(mob) {
+  // A mob on a plan is the top tier: it holds its line and everybody
+  // else yields to it (the forecast plans it first, the rank gates below
+  // make every other tier treat it as a threat).
+  if (mob.nav) return 5;
   const laned = mob.lane != null;
   const blue = mob.followLine?.touch === true && laned;
   const red = laned && mob.followLine?.touch !== true;
@@ -677,6 +682,12 @@ export function servoTick(mob, dt, supported, floating, rand = Math.random, pick
   if (pre === "touch") {
     // Contact latch erected the lane: sense again along it, virtual wall up.
     sense = senseLane(mob);
+    // Plan priority: a ride latched across the planned line is dropped
+    // at once — the plan's steering owns the mob.
+    if (planVetoesRail(mob, mob.lane?.axis)) {
+      dropRail(mob);
+      return false;
+    }
     // A peer already rides this exact line close by (abreast latch onto one
     // body): declining the latch routes around instead of grinding onto the
     // peer — the peer-aware slide below would only refuse the convergence,
@@ -694,7 +705,8 @@ export function servoTick(mob, dt, supported, floating, rand = Math.random, pick
   const jrng = mob.jrng ?? (mob.jrng = spawnRng(rand));
   const cx = Math.floor(mob.pos.x), cz = Math.floor(mob.pos.z);
   const prevAxis = mob.lane ? mob.lane.axis : null;
-  const res = updateLane(mob.lane, cx, cz, mob.yaw, sense.opens, sense.walled, jrng);
+  const res = updateLane(mob.lane, cx, cz, mob.yaw, sense.opens, sense.walled, jrng,
+    mob.nav?.plan ?? null);
   if (!res.lane) { dropLane(mob); return false; }
   mob.lane = res.lane;
   // Engagement needs true flanks: both adjacent lateral cells blocked.
@@ -745,6 +757,13 @@ export function servoTick(mob, dt, supported, floating, rand = Math.random, pick
       mob.followCool = FOLLOW_COOL;
       mob.roam.stallT = 0;
       mob.roam.latchTried = false;
+      return false;
+    }
+    // Plan priority: the budget's away-quit (45°/90° off the wall) would
+    // leave the planned line — the ride ends here instead and the plan's
+    // steering takes over.
+    if (mob.nav) {
+      dropRail(mob);
       return false;
     }
     let h = wallQuitHeading(mob, supported, floating);
@@ -865,6 +884,13 @@ export function servoTick(mob, dt, supported, floating, rand = Math.random, pick
     // the fresh window nothing changes.
     if (corner != null && freshFromMouth(mob) && !takeWalkable(mob, corner.axis)) corner = null;
     if (corner != null) {
+      // Plan priority: a corner that leaves the planned line is not
+      // taken — the ride ends and the plan's steering owns the mob.
+      if (planVetoesRail(mob, corner.axis) ||
+        (mob.nav && !navCellOnPath(mob, corner.cell.x, corner.cell.z))) {
+        dropRail(mob);
+        return false;
+      }
       adoptCornerTurn(mob, corner, cx, cz, res);
     } else if (sense.fwdOpen) {
         // A guided (violet) ride that lost its wall never U-turns in
@@ -932,12 +958,32 @@ export function servoTick(mob, dt, supported, floating, rand = Math.random, pick
         if (early != null && takeWalkable(mob, early.axis)) corner = early;
       }
       if (corner != null) {
+        // Plan priority: the tip take must serve the planned line too.
+        if (planVetoesRail(mob, corner.axis) ||
+          (mob.nav && !navCellOnPath(mob, corner.cell.x, corner.cell.z))) {
+          dropRail(mob);
+          return false;
+        }
         adoptCornerTurn(mob, corner, cx, cz, res);
       } else {
+        // Plan priority: the wall's own exit must serve the planned line
+        // — a ride that would walk off the plan ends here instead.
+        if (planVetoesRail(mob, keep.axis)) {
+          dropRail(mob);
+          return false;
+        }
         mob.lane = { axis: keep.axis, entry: oppositeYaw(keep.axis), lockX: cx, lockZ: cz };
         mob.followLine = keep.followLine;
       }
     }
+  }
+  // Plan priority (last word): a rail that runs against the planned line
+  // is dropped — the plan's steering owns the mob. A rail that agrees
+  // with the plan stays: in a 1-wide corridor, riding the wall IS the
+  // path.
+  if (planVetoesRail(mob, mob.lane?.axis)) {
+    dropRail(mob);
+    return false;
   }
   blendTurn(mob, dt, res);
   return cruiseLane(mob, dt, supported, floating, res, rand, peerGate, peers, turnGate);
@@ -1238,6 +1284,31 @@ function carriedRide(mob) {
 function dropFollowLine(mob) {
   mob.followLine = null;
   mob.turnHold = 0;
+}
+
+// The plan vetoes a rail that runs against it: the plan chooses the
+// route, the primitives only walk it. Two ways to run against it —
+// the rail turns the wrong way (the direction test), or it drifts off
+// the band around the planned cells (the distance test: a wall-follow
+// that keeps riding, or switches to another wall, while the planned path
+// walks away). An entry commit is exempt — its mouth lies on the path,
+// so its approach serves the plan by construction.
+function planVetoesRail(mob, axis) {
+  if (!mob.nav || axis == null) return false;
+  if (mob.roam?.entry === true) return false;
+  if (!navPlanAllows(mob, axis)) return true;
+  return navPathDistance(mob) > NAV_BAND;
+}
+
+// Drop a rail (a 1-wide lane and its touch line) as one: the plan's
+// steering takes over from here, and the next latch is held off so the
+// mob does not re-grab the same wall on the following tick.
+function dropRail(mob) {
+  dropFollowLine(mob);
+  dropLane(mob);
+  mob.followCool = FOLLOW_COOL;
+  mob.stuckT = 0;
+  mob.servoStall = 0;
 }
 
 function noseBlockedAt(mob, x, z, yaw) {
@@ -1821,12 +1892,19 @@ export function tickFarmMob(mob, dt, pickTarget, rand = mob.rand ?? Math.random,
   const floating = surface != null;
   const supported = floating || hasSupport(mob.pos.x, mob.pos.y, mob.pos.z, mob.hw);
   if (supported) mob.fallFrom = mob.pos.y;
+  // Navigation (a latched target): the planner owns the goal, so the
+  // tick below runs with the entry draw, the passage state, and the
+  // random re-picks paused — the planned commit drives the mob instead.
+  const navHold = mob.nav ? navTick(mob, dt, supported, floating, peers) : false;
   // Tunnel-entry attraction primes over everything (open roam, wall rides,
   // wander picks): draws repeat every scan until one accepts, steered as a
   // plain roam commit. While one runs, the picks below pause (stuck/refresh
   // would steal its target); peer avoidance stays live (the tiered planner
   // slows, sidesteps hole-ward, or aborts entries — only the backstop ran
   // before, which shoved precise maneuvers).
+  // A plan does not switch the mouth machinery off: the entry draw is
+  // gated on the path instead (entry.js), so a mouth that serves the plan
+  // is threaded and one that does not never draws.
   mob.entryScanT = Math.max(0, (mob.entryScanT ?? 0) - dt);
   mob.entryCoolT = Math.max(0, (mob.entryCoolT ?? 0) - dt);
   mob._grindCool = Math.max(0, (mob._grindCool ?? 0) - dt);
@@ -1837,7 +1915,7 @@ export function tickFarmMob(mob, dt, pickTarget, rand = mob.rand ?? Math.random,
   // (passageTick owns it; lane owners and entry commits are exempt).
   if (supported && !floating) passageTick(mob, dt, supported, floating, rand, pickTarget);
   const peersEff = peers;
-  if (!entryHold) {
+  if (!entryHold && !navHold) {
     mob.wanderT -= dt;
     const dx = mob.target ? mob.target.x - mob.pos.x : 0;
     const dz = mob.target ? mob.target.z - mob.pos.z : 0;
@@ -2085,10 +2163,16 @@ export function tickFarmMob(mob, dt, pickTarget, rand = mob.rand ?? Math.random,
   let savedSpeed = 0;
   if (slow !== 1) { savedSpeed = mob.speed; mob.speed *= slow; }
   const servoed = servoTick(mob, dt, supported, floating, rand, pickTarget, lanePeerGate, peersEff, turnGate);
+  // A lane release hands the mob an exit commit of its own; the plan
+  // wins, so the nav commit is re-published before the step below.
+  if (navHold) navCommit(mob);
   let roamed = false;
   if (!servoed && supported && !floating) {
+    // Latched while navigating: the plan owns the commit, so the decide
+    // branch stays off and the peer dodge never re-aims the mob away
+    // from its path.
     roamed = roamStep(mob, dt, supported, floating, rand, pickTarget, blockedByMob,
-      plan ? plan.heading : cruise, turnGiveGate);
+      navHold ? null : (plan ? plan.heading : cruise), turnGiveGate, navHold);
   }
   // Lane-less peer-grind watch (same discipline as the laned cruise,
   // see grindWatchTick): sustained body contact with no escape breaks into
@@ -2248,6 +2332,16 @@ export function separateFarmMobs(list, grid = null) {
         // shoved in the other's direction).
         let da = Math.min(w.pen / 4, PUSH_CAP - (spent.get(a) ?? 0));
         let db = Math.min(w.pen / 4, PUSH_CAP - (spent.get(b) ?? 0));
+        // A mob on a plan is never shoved: the whole correction goes to
+        // the other side, so the planned line stays exact (the plan owns
+        // the priority, the other mob gives way).
+        if (a.nav != null && b.nav == null) {
+          da = 0;
+          db = Math.min(w.pen / 2, PUSH_CAP - (spent.get(b) ?? 0));
+        } else if (b.nav != null && a.nav == null) {
+          db = 0;
+          da = Math.min(w.pen / 2, PUSH_CAP - (spent.get(a) ?? 0));
+        }
         if (da < 0) da = 0;
         if (db < 0) db = 0;
         if (!sepSpotFree(a, a.pos.x + nx * da, a.pos.z + nz * da)) { da = 0; db = Math.min(w.pen / 4, PUSH_CAP - (spent.get(b) ?? 0)); if (db < 0) db = 0; }

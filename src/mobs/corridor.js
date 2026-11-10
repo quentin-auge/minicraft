@@ -517,6 +517,21 @@ export function pickExit(options, rand = Math.random) {
   return options[Math.floor(rand() * options.length)];
 }
 
+// The open direction that best serves the plan: the navigation planner's
+// planned direction (a unit vector) against the candidate exits. The
+// closest-aligned exit wins; when no exit is aligned the plan has no
+// say and the ordinary draw stands.
+export function pickByDirection(options, dir) {
+  if (!dir) return null;
+  let best = null, bd = 0.25;
+  for (const o of options) {
+    const [dx, dz] = dirVec(o);
+    const d = dx * dir.x + dz * dir.z;
+    if (d > bd) { bd = d; best = o; }
+  }
+  return best;
+}
+
 // Lane state: null in the open, else {axis, entry, lockX, lockZ}.
 // axis = forward cardinal heading, entry = backward cardinal heading,
 // lock = junction cell already decided (no re-pick inside it). A lane
@@ -529,12 +544,18 @@ export function pickExit(options, rand = Math.random) {
 // included) — single walls, room corners and L-entries never engage,
 // dead-end mouths (flanks walled) still do. Junction turns, dead-end
 // seeks and touch rides keep their own hold rules in the mover.
+// `preferred` is the planned direction at a junction (the navigation
+// planner's unit vector): the exit it points at wins over the random
+// draw, and the same rule picks the axis when a lane engages. Without a
+// plan the draw stands.
 // Events: engage | cruise | junction (forced L or free choice) |
 // lock-turn | uturn | null (open field, no lane).
-export function updateLane(lane, cx, cz, yaw, opens, walled = [], rand = Math.random) {
+export function updateLane(lane, cx, cz, yaw, opens, walled = [], rand = Math.random, preferred = null) {
   if (!lane) {
     if (opens.length === 2 || opens.length === 1) {
-      const axis = opens.length === 2 ? closestDir(yaw, opens) : opens[0];
+      const axis = opens.length === 2
+        ? (pickByDirection(opens, preferred) ?? closestDir(yaw, opens))
+        : opens[0];
       const latA = normYaw(axis + Math.PI / 2), latB = normYaw(axis - Math.PI / 2);
       const walledDir = (d) => walled.some((w) => yawDiff(w, d) < 1e-6);
       if (!walledDir(latA) || !walledDir(latB)) return { lane: null, event: null };
@@ -567,7 +588,9 @@ export function updateLane(lane, cx, cz, yaw, opens, walled = [], rand = Math.ra
     };
   }
   // Junction: free choice randomizes, a single non-straight exit is a
-  // forced L turn (deterministic — pickExit of one returns it).
-  const exit = pickExit(options, rand);
+  // forced L turn (deterministic — pickExit of one returns it). A
+  // planned direction (navigation) wins over the draw when it points at
+  // an open exit.
+  const exit = pickByDirection(options, preferred) ?? pickExit(options, rand);
   return { lane: { axis: exit, entry: oppositeYaw(exit), lockX: cx, lockZ: cz }, event: "junction" };
 }

@@ -44,6 +44,7 @@
 import { ENTRY_P, ENTRY_SCAN_T, ENTRY_TIMEOUT, ENTRY_COOL_T, CARDINALS, findEntries, dirVec, snapCardinal, isTwoWideMouth, mouthPairCells, mouthKey, mouthCellKey } from "./corridor.js";
 import { makeCellFree, makeCellSolid, dropLane, NO_EXPIRY, segmentWalkable } from "./step.js";
 import { roamSpan, ARRIVE_D, SPAN_MAX, exitMouth } from "./roam.js";
+import { navOnPath } from "./nav.js";
 
 // Deciding mob per passage (mouth cell, or cell pair for 2-wide),
 // dimension-scoped: block keys collide across dimensions.
@@ -98,6 +99,9 @@ function captureTwoWide(mob) {
     if (key == null) continue;
     const pair = mouthPairCells(cx, cz, axis, cellFree, cellSolid);
     const mx = (pair[0].x + pair[1].x) / 2 + 0.5, mz = (pair[0].z + pair[1].z) / 2 + 0.5;
+    // Plan gate: a capture opens a crossing, so it only fires when the
+    // crossing serves the planned path.
+    if (mob.nav && !navOnPath(mob, mx, mz)) continue;
     const dx = mx - mob.pos.x, dz = mz - mob.pos.z;
     const dist = Math.hypot(dx, dz);
     if (dist > CAPTURE_R + 1e-9) continue;
@@ -263,6 +267,10 @@ export function entryTick(mob, dt, rand = Math.random, ctx = {}) {
     if (key === mob.passage?.key) continue;
     if (!passageFree(key, mob)) continue;
     const slot = pickEntryTarget(e, mob.pos.x, mob.pos.z);
+    // Plan gate: a mouth only draws when it serves the plan — its slot
+    // lies on the remaining planned path. Without a plan every mouth
+    // draws (the plain wander behaviour).
+    if (mob.nav && !navOnPath(mob, slot.x, slot.z)) continue;
     // Oriented travel axis: corridor-ward, flipped through when the mob
     // stands past the mouth (thin holes match both ways — the discovery
     // order must never send the arrival back toward the mob's side). The

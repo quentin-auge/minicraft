@@ -840,19 +840,24 @@ export function tryGuidedErect(mob, dt, supported, floating, rand = Math.random)
 }
 
 // Decision + stepping when the servo owns nothing. Returns handled.
-export function roamStep(mob, dt, supported, floating, rand = Math.random, pickTarget, blocked = null, forceHeading = null, turnGate = null) {
+// `latched` keeps the commit as it is: the caller owns the target (the
+// navigation planner re-publishes it every tick), so the decide branch
+// is skipped and the commit is never re-drawn or expired.
+export function roamStep(mob, dt, supported, floating, rand = Math.random, pickTarget, blocked = null, forceHeading = null, turnGate = null, latched = false) {
   if (mob.lane) return false;
   const r = mob.roam;
-  const broken = r && r.mode && mob.target !== r.tgt;
-  const arrived = r && r.mode === "commit" && mob.target &&
-    Math.hypot(r.target.x - mob.pos.x, r.target.z - mob.pos.z) < ARRIVE_D;
-  const expired = r && r.mode && mob.wanderT <= 0;
-  // Entry commits never time out into a decide (that U-turns a committed
-  // mob): arrival or the ENTRY_TIMEOUT backstop in entryTick closes them.
-  const timedOut = r && r.mode && !r.entry && (r.t ?? 0) > (r.span ?? SPAN_MAX);
-  if (!r || !r.mode || broken || arrived || expired || timedOut || !mob.target) {
-    decide(mob, dt, supported, floating, rand, pickTarget, blocked);
-    if (!mob.roam?.mode) return false;
+  if (!latched) {
+    const broken = r && r.mode && mob.target !== r.tgt;
+    const arrived = r && r.mode === "commit" && mob.target &&
+      Math.hypot(r.target.x - mob.pos.x, r.target.z - mob.pos.z) < ARRIVE_D;
+    const expired = r && r.mode && mob.wanderT <= 0;
+    // Entry commits never time out into a decide (that U-turns a committed
+    // mob): arrival or the ENTRY_TIMEOUT backstop in entryTick closes them.
+    const timedOut = r && r.mode && !r.entry && (r.t ?? 0) > (r.span ?? SPAN_MAX);
+    if (!r || !r.mode || broken || arrived || expired || timedOut || !mob.target) {
+      decide(mob, dt, supported, floating, rand, pickTarget, blocked);
+      if (!mob.roam?.mode) return false;
+    }
   }
   // Commit step toward the latched target. Entry commits drive straight at
   // the claimed slot — no lateral pull toward the travel line (a 2-wide
@@ -866,6 +871,7 @@ export function roamStep(mob, dt, supported, floating, rand = Math.random, pickT
   // throughout, so every turn reads natural. Arrival still reads against
   // the mouth centre itself.
   const c = mob.roam;
+  if (!c || !c.mode) return false;
   const makeCommit = () => {
     const base = makeStepOk(mob, supported, floating, mob.nose.along, mob.yaw);
     return blocked ? (nx, nz) => base(nx, nz) && !blocked(nx, nz) : base;
