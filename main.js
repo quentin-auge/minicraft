@@ -83,6 +83,9 @@ import {
 import { initHomingTnt, fireHomingTnt, tickHomingTnt, clearHomingTnt } from "./src/mobs/homing.js";
 import { enterEndMobs, clearEndMobs, tickEndMobs, notifyEndermanVoxelChange, dragonHealth, setDragonVictoryHook, setMobSeed } from "./src/mobs/end.js";
 import { enterFarmMobs, clearFarmMobs, tickFarmMobs, handleFarmTravel, setFarmSeed, spawnFarmMobAt } from "./src/mobs/farm.js";
+import {
+  initTargetDebug, targetDebugKeyDown, targetDebugKeyUp, tickTargetDebug, resetTargetDebug,
+} from "./src/mobs/targets-debug.js";
 import { heldMob, tickHeld, severCarry } from "./src/mobs/carry.js";
 import { endPortalFrameKeys, resetEndDimension, setEndCleared } from "./src/world/end.js";
 import { resetTntUnlocks } from "./src/world/tntunlock.js";
@@ -158,6 +161,8 @@ const highlight = new THREE.LineSegments(
 highlight.visible = false;
 highlight.renderOrder = 999;
 scene.add(highlight);
+// Target debug overlay (green cells: selection, target, planned path).
+initTargetDebug(scene);
 const _hookDir = new THREE.Vector3();
 const _spawnDir = new THREE.Vector3();
 const bossBarEl = document.getElementById("bossbar");
@@ -388,6 +393,7 @@ async function buildWorld() {
     clearHomingTnt();
   clearEndMobs();
   clearFarmMobs();
+  resetTargetDebug();
   resetTravelLinks();
   resetTntUnlocks();
   if (BOOT_DIM !== "end") resetEndDimension();
@@ -665,6 +671,7 @@ async function runTravel(dest, msg) {
     resetItems(dimHotbar(dim));
     if (dest === "end") enterEndMobs(scene);
     handleFarmTravel(scene, dest);
+    resetTargetDebug();
     updateBossBar();
     updateCamera();
     // Compile behind the spiral, once per dimension per session: programs
@@ -965,6 +972,14 @@ document.addEventListener("keydown", (e) => {
     e.preventDefault();
     return;
   }
+  // Target debug (requires ?cheat=1): C aims a target, C held expands the
+  // selection on the aimed block's face plane, C released arms it, and C
+  // again on a mob sends it there. C while a mob walks cancels the target.
+  if (e.code === "KeyC" && !e.repeat && started && !isHelpOpen() && isLocked() && !building && isCheat()) {
+    targetDebugKeyDown(camera);
+    e.preventDefault();
+    return;
+  }
   // Mob grab / release (ENTER): empty hands grab the aimed mob through the
   // mob-grab hook kind; holding hands release through the mob-release kind
   // toward the aimed block's face cell. Refusals (busy hook, no aim) fizzle.
@@ -998,9 +1013,11 @@ document.addEventListener("keydown", (e) => {
   if (e.code === "KeyL") select(selected + 1);
   if (["Space", "Slash", "Tab", "ArrowUp", "ArrowDown"].includes(e.code) || e.key === " ") e.preventDefault();
 });
+
 document.addEventListener("keyup", (e) => {
   if (e.code === "KeyG" && hookActive()) cancelHook(true);
   if ((e.code === "Enter" || e.code === "NumpadEnter") && hookActive()) cancelHook(true);
+  if (e.code === "KeyC" && isCheat()) targetDebugKeyUp();
   keys[e.code] = false;
   keys[e.key] = false;
 });
@@ -1175,6 +1192,9 @@ function loop(now) {
     tickHomingTnt(sdt, dim);
     if (dim === "end") tickEndMobs(sdt, camera);
     tickFarmMobs(sdt, dim);
+    // Target debug: the selection follows the aim while C is held, and
+    // an active target ends when its plan does (arrival or give-up).
+    tickTargetDebug(camera);
     // Riding mobs inherit the hull delta after their own tick ran, so their
     // gravity never pulls them through the moving (voxel-less) hull.
     carryRiders();

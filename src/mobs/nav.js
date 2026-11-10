@@ -21,7 +21,7 @@ import {
 import { dropAllowed } from "./livestock.js";
 import { dirVec, normYaw } from "./corridor.js";
 import { mobType } from "./registry.js";
-import { contactGoalTiers } from "./targets.js";
+import { contactGoalTiers, targetCells, targetKind } from "./targets.js";
 
 // Traversal strategy registry (stable keys).
 const TRAVERSAL_STRATEGIES = [];
@@ -444,6 +444,45 @@ function pressedAtGoal(mob, nav) {
   return null;
 }
 
+// Pressed at the side: the tier-1 counterpart of the above. A long nose
+// (cow) presses the target block while the body stands a hair outside the
+// arrival square — close enough that no step fits anymore, far enough
+// that the centre test never fires. The stall clock already proved the
+// mob cannot walk the last hair: nose on the block plus body at the goal
+// cell reads as contact (the target definition), not as a stall.
+function pressedAtSide(mob, nav) {
+  if ((nav.tier ?? 0) === 0) return null;
+  if (nav.index < nav.path.length - 2) return null;
+  const kind = targetKind(nav.target?.key);
+  // Default tiers only: the side goals are the lateral neighbours of the
+  // target blocks, so a goal cell maps back to its block. A custom
+  // goalTiers shape owns unknown geometry and keeps the exact behaviour.
+  if (!kind || kind.goalTiers) return null;
+  const near = [];
+  const reach = (mob.hw ?? 0.3) + 0.6;
+  for (const g of nav.goalCells) {
+    if (Math.abs(mob.pos.y - g.y) > 0.5) continue;
+    const dx = mob.pos.x - (g.x + 0.5);
+    const dz = mob.pos.z - (g.z + 0.5);
+    if (dx * dx + dz * dz <= reach * reach) near.push(g);
+  }
+  if (!near.length) return null;
+  const blocks = new Set(targetCells(nav.target).map((c) => `${c.x},${c.y},${c.z}`));
+  const r = (mob.nose?.r ?? 0.2) + 0.05;
+  const nx = mob.pos.x + Math.sin(mob.yaw) * (mob.nose?.along ?? 0.3);
+  const nz = mob.pos.z + Math.cos(mob.yaw) * (mob.nose?.along ?? 0.3);
+  for (const g of near) {
+    const cands = [[g.x - 1, g.z], [g.x + 1, g.z], [g.x, g.z - 1], [g.x, g.z + 1]];
+    for (const [bx, bz] of cands) {
+      if (!blocks.has(`${bx},${g.y},${bz}`)) continue;
+      const cx = Math.min(Math.max(nx, bx), bx + 1);
+      const cz = Math.min(Math.max(nz, bz), bz + 1);
+      if ((nx - cx) * (nx - cx) + (nz - cz) * (nz - cz) <= r * r) return g;
+    }
+  }
+  return null;
+}
+
 // Closest point on the planned line: a narrow window around the current
 // arc (the path may fold back on itself, so a wide scan could jump to
 // the wrong leg) with a global fallback when the mob is far off the line.
@@ -659,6 +698,12 @@ export function navTick(mob, dt, supported, floating, peers = null) {
   // over the block, its nose has nowhere to go). Counted as reached
   // rather than as a stall — the plan is done, not stuck.
   if (nav.pressT >= NAV_BLOCKED_T && pressedAtGoal(mob, nav)) {
+    clearNav(mob);
+    return false;
+  }
+  // Nose pressed against the target block with the body at the side goal:
+  // contact, not a stall.
+  if (nav.pressT >= NAV_BLOCKED_T && pressedAtSide(mob, nav)) {
     clearNav(mob);
     return false;
   }

@@ -14,6 +14,7 @@ import { buildMobGrid } from "../../../src/mobs/grid.js";
 import { planGroup } from "../../../src/mobs/forecast.js";
 import { entryTick } from "../../../src/mobs/entry.js";
 import { createTarget } from "../../../src/mobs/targets.js";
+import { normYaw } from "../../../src/mobs/corridor.js";
 
 function mulberry32(a) {
   return function () {
@@ -31,11 +32,11 @@ const CAPS = { walk: true };
 // band the mover's plan veto holds: a ride that drifts further ends).
 const PATH_DEV = 0.85;
 
-function makeMob(x, y, z, yaw = 0) {
-  const spec = LIVESTOCK_SPECS.pig;
+function makeMob(x, y, z, yaw = 0, type = "pig") {
+  const spec = LIVESTOCK_SPECS[type];
   const shape = specCircles(spec);
   return {
-    type: "pig", dim: "over", pos: { x, y, z }, vel: { y: 0 },
+    type, dim: "over", pos: { x, y, z }, vel: { y: 0 },
     hw: shape.hw, h: shape.h, nose: shape.nose, tail: shape.tail,
     maxDrop: spec.drop ?? 1, alive: true, root: null,
     yaw, yawTarget: yaw, target: null, wanderT: NO_EXPIRY,
@@ -203,6 +204,81 @@ function pathDeviation(mob, plan) {
   assert.equal(cellDist, 1,
     `lying: the mob is beside the block (${mob.pos.x.toFixed(2)},${mob.pos.z.toFixed(2)})`);
   assertClean(mob, "lying");
+}
+
+// Yaw-huntmeter: ticks run until the nav ends; every tick near the target
+// counts heading flips (a left-right pirouette flips the yaw delta sign)
+// and total rotation. Deterministic under the seeded random.
+function runPressHunt(mob, maxTicks = 3000, seed = 1) {
+  const realRandom = Math.random;
+  Math.random = mulberry32(seed);
+  let ticks = 0, flips = 0, lastW = 0, cumRot = 0, lastYaw = mob.yaw;
+  try {
+    for (; ticks < maxTicks; ticks++) {
+      tickFarmMob(mob, DT, (m) => ({ x: m.pos.x + 10, z: m.pos.z }));
+      const dy = normYaw(mob.yaw - lastYaw);
+      lastYaw = mob.yaw;
+      if (!mob.nav) break;
+      cumRot += Math.abs(dy);
+      const w = Math.sign(dy) || 0;
+      if (w !== 0 && lastW !== 0 && w !== lastW) flips++;
+      if (w !== 0) lastW = w;
+    }
+  } finally {
+    Math.random = realRandom;
+  }
+  return { ticks, flips, cumRot, arrived: !mob.nav };
+}
+
+// --- long-nosed press at a ground block: no pirouette ---------------
+// A cow's nose (0.81 + 0.28 reach) presses the block while its centre
+// stands a hair outside the arrival square: the deflect used to flip
+// sides every tick (181 flips, never arriving), the steady slide holds
+// one side and walks into contact instead.
+{
+  resetWorld("over");
+  setDimension("over");
+  floor(-8, -8, 12, 12);
+  setBlock(5, 1, 0, STONE);
+  const mob = makeMob(0.5, FEET, 0.5, Math.PI / 2, "cow");
+  const target = createTarget("block", { x: 5, y: 1, z: 0 });
+  const plan = assignNav(mob, target, { capabilities: CAPS });
+  assert.ok(plan, "press-side: a path exists");
+  assert.equal(plan.tier, 1, "press-side: the block is reached from the side");
+  const run = runPressHunt(mob);
+  assert.ok(run.arrived, `press-side: the mob touches the block (${run.ticks} ticks)`);
+  assert.ok(run.ticks < 600, `press-side: no stalled press (${run.ticks} ticks)`);
+  assert.ok(run.flips <= 8, `press-side: no left-right hunt (${run.flips} flips)`);
+  onGoal(mob, { x: 4, y: 1, z: 0 }, "press-side");
+  assertClean(mob, "press-side");
+}
+
+// --- press at a corridor end: contact without room to slide ----------
+// The same long nose in a 1-wide dead end facing the block: no sideways
+// room exists, so no slide can walk the last hair — the nose pressed on
+// the block with the body at the side goal counts as contact instead of
+// stalling (or giving up) in front of it.
+{
+  resetWorld("over");
+  setDimension("over");
+  for (let x = -2; x <= 8; x++) for (let z = -2; z <= 2; z++) setBlock(x, 0, z, STONE);
+  for (let x = 0; x <= 5; x++) for (const z of [-1, 1]) {
+    setBlock(x, 1, z, STONE);
+    setBlock(x, 2, z, STONE);
+  }
+  setBlock(6, 1, 0, STONE);
+  setBlock(6, 2, 0, STONE);
+  const mob = makeMob(0.5, FEET, 0.5, Math.PI / 2, "cow");
+  const target = createTarget("block", { x: 6, y: 1, z: 0 });
+  const plan = assignNav(mob, target, { capabilities: CAPS });
+  assert.ok(plan, "press-deadend: a path exists");
+  assert.equal(plan.tier, 1, "press-deadend: the block is reached from the side");
+  const run = runPressHunt(mob);
+  assert.ok(run.arrived, `press-deadend: the mob touches the block (${run.ticks} ticks)`);
+  assert.ok(run.ticks < 600, `press-deadend: no stalled press (${run.ticks} ticks)`);
+  assert.ok(run.flips <= 8, `press-deadend: no left-right hunt (${run.flips} flips)`);
+  onGoal(mob, { x: 5, y: 1, z: 0 }, "press-deadend");
+  assertClean(mob, "press-deadend");
 }
 
 // --- a volume target: the mob walks into the volume --------------------

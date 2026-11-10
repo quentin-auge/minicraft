@@ -19,7 +19,7 @@ import { planGroup } from "./forecast.js";
 import { buildMobGrid } from "./grid.js";
 import { aabbIntersectsSolid, strideTarget } from "./step.js";
 import { getBlockIn } from "../core/store.js";
-import { applyDisplacementColor, initPaintState } from "./displacement-color.js";
+import { applyDisplacementColor } from "./displacement-color.js";
 import { clearEntryClaims } from "./entry.js";
 import { village } from "../world/village.js";
 import { dimSpec } from "../world/dimensions.js";
@@ -92,7 +92,7 @@ function buildQuadruped(kind) {
     paint(tailGroup, bodyM, [0.09, 0.55, 0.09], [0, -0.27, -0.03]);
     paint(tailGroup, legM, [0.13, 0.13, 0.13], [0, -0.58, -0.03]);
   }
-  g.userData = { kind, legs, tailGroup, ...initPaintState(), paintables };
+  g.userData = { kind, legs, tailGroup, paintables };
   return g;
 }
 

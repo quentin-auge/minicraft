@@ -32,19 +32,22 @@ export function pickBlock(origin, dir, skipLiquid, maxDist = Infinity, maxSteps 
   let tMaxY = dir.y !== 0 ? ((stepY > 0 ? Math.floor(origin.y) + 1 - origin.y : origin.y - Math.floor(origin.y)) / Math.abs(dir.y)) : Infinity;
   let tMaxZ = dir.z !== 0 ? ((stepZ > 0 ? Math.floor(origin.z) + 1 - origin.z : origin.z - Math.floor(origin.z)) / Math.abs(dir.z)) : Infinity;
   let face = [0, 0, 0];
+  // Ray distance of the hit cell (the face the ray entered through): the
+  // mob picker uses it for occlusion.
+  let t = 0;
   for (let i = 0; i < maxSteps; i++) {
     // Infinite dimensions keep stepping past the old cube (and below zero);
     // bounded dims keep the exact old bounds.
     if (!outOfWorld(x, y, z)) {
       const id = getBlock(x, y, z);
-      if (id !== AIR && !(skipLiquid && isLiquid(id))) return { x, y, z, id, face };
+      if (id !== AIR && !(skipLiquid && isLiquid(id))) return { x, y, z, id, face, t };
     }
     if (tMaxX < tMaxY && tMaxX < tMaxZ) {
-      x += stepX; tMaxX += tDeltaX; face = [-stepX, 0, 0];
+      x += stepX; t = tMaxX; tMaxX += tDeltaX; face = [-stepX, 0, 0];
     } else if (tMaxY < tMaxZ) {
-      y += stepY; tMaxY += tDeltaY; face = [0, -stepY, 0];
+      y += stepY; t = tMaxY; tMaxY += tDeltaY; face = [0, -stepY, 0];
     } else {
-      z += stepZ; tMaxZ += tDeltaZ; face = [0, 0, -stepZ];
+      z += stepZ; t = tMaxZ; tMaxZ += tDeltaZ; face = [0, 0, -stepZ];
     }
     if (Math.min(tMaxX, tMaxY, tMaxZ) > maxDist) break;
   }

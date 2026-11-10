@@ -88,6 +88,11 @@ export function driveToward(mob, dt, yawTarget, makeStep, move, opts = {}) {
 // direct goal — moveClamped slides the former, the stall path owns the
 // latter. Entry commits skip it (they wedge, stall, and convert to a
 // hole-ward guided ride instead). Returns the goal to drive.
+// A projection shorter than this share of the stride carries no
+// direction: near head-on its sign is float noise, and deriving the slide
+// facing from it flips the mob every tick (pirouette against the wall).
+const PROJ_SHARE = 0.25;
+
 export function slideDeflect(mob, dt, yawGoal, supported, floating) {
   const stride = mob.speed * dt;
   if (!(stride > 1e-9)) return yawGoal;
@@ -96,8 +101,14 @@ export function slideDeflect(mob, dt, yawGoal, supported, floating) {
   if (probeAs(yawGoal)(mob.pos.x + dx, mob.pos.z + dz)) return yawGoal;
   // Each projection is probed facing along its own axis: the slide turns
   // the head out of the wall, so the diagonal nose reach must not veto the
-  // axis the body walks.
-  const xYaw = Math.atan2(dx, 0), zYaw = Math.atan2(0, dz);
+  // axis the body walks. The facing follows the projection's own sign —
+  // except near head-on, where the sign is noise: there the current yaw
+  // breaks the tie (hysteresis), so the slide holds one side instead of
+  // flipping between both every tick.
+  const xYaw = Math.abs(dx) >= stride * PROJ_SHARE ? Math.atan2(dx, 0)
+    : Math.abs(normYaw(Math.PI / 2 - mob.yaw)) <= Math.abs(normYaw(-Math.PI / 2 - mob.yaw)) ? Math.PI / 2 : -Math.PI / 2;
+  const zYaw = Math.abs(dz) >= stride * PROJ_SHARE ? Math.atan2(0, dz)
+    : Math.abs(normYaw(0 - mob.yaw)) <= Math.abs(normYaw(Math.PI - mob.yaw)) ? 0 : Math.PI;
   const xOk = probeAs(xYaw)(mob.pos.x + dx, mob.pos.z);
   const zOk = probeAs(zYaw)(mob.pos.x, mob.pos.z + dz);
   if (xOk && !zOk) return xYaw;

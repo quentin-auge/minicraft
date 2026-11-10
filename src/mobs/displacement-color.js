@@ -5,11 +5,16 @@
 // assert the mover flags (`tunnelPass`/`wallFollow`/`oneWide`/`inPassage`),
 // never the paint.
 //
-// DELETION RECIPE (no other file holds tint state): delete this file, drop
-// the `applyDisplacementColor` import + its calls in `farm.js`, revert the
-// `paint()` wrapper there to plain `part()` calls and the `userData`
-// paint fields to `{ kind, legs, tailGroup }`.
+// The paint itself belongs to `paint.js` (the one owner of a mob's
+// materials): this module only says WHICH colour the mob's mode asks for,
+// and the owner applies it — or ignores it, since the gate is `?color=1`.
+//
+// DELETION RECIPE (no other file holds tint state): delete this file and
+// `paint.js`, drop the `applyDisplacementColor` import + its calls in
+// `farm.js`, revert the `paint()` wrapper there to plain `part()` calls
+// and the `userData` paint fields to `{ kind, legs, tailGroup }`.
 import * as THREE from "three";
+import { setModePaint } from "./paint.js";
 
 // Single shared opaque mats, applied to the paintable body meshes and
 // restored after.
@@ -18,39 +23,17 @@ const laneRedMat = new THREE.MeshStandardMaterial({ color: 0xff3333, roughness: 
 const tunnelPurpleMat = new THREE.MeshStandardMaterial({ color: 0x9933ff, roughness: 0.9 });
 const passageOrangeMat = new THREE.MeshStandardMaterial({ color: 0xff8800, roughness: 0.9 });
 
-// Cached ?color=1 read (this module never loads headless).
-let colorGate = null;
-export function colorEnabled() {
-  if (colorGate == null) {
-    colorGate = typeof location !== "undefined" &&
-      new URLSearchParams(location.search).get("color") === "1";
-  }
-  return colorGate;
+// The colour the mob's displacement mode asks for (null: the natural
+// coat).
+function modeColor(mob) {
+  if (mob.tunnelPass) return tunnelPurpleMat;
+  if (mob.inPassage) return passageOrangeMat;
+  if (mob.wallFollow) return wallBlueMat;
+  if (mob.oneWide) return laneRedMat;
+  return null;
 }
 
-// Paint state for one quadruped root: the paintable meshes plus the
-// saved materials to restore.
-export function initPaintState() {
-  return { paintables: [], paintOn: false, paintMat: null, origMats: null };
-}
-
+// The paint owner applies it (and gates it on ?color=1).
 export function applyDisplacementColor(mob) {
-  if (!colorEnabled()) return;
-  const root = mob.root;
-  if (!root) return;
-  const ud = root.userData;
-  const want = mob.tunnelPass ? tunnelPurpleMat : mob.inPassage ? passageOrangeMat : mob.wallFollow ? wallBlueMat : mob.oneWide ? laneRedMat : null;
-  if (want && ud.paintMat !== want) {
-    if (!ud.paintOn) {
-      ud.origMats = ud.paintables.map((m) => m.material);
-      ud.paintOn = true;
-    }
-    for (const m of ud.paintables) m.material = want;
-    ud.paintMat = want;
-  } else if (!want && ud.paintOn) {
-    ud.paintables.forEach((m, i) => { m.material = ud.origMats[i]; });
-    ud.origMats = null;
-    ud.paintOn = false;
-    ud.paintMat = null;
-  }
+  setModePaint(mob, modeColor(mob));
 }
