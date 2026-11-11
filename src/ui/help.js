@@ -1,6 +1,9 @@
-// Help overlay. Pauses the sim while open; closing re-locks pointer.
+// Help float (hold H). Opens centered while keeping pointer lock (no mouse
+// on help — pure readout); the sim pauses behind it via the registry.
+// Releasing H hides it again. No buttons, no backdrop click; Enter and
+// Escape do nothing on the float — only the release closes it.
+import { registerMenu, openFloat, closeModal } from "./menus.js";
 export let helpOpen = false;
-let closeTime = 0;
 
 const el = () => document.getElementById("help");
 
@@ -10,29 +13,35 @@ export function isHelpOpen() {
 
 export function openHelp() {
   helpOpen = true;
-  el().style.display = "flex";
-  if (document.pointerLockElement) document.exitPointerLock();
+  openFloat(el());
 }
 
 export function closeHelp() {
   helpOpen = false;
-  el().style.display = "none";
-  closeTime = Date.now();
+  closeModal(el());
 }
 
-export function helpJustClosed() {
-  return Date.now() - closeTime < 2000;
-}
+// Kept as a no-op for callers: floating needs no button wiring (no Close,
+// the release closes; the lock was never lost so no re-lock).
+export function initHelp() {}
 
-export function initHelp(requestLock) {
-  document.getElementById("btnHelpClose").addEventListener("click", () => {
-    closeHelp();
-    requestLock();
-  });
-  el().addEventListener("click", (e) => {
-    if (e.target === el()) {
+registerMenu({
+  key: "help",
+  layer: "float",
+  isOpen: () => helpOpen,
+  onKeydown(e) {
+    // Paused like a modal: consume everything while shown (Enter/Escape
+    // included, with no effect) so game input freezes with the sim.
+    if (!helpOpen) return false;
+    e.preventDefault();
+    return true;
+  },
+  onKeyup(e) {
+    if (e.code === "KeyH" && helpOpen) {
       closeHelp();
-      requestLock();
+      e.preventDefault();
+      return true;
     }
-  });
-}
+    return false;
+  },
+});

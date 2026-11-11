@@ -41,7 +41,7 @@ import { initChainProxy, proxyNote, proxyCull, proxyClear } from "./src/render/c
 import { applyRegions, regionByKey, MOON_FADE_Y } from "./src/render/regions.js";
 import { resetItems, select, selected, selectedId, initHotbarInput, setItem, getItems } from "./src/ui/hotbar.js";
 import { initMenu, enterGame, started, isLocked } from "./src/ui/menu.js";
-import { initHelp, openHelp, closeHelp, isHelpOpen } from "./src/ui/help.js";
+import { initHelp, openHelp } from "./src/ui/help.js";
 import { toggleDebug, tickDebug } from "./src/ui/debug.js";
 import { setLiquidFogOverride } from "./src/core/textures.js";
 import { tickWaterFog, eyeMediumId } from "./src/render/waterfog.js";
@@ -85,7 +85,8 @@ import { enterEndMobs, clearEndMobs, clearEndermenDim, tickEndMobs, notifyEnderm
 import { enterFarmMobs, clearFarmMobs, tickFarmMobs, handleFarmTravel, setFarmSeed } from "./src/mobs/farm.js";
 import { spawnCatalog, spawnMobAt, spawnSelection, nextSpawnKey } from "./src/mobs/spawn.js";
 import { mobLabel, mobType, allMobs } from "./src/mobs/registry.js";
-import { openMobMenu, isMobMenuOpen, mobMenuMove, mobMenuToggle, mobMenuOk, mobMenuCancel, initMobMenu } from "./src/ui/mobmenu.js";
+import { openMobMenu, initMobMenu } from "./src/ui/mobmenu.js";
+import { anyModalOpen, anyMenuOpen, anyPanelOpen, routeMenuKey, routeMenuKeyUp } from "./src/ui/menus.js";
 import {
   initTargetDebug, targetDebugKeyDown, targetDebugKeyUp, tickTargetDebug, resetTargetDebug,
 } from "./src/mobs/targets-debug.js";
@@ -843,7 +844,7 @@ initMenu(renderer, () => {
   // closed-in fog: frames keep rendering, movement resumes at spawn.
   enterGame(renderer);
   buildWorld();
-}, () => isHelpOpen() || isMobMenuOpen(), () => building);
+}, anyPanelOpen, () => building);
 
 // Pre-build the world behind the translucent menu; a Play click enters on
 // the first rendered world frame, movement unlocks as soon as the spawn
@@ -866,7 +867,7 @@ function requestLockNow() {
 initHotbarInput(() => false);
 
 document.addEventListener("mousemove", (e) => {
-  if (!isLocked()) return;
+  if (!isLocked() || anyPanelOpen()) return;
   setYaw(player.yaw - e.movementX * 0.0022);
   const p = player.pitch - e.movementY * 0.0022;
   setPitch(Math.max(-Math.PI / 2 + 0.01, Math.min(Math.PI / 2 - 0.01, p)));
@@ -874,7 +875,7 @@ document.addEventListener("mousemove", (e) => {
 });
 
 document.addEventListener("mousedown", (e) => {
-  if (!isLocked() || isHelpOpen() || isMobMenuOpen() || !started) return;
+  if (!isLocked() || anyPanelOpen() || !started) return;
   if (rocketEditingBlocked()) return;
   // In flight no editing at all: no hull taps, no store taps — clicks are
   // inert (chain strokes are skipped separately in the tick below).
@@ -924,36 +925,22 @@ document.addEventListener("contextmenu", (e) => e.preventDefault());
 document.addEventListener("keydown", (e) => {
   const tag = e.target && e.target.tagName;
   if (tag === "INPUT" || tag === "TEXTAREA") return;
-  if (isHelpOpen()) {
-    if (e.code === "Escape") closeHelp();
-    return;
-  }
-  // Spawn menu (hold B 0.3 s): Up/Down move, Space toggles, click a
-  // row toggles it, Enter and B validate and relock, Cancel reverts and
-  // relocks. B is repeat-guarded like Space so the hold that opened the
-  // menu never validates it back on its own repeats. Esc only closes
-  // (no relock: the browser would instantly undo a lock requested from an
-  // Esc gesture, spawning the pause menu) — click resumes, like help.
-  // Every other key is consumed while open so game input freezes.
-  if (isMobMenuOpen()) {
-    if (e.code === "ArrowUp") { mobMenuMove(-1); e.preventDefault(); return; }
-    if (e.code === "ArrowDown") { mobMenuMove(1); e.preventDefault(); return; }
-    if (e.code === "Space") {
-      if (!e.repeat) mobMenuToggle();
-      e.preventDefault();
-      return;
-    }
-    if (e.code === "Enter" || e.code === "NumpadEnter" || e.code === "KeyB") {
-      if (!e.repeat) { mobMenuOk(); requestLockNow(); }
-      e.preventDefault(); return;
-    }
-    if (e.code === "Escape") { mobMenuCancel(); e.preventDefault(); return; }
-    if (["Space", "Slash", "Tab", "ArrowUp", "ArrowDown"].includes(e.code) || e.key === " ") e.preventDefault();
-    return;
-  }
-  if (e.code === "KeyH" && !keys[e.code]) { openHelp(); e.preventDefault(); return; }
+  // Menus first: the registry routes to the topmost open modal (consuming
+  // everything while one is open) then to the topmost open float (consuming
+  // everything too — paused like a modal, Enter/Escape do nothing on
+  // floats) then to the pause overlay for Enter/Escape resume, letting
+  // other paused keys fall through to the game below.
+  if (routeMenuKey(e, {
+    toast,
+    requestLock: requestLockNow,
+    canResume: () => started && !isLocked() && !anyPanelOpen(),
+  })) return;
+  // Help float (hold H, works even before Play): shows while held, hides on
+  // release (see keyup); the lock is kept throughout so there is no mouse.
+  // Repeats while open are consumed above.
+  if (e.code === "KeyH" && !e.repeat && !anyPanelOpen()) { openHelp(); e.preventDefault(); return; }
   if (e.code === "Equal" && !e.repeat) { toggleDebug(); return; }
-  if (e.code === "KeyF" && !e.repeat && started && !isHelpOpen()) {
+  if (e.code === "KeyF" && !e.repeat && started && !anyModalOpen()) {
     // No fly toggle while piloting the rocket; the parked cabin keeps
     // fly on (no prompt, no takeoff until it is off).
     if (rocketPiloting()) { e.preventDefault(); return; }
@@ -966,7 +953,7 @@ document.addEventListener("keydown", (e) => {
     e.preventDefault();
     return;
   }
-  if (e.code === "KeyG" && !e.repeat && started && !isHelpOpen() && isLocked()) {
+  if (e.code === "KeyG" && !e.repeat && started && !anyModalOpen() && isLocked()) {
     if (rocketPiloting()) { e.preventDefault(); return; }
     camera.getWorldDirection(_hookDir);
     if (!fireHookTarget(grapplePick, camera.position, _hookDir)) {
@@ -980,14 +967,14 @@ document.addEventListener("keydown", (e) => {
   // closed) plus never mid-build, so a stray keypress can't disturb boot,
   // New World, or a running transition (travelTo no-ops while busy anyway).
   const WORLD_CYCLE = ["over", "end", "nether", "tnt"];
-  if (e.code === "KeyZ" && !e.repeat && started && !isHelpOpen() && isLocked() && !building && isCheat()) {
+  if (e.code === "KeyZ" && !e.repeat && started && !anyModalOpen() && isLocked() && !building && isCheat()) {
     if (rocketPiloting()) { e.preventDefault(); return; }
     const at = WORLD_CYCLE.indexOf(dim);
     debugTravelTo(WORLD_CYCLE[(at + 1) % WORLD_CYCLE.length]);
     e.preventDefault();
     return;
   }
-  if (e.code === "KeyV" && !e.repeat && started && !isHelpOpen() && isLocked() && isCheat()) {
+  if (e.code === "KeyV" && !e.repeat && started && !anyModalOpen() && isLocked() && isCheat()) {
     gameSpeed = GAME_SPEEDS[(GAME_SPEEDS.indexOf(gameSpeed) + 1) % GAME_SPEEDS.length];
     toast(`Speed ×${gameSpeed}`);
     e.preventDefault();
@@ -996,17 +983,20 @@ document.addEventListener("keydown", (e) => {
   // Cheat spawn (requires ?cheat=1): tap B (<250 ms) drops the next
   // selected kind exactly where the mob-release grapple would have ferried
   // it, instantly (no hook flight, no ferry animation). A 250–299 ms hold
-  // does nothing; holding B for 0.3 s opens the spawn menu instead (the
-  // release never spawns). Any dimension: each hook owns its dimension
-  // rules, and debug mobs roam free until the persistence rule clears
-  // them. No spot reads as No spot, like a release that re-holds.
-  if (e.code === "KeyB" && !e.repeat && started && !isHelpOpen() && !isMobMenuOpen() && isLocked() && isCheat()) {
+  // does nothing; holding B for 0.3 s opens the spawn float instead
+  // (centered, unlocked, pausing like a modal), and releasing B closes it
+  // keeping the live selection (release = save, never a spawn;
+  // Enter/Escape do nothing on the float). Any dimension: each hook owns
+  // its dimension rules, and debug mobs roam free until the persistence
+  // rule clears them. No spot reads as No spot, like a release that
+  // re-holds.
+  if (e.code === "KeyB" && !e.repeat && started && !anyPanelOpen() && isLocked() && isCheat()) {
     bDown = true;
     bPressT = performance.now();
     if (bHoldTimer) clearTimeout(bHoldTimer);
     bHoldTimer = setTimeout(() => {
       bHoldTimer = 0;
-      if (!bDown || isMobMenuOpen() || !isCheat() || !started || !isLocked()) return;
+      if (!bDown || anyPanelOpen() || !isCheat() || !started || !isLocked()) return;
       openMobMenu(spawnCatalog(), spawnSelection());
       Object.keys(keys).forEach((k) => { keys[k] = false; });
     }, 300);
@@ -1016,7 +1006,7 @@ document.addEventListener("keydown", (e) => {
   // Target debug (requires ?cheat=1): C aims a target, C held expands the
   // selection on the aimed block's face plane, C released arms it, and C
   // again on a mob sends it there. C while a mob walks cancels the target.
-  if (e.code === "KeyC" && !e.repeat && started && !isHelpOpen() && isLocked() && !building && isCheat()) {
+  if (e.code === "KeyC" && !e.repeat && started && !anyModalOpen() && isLocked() && !building && isCheat()) {
     targetDebugKeyDown(camera);
     e.preventDefault();
     return;
@@ -1028,7 +1018,7 @@ document.addEventListener("keydown", (e) => {
   // launching and grabbing share no input. No release while the rocket
   // takes over (countdown/flight) either: a held mob stays held for the
   // whole trip.
-  if ((e.code === "Enter" || e.code === "NumpadEnter") && !e.repeat && started && !isHelpOpen() && isLocked() && !building) {
+  if ((e.code === "Enter" || e.code === "NumpadEnter") && !e.repeat && started && !anyModalOpen() && isLocked() && !building) {
     const launchChord = keys["ShiftLeft"] || keys["ShiftRight"] || keys["Shift"];
     if (!hookActive() && !launchChord) {
       camera.getWorldDirection(_hookDir);
@@ -1056,13 +1046,35 @@ document.addEventListener("keydown", (e) => {
 });
 
 document.addEventListener("keyup", (e) => {
+  // Floats first: H/B release closes the matching hold-to-show panel
+  // (B keeps the live selection and re-locks; H kept the lock throughout).
+  // A consumed release never taps/spawns. Enter/Escape do nothing on floats.
+  const floatConsumed = routeMenuKeyUp(e, {
+    toast,
+    requestLock: requestLockNow,
+    canResume: () => started && !isLocked() && !anyPanelOpen(),
+  });
+  if (e.code === "KeyH" && floatConsumed) {
+    keys[e.code] = false;
+    keys[e.key] = false;
+    return;
+  }
+  if (e.code === "KeyB" && floatConsumed) {
+    if (bHoldTimer) { clearTimeout(bHoldTimer); bHoldTimer = 0; }
+    bDown = false;
+    keys[e.code] = false;
+    keys[e.key] = false;
+    if (started && !isLocked() && !anyPanelOpen()) requestLockNow();
+    return;
+  }
   if (e.code === "KeyG" && hookActive()) cancelHook(true);
   if ((e.code === "Enter" || e.code === "NumpadEnter") && hookActive()) cancelHook(true);
   if (e.code === "KeyC" && isCheat()) targetDebugKeyUp();
   if (e.code === "KeyB") {
     if (bHoldTimer) { clearTimeout(bHoldTimer); bHoldTimer = 0; }
-    // The menu release never spawns; a quick tap places the next ticked kind.
-    if (!isMobMenuOpen() && bDown && isCheat() && started && isLocked()) {
+    // The float release above already returned; a quick tap (menu never
+    // opened) places the next ticked kind.
+    if (bDown && isCheat() && started && isLocked()) {
       const dt = performance.now() - bPressT;
       if (dt < 250) {
         camera.getWorldDirection(_spawnDir);
@@ -1125,7 +1137,7 @@ function loop(now) {
     pendingPlay = false;
     enterGame(renderer);
   }
-  const simActive = worldReady && started && !building && isLocked() && !isHelpOpen() && !isMobMenuOpen();
+  const simActive = worldReady && started && !building && isLocked() && !anyMenuOpen();
   updateCamera(simActive ? dt : 0);
   if (!worldReady || !started) {
     highlight.visible = false;

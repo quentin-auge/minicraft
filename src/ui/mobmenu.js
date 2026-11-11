@@ -1,14 +1,17 @@
-// Cheat spawn menu (hold B). Pauses the sim while open like help. Ok and
-// Enter validate and relock, Cancel reverts; Esc only closes without relock
-// (a lock requested from an Esc gesture is instantly undone by the browser),
-// click resumes like help. A tap of B places the next selected kind.
+// Cheat spawn float (hold B, requires ?cheat=1). Opens centered and unlocked
+// like a modal (sim pauses behind it, free mouse: default arrow off-panel,
+// hand on-panel); releasing B hides it and keeps the live-toggled selection
+// (release = save, no Ok/Cancel). Up/Down move the cursor, Space or a row
+// click toggles; Enter and Escape do nothing on the float — only the release
+// closes it. A quick tap of B (<250 ms) never opens the menu: main.js spawns
+// the next ticked kind on keyup.
 import { moveCursor, toggleAtCursor } from "../mobs/spawn.js";
+import { registerMenu, openModal, closeModal } from "./menus.js";
 
 export let mobMenuOpen = false;
 
 let menuCatalog = [];
 let menuSelection = null;
-let menuSnapshot = null;
 
 const el = () => document.getElementById("mobmenu");
 const list = () => document.getElementById("moblist");
@@ -44,31 +47,15 @@ export function renderMobMenu() {
 export function openMobMenu(catalog, selection) {
   menuCatalog = catalog;
   menuSelection = selection;
-  menuSnapshot = selection ? { keys: new Set(selection.keys), cursor: selection.cursor } : null;
   mobMenuOpen = true;
   renderMobMenu();
-  el().style.display = "flex";
-  if (document.pointerLockElement) document.exitPointerLock();
+  openModal(el());
 }
 
+// Release = save: the selection was toggled live, nothing to restore.
 export function closeMobMenu() {
   mobMenuOpen = false;
-  el().style.display = "none";
-}
-
-// Ok keeps the live-toggled selection; Cancel restores the opening snapshot.
-export function mobMenuOk() {
-  menuSnapshot = null;
-  closeMobMenu();
-}
-
-export function mobMenuCancel() {
-  if (menuSelection && menuSnapshot) {
-    menuSelection.keys = new Set(menuSnapshot.keys);
-    menuSelection.cursor = menuSnapshot.cursor;
-  }
-  menuSnapshot = null;
-  closeMobMenu();
+  closeModal(el());
 }
 
 export function mobMenuMove(delta) {
@@ -83,19 +70,34 @@ export function mobMenuToggle() {
   renderMobMenu();
 }
 
-export function initMobMenu(requestLock) {
-  document.getElementById("btnMobOk").addEventListener("click", () => {
-    mobMenuOk();
-    requestLock();
-  });
-  document.getElementById("btnMobCancel").addEventListener("click", () => {
-    mobMenuCancel();
-    requestLock();
-  });
-  el().addEventListener("click", (e) => {
-    if (e.target === el()) {
-      mobMenuOk();
-      requestLock();
+// Kept as a no-op for callers: floating needs no button wiring (no Ok/Cancel,
+// the release closes, saves, and re-locks).
+export function initMobMenu() {}
+
+registerMenu({
+  key: "spawn",
+  layer: "float",
+  isOpen: () => mobMenuOpen,
+  // Paused like a modal: nav keys act, then everything is consumed (Enter
+  // and Escape included, with no effect) so game input freezes with the sim.
+  onKeydown(e) {
+    if (!mobMenuOpen) return false;
+    if (e.code === "ArrowUp") { mobMenuMove(-1); e.preventDefault(); return true; }
+    if (e.code === "ArrowDown") { mobMenuMove(1); e.preventDefault(); return true; }
+    if (e.code === "Space") {
+      if (!e.repeat) mobMenuToggle();
+      e.preventDefault();
+      return true;
     }
-  });
-}
+    e.preventDefault();
+    return true;
+  },
+  onKeyup(e) {
+    if (e.code === "KeyB" && mobMenuOpen) {
+      closeMobMenu();
+      e.preventDefault();
+      return true;
+    }
+    return false;
+  },
+});

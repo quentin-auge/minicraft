@@ -5,6 +5,7 @@
 // same as help). The game is fully static, no saves. Only New World waits
 // on a running build (double-regen protection); everything else stays
 // clickable, with no spinner.
+import { registerMenu, resumePointer } from "./menus.js";
 export let started = false;
 export let locked = false;
 
@@ -39,7 +40,7 @@ export function enterGame(renderer) {
   requestLock(renderer);
 }
 
-export function initMenu(renderer, onPlay, onNewWorld, isHelpOpen, isBuilding) {
+export function initMenu(renderer, onPlay, onNewWorld, anyPanelOpen, isBuilding) {
   refreshButtons();
   overlay().addEventListener("click", () => {
     if (!started) return;
@@ -60,11 +61,13 @@ export function initMenu(renderer, onPlay, onNewWorld, isHelpOpen, isBuilding) {
     if (started) requestLock(renderer);
   });
   renderer.domElement.addEventListener("click", () => {
-    if (started && !locked && !isHelpOpen()) requestLock(renderer);
+    if (started && !locked && !anyPanelOpen()) requestLock(renderer);
   });
   document.addEventListener("pointerlockchange", () => {
     locked = document.pointerLockElement === renderer.domElement;
-    if (isHelpOpen()) return;
+    // A centered hold-to-show panel open above the game freezes the start
+    // overlay exactly like a modal: no Resume flash mid-hold.
+    if (anyPanelOpen()) return;
     // Pre-start lock (Play clicked mid-build) never hides the menu: entry
     // happens on the first rendered world frame, which hides it itself.
     if (!started) { refreshButtons(); return; }
@@ -74,3 +77,22 @@ export function initMenu(renderer, onPlay, onNewWorld, isHelpOpen, isBuilding) {
     refreshButtons();
   });
 }
+
+// Pause overlay as the registry's overlay layer: open whenever the game runs
+// unlocked with no panel above it (routeMenuKey only reaches it then). Enter
+// and Escape resume (re-lock); other keys fall through so paused shortcuts
+// (H, F, K/L, debug) keep working exactly as before. Pre-start Enter does
+// nothing: Play stays a click.
+registerMenu({
+  key: "pause",
+  layer: "overlay",
+  isOpen: () => started && !locked,
+  onKeydown(e, ctx) {
+    if (e.code === "Enter" || e.code === "NumpadEnter" || e.code === "Escape") {
+      if (!e.repeat) resumePointer(ctx, { hint: false, defer: e.code === "Escape" });
+      e.preventDefault();
+      return true;
+    }
+    return false;
+  },
+});

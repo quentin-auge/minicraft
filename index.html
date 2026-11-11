@@ -63,12 +63,12 @@
     }
     #help {
       position: fixed; inset: 0; z-index: 30; display: none;
-      align-items: center; justify-content: center;
+      align-items: center; justify-content: center; pointer-events: none;
     }
     #help .panel {
       background: #1c2030; color: #e8edf5; padding: 18px 20px; border-radius: 14px;
       border: 2px solid rgba(255,255,255,0.18); max-width: 560px; line-height: 1.6;
-      font-size: 14px; box-shadow: 0 12px 40px rgba(0,0,0,0.6);
+      font-size: 14px; box-shadow: 0 12px 40px rgba(0,0,0,0.6); pointer-events: none;
     }
     #help h2 { margin-bottom: 12px; font-size: 22px; color: #fff; }
     #help h3 { margin: 16px 0 6px; font-size: 15px; color: #9bd; }
@@ -81,18 +81,14 @@
     #help .portal-diagram svg { flex: 0 0 auto; border-radius: 8px; box-shadow: 0 0 18px rgba(155,48,247,0.55); }
     #help #tntArt svg { box-shadow: 0 0 18px rgba(209,26,26,0.55); }
     #help .portal-diagram p { margin: 0; }
-    #help .closebtn {
-      margin-top: 14px; display: block; width: 100%; font: inherit; font-size: 15px; font-weight: 600;
-      color: #fff; background: #3a8; border: 2px solid #4c9; border-radius: 8px; padding: 10px; cursor: pointer;
-    }
     #mobmenu {
       position: fixed; inset: 0; z-index: 30; display: none;
-      align-items: center; justify-content: center;
+      align-items: center; justify-content: center; cursor: default;
     }
     #mobmenu .panel {
       background: #1c2030; color: #e8edf5; padding: 18px 20px; border-radius: 14px;
       border: 2px solid rgba(255,255,255,0.18); min-width: 300px; max-width: 360px;
-      box-shadow: 0 12px 40px rgba(0,0,0,0.6);
+      box-shadow: 0 12px 40px rgba(0,0,0,0.6); cursor: pointer;
     }
     #mobmenu h2 { margin-bottom: 10px; font-size: 20px; color: #fff; }
     #mobmenu .row {
@@ -101,22 +97,15 @@
     }
     #mobmenu .row.cursor { background: rgba(255,255,255,0.12); outline: 1px solid rgba(255,255,255,0.25); }
     #mobmenu .tick { font-family: monospace; color: #9fd; min-width: 28px; }
-    #mobmenu .btnrow { margin-top: 14px; display: flex; gap: 10px; }
-    #mobmenu .okbtn, #mobmenu .cancelbtn {
-      flex: 1; font: inherit; font-size: 15px; font-weight: 600;
-      color: #fff; border-radius: 8px; padding: 10px; cursor: pointer;
-    }
-    #mobmenu .okbtn { background: #3a8; border: 2px solid #4c9; }
-    #mobmenu .cancelbtn { background: #a33; border: 2px solid #c44; }
     #overlay {
       position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
-      z-index: 10; cursor: pointer;
+      z-index: 10; cursor: default;
     }
     #overlay .panel {
       background: #1c2030; color: #e8edf5;
       padding: 40px 56px; border-radius: 14px; text-align: center;
       border: 2px solid rgba(255,255,255,0.18);
-      box-shadow: 0 12px 40px rgba(0,0,0,0.6);
+      box-shadow: 0 12px 40px rgba(0,0,0,0.6); cursor: pointer;
     }
     #overlay h1 { font-size: 44px; margin-bottom: 6px; letter-spacing: 2px; }
     #overlay h1 span { color: #7bc043; }
@@ -124,7 +113,7 @@
     #overlay .menu-btn {
       font: inherit; font-size: 17px; font-weight: 600; color: #fff;
       background: rgba(255,255,255,0.12); border: 2px solid rgba(255,255,255,0.35);
-      padding: 12px 22px; border-radius: 8px;
+      padding: 12px 22px; border-radius: 8px; cursor: pointer;
       transition: background .15s, transform .15s;
     }
     #overlay .menu-btn:hover { background: rgba(255,255,255,0.22); transform: translateY(-2px); }
@@ -270,7 +259,7 @@
         <tr><td>Wheel, K, L</td><td>Select block</td></tr>
         <tr><td>Left Click</td><td>Place block</td></tr>
         <tr><td>Right Click</td><td>Remove block</td></tr>
-        <tr><td>H</td><td>Help</td></tr>
+        <tr><td>H (hold)</td><td>Help</td></tr>
         <tr><td>=</td><td>Debug</td></tr>
       </table>
       <div class="portal-diagram">
@@ -287,17 +276,12 @@
           <div id="tntArt"></div>
         </div>
       </div>
-      <button class="closebtn" id="btnHelpClose">Close</button>
     </div>
   </div>
   <div id="mobmenu">
     <div class="panel">
       <h2>Spawn</h2>
       <div id="moblist"></div>
-      <div class="btnrow">
-        <button class="okbtn" id="btnMobOk">Ok</button>
-        <button class="cancelbtn" id="btnMobCancel">Cancel</button>
-      </div>
     </div>
   </div>
 
@@ -309,7 +293,7 @@
         <button class="menu-btn" id="btnPlay">Play</button>
         <button class="menu-btn" id="btnNew" style="display:none">New World</button>
       </div>
-      <div class="hint">Press H for help</div>
+      <div class="hint">H for help (hold)</div>
     </div>
   </div>
 
