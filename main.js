@@ -85,6 +85,7 @@ import { enterEndMobs, clearEndMobs, clearEndermenDim, tickEndMobs, notifyEnderm
 import { enterFarmMobs, clearFarmMobs, tickFarmMobs, handleFarmTravel, setFarmSeed } from "./src/mobs/farm.js";
 import { spawnCatalog, spawnMobAt, spawnSelection, nextSpawnKey } from "./src/mobs/spawn.js";
 import { mobLabel, mobType, allMobs } from "./src/mobs/registry.js";
+import { openMobMenu, isMobMenuOpen, mobMenuMove, mobMenuToggle, mobMenuOk, mobMenuCancel, initMobMenu } from "./src/ui/mobmenu.js";
 import {
   initTargetDebug, targetDebugKeyDown, targetDebugKeyUp, tickTargetDebug, resetTargetDebug,
 } from "./src/mobs/targets-debug.js";
@@ -167,9 +168,11 @@ scene.add(highlight);
 initTargetDebug(scene);
 const _hookDir = new THREE.Vector3();
 const _spawnDir = new THREE.Vector3();
-// Cheat B spawn: each tap places the next ticked kind from the shared spawn
-// selection (cow/pig by default; the hold-B menu of the next commit ticks
-// more), cycling in catalog order.
+// Cheat B press tracking: tap (<250 ms) spawns the next selected kind, a
+// 250–299 ms hold does nothing, holding >=300 ms opens the spawn menu.
+let bPressT = 0;
+let bHoldTimer = 0;
+let bDown = false;
 const bossBarEl = document.getElementById("bossbar");
 const bossFillEl = document.getElementById("bossfill");
 function updateBossBar() {
@@ -840,7 +843,7 @@ initMenu(renderer, () => {
   // closed-in fog: frames keep rendering, movement resumes at spawn.
   enterGame(renderer);
   buildWorld();
-}, isHelpOpen, () => building);
+}, () => isHelpOpen() || isMobMenuOpen(), () => building);
 
 // Pre-build the world behind the translucent menu; a Play click enters on
 // the first rendered world frame, movement unlocks as soon as the spawn
@@ -848,6 +851,10 @@ initMenu(renderer, () => {
 buildWorld();
 
 initHelp(() => {
+  if (started && !isLocked()) requestLockNow();
+});
+
+initMobMenu(() => {
   if (started && !isLocked()) requestLockNow();
 });
 
@@ -867,7 +874,7 @@ document.addEventListener("mousemove", (e) => {
 });
 
 document.addEventListener("mousedown", (e) => {
-  if (!isLocked() || isHelpOpen() || !started) return;
+  if (!isLocked() || isHelpOpen() || isMobMenuOpen() || !started) return;
   if (rocketEditingBlocked()) return;
   // In flight no editing at all: no hull taps, no store taps — clicks are
   // inert (chain strokes are skipped separately in the tick below).
@@ -921,6 +928,29 @@ document.addEventListener("keydown", (e) => {
     if (e.code === "Escape") closeHelp();
     return;
   }
+  // Spawn menu (hold B 0.3 s): Up/Down move, Space toggles, click a
+  // row toggles it, Enter and B validate and relock, Cancel reverts and
+  // relocks. B is repeat-guarded like Space so the hold that opened the
+  // menu never validates it back on its own repeats. Esc only closes
+  // (no relock: the browser would instantly undo a lock requested from an
+  // Esc gesture, spawning the pause menu) — click resumes, like help.
+  // Every other key is consumed while open so game input freezes.
+  if (isMobMenuOpen()) {
+    if (e.code === "ArrowUp") { mobMenuMove(-1); e.preventDefault(); return; }
+    if (e.code === "ArrowDown") { mobMenuMove(1); e.preventDefault(); return; }
+    if (e.code === "Space") {
+      if (!e.repeat) mobMenuToggle();
+      e.preventDefault();
+      return;
+    }
+    if (e.code === "Enter" || e.code === "NumpadEnter" || e.code === "KeyB") {
+      if (!e.repeat) { mobMenuOk(); requestLockNow(); }
+      e.preventDefault(); return;
+    }
+    if (e.code === "Escape") { mobMenuCancel(); e.preventDefault(); return; }
+    if (["Space", "Slash", "Tab", "ArrowUp", "ArrowDown"].includes(e.code) || e.key === " ") e.preventDefault();
+    return;
+  }
   if (e.code === "KeyH" && !keys[e.code]) { openHelp(); e.preventDefault(); return; }
   if (e.code === "Equal" && !e.repeat) { toggleDebug(); return; }
   if (e.code === "KeyF" && !e.repeat && started && !isHelpOpen()) {
@@ -963,34 +993,23 @@ document.addEventListener("keydown", (e) => {
     e.preventDefault();
     return;
   }
-  // Cheat spawn (requires ?cheat=1): B drops the next ticked kind exactly
-  // where the mob-release grapple would have ferried it, instantly (no
-  // hook flight, no ferry animation). Any dimension: each hook owns its
-  // dimension rules, and debug mobs roam free until the persistence rule
-  // clears them. No spot reads as No spot, like a release that re-holds.
-  if (e.code === "KeyB" && !e.repeat && started && !isHelpOpen() && isLocked() && isCheat()) {
-    camera.getWorldDirection(_spawnDir);
-    const hit = pickBlock(camera.position, _spawnDir, true);
-    let mob = null;
-    if (hit) {
-      const key = nextSpawnKey(spawnSelection(), spawnCatalog());
-      const dims = key ? mobType(key)?.footprint?.() : null;
-      if (key && dims) {
-        const peers = allMobs().filter((o) => o.alive && (o.dim ?? dim) === dim);
-        const spot = mobReleaseSpot(isSolid, dims.hw, dims.h,
-          hit.x, hit.y, hit.z, hit.face,
-          (x, y, z) => releasePeerFree(peers, { hw: dims.hw, h: dims.h, alive: true, dim }, x, y, z));
-        if (spot) {
-          const yaw = Math.atan2(_spawnDir.x, _spawnDir.z);
-          mob = spawnMobAt(key, {
-            scene, dim, x: spot.x, y: spot.y, z: spot.z,
-            rand: Math.random, exact: true, yaw,
-          });
-          if (mob) settleReleased(mob, yaw);
-        }
-      }
-    }
-    toast(mob ? `${mobLabel(mob.type)} spawned${dim === "over" ? "" : ` (${dim})`}` : "No spot");
+  // Cheat spawn (requires ?cheat=1): tap B (<250 ms) drops the next
+  // selected kind exactly where the mob-release grapple would have ferried
+  // it, instantly (no hook flight, no ferry animation). A 250–299 ms hold
+  // does nothing; holding B for 0.3 s opens the spawn menu instead (the
+  // release never spawns). Any dimension: each hook owns its dimension
+  // rules, and debug mobs roam free until the persistence rule clears
+  // them. No spot reads as No spot, like a release that re-holds.
+  if (e.code === "KeyB" && !e.repeat && started && !isHelpOpen() && !isMobMenuOpen() && isLocked() && isCheat()) {
+    bDown = true;
+    bPressT = performance.now();
+    if (bHoldTimer) clearTimeout(bHoldTimer);
+    bHoldTimer = setTimeout(() => {
+      bHoldTimer = 0;
+      if (!bDown || isMobMenuOpen() || !isCheat() || !started || !isLocked()) return;
+      openMobMenu(spawnCatalog(), spawnSelection());
+      Object.keys(keys).forEach((k) => { keys[k] = false; });
+    }, 300);
     e.preventDefault();
     return;
   }
@@ -1040,6 +1059,42 @@ document.addEventListener("keyup", (e) => {
   if (e.code === "KeyG" && hookActive()) cancelHook(true);
   if ((e.code === "Enter" || e.code === "NumpadEnter") && hookActive()) cancelHook(true);
   if (e.code === "KeyC" && isCheat()) targetDebugKeyUp();
+  if (e.code === "KeyB") {
+    if (bHoldTimer) { clearTimeout(bHoldTimer); bHoldTimer = 0; }
+    // The menu release never spawns; a quick tap places the next ticked kind.
+    if (!isMobMenuOpen() && bDown && isCheat() && started && isLocked()) {
+      const dt = performance.now() - bPressT;
+      if (dt < 250) {
+        camera.getWorldDirection(_spawnDir);
+        const hit = pickBlock(camera.position, _spawnDir, true);
+        let mob = null;
+        if (hit) {
+          const key = nextSpawnKey(spawnSelection(), spawnCatalog());
+          // Grapple-equivalent placement, instantly: the shared release
+          // resolution on the same aim, then an exact spawn (no hook
+          // flight, no ferry animation). Null spot reads as No spot,
+          // like a grapple release that re-holds.
+          const dims = key ? mobType(key)?.footprint?.() : null;
+          if (key && dims) {
+            const peers = allMobs().filter((o) => o.alive && (o.dim ?? dim) === dim);
+            const spot = mobReleaseSpot(isSolid, dims.hw, dims.h,
+              hit.x, hit.y, hit.z, hit.face,
+              (x, y, z) => releasePeerFree(peers, { hw: dims.hw, h: dims.h, alive: true, dim }, x, y, z));
+            if (spot) {
+              const yaw = Math.atan2(_spawnDir.x, _spawnDir.z);
+              mob = spawnMobAt(key, {
+                scene, dim, x: spot.x, y: spot.y, z: spot.z,
+                rand: Math.random, exact: true, yaw,
+              });
+              if (mob) settleReleased(mob, yaw);
+            }
+          }
+        }
+        toast(mob ? `${mobLabel(mob?.type)} spawned${dim === "over" ? "" : ` (${dim})`}` : "No spot");
+      }
+    }
+    bDown = false;
+  }
   keys[e.code] = false;
   keys[e.key] = false;
 });
@@ -1070,7 +1125,7 @@ function loop(now) {
     pendingPlay = false;
     enterGame(renderer);
   }
-  const simActive = worldReady && started && !building && isLocked() && !isHelpOpen();
+  const simActive = worldReady && started && !building && isLocked() && !isHelpOpen() && !isMobMenuOpen();
   updateCamera(simActive ? dt : 0);
   if (!worldReady || !started) {
     highlight.visible = false;

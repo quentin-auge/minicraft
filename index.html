@@ -85,6 +85,29 @@
       margin-top: 14px; display: block; width: 100%; font: inherit; font-size: 15px; font-weight: 600;
       color: #fff; background: #3a8; border: 2px solid #4c9; border-radius: 8px; padding: 10px; cursor: pointer;
     }
+    #mobmenu {
+      position: fixed; inset: 0; z-index: 30; display: none;
+      align-items: center; justify-content: center;
+    }
+    #mobmenu .panel {
+      background: #1c2030; color: #e8edf5; padding: 18px 20px; border-radius: 14px;
+      border: 2px solid rgba(255,255,255,0.18); min-width: 300px; max-width: 360px;
+      box-shadow: 0 12px 40px rgba(0,0,0,0.6);
+    }
+    #mobmenu h2 { margin-bottom: 10px; font-size: 20px; color: #fff; }
+    #mobmenu .row {
+      display: flex; gap: 10px; align-items: baseline; padding: 6px 10px;
+      border-radius: 6px; font-size: 15px; line-height: 1.4; cursor: pointer;
+    }
+    #mobmenu .row.cursor { background: rgba(255,255,255,0.12); outline: 1px solid rgba(255,255,255,0.25); }
+    #mobmenu .tick { font-family: monospace; color: #9fd; min-width: 28px; }
+    #mobmenu .btnrow { margin-top: 14px; display: flex; gap: 10px; }
+    #mobmenu .okbtn, #mobmenu .cancelbtn {
+      flex: 1; font: inherit; font-size: 15px; font-weight: 600;
+      color: #fff; border-radius: 8px; padding: 10px; cursor: pointer;
+    }
+    #mobmenu .okbtn { background: #3a8; border: 2px solid #4c9; }
+    #mobmenu .cancelbtn { background: #a33; border: 2px solid #c44; }
     #overlay {
       position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
       z-index: 10; cursor: pointer;
@@ -265,6 +288,16 @@
         </div>
       </div>
       <button class="closebtn" id="btnHelpClose">Close</button>
+    </div>
+  </div>
+  <div id="mobmenu">
+    <div class="panel">
+      <h2>Spawn</h2>
+      <div id="moblist"></div>
+      <div class="btnrow">
+        <button class="okbtn" id="btnMobOk">Ok</button>
+        <button class="cancelbtn" id="btnMobCancel">Cancel</button>
+      </div>
     </div>
   </div>
 
