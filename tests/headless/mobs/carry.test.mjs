@@ -11,7 +11,7 @@ import {
   CARRY_DIST, CARRY_DOWN, heldMob, holdMob, latchMob, severCarry, isCarried,
   staysHullPinned,
   holdFeet, tickHeld, boxFree, findReleaseSpot, releasePeerFree, settleReleased,
-  grabHaulProtected, resolveBlockLanding, applyMobGap,
+  grabHaulProtected, resolveBlockLanding, applyMobGap, mobReleaseSpot,
 } from "../../../src/mobs/carry.js";
 import { registerMobType, registerMobSource, allMobs, mobType } from "../../../src/mobs/registry.js";
 import { LIVESTOCK_SPECS, specCircles } from "../../../src/mobs/livestock.js";
@@ -350,5 +350,35 @@ assert.deepEqual(mobCenterOffset(enderman), { x: 0, y: 1.35, z: 0 });
   assert.equal(latchMob(null), null);
   assert.equal(heldMob(), null); // latch claims no hand: hold still owns that
 }
+
+// --- mobReleaseSpot: the shared grapple-equivalent resolution ---
+// (hook ferry and cheat spawn menu resolve through this one function)
+const spotClose = (s, x, y, z) =>
+  assert.ok(s && closeTo(s.x, x) && closeTo(s.y, y) && closeTo(s.z, z),
+    `expected ~(${x},${y},${z}), got ${s ? `(${s.x},${s.y},${s.z})` : s}`);
+// Top face: rides onto the anchor top.
+spotClose(mobReleaseSpot(soloSlab, 0.3, 1, 0, 5, 0, [0, 1, 0]), 0.5, 6.001, 0.5);
+{
+  // Tall side face: before-cell plus the arrival backoff.
+  const tower = colAt(new Set(["0,1,0", "0,2,0", "0,3,0", "0,4,0", "0,5,0"]));
+  spotClose(mobReleaseSpot(tower, 0.3, 1, 0, 3, 0, [1, 0, 0]), 1.65, 3.001, 0.5);
+  // Backoff blocked (a cell the exact stop never touches): the exact stop
+  // is kept.
+  const towerGap = colAt(new Set(["0,1,0", "0,2,0", "0,3,0", "0,4,0", "0,5,0", "2,4,0"]));
+  spotClose(mobReleaseSpot(towerGap, 0.3, 1, 0, 3, 0, [1, 0, 0], null, { arriveGap: 0.6 }), 1.5, 3.001, 0.5);
+  // Exact stop blocked too: the same-level ring answers, never above.
+  const towerFull = colAt(new Set(["0,1,0", "0,2,0", "0,3,0", "0,4,0", "0,5,0", "1,4,0", "1,3,0"]));
+  const rs = mobReleaseSpot(towerFull, 0.3, 1, 0, 3, 0, [1, 0, 0]);
+  spotClose(rs, 0.5, 3.001, -0.5);
+  // Custom gaps flow through untouched.
+  spotClose(mobReleaseSpot(tower, 0.3, 1, 0, 3, 0, [1, 0, 0], null, { arriveGap: 0 }), 1.5, 3.001, 0.5);
+}
+{
+  // Thick bottom face: dangles below the anchor when it fits.
+  const thick = colAt(new Set(["0,3,0", "0,4,0", "0,5,0"]));
+  spotClose(mobReleaseSpot(thick, 0.3, 1, 0, 3, 0, [0, -1, 0]), 0.5, 1.4, 0.5);
+}
+// Fully peer-vetoed: null, the caller keeps holding (or reports No spot).
+assert.equal(mobReleaseSpot(soloSlab, 0.3, 1, 0, 5, 0, [0, 1, 0], () => false), null);
 
 console.log("carry.test.mjs: ok");

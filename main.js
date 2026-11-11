@@ -72,7 +72,7 @@ const GLOW_SUSPENDED = new Set(["glowstone"]);
 let wasBridgeHeld = false;
 let wasChainHeld = false;
 const bridgeTouchedUnion = [];
-import { CHUNK, renderDist, dim, setDimension, setBlock, getBlock, outOfWorld, worlds } from "./src/core/store.js";
+import { CHUNK, renderDist, dim, setDimension, setBlock, getBlock, isSolid, outOfWorld, worlds } from "./src/core/store.js";
 import { dimEnv, dimSpec, dimHasMoon, dimHotbar } from "./src/world/dimensions.js";
 import { EYE, setFlyStepAllow, updateFreeSwim } from "./src/player/physics.js";
 import { setExtraSolid } from "./src/player/physics.js";
@@ -84,11 +84,11 @@ import { initHomingTnt, fireHomingTnt, tickHomingTnt, clearHomingTnt } from "./s
 import { enterEndMobs, clearEndMobs, clearEndermenDim, tickEndMobs, notifyEndermanVoxelChange, dragonHealth, setDragonVictoryHook, setMobSeed } from "./src/mobs/end.js";
 import { enterFarmMobs, clearFarmMobs, tickFarmMobs, handleFarmTravel, setFarmSeed } from "./src/mobs/farm.js";
 import { spawnCatalog, spawnMobAt, spawnSelection, nextSpawnKey } from "./src/mobs/spawn.js";
-import { mobLabel } from "./src/mobs/registry.js";
+import { mobLabel, mobType, allMobs } from "./src/mobs/registry.js";
 import {
   initTargetDebug, targetDebugKeyDown, targetDebugKeyUp, tickTargetDebug, resetTargetDebug,
 } from "./src/mobs/targets-debug.js";
-import { heldMob, tickHeld, severCarry } from "./src/mobs/carry.js";
+import { heldMob, tickHeld, severCarry, mobReleaseSpot, releasePeerFree, settleReleased } from "./src/mobs/carry.js";
 import { endPortalFrameKeys, resetEndDimension, setEndCleared } from "./src/world/end.js";
 import { resetTntUnlocks } from "./src/world/tntunlock.js";
 import { isCheat } from "./src/core/cheat.js";
@@ -963,21 +963,31 @@ document.addEventListener("keydown", (e) => {
     e.preventDefault();
     return;
   }
-  // Cheat spawn (requires ?cheat=1): B drops the next ticked kind where
-  // the crosshair points — on top of the aimed block when its top face is
-  // aimed at, else 3 above the faced cell with the hook owning the landing.
-  // Any dimension: each hook owns its free-spot and dimension rules, and
-  // debug mobs roam free until the persistence rule clears them.
+  // Cheat spawn (requires ?cheat=1): B drops the next ticked kind exactly
+  // where the mob-release grapple would have ferried it, instantly (no
+  // hook flight, no ferry animation). Any dimension: each hook owns its
+  // dimension rules, and debug mobs roam free until the persistence rule
+  // clears them. No spot reads as No spot, like a release that re-holds.
   if (e.code === "KeyB" && !e.repeat && started && !isHelpOpen() && isLocked() && isCheat()) {
     camera.getWorldDirection(_spawnDir);
     const hit = pickBlock(camera.position, _spawnDir, true);
     let mob = null;
     if (hit) {
       const key = nextSpawnKey(spawnSelection(), spawnCatalog());
-      if (key) {
-        const px = hit.x + hit.face[0] + 0.5, pz = hit.z + hit.face[2] + 0.5;
-        const py = hit.face[1] === 1 ? hit.y + 1 : hit.y + 3;
-        mob = spawnMobAt(key, { scene, dim, x: px, z: pz, y: py, rand: Math.random });
+      const dims = key ? mobType(key)?.footprint?.() : null;
+      if (key && dims) {
+        const peers = allMobs().filter((o) => o.alive && (o.dim ?? dim) === dim);
+        const spot = mobReleaseSpot(isSolid, dims.hw, dims.h,
+          hit.x, hit.y, hit.z, hit.face,
+          (x, y, z) => releasePeerFree(peers, { hw: dims.hw, h: dims.h, alive: true, dim }, x, y, z));
+        if (spot) {
+          const yaw = Math.atan2(_spawnDir.x, _spawnDir.z);
+          mob = spawnMobAt(key, {
+            scene, dim, x: spot.x, y: spot.y, z: spot.z,
+            rand: Math.random, exact: true, yaw,
+          });
+          if (mob) settleReleased(mob, yaw);
+        }
       }
     }
     toast(mob ? `${mobLabel(mob.type)} spawned${dim === "over" ? "" : ` (${dim})`}` : "No spot");

@@ -38,8 +38,14 @@ const MOB_DEFAULTS = {
   // the kinds that can be dropped into the world (the boss dragon has
   // no hook and never shows up). The hook owns the model, the free-spot
   // rules, and the dimension rules: ctx is {scene, dim, x, y, z, rand}
-  // with the wanted feet position in the active dimension.
+  // with the wanted feet position in the active dimension. With
+  // {exact: true} the hook places exactly at (x, y, z) after a final
+  // body-box check (no spot search); ctx.yaw overrides the random facing.
   spawn: null,
+  // footprint(): optional body dims {hw, h} for kinds that register one.
+  // Lets callers resolve placement (e.g. the grapple-equivalent release
+  // spot) before the mob exists; the live mob carries the same numbers.
+  footprint: null,
 };
 
 export const MOB_TYPES = [];

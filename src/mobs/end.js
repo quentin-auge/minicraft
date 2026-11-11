@@ -309,7 +309,8 @@ registerMobType({
   create: createEnderman,
   tick: tickEnderman,
   dispose: disposeEndMob,
-  spawn: (ctx) => spawnEndermanAt(ctx.scene, ctx.x, ctx.z, ctx.y, ctx.rand, ctx.dim),
+  spawn: (ctx) => spawnEndermanAt(ctx.scene, ctx.x, ctx.z, ctx.y, ctx.rand, ctx.dim, ctx),
+  footprint: () => ({ hw: 0.31, h: 2.7 }),
 });
 
 function tickDragon(mob, dt, camera) {
@@ -556,36 +557,27 @@ function ensureEndermanMats() {
   if (!endermanHaloMat) endermanHaloMat = new THREE.MeshBasicMaterial({ color: 0x8b32c7, transparent: true, opacity: 0.22, side: THREE.BackSide, fog: false, depthWrite: false, blending: THREE.AdditiveBlending });
 }
 
-// Cheat placement (B key, any dimension): drops one Enderman at the wanted
-// feet spot, rising up to 5 cells for a free supported cell. Returns the mob
-// or null when there is no spot. The End keeps its native platform rules
-// (makeEnderman above); outside it the fallback just finds standing room or
-// stays unplaced — movement rework stays with the user.
-export function spawnEndermanAt(scene, x, z, y, rand = Math.random, dimName = "end") {
+// Cheat placement (B key, any dimension): drops one Enderman exactly at the
+// wanted feet spot — the caller resolved the grapple-equivalent spot
+// (including its peer rule), so the hook only asserts a free body box and
+// places, with no support check either (gravity decides, like a release).
+// Returns the mob or null when the cell is blocked.
+export function spawnEndermanAt(scene, x, z, y, rand = Math.random, dimName = "end", opts = {}) {
   sceneRef = scene;
   ensureEndermanMats();
   const dimNow = dimName ?? "end";
   const hw = 0.31, h = 2.7;
-  let sy = y;
-  let placed = false;
-  for (let t = 0; t < 6 && !placed; t++) {
-    const yy = y + t;
-    if (!aabbFreeIn(dimNow, x, yy, z, hw, h) || !supportIn(dimNow, x, yy, z, hw)) continue;
-    if ([...mobs].some((m) => m.alive && m.dim === dimNow && m.type === "enderman" &&
-      Math.hypot(m.pos.x - x, m.pos.z - z) < 2.5 && Math.abs(m.pos.y - yy) < h)) continue;
-    sy = yy;
-    placed = true;
-  }
-  if (!placed) return null;
+  const yaw = opts.exact && opts.yaw != null ? opts.yaw : (rand() ?? Math.random()) * Math.PI * 2;
+  if (!aabbFreeIn(dimNow, x, y, z, hw, h)) return null;
   const model = makeEndermanModel();
   const mob = {
     ...model, type: "enderman", dim: dimNow, pos: model.root.position,
     hw, h, grabR: 0.5, grabH: 2.7,
-    grabSide: 0.5, grabFront: 0.3, grabBack: 0.25, yaw: (rand() ?? Math.random()) * Math.PI * 2,
+    grabSide: 0.5, grabFront: 0.3, grabBack: 0.25, yaw,
     alive: true, t: (rand() ?? Math.random()) * 6,
     lookTime: 0, angryTime: 0, redTime: 0,
   };
-  model.root.position.set(x, sy, z);
+  model.root.position.set(x, y, z);
   model.root.rotation.y = mob.yaw;
   model.root.visible = true;
   sceneRef.add(model.root);

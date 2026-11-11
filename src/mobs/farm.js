@@ -164,7 +164,11 @@ for (const kind of ["pig", "cow"]) {
       applyDisplacementColor(mob);
     },
     dispose: disposeFarmMob,
-    spawn: (ctx) => spawnQuadrupedAt(kind, ctx.scene, ctx.x, ctx.z, ctx.y, ctx.rand, ctx.dim),
+    spawn: (ctx) => spawnQuadrupedAt(kind, ctx.scene, ctx.x, ctx.z, ctx.y, ctx.rand, ctx.dim, ctx),
+    footprint: () => {
+      const s = specCircles(LIVESTOCK_SPECS[kind]);
+      return { hw: s.hw, h: s.h };
+    },
   });
 }
 
@@ -200,14 +204,29 @@ function spotFree(x, y, z, yaw, hw, h, nose) {
 // attachment exists anywhere in this system — under the standard
 // persistence rule. Peer-aware like the grab release: never stacks the
 // newborn onto a live mob (the separation backstop would unstack it, but
-// spawning clean beats resolving).
-export function spawnQuadrupedAt(kind, scene, x, z, y, rand = Math.random, dimName = null) {
+// spawning clean beats resolving). With {exact: true} the caller already
+// resolved the grapple-equivalent spot (including its peer rule), so the
+// hook only asserts a free body box and places — no search, no second
+// peer rule; the rise search below serves the legacy debug rig.
+export function spawnQuadrupedAt(kind, scene, x, z, y, rand = Math.random, dimName = null, opts = {}) {
   sceneRef = scene;
   const dimNow = dimName ?? activeDim;
   const spec = LIVESTOCK_SPECS[kind];
   if (!spec) return null;
   const shape = specCircles(spec);
   const hw = shape.hw, h = shape.h;
+  if (opts.exact) {
+    const yaw = opts.yaw ?? rand() * Math.PI * 2;
+    // Body box only, like the grapple release (no nose rule there): the
+    // spot already passed the grapple-equivalent resolution + peer veto.
+    if (aabbIntersectsSolid(x, y, z, hw, h)) return null;
+    const mob = createMob(kind, { x, z, y, dim: dimNow, yaw, rand });
+    if (mob) {
+      mobs.add(mob);
+      syncVisibility();
+    }
+    return mob;
+  }
   const probe = { pos: { x: 0, y: 0, z: 0 }, yaw: 0, hw, nose: shape.nose, tail: shape.tail, alive: true };
   const peers = [...mobs].filter((m) => m.alive && m.dim === dimNow);
   const peerFree = (sx, sy, sz, syaw) => {

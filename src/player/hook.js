@@ -28,7 +28,7 @@ import { showRope, showPinnedRope, showTip, hideRope, hideLine, hideTip, applyRo
 import { pickBlock } from "./edit.js";
 import { flyOn } from "./fly.js";
 import { pickMob, grabScale, mobCenterOffset } from "../mobs/pick.js";
-import { heldMob, holdMob, latchMob, holdFeet, boxFree, findReleaseSpot, releasePeerFree, settleReleased, grabHaulProtected, resolveBlockLanding, applyMobGap } from "../mobs/carry.js";
+import { heldMob, holdMob, latchMob, holdFeet, releasePeerFree, settleReleased, grabHaulProtected, resolveBlockLanding, mobReleaseSpot } from "../mobs/carry.js";
 import { mobType, allMobs } from "../mobs/registry.js";
 
 const HOOK_DEFAULTS = {
@@ -381,9 +381,8 @@ function arriveMobRelease(h) {
   // reads exactly like a walled one (fit-gated release re-holds instead).
   const peers = allMobs().filter((o) => o !== mob && o.alive && (o.dim ?? dim) === (mob.dim ?? dim));
   const peerFree = (x, y, z) => releasePeerFree(peers, mob, x, y, z);
-  const g = applyMobGap(isSolid, hw, mh, h, [h.fx, h.fy, h.fz], h.spec.arriveGap, h.spec.hangClear);
-  const at = (x, y, z) => boxFree(isSolid, x, y, z, hw, mh) && peerFree(x, y, z);
-  const spot = at(g.x, g.y, g.z) ? g : findReleaseSpot(isSolid, hw, mh, h.tx, h.ty, h.tz, 0, peerFree);
+  // Shared resolution (see carry.js): gaps, then the same-level ring.
+  const spot = mobReleaseSpot(isSolid, hw, mh, h.bx, h.by, h.bz, [h.fx, h.fy, h.fz], peerFree, h.spec);
   if (spot) {
     mob.pos.set(spot.x, spot.y, spot.z);
     settleReleased(mob, yaw + Math.PI);

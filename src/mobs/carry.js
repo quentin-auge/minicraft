@@ -204,6 +204,22 @@ export function findReleaseSpot(isSolidAt, hw, h, fx, fy, fz, upMax = 8, peerFre
   return null;
 }
 
+// Grapple-equivalent release resolution (player grapple and mob release
+// alike): the shared-landing rule, then the arrival gaps when they fit, then
+// the same-level ring only — never above. Returns `{x, y, z}` feet or null
+// (a blocked landing re-holds instead of manufacturing support overhead).
+// Pure, three-free, isSolidAt/peerFree injected: the hook ferry and the
+// cheat spawn menu resolve through this one function, so a spawned mob lands
+// exactly where the grapple would have ferried it. Headless-tested.
+export function mobReleaseSpot(isSolidAt, hw, h, bx, by, bz, face, peerFree = null, opts = {}) {
+  const { arriveGap = 0.15, hangClear = 0.6, headOff = 0 } = opts;
+  const land = resolveBlockLanding(isSolidAt, bx, by, bz, face, headOff);
+  const g = applyMobGap(isSolidAt, hw, h, land, face, arriveGap, hangClear);
+  const at = (x, y, z) => boxFree(isSolidAt, x, y, z, hw, h) && (!peerFree || peerFree(x, y, z));
+  if (at(g.x, g.y, g.z)) return { x: g.x, y: g.y, z: g.z };
+  return findReleaseSpot(isSolidAt, hw, h, land.tx, land.ty, land.tz, 0, peerFree);
+}
+
 // Peer-occupancy test for a release candidate: true when no live same-dim
 // peer's body box (plus a comfort gap) intersects the candidate's box.
 // Duck-typed peers ({pos, yaw?, hw, h, alive, dim}), pure, headless-testable.
