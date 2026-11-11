@@ -31,6 +31,15 @@ const DRAGON_MIN_Y = END_PLATFORM_TOP + 7;
 const DRAGON_MAX_Y = END_PLATFORM_TOP + 22;
 const DRAGON_HP = 8;
 const DRAGON_SPEED_MULT = 1.2;
+// Endermen are modelled at full size but live smaller: the model root is
+// scaled down and the body numbers (hw/h plus the grab box) follow, so the
+// AABB, support, teleport, and grab match the visuals.
+const ENDERMAN_SCALE = 0.8;
+const ENDERMAN_DIMS = {
+  hw: 0.31 * ENDERMAN_SCALE, h: 2.7 * ENDERMAN_SCALE,
+  grabR: 0.5 * ENDERMAN_SCALE, grabH: 2.7 * ENDERMAN_SCALE,
+  grabSide: 0.5 * ENDERMAN_SCALE, grabFront: 0.3 * ENDERMAN_SCALE, grabBack: 0.25 * ENDERMAN_SCALE,
+};
 const randomDragonSpitInterval = () => 2 + mobHash(mobSpawnCount++, 7, 9401) * 4;
 let sceneRef = null;
 let dragonRef = null;
@@ -254,11 +263,11 @@ function makeEnderman(index) {
   }
   const mob = {
     ...model, type: "enderman", dim: "end", pos: model.root.position,
-    hw: 0.31, h: 2.7, grabR: 0.5, grabH: 2.7,
-    grabSide: 0.5, grabFront: 0.3, grabBack: 0.25, yaw: 0,
-    alive: true, t: mobHash(index, 13, 9405) * 6,
+    ...ENDERMAN_DIMS,
+    yaw: 0, alive: true, t: mobHash(index, 13, 9405) * 6,
     lookTime: 0, angryTime: 0, redTime: 0,
   };
+  model.root.scale.setScalar(ENDERMAN_SCALE);
   model.root.position.set(x, END_PLATFORM_TOP + 1, z);
   mob.yaw = mobHash(index, 17, 9406) * Math.PI * 2;
   model.root.rotation.y = mob.yaw;
@@ -310,7 +319,7 @@ registerMobType({
   tick: tickEnderman,
   dispose: disposeEndMob,
   spawn: (ctx) => spawnEndermanAt(ctx.scene, ctx.x, ctx.z, ctx.y, ctx.rand, ctx.dim, ctx),
-  footprint: () => ({ hw: 0.31, h: 2.7 }),
+  footprint: () => ({ hw: ENDERMAN_DIMS.hw, h: ENDERMAN_DIMS.h }),
 });
 
 function tickDragon(mob, dt, camera) {
@@ -566,17 +575,18 @@ export function spawnEndermanAt(scene, x, z, y, rand = Math.random, dimName = "e
   sceneRef = scene;
   ensureEndermanMats();
   const dimNow = dimName ?? "end";
-  const hw = 0.31, h = 2.7;
+  const { hw, h } = ENDERMAN_DIMS;
   const yaw = opts.exact && opts.yaw != null ? opts.yaw : (rand() ?? Math.random()) * Math.PI * 2;
   if (!aabbFreeIn(dimNow, x, y, z, hw, h)) return null;
   const model = makeEndermanModel();
   const mob = {
     ...model, type: "enderman", dim: dimNow, pos: model.root.position,
-    hw, h, grabR: 0.5, grabH: 2.7,
-    grabSide: 0.5, grabFront: 0.3, grabBack: 0.25, yaw,
+    ...ENDERMAN_DIMS,
+    yaw,
     alive: true, t: (rand() ?? Math.random()) * 6,
     lookTime: 0, angryTime: 0, redTime: 0,
   };
+  model.root.scale.setScalar(ENDERMAN_SCALE);
   model.root.position.set(x, y, z);
   model.root.rotation.y = mob.yaw;
   model.root.visible = true;
