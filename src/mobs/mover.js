@@ -17,7 +17,7 @@ import { navTick, navCommit, navPlanAllows, navPathDistance, navCellOnPath, NAV_
 import { queryMobGrid, buildMobGrid } from "./grid.js";
 import {
   aabbIntersectsSolid, noseHitsSolid, hasSupport,
-  liquidSurface, footingOk, groundBelow, headroomOk,
+  liquidSurface, footingOk, footingOkAt, groundBelow, headroomOk,
   makeCellFree, makeCellSolid, makeStepOk, descendOk, turnTo,
   moveClamped, moveVector, driveToward, dropLane, spawnRng, stepVertical,
   SERVO_STEP, VIRTUAL_W, NO_EXPIRY, slideDeflect, segmentWalkable,
@@ -2075,7 +2075,18 @@ function seekDeadEnd(mob, dt, supported, floating, peers = null) {
         !sweepDiscOk(mob, nx, nz, peers, null))) return false;
       const noseBlocked = noseGate && noseBlockedAt(mob, nx, nz, forward);
       if (noseBlocked) noseStopped = true;
-      return !noseBlocked;
+      // Open lip reads as a dead end through the same nose column: past the
+      // floor edge the head would hang over the void, so the step refuses
+      // AND trips the turn — descendOk alone would stop the core at the lip
+      // with the head dangling and no turn to leave on (a bare footNose
+      // refusal without the trip would stall the same way). noseGate keeps
+      // it to straight approaches, so corner blend arcs (which swing the
+      // nose transiently, like the roof straddle) never trip it; floating
+      // and falling mobs keep legacy reads.
+      const lipBlocked = noseGate && supported && !floating &&
+        !footingOkAt(mob, nx, nz, mob.pos.y, forward, mob.nose.along);
+      if (lipBlocked) noseStopped = true;
+      return !noseBlocked && !lipBlocked;
     };
   };
   const seek = driveToward(mob, dt, forward, makeSeek, moveVector, { rate: SERVO_TURN });
