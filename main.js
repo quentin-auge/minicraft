@@ -77,8 +77,9 @@ import { dimEnv, dimSpec, dimHasMoon, dimHotbar } from "./src/world/dimensions.j
 import { EYE, setFlyStepAllow, updateFreeSwim } from "./src/player/physics.js";
 import { setExtraSolid } from "./src/player/physics.js";
 import {
-  initRocket, resetRocket, tickRocket, rocketPiloting, rocketTakesOver,
+  initRocket, resetRocket, tickRocket, rocketTakesOver,
   rocketEditingBlocked, rocketSolidAt, rocketFlying, carryRiders,
+  cycleConeSize,
 } from "./src/vehicles/rocket.js";
 import { initHomingTnt, fireHomingTnt, tickHomingTnt, clearHomingTnt } from "./src/mobs/homing.js";
 import { enterEndMobs, clearEndMobs, clearEndermenDim, tickEndMobs, notifyEndermanVoxelChange, teleportBlastEndermen, dragonHealth, setDragonVictoryHook, setMobSeed } from "./src/mobs/end.js";
@@ -971,9 +972,10 @@ document.addEventListener("keydown", (e) => {
   if (e.code === "KeyH" && !e.repeat && !anyPanelOpen()) { openHelp(); e.preventDefault(); return; }
   if (e.code === "Equal" && !e.repeat) { toggleDebug(); return; }
   if (e.code === "KeyF" && !e.repeat && started && !anyModalOpen()) {
-    // No fly toggle while piloting the rocket; the parked cabin keeps
-    // fly on (no prompt, no takeoff until it is off).
-    if (rocketPiloting()) { e.preventDefault(); return; }
+    // No fly toggle while the rocket holds the player (piloting or the
+    // landing animation); the parked cabin keeps fly on (no prompt, no
+    // takeoff until it is off).
+    if (rocketTakesOver()) { e.preventDefault(); return; }
     if (!flyOn) {
       setFly(true);
       cancelHook(false);
@@ -983,8 +985,14 @@ document.addEventListener("keydown", (e) => {
     e.preventDefault();
     return;
   }
+  // The reactor cone size: T cycles how wide and far the engine jets spray.
+  if (e.code === "KeyT" && !e.repeat && started && !anyModalOpen() && isLocked()) {
+    cycleConeSize();
+    e.preventDefault();
+    return;
+  }
   if (e.code === "KeyG" && !e.repeat && started && !anyModalOpen() && isLocked()) {
-    if (rocketPiloting()) { e.preventDefault(); return; }
+    if (rocketTakesOver()) { e.preventDefault(); return; }
     camera.getWorldDirection(_hookDir);
     if (!fireHookTarget(grapplePick, camera.position, _hookDir)) {
       fireSkyHook(camera.position, _hookDir, scene.fog.far + 40, TNT_SKY_GRAPPLE_MAX, refreshBlocks);
@@ -998,7 +1006,7 @@ document.addEventListener("keydown", (e) => {
   // New World, or a running transition (travelTo no-ops while busy anyway).
   const WORLD_CYCLE = ["over", "end", "nether", "tnt"];
   if (e.code === "KeyZ" && !e.repeat && started && !anyModalOpen() && isLocked() && !building && isCheat()) {
-    if (rocketPiloting()) { e.preventDefault(); return; }
+    if (rocketTakesOver()) { e.preventDefault(); return; }
     const at = WORLD_CYCLE.indexOf(dim);
     debugTravelTo(WORLD_CYCLE[(at + 1) % WORLD_CYCLE.length]);
     e.preventDefault();
@@ -1060,8 +1068,10 @@ document.addEventListener("keydown", (e) => {
             () => mobReleaseTarget(held, aim.x, aim.y, aim.z, aim.face),
             camera.position, _hookDir, "mob-release");
         }
-      } else if (!rocketFlying()) {
-        // No mob grab while flying (a hook already out resolves normally).
+      } else if (!rocketTakesOver()) {
+        // No mob grab while the rocket holds the player (countdown, flight,
+        // landing animation — a hook would move a frozen pilot); a hook
+        // already out resolves normally.
         fireHookTarget(mobGrabTarget, camera.position, _hookDir, "mob-grab");
       }
     }
@@ -1474,10 +1484,11 @@ function loop(now) {
 updateCamera();
 requestAnimationFrame(loop);
 
-// ?test=1 instrumentation hook (tests/browser/hook.js + mob-paths.mjs):
-// 1-wide path rigs + deterministic mob traces. Dynamic import, inert unless
-// the param is set — no game behavior changes.
+// ?test=1 instrumentation hooks (tests/browser/mobs/hook.js + fx/hook.js):
+// 1-wide path rigs + deterministic mob traces, reactor-cone probe.
+// Dynamic imports, inert unless the param is set — no game behavior changes.
 if (new URLSearchParams(location.search).get("test") === "1") {
   import("./tests/browser/mobs/hook.js").then((m) =>
     m.initTest({ scene, worldReady: () => worldReady }));
+  import("./tests/browser/fx/hook.js").then((m) => m.initFxProbe());
 }

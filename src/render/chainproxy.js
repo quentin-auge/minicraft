@@ -13,6 +13,7 @@ import { chunkOf, getBlock } from "../core/store.js";
 import { glowstoneMats, materialsFor, liquidSurfaceMat } from "../core/textures.js";
 import { glowVariantAt } from "../world/glowstone.js";
 import { chunkVersion } from "./mesher.js";
+import { ORDERS } from "./orders.js";
 
 const boxGeo = new THREE.BoxGeometry(1, 1, 1);
 const CAP = 512; // instances per transient mesh; oldest cells drop past it
@@ -118,7 +119,7 @@ function rebuild() {
       mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
       mesh.frustumCulled = false; // transient positions; skip bounds tracking
       // Same compositing slot as the real outside liquid sheets.
-      if (isLiquid(g.id)) mesh.renderOrder = 10;
+      if (isLiquid(g.id)) mesh.renderOrder = ORDERS.LIQUID_OUTSIDE;
       sceneRef.add(mesh);
       rec = { mesh };
       meshes.set(h, rec);

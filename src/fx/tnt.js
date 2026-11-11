@@ -26,6 +26,7 @@ import { pos, vel, setOnGround, addPlayerKnockback, KNOCK_DECAY } from "../playe
 import { computeMegaLaunch } from "../core/launch.js";
 import { flyOn } from "../player/fly.js";
 import { spawnBurst, spawnBurstBatch, spawnFlash, spawnFlashBatch, spawnFireballBatch, sharedFlashGeo, initBandShell, updateBandShell, hideBandShell, spawnDense, denseCount, noteDenseSpawn, resetDenseFx, flushDense } from "./particles.js";
+import { PALETTES } from "./palettes.js";
 import { clearGlowstoneAt } from "../world/glowstone.js";
 import { MOON_MIN_Y, markMoonDirty } from "../world/moon.js";
 import { clearFlowerAt } from "../world/flowers.js";
@@ -442,7 +443,7 @@ function megaPoolRadius(kind, n) {
 // decides the crater and knockback reach. One dense GPU engine
 // (spawnDense): counts scale with R^3 so big pools get denser, and the
 // fireball fills the full crater.
-const FIRE = [[1, 0.8, 0.1], [1, 0.45, 0.05], [0.9, 0.1, 0.02]];
+const FIRE = PALETTES.fire.embers;
 const EMBERW = [1, 0.95, 0.8];
 function D(R, per, min, max) { return denseCount(R, per, min, max); }
 // Single post-detonation clock for every mega/ultra visual: recipes stay

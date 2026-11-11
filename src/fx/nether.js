@@ -6,6 +6,7 @@ import * as THREE from "three";
 import { LAVA } from "../core/blocks.js";
 import { WORLD_RADIUS, getBlock } from "../core/store.js";
 import { NETHER_FIRE_LEVEL, netherVolcanoes } from "../world/nether.js";
+import { ORDERS } from "../render/orders.js";
 
 const EMBER_COUNT = 220;
 const VOLCANO_EMBER_COUNT = 340;
@@ -208,11 +209,12 @@ function ensureMotes(scene, camera) {
   }
   motes.pts.geometry.attributes.color.needsUpdate = true;
   motes.pts.visible = false;
-  // Drawn after the liquid sheets (renderOrder 10/11), so submerged motes
-  // read over the surface blue instead of being painted over by it; depth
-  // test stays on, so rock still occludes and motes above the surface stay
-  // hidden. Below glass (13), which keeps drawing last.
-  motes.pts.renderOrder = 12;
+  // Drawn after the liquid sheets (ORDERS.MOTE sits above both liquid
+  // bands), so submerged motes read over the surface blue instead of being
+  // painted over by it; depth test stays on, so rock still occludes and
+  // motes above the surface stay hidden. Below glass (ORDERS.GLASS), which
+  // keeps drawing after the liquids.
+  motes.pts.renderOrder = ORDERS.MOTE;
   scene.add(motes.pts);
 }
 

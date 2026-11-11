@@ -24,10 +24,12 @@ import { MOON_MIN_Y, markMoonDirty } from "../world/moon.js";
 import { clearFlowerAt, noteFlowerPlace } from "../world/flowers.js";
 import { clearReactionAt } from "../world/reactions.js";
 import { clearTNTBox } from "../fx/tnt.js";
-import { notePortalEdits } from "../world/portals.js";
+import { notePortalEdits, toast } from "../world/portals.js";
 import { severHook } from "../player/hook.js";
 import { refreshBlocks, queueRefreshBlocks } from "../render/mesher.js";
-import { spawnBurst, spawnBurstBatch } from "../fx/particles.js";
+import { ORDERS } from "../render/orders.js";
+import { exposedFaces, speedFactor, countdownFactor, fxScale, nextConeSize, ROCKET_FX_CONE_SIZES, ROCKET_FX_DEFAULT_CONE } from "../fx/rocketfx.js";
+import { playFx } from "../fx/rocketimpact.js";
 import { dimTntTiersUnlocked } from "../world/dimensions.js";
 import { isTntTierUnlocked } from "../world/tntunlock.js";
 import { villageFrames } from "../world/village.js";
@@ -38,20 +40,49 @@ registerVehicleType({ key: "rocket", name: "Rocket", carriesMobs: true });
 
 const COUNTDOWN = 3.0;
 const FADE_TIME = 2.5;
-const LANDING_FADE = 1.0;
+const LANDING_FADE = 0.5;
+// Settle freeze after the landing fade: no FX, the pilot stays pinned
+// until the camera has stabilized (fade + trauma tail + margin).
+const LANDING_SETTLE = 0.6;
+// The camera-trauma decay in main.js, named so the tracked shake rates
+// below mirror it instead of hardcoding it twice. Mirror with main.js
+// `camTrauma` decay if that ever changes.
+const TRAUMA_DECAY = 1.4;
+// The tremor adds trauma at the tracking rate (decay x tick cadence) so
+// the camera follows the ramp instead of pinning at the cap early.
+const TREMOR_TRACK = TRAUMA_DECAY * 0.12;
 const ACCEL = 26;
+// Liftoff burn: the old instant 5.2 kick as a real 0.2 s push at ACCEL, so
+// the exhaust burns exactly while the hull accelerates off the pad.
+const LAUNCH_BURN = 0.2;
+// Thrust level glide rate: the exhaust ramps instead of popping.
+const THRUST_RAMP = 8;
 const MAX_SPEED = FLY * 3;
 const BOOST_SPEED = FLY * 6;
 const H_SMOOTH = 8;
 const BOOST_RAMP = 3;
 const CARVE_MAX = 2400;
+// Impact FX budget per frame: the surfaces the rocket tears open, sampled so
+// every side of the swept shaft keeps a share.
+const CARVE_FACE_BUDGET = 24;
+const CARVE_FACE_FRAME_CAP = 48;
+// The hull's own rock dust starts once the carve has torn this many cells:
+// below it the dust would be more noise than the blast it follows.
+const CARVE_DUST_MIN_CELLS = 6;
+// Camera shake for the rocket's beats. The ignition kick lands once, the
+// tremor and the touchdown shake both come out of the landing curve, so
+// they always match the cloud of that moment (see src/fx/rocketfx.js).
+// The burn keeps a low rumble.
+const SHAKE = {
+  ignition: 0.03,
+  burn: 0.02,
+};
 
 const boxGeo = new THREE.BoxGeometry(1, 1, 1);
-const flameGeo = new THREE.ConeGeometry(0.55, 1.6, 8);
-const flameMat = new THREE.MeshBasicMaterial({
-  color: 0xff9a33, transparent: true, opacity: 0.85,
-  blending: THREE.AdditiveBlending, depthWrite: false, fog: false,
-});
+// Thruster exhaust: particles only, no flame meshes — the push reads as an
+// ember jet plus grey smoke streaming down under the nozzles. The pilot
+// sees the jet through the faded hull (foreground embers) and from outside
+// (depth-tested smoke).
 // See-through moving hull: one cloned material set per block id, used for
 // the whole fade in both directions — no opaque/transparent swap, so the
 // fade stays continuous at the 100 % opaque ends.
@@ -62,11 +93,12 @@ function movingMatsFor(id) {
     m = materialsFor(id).map((src) => {
       const c = src.clone();
       c.transparent = true;
-      // Depth writes stay on: at opacity == base the model reads exactly
-      // like the opaque voxels it replaces, so installing/removing the
-      // transparent set causes no pop at either fade end. The glass keeps
-      // its own depthless renderOrder path.
-      c.depthWrite = true;
+      // Depth writes stay on for every solid id: at opacity == base the model
+      // reads exactly like the opaque voxels it replaces, so installing or
+      // removing the transparent set causes no pop at either fade end. Glass
+      // keeps its source depthless path: it is a window, not an occluder, so
+      // the world behind it (liquids included) still composites through.
+      c.depthWrite = src.depthWrite ?? true;
       c.userData.baseOpacity = src.opacity ?? 1;
       c.userData.fadeOpacity = Math.min(c.userData.baseOpacity, 0.5);
       c.opacity = c.userData.baseOpacity;
@@ -84,12 +116,26 @@ let countdownEl = null;
 let promptText = "";
 
 let phase = "parked"; // parked | countdown | flight | landing
+// The reactor cone size the player picked (T).
+let coneSize = ROCKET_FX_DEFAULT_CONE;
 let piloting = false;
 let siteVersion = -1;
 let countdown = 0;
 let landingT = 0;
 let exhaustT = 0;
+// The touchdown factor of the last landing: the fade replays the takeoff's
+// smoke and tremor scaled by it, so the landing always lands as hard as it
+// hit.
+let landingT0 = 0;
+// The touchdown's shake input, on the non-boost cap: at FLY x 3 and above
+// the shake reads full takeoff violence, below it scales linearly. The
+// cloud keeps the boosted cap (landingT0), so a max-boost drop looks
+// bigger while shaking the same.
+let shakeT0 = 0;
 let thrustLevel = 0;
+let brakeLevel = 0;
+let launchBurn = 0;
+let plumeT = 0;
 let hullFade = 0;
 // Fade segments, consumed in order: { from, to, t, dur, ease? }. The
 // countdown runs an accelerating 1 s phase (`ease: "in"`) then a linear 1 s
@@ -100,6 +146,10 @@ const COUNTDOWN_FADE = [
 ];
 let fadeSegs = [];
 let boostF = 0;
+// A new launch needs the chord released first: a pilot who never lets go of
+// SHIFT+ENTER must not relaunch the rocket the instant a landing animation
+// ends.
+let takeoffArmed = true;
 let dockedCells = [];
 let landingTarget = new THREE.Vector3();
 
@@ -109,7 +159,7 @@ const _fwd = new THREE.Vector3();
 const _right = new THREE.Vector3();
 const _hv = new THREE.Vector3();
 
-let moving = null; // { group, flames, solid, cells, meshes }
+let moving = null; // { group, solid, cells, meshes }
 let movingBuiltVersion = -1;
 // Riding voxel set: local cells + ids (+ glowstone variant) that travel
 // with the hull and stamp back on landing. Scanned from the parked box at
@@ -135,7 +185,13 @@ export function resetRocket() {
   piloting = false;
   countdown = 0;
   landingT = 0;
+  landingT0 = 0;
+  shakeT0 = 0;
   thrustLevel = 0;
+  brakeLevel = 0;
+  launchBurn = 0;
+  plumeT = 0;
+  takeoffArmed = true;
   hullFade = 0;
   clearFade();
   rvel.set(0, 0, 0);
@@ -147,6 +203,30 @@ export function resetRocket() {
 }
 
 function shake(a) { if (shakeFn) shakeFn(a); }
+
+// The tuned shake gains, baked in: tremor 3, liftoff 1, touchdown 3,
+// fade 1. One table, read by the helpers below — no live knobs.
+const SHAKE_GAIN = { tremor: 3, liftoff: 1, touchdown: 3, fade: 1 };
+
+// A tracked add: the equilibrium follows the landing-curve value through
+// the decay, so the camera rides the ramp instead of pinning at the cap.
+// Tick form (decay x cadence) for the 0.12 s loops, frame form (decay x
+// dt) for per-frame adds, thump form for one-shots.
+function shakeTick(factor, knob) {
+  shake((fxScale("landing", factor).shake ?? 0) * TREMOR_TRACK * SHAKE_GAIN[knob]);
+}
+function shakeFrame(factor, knob, dt) {
+  shake((fxScale("landing", factor).shake ?? 0) * TRAUMA_DECAY * dt * SHAKE_GAIN[knob]);
+}
+function shakeThump(factor, knob) {
+  shake((fxScale("landing", factor).shake ?? 0) * SHAKE_GAIN[knob]);
+}
+
+// Cycle the reactor cone size and say which one is now in use.
+export function cycleConeSize() {
+  coneSize = nextConeSize(coneSize);
+  toast("Cone width: " + (ROCKET_FX_CONE_SIZES[coneSize]?.label ?? coneSize));
+}
 
 function fadeHull(to, duration = FADE_TIME, ease = undefined) {
   fadeSegs = [{ from: hullFade, to, t: 0, dur: duration, ease }];
@@ -189,6 +269,7 @@ function syncSite() {
   piloting = false;
   rvel.set(0, 0, 0);
   thrustLevel = 0;
+  brakeLevel = 0;
   countdown = 0;
   hullFade = 0;
   clearFade();
@@ -208,14 +289,12 @@ function layout() {
   return rocketSite.grid;
 }
 
-export function rocketPiloting() {
-  return piloting;
-}
-
-// The player loop defers to the rocket while counting down or flying: the
-// pilot is pinned, plain walk physics never runs.
+// The rocket holds the player for the whole sequence: the countdown, the
+// flight, and the landing animation — during the touchdown the pilot stays
+// pinned until the hull has finished fading out, so plain walk physics
+// never runs and nothing can walk away mid-sequence.
 export function rocketTakesOver() {
-  return piloting && (phase === "countdown" || phase === "flight");
+  return (piloting && (phase === "countdown" || phase === "flight")) || phase === "landing";
 }
 
 export function rocketInsidePlayer() {
@@ -441,9 +520,14 @@ function holdTakeoff() {
   // Takeoff chord: SHIFT + ENTER held, never in fly mode. The chord never
   // fires the grab hook (main.js skips ENTER fire while Shift is down), so
   // launching and grabbing share no input.
+  return chordHeld() && !flyOn;
+}
+
+// The launch chord itself, ignoring the fly-mode veto.
+function chordHeld() {
   const shift = keys["ShiftLeft"] || keys["ShiftRight"] || keys["Shift"];
   const enter = keys["Enter"] || keys["NumpadEnter"];
-  return !!shift && !!enter && !flyOn;
+  return !!shift && !!enter;
 }
 
 function placeAtStand() {
@@ -492,33 +576,49 @@ export function tickRocket(dt) {
     if (moving?.group) moving.group.visible = false;
     countdown = 0;
   thrustLevel = 0;
+  brakeLevel = 0;
   hullFade = 0;
   boostF = 0;
   clearFade();
     setPrompt("");
     updateCountdown();
+    // Leaving the dimension drops any pending wall impacts.
+    carveFaces.length = 0;
     return;
   }
   if (!syncSite()) {
     setPrompt("");
     updateCountdown();
+    carveFaces.length = 0;
     return;
   }
   if (moving?.group) moving.group.visible = phase !== "parked";
+  // The launch chord re-arms the moment it is released (see takeoffArmed).
+  if (!chordHeld()) takeoffArmed = true;
   if (phase === "parked") {
     if (rocketInsidePlayer()) {
       // Fly mode stays on inside the cabin: no prompt and no takeoff
       // while it is, takeoff only once it is off.
-      if (holdTakeoff()) startCountdown();
+      if (takeoffArmed && holdTakeoff()) startCountdown();
     }
   } else if (phase === "countdown") tickCountdown(dt);
   else if (phase === "flight") tickFlight(dt);
   else if (phase === "landing") tickLanding(dt);
   tickHullFade(dt);
   applyHullFade();
-  tickFlames();
   updatePrompt();
   updateCountdown();
+  flushCarveFaces();
+}
+
+// One batched blast per frame over the walls the ascent tore open.
+function flushCarveFaces() {
+  if (!carveFaces.length) return;
+  const faces = carveFaces;
+  carveFaces = [];
+  // The blast grows with the speed the hull carries: a slow bore throws
+  // pebbles, a max-speed dive throws a wall of debris.
+  playFx("impact", { faces, factor: speedFactor(rvel.length(), BOOST_SPEED) });
 }
 
 function startCountdown() {
@@ -534,14 +634,17 @@ function startCountdown() {
   // forever, sinking them through the floor while the rocket leaves.
   carryRiders();
   exhaustT = 0;
-  thrustLevel = 1;
+  thrustLevel = 0;
+  brakeLevel = 0;
+  launchBurn = 0;
+  plumeT = 0;
   hullFade = 0;
   fadeSegs = [
     { from: 0, to: COUNTDOWN_FADE[0].to, t: 0, dur: COUNTDOWN_FADE[0].dur, ease: COUNTDOWN_FADE[0].ease },
     { from: COUNTDOWN_FADE[0].to, to: COUNTDOWN_FADE[1].to, t: 0, dur: COUNTDOWN_FADE[1].dur },
   ];
   pinPilot();
-  shake(0.05);
+  shake(SHAKE.ignition);
 }
 
 function cancelCountdown() {
@@ -550,6 +653,9 @@ function cancelCountdown() {
   countdown = 0;
   exhaustT = 0;
   thrustLevel = 0;
+  brakeLevel = 0;
+  launchBurn = 0;
+  plumeT = 0;
   hullFade = 0;
   clearFade();
   stamp();
@@ -561,12 +667,21 @@ function tickCountdown(dt) {
     return;
   }
   pinPilot();
-  thrustLevel = 1;
+  // The engines spool up instead of popping on.
+  thrustLevel += (1 - thrustLevel) * Math.min(1, THRUST_RAMP * dt);
   countdown -= dt;
+  // The ignition tremor: progressive over the whole countdown, ramping to
+  // the landing violence at liftoff (the takeoff thump reads the same
+  // curve input as a max non-boost touchdown). Adds are tracked so the
+  // camera follows the ramp instead of pinning at the cap early; the
+  // liftoff thump lands on top.
+  const progress = Math.min(1, 1 - Math.max(0, countdown) / COUNTDOWN);
   exhaustT -= dt;
   if (exhaustT <= 0) {
     exhaustT = 0.12;
     spawnExhaust();
+    spawnCountdownSmoke(progress);
+    shakeTick(countdownFactor(progress), "tremor");
   }
   if (countdown <= 0) {
     releaseDockedProtection();
@@ -574,26 +689,52 @@ function tickCountdown(dt) {
     countdown = 0;
     hullFade = 1;
     clearFade();
-    rvel.set(0, 5.2, 0);
-    shake(0.2);
+    // Liftoff hits with the touchdown cloud at factor 1 plus its shake —
+    // the same curve input as a max-speed non-boost touchdown.
+    launchBurn = LAUNCH_BURN;
+    plumeT = 0;
+    rvel.set(0, 0, 0);
+    // The touchdown cloud at factor 1; the thump below reads the same
+    // curve input the cloud was built with.
+    landingDust(BOOST_SPEED);
+    shakeThump(1, "liftoff");
   }
+}
+
+// Nozzle world positions, just under the hull: shared by the exhaust,
+// the countdown smoke and the flight plume.
+function thrusterNozzles() {
+  const out = [];
+  for (const c of layout().cells) {
+    if (c.id !== THRUSTER) continue;
+    out.push([origin.x + c.x + 0.5, origin.y - 0.15, origin.z + c.z + 0.5]);
+  }
+  return out;
 }
 
 // One batched exhaust burst across all thrusters: a single Points cloud
 // per tick instead of one allocation per nozzle. Shared by the countdown
-// and the landing fade (mirror phases).
+// and the landing fade (mirror phases). Emitted just under the hull so the
+// puffs are not swallowed by the base row, always sprayed downward —
+// braking thrust included, so the exhaust never rises into the hull.
 function spawnExhaust() {
-  const centers = [];
-  for (const c of layout().cells) {
-    if (c.id !== THRUSTER) continue;
-    centers.push([origin.x + c.x + 0.5, origin.y + 0.05, origin.z + c.z + 0.5]);
-  }
-  if (centers.length) spawnBurstBatch({
-    centers, count: 10, life: 0.55, size: 0.4, gravity: 1.5,
-    color: [0.9, 0.55, 0.2], variance: [0.1, 0.2, 0.2],
-    speedMin: 1, speedMax: 4, up: 1,
+  const nozzles = thrusterNozzles();
+  if (!nozzles.length) return;
+  playFx("exhaust", { nozzles, cone: coneSize });
+  shake(SHAKE.burn);
+}
+
+// Landing-like smoke wrapping the hull while the engines spool: height and
+// density scale with the liftoff approach, ending at a max-speed boosted
+// landing. Shared by the landing fade: the touchdown rumble replays the
+// same smoke, scaled by the touchdown and decaying with the fade.
+function spawnCountdownSmoke(progress) {
+  playFx("landing", {
+    x: origin.x, y: origin.y, z: origin.z,
+    halfW: ROCKET_SPEC.w * 0.5, halfD: ROCKET_SPEC.d * 0.5,
+    hullHeight: ROCKET_SPEC.h,
+    factor: countdownFactor(progress),
   });
-  shake(0.02);
 }
 
 // Read the live ride box out of the store and turn it into a moving model.
@@ -655,6 +796,8 @@ function snapshot() {
         }
     if (tntUp) clearTNTBox(ox + RIDE.x0, oy + RIDE.y1 + 1, oz + RIDE.z0, ox + RIDE.x1, oy + RIDE.y1 + ROCKET_SPEC.h, oz + RIDE.z1);
     for (const c of upCleared) cleared.push(c);
+    // The column torn open above the hull at liftoff: its walls burst too.
+    collectCarveFaces(upCleared);
   }
   if (cleared.length) {
     notePortalEdits(cleared);
@@ -697,22 +840,16 @@ function buildMoving(cells) {
       a[o + 12] = list[i].lx + 0.5; a[o + 13] = list[i].ly + 0.5; a[o + 14] = list[i].lz + 0.5; a[o + 15] = 1;
     }
     mesh.instanceMatrix.needsUpdate = true;
-    if (id === GLASS) mesh.renderOrder = 13;
+    // The moving hull is translucent during flight, never an occluder: it
+    // composites over the world's transparent bands (liquids included), and
+    // its glass rides one band above the hull blocks so it is never tinted
+    // by them.
+    mesh.renderOrder = id === GLASS ? ORDERS.VEHICLE_GLASS : ORDERS.VEHICLE;
     group.add(mesh);
     meshes.push({ id, mesh });
   }
-  const flames = [];
-  for (const c of layout().cells) {
-    if (c.id !== THRUSTER) continue;
-    const f = new THREE.Mesh(flameGeo, flameMat);
-    f.rotation.x = Math.PI;
-    f.position.set(c.x + 0.5, c.y - 0.75, c.z + 0.5);
-    f.visible = false;
-    group.add(f);
-    flames.push(f);
-  }
   sceneRef.add(group);
-  moving = { group, flames, solid, cells, meshes };
+  moving = { group, solid, cells, meshes };
   applyHullFade();
 }
 
@@ -730,28 +867,10 @@ function applyHullFade() {
   }
 }
 
-function tickFlames() {
-  const flames = moving?.flames;
-  if (!flames) return;
-  const level = phase === "countdown" ? 1 : (phase === "flight" ? thrustLevel : 0);
-  const on = level > 0;
-  flameMat.opacity = 0.7 + 0.18 * Math.min(level, 1);
-  for (const f of flames) {
-    f.visible = on;
-    if (on) {
-      const flicker = 0.82 + Math.random() * 0.36;
-      const width = (0.72 + 0.16 * level) * (0.9 + Math.random() * 0.14);
-      const length = (0.9 + 0.62 * level) * flicker;
-      f.scale.set(width, length, width);
-    }
-  }
-}
-
 function tickFlight(dt) {
   _fwd.set(-Math.sin(yaw), 0, -Math.cos(yaw));
   _right.set(Math.cos(yaw), 0, -Math.sin(yaw));
-  thrustLevel = 0;
-  // Ramped boost factor: acceleration, caps, and flames glide instead of
+  // Ramped boost factor: acceleration, caps, and thrust glide instead of
   // stepping, so the camera never feels a pop.
   const boostTarget = (keys["ShiftLeft"] || keys["ShiftRight"] || keys["Shift"]) ? 1 : 0;
   boostF += (boostTarget - boostF) * Math.min(1, BOOST_RAMP * dt);
@@ -772,9 +891,31 @@ function tickFlight(dt) {
     rvel.z += (_hv.z - rvel.z) * k;
     // Vertical stays acceleration-driven with the ramped cap.
     const accel = ACCEL * (1 + boostF);
-    if (keys["ArrowUp"]) rvel.y += accel * dt;
-    if (keys["ArrowDown"]) rvel.y -= accel * dt;
-    thrustLevel = 1 + 0.5 * boostF;
+    let upAccel = 0;
+    let downAccel = 0;
+    if (keys["ArrowUp"]) { rvel.y += accel * dt; upAccel = accel; }
+    if (keys["ArrowDown"]) { rvel.y -= accel * dt; downAccel = accel; }
+    // The liftoff is a real push, not a kick: the engines stay lit while
+    // the hull accelerates off the pad, and the camera rumbles with the
+    // burn — the landing fade in reverse, decaying as the push ends.
+    if (launchBurn > 0) {
+      launchBurn -= dt;
+      rvel.y += ACCEL * dt;
+      upAccel = Math.max(upAccel, ACCEL);
+      shakeFrame(Math.max(0, launchBurn) / LAUNCH_BURN, "liftoff", dt);
+    }
+    // The exhaust follows the commanded vertical push only — bigger push,
+    // denser jet (nominal = 1, boosted = 2) — and glides to it. The braking
+    // push is tracked separately: it feeds the same downward jet.
+    const target = upAccel / ACCEL;
+    thrustLevel += (target - thrustLevel) * Math.min(1, THRUST_RAMP * dt);
+    if (Math.abs(target - thrustLevel) < 0.01) thrustLevel = target;
+    const brakeTarget = downAccel / ACCEL;
+    brakeLevel += (brakeTarget - brakeLevel) * Math.min(1, THRUST_RAMP * dt);
+    if (Math.abs(brakeTarget - brakeLevel) < 0.01) brakeLevel = brakeTarget;
+  } else {
+    thrustLevel = 0;
+    brakeLevel = 0;
   }
   if (rvel.y > cap) rvel.y = cap;
   if (rvel.y < -cap) rvel.y = -cap;
@@ -796,14 +937,34 @@ function tickFlight(dt) {
       startLanding();
       return;
     }
-    // Only upward travel carves what the hull sweeps through.
-    if (rvel.y > 0) carveAt(origin);
+    // The bounding box is the authority: whatever rock the swept volume
+    // reaches is torn out, in every direction. The box's bottom row is
+    // never touched (the ground stays solid), so a landing leaves the
+    // floor intact.
+    if (rvel.x || rvel.y || rvel.z) carveAt(origin);
   }
 
   if (moving?.group) moving.group.position.copy(origin);
+  // The exhaust jet under the nozzles, streaming while the engines push —
+  // up-burn and braking alike, always downward.
+  const jetLevel = Math.max(thrustLevel, brakeLevel);
+  plumeT -= dt;
+  if (jetLevel > 0.05 && plumeT <= 0) {
+    plumeT = 0.06;
+    spawnThrustPlume(jetLevel);
+  }
   if (piloting) pinPilot();
 
   if (rvel.y < -0.6 && groundBelow()) startLanding();
+}
+
+// Exhaust jet under the four nozzles while the engines push, always
+// downward. The look comes from the spec (src/fx/rocketfx.js): an ember jet
+// plus a grey puff, both denser and faster with the thrust level.
+function spawnThrustPlume(L) {
+  const nozzles = thrusterNozzles();
+  if (!nozzles.length) return;
+  playFx("plume", { nozzles, ramp: { level: L }, cone: coneSize });
 }
 
 function footprintSolid(by) {
@@ -821,33 +982,71 @@ function groundBelow() {
 function startLanding() {
   phase = "landing";
   thrustLevel = 0;
+  brakeLevel = 0;
   landingT = 0;
   exhaustT = 0;
+  // One shake scaled by the touchdown speed and the live peak knob:
+  // linear up to the non-boost cap, full takeoff violence at FLY x 3 and
+  // above. Trauma itself caps in main.js.
+  const impact = Math.abs(rvel.y);
   landingTarget.set(Math.floor(origin.x), Math.floor(origin.y), Math.floor(origin.z));
   origin.copy(landingTarget);
   if (moving?.group) moving.group.position.copy(origin);
   rvel.set(0, 0, 0);
   if (piloting) {
-    // Controls release the instant the hull touches down; the mirrored
-    // 1 s fade-out (accelerating, exhaust on) runs while the player
-    // already walks free.
+    // The hull takes the pilot down with it: the mirrored fade-out
+    // (accelerating, exhaust on) runs with the player frozen at the
+    // stand, released only once the hull has faded out.
     piloting = false;
     pinPilot();
     fadeHull(0, LANDING_FADE, "in");
   }
-  landingDust();
-  shake(0.22);
+  // The touchdown feel: the cloud reads the boosted cap while the shake
+  // reads the non-boost cap — so the two stay together up to FLY x 3,
+  // and past that only the cloud keeps growing.
+  landingT0 = speedFactor(impact, BOOST_SPEED);
+  shakeT0 = Math.min(1, speedFactor(impact, MAX_SPEED));
+  landingDust(impact);
+  shakeThump(shakeT0, "touchdown");
 }
 
 function tickLanding(dt) {
   thrustLevel = 0;
+  brakeLevel = 0;
+  // The pilot is frozen for the whole landing animation: pinned at the
+  // stand, no walk, no fly, no relaunch until the hull has faded out and
+  // the camera has stabilized (fade, then settle freeze).
+  pinPilot();
   landingT += dt;
-  exhaustT -= dt;
-  if (exhaustT <= 0) {
-    exhaustT = 0.12;
-    spawnExhaust();
+  // FX only over the fade: the settle freeze is still air, so the camera
+  // truly stabilizes before control returns.
+  if (landingT < LANDING_FADE) {
+    exhaustT -= dt;
+    if (exhaustT <= 0) {
+      exhaustT = 0.12;
+      spawnExhaust();
+      // The touchdown rumble: the landing fade replays the landing smoke,
+      // scaled by the touchdown and decaying with the fade — the countdown
+      // in reverse, so the landing lasts as long as it hits instead of
+      // dying on the impact frame. Ticks are tracked (decay x cadence, like
+      // the countdown tremor) so a max drop swells without pinning the
+      // lens.
+      const fadeK = Math.max(0, 1 - landingT / LANDING_FADE);
+      if (landingT0 > 0) {
+        playFx("landing", {
+          x: origin.x, y: origin.y, z: origin.z,
+          halfW: ROCKET_SPEC.w * 0.5, halfD: ROCKET_SPEC.d * 0.5,
+          hullHeight: ROCKET_SPEC.h,
+          factor: landingT0 * fadeK,
+        });
+        shakeTick(shakeT0 * fadeK, "fade");
+      }
+    }
   }
-  if (landingT >= LANDING_FADE) finalizeLanding();
+  // The settle freeze scales with the shake input like the rumble does: a
+  // max drop holds until full stabilization, a soft kiss barely holds
+  // past the fade.
+  if (landingT >= LANDING_FADE + LANDING_SETTLE * shakeT0) finalizeLanding();
 }
 
 function finalizeLanding() {
@@ -864,10 +1063,16 @@ function carveAt(o) {
   const x1 = Math.floor(o.x) + RIDE.x1;
   const y1 = Math.floor(o.y) + RIDE.y1;
   const z1 = Math.floor(o.z) + RIDE.z1;
+  // The box's bottom row is the face the hull rests on. While descending
+  // that row is the landing surface, so it is spared: the ground the
+  // rocket lands on stays solid. Ascending and moving sideways it is
+  // ordinary fresh rock and goes with the rest.
+  const skipBase = rvel.y < 0;
   outer:
   for (let y = y0; y <= y1; y++)
     for (let x = x0; x <= x1; x++)
       for (let z = z0; z <= z1; z++) {
+        if (skipBase && y === y0) continue;
         const id = getBlock(x, y, z);
         if (id === AIR) continue;
         if (isCellProtected(x, y, z)) continue;
@@ -884,22 +1089,46 @@ function carveAt(o) {
   if (tntHit) clearTNTBox(x0, y0, z0, x1, y1, z1);
   notePortalEdits(cleared);
   queueRefreshBlocks(cleared);
-  if (cleared.length > 6) {
-    spawnBurst({
-      x: o.x + ROCKET_SPEC.w * 0.5, y: o.y + 1.5, z: o.z + ROCKET_SPEC.d * 0.5,
-      count: Math.min(40, 8 + ((cleared.length / 12) | 0)), life: 0.55, size: 0.35,
-      gravity: 8, additive: false, color: [0.55, 0.5, 0.45], variance: [0.2, 0.2, 0.2],
-      speedMin: 2, speedMax: 7, up: 1,
+  // Rock dust at the hull: the volume the rocket tore loose, scaled with
+  // the speed it tore it at.
+  if (cleared.length > CARVE_DUST_MIN_CELLS) {
+    playFx("carve", {
+      x: o.x, y: o.y, z: o.z,
+      halfW: ROCKET_SPEC.w * 0.5, halfD: ROCKET_SPEC.d * 0.5,
+      amount: cleared.length,
+      factor: speedFactor(rvel.length(), BOOST_SPEED),
     });
+  }
+  // The rock this pass tore open: its exposed faces are the walls the
+  // rocket just burst through, and they carry the explosive FX.
+  collectCarveFaces(cleared);
+}
+
+// Impact faces found by the carve passes of this frame, flushed once per
+// tick so a fast ascent stays a handful of batched draw calls.
+let carveFaces = [];
+
+// Find the shaft walls the carve just exposed: a cleared cell whose
+// neighbour is still solid is a face the rocket burst through.
+function collectCarveFaces(cells) {
+  if (carveFaces.length >= CARVE_FACE_FRAME_CAP) return;
+  const faces = exposedFaces(cells, isSolid, { maxFaces: CARVE_FACE_BUDGET });
+  for (const f of faces) {
+    if (carveFaces.length >= CARVE_FACE_FRAME_CAP) break;
+    carveFaces.push(f);
   }
 }
 
-function landingDust() {
-  spawnBurst({
-    x: origin.x + ROCKET_SPEC.w * 0.5, y: origin.y + 0.2, z: origin.z + ROCKET_SPEC.d * 0.5,
-    count: 70, life: 0.9, size: 0.5, gravity: 9, additive: false,
-    color: [0.55, 0.5, 0.45], variance: [0.2, 0.2, 0.2],
-    speedMin: 3, speedMax: 10, up: 2,
+function landingDust(impact = 0) {
+  // The touchdown cloud: the single shipped smoke look, scaled by the
+  // impact speed against the boosted vertical cap — soft landings barely
+  // puff, a max-speed drop blooms. Returns the factors the landing curve
+  // resolved, so the shake reads the same numbers.
+  return playFx("landing", {
+    x: origin.x, y: origin.y, z: origin.z,
+    halfW: ROCKET_SPEC.w * 0.5, halfD: ROCKET_SPEC.d * 0.5,
+    hullHeight: ROCKET_SPEC.h,
+    factor: speedFactor(impact, BOOST_SPEED),
   });
 }
 

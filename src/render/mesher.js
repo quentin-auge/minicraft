@@ -12,6 +12,7 @@ import { GLOW_VARIANT_COUNT, glowVariantAt } from "../world/glowstone.js";
 import { variantAt, VARIANT_BLOCKS } from "../world/reactions.js";
 import { variantMaterials, shellMaterial, shellGeometry, trackShellMaterial, syncShellFade, untrackShellMaterials } from "./reactions.js";
 import { regionOf, regionByKey } from "./regions.js";
+import { ORDERS } from "./orders.js";
 
 const boxGeo = new THREE.BoxGeometry(1, 1, 1);
 const dummy = new THREE.Object3D();
@@ -49,8 +50,8 @@ function liquidFaceVisible(x, y, z, id, dx, dy, dz) {
   return !info.opaque;
 }
 // Liquid rendering: every bound emits the coplanar pair — a FrontSide quad
-// (renderOrder 10, always the outside color) plus a BackSide quad
-// (renderOrder 11). Each viewpoint sees exactly one sheet per quad
+// (ORDERS.LIQUID_OUTSIDE, always the outside color) plus a BackSide quad
+// (ORDERS.LIQUID_INSIDE). Each viewpoint sees exactly one sheet per quad
 // (backface culling). Both sheets write depth, so the nearest interface
 // occludes block undersides and far walls instead of composing through in
 // transparency; stacked boundaries still blend in a fixed deterministic
@@ -522,13 +523,13 @@ export function rebuildChunk(cx, cz, fade = false) {
       const mesh = buildBoxes(rest, getMats(id), tintMap);
       // Glass draws after liquids so it composites over water whether the
       // glass sits behind or in front of the surface.
-      if (id === GLASS) mesh.renderOrder = 13;
+      if (id === GLASS) mesh.renderOrder = ORDERS.GLASS;
       restGroup.add(mesh);
       meshes.set(id, mesh);
     }
     for (const g of groups.values()) {
       const mesh = buildBoxes(g.list, regionMaterials(g.region, "b:" + id, () => getMats(id)), tintMap);
-      if (id === GLASS) mesh.renderOrder = 13;
+      if (id === GLASS) mesh.renderOrder = ORDERS.GLASS;
       registerRegionMesh(g.region, mesh);
       sceneRef.add(mesh);
       meshes.set(g.region.key + ":" + id, mesh);
@@ -631,13 +632,13 @@ export function rebuildChunk(cx, cz, fade = false) {
     }
   }
   // Boundary faces only: every bound emits the coplanar pair — a FrontSide
-  // quad (renderOrder 10, always the outside color) plus a BackSide quad
-  // (renderOrder 11). Each viewpoint sees exactly one sheet per quad
-  // (backface culling); the sheets write depth, so the nearest interface
+  // quad (ORDERS.LIQUID_OUTSIDE, always the outside color) plus a BackSide
+  // quad (ORDERS.LIQUID_INSIDE). Each viewpoint sees exactly one sheet per
+  // quad (backface culling); the sheets write depth, so the nearest interface
   // occludes what sits behind it instead of composing through in
   // transparency. Back color is static per quad: trapped air (bubble,
   // well, mixed cavity) the inside color, open air (surface, detached cube)
-  // the outside color. Glass draws last (renderOrder 13).
+  // the outside color. Glass draws after the liquids (ORDERS.GLASS).
   const quadMesh = (mat, quads, order) => {
     const mesh = new THREE.InstancedMesh(liquidGeo, mat, quads.length);
     for (let i = 0; i < quads.length; i++) writeLiquidQuad(mesh, i, quads[i]);
@@ -647,9 +648,9 @@ export function rebuildChunk(cx, cz, fade = false) {
     return mesh;
   };
   for (const { map, role, order, suffix } of [
-    { map: liquids, role: "outside", order: 10, suffix: "_out" },
-    { map: liquidsIn, role: "inside", order: 11, suffix: "_in" },
-    { map: liquidsPocket, role: "pocket", order: 11, suffix: "_pocket" },
+    { map: liquids, role: "outside", order: ORDERS.LIQUID_OUTSIDE, suffix: "_out" },
+    { map: liquidsIn, role: "inside", order: ORDERS.LIQUID_INSIDE, suffix: "_in" },
+    { map: liquidsPocket, role: "pocket", order: ORDERS.LIQUID_INSIDE, suffix: "_pocket" },
   ]) {
     for (const [lid, list] of map) {
       const { rest, groups, restTop: rt, restBottom: rb } = partitionRegion(lid, list);

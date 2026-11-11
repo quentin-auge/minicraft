@@ -7,8 +7,33 @@ let sceneRef = null;
 const bursts = [];
 const flashes = [];
 
+// Attack time of the burst envelope: a fresh particle cloud ramps to full
+// opacity over this long instead of appearing in one frame. Kept short so
+// explosions still read as instant while a steady smoke cadence stops
+// flickering.
+const FX_ATTACK = 0.25;
+
 export function initFx(scene) {
   sceneRef = scene;
+}
+
+// The cone basis for a launch axis: the axis itself and two vectors
+// spanning the plane around it. One rule for every spray in the game — the
+// particle clouds and the rocket's shock ring pick the same frame, so a
+// ring's sparks leave along the surface the ring lies in.
+const CONE_BASIS_EPS = 0.9;
+export function coneBasis(dir) {
+  const len = Math.hypot(dir[0], dir[1], dir[2]);
+  const axis = len * len < 1e-9 ? [0, 1, 0] : [dir[0] / len, dir[1] / len, dir[2] / len];
+  const ref = Math.abs(axis[1]) < CONE_BASIS_EPS ? [0, 1, 0] : [1, 0, 0];
+  const raw = cross(ref, axis);
+  const rl = Math.hypot(raw[0], raw[1], raw[2]) || 1;
+  const right = [raw[0] / rl, raw[1] / rl, raw[2] / rl];
+  return { axis, right, upAxis: cross(axis, right) };
+}
+
+function cross(a, b) {
+  return [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
 }
 
 export function spawnBurst(o) {
@@ -27,15 +52,18 @@ export function spawnBurst(o) {
     // Foreground: skip depth testing and draw above everything (below the
     // block highlight), for bursts that must read through terrain.
     foreground = false,
+    // Compositing band: the caller's own ladder (see src/render/orders.js).
+    // Unset keeps the default (foreground draws on the top band).
+    renderOrder = undefined,
     // Optional normalized launch axis. spread is the cone half-angle in radians.
     direction = null, spread = 0.35,
   } = o;
   let axis = null, right = null, upAxis = null, cosSpread = Math.cos(spread);
   if (direction) {
-    axis = new THREE.Vector3(...direction).normalize();
-    const reference = Math.abs(axis.y) < 0.9 ? new THREE.Vector3(0, 1, 0) : new THREE.Vector3(1, 0, 0);
-    right = new THREE.Vector3().crossVectors(reference, axis).normalize();
-    upAxis = new THREE.Vector3().crossVectors(axis, right).normalize();
+    const b = coneBasis(direction);
+    axis = new THREE.Vector3(b.axis[0], b.axis[1], b.axis[2]);
+    right = new THREE.Vector3(b.right[0], b.right[1], b.right[2]);
+    upAxis = new THREE.Vector3(b.upAxis[0], b.upAxis[1], b.upAxis[2]);
   }
   const positions = new Float32Array(count * 3);
   const colors = new Float32Array(count * 3);
@@ -89,7 +117,8 @@ export function spawnBurst(o) {
   });
   const pts = new THREE.Points(geo, mat);
   pts.frustumCulled = false;
-  if (foreground) pts.renderOrder = 998;
+  if (renderOrder !== undefined) pts.renderOrder = renderOrder;
+  else if (foreground) pts.renderOrder = 998;
   sceneRef.add(pts);
   bursts.push({ pts, vel, life, max: life, gravity });
 }
@@ -99,6 +128,16 @@ export function spawnBurst(o) {
 // loop instead of one cloud per block. `centers` is [[x,y,z], ...]; each
 // center gets `count` particles, the whole cloud hard-capped so a sustained
 // cascade's live particle count stays bounded.
+//
+// `directions` optionally gives each center its own launch axis (parallel
+// array, one [x,y,z] per center) so a batch can spray along many surfaces at
+// once — the carve FX aims every face's spray along its own normal. Without
+// it the cloud stays isotropic, exactly as before. `spread` is the cone
+// half-angle in radians when directions are given.
+//
+// `fillRadius` spreads each center's particles through a ball of that
+// radius instead of leaving them on the center: a batch of blobs reads as a
+// continuous volume, where a batch of points reads as separate specks.
 const BURST_BATCH_MAX = 8000;
 export function spawnBurstBatch(o) {
   if (!sceneRef) return;
@@ -106,23 +145,77 @@ export function spawnBurstBatch(o) {
     centers, count = 64, life = 0.8, size = 0.18, gravity = 22, additive = true,
     color = [1, 0.6, 0.15], variance = [0, 0.4, 0.2],
     speedMin = 4, speedMax = 12, up = 3, foreground = false,
+    directions = null, spread = 0.45,
+    // Spawn ball: the particles start spread through this radius instead of
+    // on the center (same as the single burst's fill ball).
+    fillRadius = 0,
+    // Palette: [[r,g,b], ...] picked uniformly per particle, replacing
+    // color/variance when set.
+    palette = null,
+    // Compositing band: the caller's own ladder (see src/render/orders.js).
+    // Unset keeps the default (foreground draws on the top band).
+    renderOrder = undefined,
   } = o;
   const n = Math.min(centers.length * count, BURST_BATCH_MAX);
   if (n <= 0) return;
   const positions = new Float32Array(n * 3);
   const colors = new Float32Array(n * 3);
   const vel = new Float32Array(n * 3);
+  // Per-center cone basis, built once so the inner loop never re-derives it.
+  let axes = null;
+  if (directions && directions.length) {
+    axes = directions.map((d) => {
+      const b = coneBasis(d);
+      return {
+        axis: new THREE.Vector3(b.axis[0], b.axis[1], b.axis[2]),
+        right: new THREE.Vector3(b.right[0], b.right[1], b.right[2]),
+        upAxis: new THREE.Vector3(b.upAxis[0], b.upAxis[1], b.upAxis[2]),
+      };
+    });
+  }
+  const cosSpread = Math.cos(spread);
   for (let i = 0; i < n; i++) {
-    const c = centers[i % centers.length];
+    const ci = i % centers.length;
+    const c = centers[ci];
     positions[i * 3] = c[0]; positions[i * 3 + 1] = c[1]; positions[i * 3 + 2] = c[2];
-    const th = Math.random() * Math.PI * 2;
-    const ph = Math.acos(2 * Math.random() - 1);
-    const s = speedMin + Math.random() * (speedMax - speedMin);
-    vel[i * 3] = s * Math.sin(ph) * Math.cos(th);
-    vel[i * 3 + 1] = s * Math.cos(ph) + up;
-    vel[i * 3 + 2] = s * Math.sin(ph) * Math.sin(th);
-    for (let j = 0; j < 3; j++)
-      colors[i * 3 + j] = Math.min(1, Math.max(0, color[j] + Math.random() * variance[j]));
+    if (fillRadius > 0) {
+      const rr = fillRadius * Math.cbrt(Math.random());
+      const th = Math.random() * Math.PI * 2;
+      const ph = Math.acos(2 * Math.random() - 1);
+      positions[i * 3] += rr * Math.sin(ph) * Math.cos(th);
+      positions[i * 3 + 1] += rr * Math.cos(ph);
+      positions[i * 3 + 2] += rr * Math.sin(ph) * Math.sin(th);
+    }
+    if (axes) {
+      // Cone around the center's own axis: surface FX spray along each
+      // face's normal instead of spraying everywhere.
+      const { axis, right, upAxis } = axes[ci % axes.length];
+      const s = speedMin + Math.random() * (speedMax - speedMin);
+      const th = Math.random() * Math.PI * 2;
+      const cosPh = 1 - Math.random() * (1 - cosSpread);
+      const sinPh = Math.sqrt(1 - cosPh * cosPh);
+      const sideX = right.x * Math.cos(th) + upAxis.x * Math.sin(th);
+      const sideY = right.y * Math.cos(th) + upAxis.y * Math.sin(th);
+      const sideZ = right.z * Math.cos(th) + upAxis.z * Math.sin(th);
+      vel[i * 3] = (axis.x * cosPh + sideX * sinPh) * s;
+      vel[i * 3 + 1] = (axis.y * cosPh + sideY * sinPh) * s + up;
+      vel[i * 3 + 2] = (axis.z * cosPh + sideZ * sinPh) * s;
+    } else {
+      const th = Math.random() * Math.PI * 2;
+      const ph = Math.acos(2 * Math.random() - 1);
+      const s = speedMin + Math.random() * (speedMax - speedMin);
+      vel[i * 3] = s * Math.sin(ph) * Math.cos(th);
+      vel[i * 3 + 1] = s * Math.cos(ph) + up;
+      vel[i * 3 + 2] = s * Math.sin(ph) * Math.sin(th);
+    }
+    if (palette) {
+      const pc = palette[(Math.random() * palette.length) | 0];
+      for (let j = 0; j < 3; j++)
+        colors[i * 3 + j] = Math.min(1, Math.max(0, pc[j] + (Math.random() - 0.5) * 0.08));
+    } else {
+      for (let j = 0; j < 3; j++)
+        colors[i * 3 + j] = Math.min(1, Math.max(0, color[j] + Math.random() * variance[j]));
+    }
   }
   const geo = new THREE.BufferGeometry();
   geo.setAttribute("position", new THREE.BufferAttribute(positions, 3));
@@ -134,7 +227,8 @@ export function spawnBurstBatch(o) {
   });
   const pts = new THREE.Points(geo, mat);
   pts.frustumCulled = false;
-  if (foreground) pts.renderOrder = 998;
+  if (renderOrder !== undefined) pts.renderOrder = renderOrder;
+  else if (foreground) pts.renderOrder = 998;
   sceneRef.add(pts);
   bursts.push({ pts, vel, life, max: life, gravity });
 }
@@ -488,28 +582,42 @@ export function flushDense() {
     pool.dStart = -1; pool.dLen = 0; pool.dFull = false;
   }
 }
-// Instanced voxel debris: one small pool, cheap at 384 boxes.
-let debris = null; // { mesh, vel, spin, birth, life, n, active }
+// Instanced voxel debris: a small pool of bursts, cheap at 384 boxes each.
+// One burst at a time swallowed every blast that landed inside the first
+// one's live window — a rocket carving a shaft frame after frame threw its
+// debris once and then nothing for half a second. The pool keeps a few
+// bursts alive at once, so each blast shows its own cubes.
+const DEBRIS_POOL_SIZE = 3;
+const DEBRIS_BOXES = 384;
+let debrisPool = []; // [{ mesh, vel, spin, rot, birth, life, n, active, count }]
+
+function makeDebrisBurst() {
+  const n = DEBRIS_BOXES;
+  const geo = new THREE.BoxGeometry(0.5, 0.5, 0.5);
+  const mat = new THREE.MeshLambertMaterial({ color: 0xffffff });
+  const mesh = new THREE.InstancedMesh(geo, mat, n);
+  mesh.frustumCulled = false;
+  mesh.visible = false;
+  const dummy = new THREE.Object3D();
+  dummy.position.set(0, -9999, 0);
+  dummy.updateMatrix();
+  for (let i = 0; i < n; i++) mesh.setMatrixAt(i, dummy.matrix);
+  mesh.instanceMatrix.needsUpdate = true;
+  sceneRef.add(mesh);
+  return { mesh, vel: new Float32Array(n * 3), spin: new Float32Array(n * 2), rot: new Float32Array(n * 2), birth: 0, life: 0, n, active: false, count: 0 };
+}
+
 export function spawnDebris(o) {
   if (!sceneRef) return;
-  // One debris burst at a time: mass pooled blasts keep the first member's
-  // cubes instead of paying per-member matrix streams.
-  if (debris?.active && denseFire.time - debris.birth < debris.life * 0.5) return;
   const { x, y, z, R, count = 260, life = 1.6 } = o;
+  if (!debrisPool.length) {
+    for (let i = 0; i < DEBRIS_POOL_SIZE; i++) debrisPool.push(makeDebrisBurst());
+  }
+  // A free slot first, else the oldest live burst gives way.
+  let debris = debrisPool.find((d) => !d.active);
   if (!debris) {
-    const n = 384;
-    const geo = new THREE.BoxGeometry(0.5, 0.5, 0.5);
-    const mat = new THREE.MeshLambertMaterial({ color: 0xffffff });
-    const mesh = new THREE.InstancedMesh(geo, mat, n);
-    mesh.frustumCulled = false;
-    mesh.visible = false;
-    const dummy = new THREE.Object3D();
-    dummy.position.set(0, -9999, 0);
-    dummy.updateMatrix();
-    for (let i = 0; i < n; i++) mesh.setMatrixAt(i, dummy.matrix);
-    mesh.instanceMatrix.needsUpdate = true;
-    sceneRef.add(mesh);
-    debris = { mesh, vel: new Float32Array(n * 3), spin: new Float32Array(n * 2), birth: 0, life: 0, n, active: false, rot: new Float32Array(n * 2) };
+    debris = debrisPool[0];
+    for (const d of debrisPool) if (d.birth < debris.birth) debris = d;
   }
   const m = Math.min(count, debris.n);
   const dummy = new THREE.Object3D();
@@ -545,7 +653,7 @@ export function spawnDebris(o) {
 const _dd = new THREE.Object3D();
 const _dm = new THREE.Matrix4();
 export function tickDenseFx(dt) {
-  if (!densePoolsLive && !debris?.active) {
+  if (!densePoolsLive && !debrisPool.some((d) => d.active)) {
     // Still advance clocks so births stay valid once pools exist.
     for (const p of DENSE_POOLS) p.time += dt;
     return;
@@ -560,29 +668,30 @@ export function tickDenseFx(dt) {
     for (const p of DENSE_POOLS) p.pts.visible = false;
     lastDenseEnd = -1;
   }
-  if (debris?.active) {
+  for (const debris of debrisPool) {
+    if (!debris.active) continue;
     const age = denseFire.time - debris.birth;
     if (age > debris.life) {
       debris.active = false;
       debris.mesh.visible = false;
-    } else {
-      // Integrate from current matrices (cheap at 384).
-      for (let i = 0; i < debris.count; i++) {
-        debris.vel[i * 3 + 1] -= 42 * dt;
-        debris.mesh.getMatrixAt(i, _dm);
-        _dd.position.setFromMatrixPosition(_dm);
-        _dd.position.x += debris.vel[i * 3] * dt;
-        _dd.position.y += debris.vel[i * 3 + 1] * dt;
-        _dd.position.z += debris.vel[i * 3 + 2] * dt;
-        if (_dd.position.y < 1) { _dd.position.y = 1; debris.vel[i * 3 + 1] *= -0.35; }
-        debris.rot[i * 2] += debris.spin[i * 2] * dt;
-        debris.rot[i * 2 + 1] += debris.spin[i * 2 + 1] * dt;
-        _dd.rotation.set(debris.rot[i * 2], debris.rot[i * 2 + 1], 0);
-        _dd.updateMatrix();
-        debris.mesh.setMatrixAt(i, _dd.matrix);
-      }
-      debris.mesh.instanceMatrix.needsUpdate = true;
+      continue;
     }
+    // Integrate from current matrices (cheap at 384).
+    for (let i = 0; i < debris.count; i++) {
+      debris.vel[i * 3 + 1] -= 42 * dt;
+      debris.mesh.getMatrixAt(i, _dm);
+      _dd.position.setFromMatrixPosition(_dm);
+      _dd.position.x += debris.vel[i * 3] * dt;
+      _dd.position.y += debris.vel[i * 3 + 1] * dt;
+      _dd.position.z += debris.vel[i * 3 + 2] * dt;
+      if (_dd.position.y < 1) { _dd.position.y = 1; debris.vel[i * 3 + 1] *= -0.35; }
+      debris.rot[i * 2] += debris.spin[i * 2] * dt;
+      debris.rot[i * 2 + 1] += debris.spin[i * 2 + 1] * dt;
+      _dd.rotation.set(debris.rot[i * 2], debris.rot[i * 2 + 1], 0);
+      _dd.updateMatrix();
+      debris.mesh.setMatrixAt(i, _dd.matrix);
+    }
+    debris.mesh.instanceMatrix.needsUpdate = true;
   }
 }
 export function denseFxActive() {
@@ -618,7 +727,7 @@ export function resetDenseFx() {
     if (p.pts.material.uniforms) p.pts.material.uniforms.uTime.value = 0;
   }
   lastDenseEnd = -1;
-  if (debris) { debris.active = false; debris.mesh.visible = false; }
+  if (debrisPool.length) for (const d of debrisPool) { d.active = false; d.mesh.visible = false; }
 }
 
 export function spawnFlash(o) {
@@ -697,7 +806,7 @@ export function spawnFireballBatch(o) {
 // one draw call instead of one Mesh each. Grows in place, fades as a unit.
 export function spawnFlashBatch(o) {
   if (!sceneRef) return;
-  const { centers, color = 0xffdd77, life = 0.28, size = 1, growth = 4.2 } = o;
+  const { centers, color = 0xffdd77, life = 0.28, size = 1, growth = 4.2, renderOrder = undefined } = o;
   if (!centers.length) return;
   const mesh = new THREE.InstancedMesh(
     sharedFlashGeo(),
@@ -705,6 +814,7 @@ export function spawnFlashBatch(o) {
     centers.length
   );
   mesh.frustumCulled = false;
+  if (renderOrder !== undefined) mesh.renderOrder = renderOrder;
   const dummy = new THREE.Object3D();
   for (let i = 0; i < centers.length; i++) {
     const c = centers[i];
@@ -737,7 +847,11 @@ export function tickFx(dt) {
       p[j + 2] += b.vel[j + 2] * dt;
     }
     b.pts.geometry.attributes.position.needsUpdate = true;
-    b.pts.material.opacity = Math.min(1, b.life / b.max);
+    // Attack + release envelope: a fresh cloud fades in instead of popping
+    // at full opacity, then fades out with its remaining life — no hard
+    // on/off edge when a spawner emits on a steady cadence.
+    const age = b.max - b.life;
+    b.pts.material.opacity = Math.min(1, age / FX_ATTACK, b.life / b.max);
   }
   for (let i = flashes.length - 1; i >= 0; i--) {
     const f = flashes[i];
