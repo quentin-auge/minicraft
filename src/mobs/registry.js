@@ -31,6 +31,15 @@ const MOB_DEFAULTS = {
   release: null,
   // refuseMsg: toast answered when an ungrabbable kind is aimed at.
   refuseMsg: null,
+  // label: display name (menus, toasts). The key is the fallback.
+  label: null,
+  // spawn(ctx): optional placement hook for the cheat spawn menu. Only
+  // kinds that register one are placeable, so the menu lists exactly
+  // the kinds that can be dropped into the world (the boss dragon has
+  // no hook and never shows up). The hook owns the model, the free-spot
+  // rules, and the dimension rules: ctx is {scene, dim, x, y, z, rand}
+  // with the wanted feet position in the active dimension.
+  spawn: null,
 };
 
 export const MOB_TYPES = [];
@@ -51,6 +60,14 @@ export function registerMobType(spec) {
 
 export function mobType(key) {
   return byKey.get(key) ?? null;
+}
+
+// Display name of a kind: the spec label, else the key with a capital.
+export function mobLabel(key) {
+  const spec = mobType(key);
+  if (spec?.label) return spec.label;
+  if (!key) return "";
+  return key[0].toUpperCase() + key.slice(1);
 }
 
 export function createMob(key, context) {

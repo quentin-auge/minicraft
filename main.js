@@ -81,8 +81,10 @@ import {
   rocketEditingBlocked, rocketSolidAt, rocketFlying, carryRiders,
 } from "./src/vehicles/rocket.js";
 import { initHomingTnt, fireHomingTnt, tickHomingTnt, clearHomingTnt } from "./src/mobs/homing.js";
-import { enterEndMobs, clearEndMobs, tickEndMobs, notifyEndermanVoxelChange, dragonHealth, setDragonVictoryHook, setMobSeed } from "./src/mobs/end.js";
-import { enterFarmMobs, clearFarmMobs, tickFarmMobs, handleFarmTravel, setFarmSeed, spawnFarmMobAt } from "./src/mobs/farm.js";
+import { enterEndMobs, clearEndMobs, clearEndermenDim, tickEndMobs, notifyEndermanVoxelChange, dragonHealth, setDragonVictoryHook, setMobSeed } from "./src/mobs/end.js";
+import { enterFarmMobs, clearFarmMobs, tickFarmMobs, handleFarmTravel, setFarmSeed } from "./src/mobs/farm.js";
+import { spawnCatalog, spawnMobAt, spawnSelection, nextSpawnKey } from "./src/mobs/spawn.js";
+import { mobLabel } from "./src/mobs/registry.js";
 import {
   initTargetDebug, targetDebugKeyDown, targetDebugKeyUp, tickTargetDebug, resetTargetDebug,
 } from "./src/mobs/targets-debug.js";
@@ -165,6 +167,9 @@ scene.add(highlight);
 initTargetDebug(scene);
 const _hookDir = new THREE.Vector3();
 const _spawnDir = new THREE.Vector3();
+// Cheat B spawn: each tap places the next ticked kind from the shared spawn
+// selection (cow/pig by default; the hold-B menu of the next commit ticks
+// more), cycling in catalog order.
 const bossBarEl = document.getElementById("bossbar");
 const bossFillEl = document.getElementById("bossfill");
 function updateBossBar() {
@@ -580,7 +585,9 @@ async function runTravel(dest, msg) {
     severHook();
     dropHeldMob();
     clearHomingTnt();
-    clearEndMobs();
+    // End natives never travel: leaving the End drops that dim's mobs
+    // (dragon + platform Endermen); cheat Endermen in retain dims survive.
+    clearEndMobs("end");
     resetTNTMemory();
     clearPortalFills();
     renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
@@ -597,6 +604,8 @@ async function runTravel(dest, msg) {
       clearFlowerDim(dest);
       clearReactionsDim(dest);
       clearRegularTntDim(dest);
+      // Regenerate dims rebuild: drop that dim's placed Endermen too.
+      if (dest !== "end") clearEndermenDim(dest);
     }
     if (dest === 'tnt') {
       const spec = dimSpec('tnt');
@@ -873,7 +882,7 @@ document.addEventListener("mousedown", (e) => {
     const changed = placeAtSelection(id, camera.position.y);
     if (changed) {
       refreshBlocks(changed);
-      if (dim === "end") notifyEndermanVoxelChange(changed, camera);
+      notifyEndermanVoxelChange(changed, camera, dim);
       if (face && base) chainNotePressPlace(chain, base[0] + face[0], base[1] + face[1], base[2] + face[2]);
       else for (const c of changed) chainAnchorPush(chain, c[0], c[1], c[2]);
     }
@@ -885,7 +894,7 @@ document.addEventListener("mousedown", (e) => {
       const changed = breakBlockAt(bt.x, bt.y, bt.z, { eyeY: camera.position.y });
       if (changed.length) {
         refreshBlocks(changed);
-        if (dim === "end") notifyEndermanVoxelChange(changed, camera);
+        notifyEndermanVoxelChange(changed, camera, dim);
       }
       chainAnchorPush(chain, bt.x, bt.y, bt.z);
     }
@@ -954,21 +963,24 @@ document.addEventListener("keydown", (e) => {
     e.preventDefault();
     return;
   }
-  // Debug spawn (requires ?cheat=1): B drops a random pig/cow where the
-  // crosshair points — on top of the aimed block when its top face is
-  // aimed at, else 3 above the faced cell with gravity landing it. Any
-  // dimension: the spawn and tick read the active world's voxels, and
+  // Cheat spawn (requires ?cheat=1): B drops the next ticked kind where
+  // the crosshair points — on top of the aimed block when its top face is
+  // aimed at, else 3 above the faced cell with the hook owning the landing.
+  // Any dimension: each hook owns its free-spot and dimension rules, and
   // debug mobs roam free until the persistence rule clears them.
   if (e.code === "KeyB" && !e.repeat && started && !isHelpOpen() && isLocked() && isCheat()) {
     camera.getWorldDirection(_spawnDir);
     const hit = pickBlock(camera.position, _spawnDir, true);
     let mob = null;
     if (hit) {
-      const px = hit.x + hit.face[0] + 0.5, pz = hit.z + hit.face[2] + 0.5;
-      const py = hit.face[1] === 1 ? hit.y + 1 : hit.y + 3;
-      mob = spawnFarmMobAt(scene, px, pz, py);
+      const key = nextSpawnKey(spawnSelection(), spawnCatalog());
+      if (key) {
+        const px = hit.x + hit.face[0] + 0.5, pz = hit.z + hit.face[2] + 0.5;
+        const py = hit.face[1] === 1 ? hit.y + 1 : hit.y + 3;
+        mob = spawnMobAt(key, { scene, dim, x: px, z: pz, y: py, rand: Math.random });
+      }
     }
-    toast(mob ? `${mob.type === "pig" ? "Pig" : "Cow"} spawned${dim === "over" ? "" : ` (${dim})`}` : "No spot");
+    toast(mob ? `${mobLabel(mob.type)} spawned${dim === "over" ? "" : ` (${dim})`}` : "No spot");
     e.preventDefault();
     return;
   }
@@ -1189,10 +1201,10 @@ function loop(now) {
         notePortalEdits(touched);
         refreshBlocks(touched);
       }
-      if (dim === "end" && touched.length) notifyEndermanVoxelChange(touched, camera);
+      if (touched.length) notifyEndermanVoxelChange(touched, camera, dim);
     }, pos.x, pos.y, pos.z, scene.fog.far);
     tickHomingTnt(sdt, dim);
-    if (dim === "end") tickEndMobs(sdt, camera);
+    tickEndMobs(sdt, camera, dim);
     tickFarmMobs(sdt, dim);
     // Target debug: the selection follows the aim while C is held, and
     // an active target ends when its plan does (arrival or give-up).
@@ -1225,7 +1237,7 @@ function loop(now) {
         notePortalEdits(touched);
         refreshBlocks(touched);
       }
-      if (dim === "end" && touched.length) notifyEndermanVoxelChange(touched, camera);
+      if (touched.length) notifyEndermanVoxelChange(touched, camera, dim);
     }
     // GPU relief while a wipe, dense mega, or sliced carve runs (master's
     // quality-tier dip): full resolution restores the frame the queues
@@ -1362,7 +1374,7 @@ function loop(now) {
     setHaloSuspended(bridge ? GLOW_SUSPENDED : null);
     if (touched.length) {
       flushChainBatch(touched);
-      if (dim === "end") notifyEndermanVoxelChange(touched, camera);
+      notifyEndermanVoxelChange(touched, camera, dim);
       // Liquid transitions of this stroke (air/liquid→liquid): the mesher
       // rebuilds only chunks whose meshes can change instead of fanning out
       // over the halo range.
@@ -1383,7 +1395,7 @@ function loop(now) {
     if (wasChainHeld && !chainHoldActive(chain)) {
       const purged = endChainStroke();
       if (purged.length) {
-        if (dim === "end") notifyEndermanVoxelChange(purged, camera);
+        if (purged.length) notifyEndermanVoxelChange(purged, camera, dim);
         notePortalEdits(purged);
         if (wasBridgeHeld && !bridge) for (const c of purged) bridgeTouchedUnion.push(c);
         else refreshBlocks(purged);

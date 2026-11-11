@@ -156,6 +156,7 @@ function disposeFarmMob(mob) {
 for (const kind of ["pig", "cow"]) {
   registerMobType({
     key: kind,
+    label: kind === "pig" ? "Pig" : "Cow",
     capabilities: { walk: true, float: true, grabbable: true },
     create: (ctx) => makeFarmMob(kind, ctx),
     tick: (mob, dt) => {
@@ -163,6 +164,7 @@ for (const kind of ["pig", "cow"]) {
       applyDisplacementColor(mob);
     },
     dispose: disposeFarmMob,
+    spawn: (ctx) => spawnQuadrupedAt(kind, ctx.scene, ctx.x, ctx.z, ctx.y, ctx.rand, ctx.dim),
   });
 }
 
@@ -193,19 +195,21 @@ function spotFree(x, y, z, yaw, hw, h, nose) {
   return !aabbIntersectsSolid(gx, y, gz, nose.r, h);
 }
 
-// Debug spawn (cheat only, B key): drops a random pig/cow at an arbitrary
-// point in the active dimension. Free-roaming — no pen attachment exists
-// anywhere in this system — under the standard persistence rule. Peer-aware
-// like the grab release: never stacks the newborn onto a live mob (the
-// separation backstop would unstack it, but spawning clean beats resolving).
-export function spawnFarmMobAt(scene, x, z, y, rand = Math.random) {
+// Debug spawn (cheat only, B key): drops one quadruped of the given kind
+// at an arbitrary point in the active dimension. Free-roaming — no pen
+// attachment exists anywhere in this system — under the standard
+// persistence rule. Peer-aware like the grab release: never stacks the
+// newborn onto a live mob (the separation backstop would unstack it, but
+// spawning clean beats resolving).
+export function spawnQuadrupedAt(kind, scene, x, z, y, rand = Math.random, dimName = null) {
   sceneRef = scene;
-  const kind = rand() < 0.5 ? "cow" : "pig";
+  const dimNow = dimName ?? activeDim;
   const spec = LIVESTOCK_SPECS[kind];
+  if (!spec) return null;
   const shape = specCircles(spec);
   const hw = shape.hw, h = shape.h;
   const probe = { pos: { x: 0, y: 0, z: 0 }, yaw: 0, hw, nose: shape.nose, tail: shape.tail, alive: true };
-  const peers = [...mobs].filter((m) => m.alive && m.dim === activeDim);
+  const peers = [...mobs].filter((m) => m.alive && m.dim === dimNow);
   const peerFree = (sx, sy, sz, syaw) => {
     probe.yaw = syaw;
     return !mobBlockedAt(probe, sx, sz, sy, peers, 0, null, 0);
@@ -222,12 +226,19 @@ export function spawnFarmMobAt(scene, x, z, y, rand = Math.random) {
     sy++;
   }
   if (!spotFree(x, sy, z, yaw, hw, h, shape.nose) || !peerFree(x, sy, z, yaw)) return null;
-  const mob = createMob(kind, { x, z, y: sy, dim: activeDim, yaw, rand });
+  const mob = createMob(kind, { x, z, y: sy, dim: dimNow, yaw, rand });
   if (mob) {
     mobs.add(mob);
     syncVisibility();
   }
   return mob;
+}
+
+// Random-pair wrapper (legacy debug path, browser hook rig): picks cow or
+// pig, then places it like the registry spawn hooks do.
+export function spawnFarmMobAt(scene, x, z, y, rand = Math.random) {
+  const kind = rand() < 0.5 ? "cow" : "pig";
+  return spawnQuadrupedAt(kind, scene, x, z, y, rand);
 }
 
 export function clearFarmDim(name) {

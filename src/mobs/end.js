@@ -5,7 +5,7 @@ import { isCarried } from "./carry.js";
 import { registerHomingTarget } from "./homing.js";
 import { pickBlock } from "../player/edit.js";
 import { BLOCK_INFO } from "../core/blocks.js";
-import { getBlock, topAt } from "../core/store.js";
+import { getBlock, getBlockIn, topAt } from "../core/store.js";
 import { spawnBurst } from "../fx/particles.js";
 import { END_PLATFORM_RADIUS, END_PLATFORM_TOP, END_RETURN_Z, setEndCleared } from "../world/end.js";
 import { noteDragonKill } from "../world/tntunlock.js";
@@ -304,10 +304,12 @@ registerMobType({
 });
 registerMobType({
   key: "enderman",
+  label: "Enderman",
   capabilities: { flying: false, homingTnt: false, grabbable: true },
   create: createEnderman,
   tick: tickEnderman,
   dispose: disposeEndMob,
+  spawn: (ctx) => spawnEndermanAt(ctx.scene, ctx.x, ctx.z, ctx.y, ctx.rand, ctx.dim),
 });
 
 function tickDragon(mob, dt, camera) {
@@ -512,6 +514,85 @@ function endermanSpotSupported(x, y, z, hw) {
   return spotHasSupport(x, y, z, hw);
 }
 
+// Dimension-generic solidity probes (cheat-spawned Endermen live anywhere).
+// The End path keeps the active-store helpers above untouched; generic
+// placement and the non-End idle tick read through these so other dims never
+// depend on the active dimension being "end".
+function isSolidIn(dimName, x, y, z) {
+  const info = BLOCK_INFO[getBlockIn(dimName, x, y, z)];
+  return !!info && info.solid;
+}
+
+function aabbFreeIn(dimName, px, py, pz, hw, h) {
+  const x0 = Math.floor(px - hw), x1 = Math.floor(px + hw);
+  const z0 = Math.floor(pz - hw), z1 = Math.floor(pz + hw);
+  const y0 = Math.floor(py), y1 = Math.floor(py + h - 1e-4);
+  for (let by = y0; by <= y1; by++)
+    for (let bx = x0; bx <= x1; bx++)
+      for (let bz = z0; bz <= z1; bz++) {
+        if (bx + 1 <= px - hw || bx >= px + hw) continue;
+        if (bz + 1 <= pz - hw || bz >= pz + hw) continue;
+        if (by + 1 <= py || by >= py + h) continue;
+        if (isSolidIn(dimName, bx, by, bz)) return false;
+      }
+  return true;
+}
+
+function supportIn(dimName, px, py, pz, hw) {
+  const baseY = Math.floor(py + 1e-4) - 1;
+  const x0 = Math.floor(px - hw), x1 = Math.floor(px + hw);
+  const z0 = Math.floor(pz - hw), z1 = Math.floor(pz + hw);
+  for (let bx = x0; bx <= x1; bx++)
+    for (let bz = z0; bz <= z1; bz++) {
+      if (bx + 1 <= px - hw || bx >= px + hw) continue;
+      if (bz + 1 <= pz - hw || bz >= pz + hw) continue;
+      if (isSolidIn(dimName, bx, baseY, bz)) return true;
+    }
+  return false;
+}
+
+function ensureEndermanMats() {
+  if (!endermanBodyMat) endermanBodyMat = makeMat(0x0c0a12, { emissive: 0x000000, roughness: 0.85, metalness: 0.05 });
+  if (!endermanHaloMat) endermanHaloMat = new THREE.MeshBasicMaterial({ color: 0x8b32c7, transparent: true, opacity: 0.22, side: THREE.BackSide, fog: false, depthWrite: false, blending: THREE.AdditiveBlending });
+}
+
+// Cheat placement (B key, any dimension): drops one Enderman at the wanted
+// feet spot, rising up to 5 cells for a free supported cell. Returns the mob
+// or null when there is no spot. The End keeps its native platform rules
+// (makeEnderman above); outside it the fallback just finds standing room or
+// stays unplaced — movement rework stays with the user.
+export function spawnEndermanAt(scene, x, z, y, rand = Math.random, dimName = "end") {
+  sceneRef = scene;
+  ensureEndermanMats();
+  const dimNow = dimName ?? "end";
+  const hw = 0.31, h = 2.7;
+  let sy = y;
+  let placed = false;
+  for (let t = 0; t < 6 && !placed; t++) {
+    const yy = y + t;
+    if (!aabbFreeIn(dimNow, x, yy, z, hw, h) || !supportIn(dimNow, x, yy, z, hw)) continue;
+    if ([...mobs].some((m) => m.alive && m.dim === dimNow && m.type === "enderman" &&
+      Math.hypot(m.pos.x - x, m.pos.z - z) < 2.5 && Math.abs(m.pos.y - yy) < h)) continue;
+    sy = yy;
+    placed = true;
+  }
+  if (!placed) return null;
+  const model = makeEndermanModel();
+  const mob = {
+    ...model, type: "enderman", dim: dimNow, pos: model.root.position,
+    hw, h, grabR: 0.5, grabH: 2.7,
+    grabSide: 0.5, grabFront: 0.3, grabBack: 0.25, yaw: (rand() ?? Math.random()) * Math.PI * 2,
+    alive: true, t: (rand() ?? Math.random()) * 6,
+    lookTime: 0, angryTime: 0, redTime: 0,
+  };
+  model.root.position.set(x, sy, z);
+  model.root.rotation.y = mob.yaw;
+  model.root.visible = true;
+  sceneRef.add(model.root);
+  mobs.add(mob);
+  return mob;
+}
+
 // Highest solid top + 1, so arrivals land on player towers as well as the
 // platform instead of the hardcoded platform top.
 function groundYAt(x, z) {
@@ -525,11 +606,12 @@ function groundYAt(x, z) {
   return y + 1;
 }
 
-export function notifyEndermanVoxelChange(changed, camera) {
+export function notifyEndermanVoxelChange(changed, camera, dimName = null) {
   if (!changed || !changed.length || !sceneRef) return;
   for (const mob of mobs) {
     // A held enderman never teleports: the grab hook owns its frame.
     if (!mob.alive || mob.type !== "enderman" || isCarried(mob)) continue;
+    if (dimName ? mob.dim !== dimName : mob.dim !== "end") continue;
     let relevant = false;
     const yLo = Math.floor(mob.pos.y) - 1, yHi = Math.floor(mob.pos.y + mob.h);
     for (const c of changed) {
@@ -539,12 +621,52 @@ export function notifyEndermanVoxelChange(changed, camera) {
       relevant = true; break;
     }
     if (!relevant) continue;
-    if (endermanIntersectsSolid(mob) || !endermanHasSupport(mob)) teleportEnderman(mob, camera);
+    if (mob.dim === "end") {
+      if (endermanIntersectsSolid(mob) || !endermanHasSupport(mob)) teleportEnderman(mob, camera);
+      continue;
+    }
+    // Outside the End there is no platform teleport: rise in place for a
+    // free supported cell, else stay where placed.
+    if (!aabbFreeIn(mob.dim, mob.pos.x, mob.pos.y, mob.pos.z, mob.hw, mob.h) ||
+        !supportIn(mob.dim, mob.pos.x, mob.pos.y, mob.pos.z, mob.hw)) {
+      for (let t = 0; t < 6; t++) {
+        const yy = mob.pos.y + t;
+        if (aabbFreeIn(mob.dim, mob.pos.x, yy, mob.pos.z, mob.hw, mob.h) &&
+            supportIn(mob.dim, mob.pos.x, yy, mob.pos.z, mob.hw)) {
+          mob.root.position.set(mob.pos.x, yy, mob.pos.z);
+          mob.pos.copy(mob.root.position);
+          break;
+        }
+      }
+    }
   }
 }
 
 function tickEnderman(mob, dt, camera) {
   mob.t += dt;
+  if (mob.dim !== "end") {
+    // Generic idle outside the End (movement rework stays with the user):
+    // face the camera, breathe the arms, hold the placed spot.
+    const dx = camera.position.x - mob.pos.x, dz = camera.position.z - mob.pos.z;
+    if (Math.hypot(dx, dz) > 0.001) mob.root.rotation.y = Math.atan2(dx, dz);
+    mob.yaw = mob.root.rotation.y;
+    const phase = mob.t * 1.8;
+    mob.armL.rotation.x = Math.sin(phase) * 0.06;
+    mob.armR.rotation.x = Math.sin(phase + 0.6) * 0.06;
+    if (!aabbFreeIn(mob.dim, mob.pos.x, mob.pos.y, mob.pos.z, mob.hw, mob.h) ||
+        !supportIn(mob.dim, mob.pos.x, mob.pos.y, mob.pos.z, mob.hw)) {
+      for (let t = 0; t < 6; t++) {
+        const yy = mob.pos.y + t;
+        if (aabbFreeIn(mob.dim, mob.pos.x, yy, mob.pos.z, mob.hw, mob.h) &&
+            supportIn(mob.dim, mob.pos.x, yy, mob.pos.z, mob.hw)) {
+          mob.root.position.set(mob.pos.x, yy, mob.pos.z);
+          break;
+        }
+      }
+    }
+    mob.pos.copy(mob.root.position);
+    return;
+  }
   if (mob.angryTime > 0) mob.angryTime = Math.max(0, mob.angryTime - dt);
   if (mob.redTime > 0) mob.redTime = Math.max(0, mob.redTime - dt);
   const dx = camera.position.x - mob.pos.x, dz = camera.position.z - mob.pos.z;
@@ -585,9 +707,8 @@ export function setDragonVictoryHook(fn) { onDragonVictory = fn; }
 
 export function enterEndMobs(scene) {
   sceneRef = scene;
-  if (!endermanBodyMat) endermanBodyMat = makeMat(0x0c0a12, { emissive: 0x000000, roughness: 0.85, metalness: 0.05 });
-  if (!endermanHaloMat) endermanHaloMat = new THREE.MeshBasicMaterial({ color: 0x8b32c7, transparent: true, opacity: 0.22, side: THREE.BackSide, fog: false, depthWrite: false, blending: THREE.AdditiveBlending });
-  clearEndMobs();
+  ensureEndermanMats();
+  clearEndMobs("end");
   setEndCleared(false);
   dragonRef = createMob("dragon");
   mobs.add(dragonRef);
@@ -598,10 +719,21 @@ export function enterEndMobs(scene) {
   return dragonRef;
 }
 
-export function clearEndMobs() {
-  for (const mob of [...mobs]) mobType(mob.type)?.dispose?.(mob);
-  mobs.clear();
-  dragonRef = null;
+export function clearEndMobs(name = null) {
+  for (const mob of [...mobs]) {
+    if (name && mob.dim !== name) continue;
+    mobType(mob.type)?.dispose?.(mob);
+  }
+  if (!name || name === "end") dragonRef = null;
+}
+
+// Regenerate-dimension wipe for cheat Endermen (mirrors the farm travel
+// rule): entering a regenerate dim drops that dim's placed Endermen, retain
+// dims keep theirs. The End native population rebuilds via enterEndMobs.
+export function clearEndermenDim(name) {
+  for (const mob of [...mobs]) {
+    if (mob.dim === name && mob.type === "enderman") mobType(mob.type)?.dispose?.(mob);
+  }
 }
 
 export function listEndMobs() {
@@ -610,9 +742,11 @@ export function listEndMobs() {
 
 registerMobSource("end", listEndMobs);
 
-export function tickEndMobs(dt, camera) {
+export function tickEndMobs(dt, camera, dimName = null) {
   for (const mob of mobs) {
     if (!mob.alive) continue;
+    if (dimName && mob.root) mob.root.visible = mob.dim === dimName;
+    if (dimName && mob.dim !== dimName) continue;
     if (isCarried(mob)) continue; // grab hook owns the frame: frozen mid-hold
     mobType(mob.type)?.tick?.(mob, dt, camera);
   }
