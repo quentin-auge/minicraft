@@ -20,6 +20,7 @@ import {
 } from "../player/physics.js";
 import { FLY, flyOn } from "../player/fly.js";
 import { clearGlowstoneAt, noteGlowstonePlace, noteGlowstonePlaceShared, glowVariantAt } from "../world/glowstone.js";
+import { MOON_MIN_Y, markMoonDirty } from "../world/moon.js";
 import { clearFlowerAt, noteFlowerPlace } from "../world/flowers.js";
 import { clearReactionAt } from "../world/reactions.js";
 import { clearTNTBox } from "../fx/tnt.js";
@@ -622,6 +623,7 @@ function snapshot() {
         }
         clearReactionAt(x, y, z);
         setBlock(x, y, z, AIR);
+        if (y >= MOON_MIN_Y) markMoonDirty();
         scanned.push({ lx: x - ox, ly: y - oy, lz: z - oz, id, v, extra: false });
         cleared.push([x, y, z]);
       }
@@ -648,6 +650,7 @@ function snapshot() {
           else if (isTntLike(id)) tntUp = true;
           clearReactionAt(x, y, z);
           setBlock(x, y, z, AIR);
+          if (y >= MOON_MIN_Y) markMoonDirty();
           upCleared.push([x, y, z]);
         }
     if (tntUp) clearTNTBox(ox + RIDE.x0, oy + RIDE.y1 + 1, oz + RIDE.z0, ox + RIDE.x1, oy + RIDE.y1 + ROCKET_SPEC.h, oz + RIDE.z1);
@@ -873,6 +876,7 @@ function carveAt(o) {
         else if (isTntLike(id)) tntHit = true;
         clearReactionAt(x, y, z);
         setBlock(x, y, z, AIR);
+        if (y >= MOON_MIN_Y) markMoonDirty();
         cleared.push([x, y, z]);
         if (--budget <= 0) { rvel.set(0, 0, 0); break outer; }
       }
@@ -918,6 +922,7 @@ function clearBox(x0, y0, z0, x1, y1, z1) {
         else if (id === FLOWER) clearFlowerAt(x, y, z);
         clearReactionAt(x, y, z);
         setBlock(x, y, z, AIR);
+        if (y >= MOON_MIN_Y) markMoonDirty();
         cleared.push([x, y, z]);
       }
   return cleared;
@@ -938,6 +943,7 @@ function stamp() {
   for (const c of modelCells) {
     const x = ox + c.lx, y = oy + c.ly, z = oz + c.lz;
     setBlock(x, y, z, c.id);
+    if (y >= MOON_MIN_Y) markMoonDirty();
     if (c.id === GLOWSTONE) {
       if (c.v !== undefined && c.v >= 0) noteGlowstonePlaceShared(x, y, z, c.v);
       else noteGlowstonePlace(x, y, z);

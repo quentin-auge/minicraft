@@ -5,7 +5,7 @@ import * as THREE from "three";
 import { isLiquid } from "../core/blocks.js";
 import { getBlock, isSolid, colLiqTop, colTopIdx, dim } from "../core/store.js";
 import { dimSpec, dimHasMoon } from "../world/dimensions.js";
-import { MOON_MIN_Y } from "../world/moon.js";
+import { MOON_MIN_Y, isMoonGone } from "../world/moon.js";
 
 export const PLAYER_HW = 0.3;
 export const PLAYER_H = 1.8;
@@ -386,8 +386,8 @@ export function updateFreeSwim(dt) {
 export function updatePlayer(dt) {
   // Low gravity near the Moon and above (master rule): one factor per
   // frame, shared by every acceleration and energy calc below so arcs
-  // stay consistent.
-  const G = dimHasMoon(dim) && pos.y >= MOON_MIN_Y ? GRAVITY * 0.5 : GRAVITY;
+  // stay consistent. Dies with the moon: no lunar blocks left, no low-g.
+  const G = dimHasMoon(dim) && !isMoonGone() && pos.y >= MOON_MIN_Y ? GRAVITY * 0.5 : GRAVITY;
   _fwd.set(-Math.sin(yaw), 0, -Math.cos(yaw));
   _right.set(Math.cos(yaw), 0, -Math.sin(yaw));
   _move.set(0, 0, 0);

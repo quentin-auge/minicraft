@@ -26,6 +26,7 @@ import { GRAVITY, pos, vel, setOnGround, addPlayerKnockback, KNOCK_DECAY } from 
 import { flyOn } from "../player/fly.js";
 import { spawnBurst, spawnBurstBatch, spawnFlash, spawnFlashBatch, spawnFireballBatch, sharedFlashGeo, initBandShell, updateBandShell, hideBandShell, spawnDense, denseCount, noteDenseSpawn, resetDenseFx, flushDense } from "./particles.js";
 import { clearGlowstoneAt } from "../world/glowstone.js";
+import { MOON_MIN_Y, markMoonDirty } from "../world/moon.js";
 import { clearFlowerAt } from "../world/flowers.js";
 import { clearReactionAt } from "../world/reactions.js";
 import { notePoolEdit } from "../render/poollights.js";
@@ -1808,6 +1809,7 @@ function clearCell(x, y, z, touched) {
   if (kindOfBlock(id).pool) untrackMega(x, y, z);
   clearReactionAt(x, y, z);
   setBlock(x, y, z, AIR);
+  if (y >= MOON_MIN_Y) markMoonDirty();
   touched.push([x, y, z]);
   return true;
 }

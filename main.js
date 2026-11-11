@@ -27,7 +27,7 @@ import { initRope } from "./src/player/rope.js";
 import { tickTNT, initTNTFx, resetTNTMemory, clearRegularTntDim, onExplode, onLiquidPurge, shakeSpecFor, bandFront, bandActive, drainBlastRemesh, queueBlastRefresh, megaImminent, megaCarveActive, megaFxActive, MEGA_BLAST_T, MEGA_BLAST_TIME_SCALE } from "./src/fx/tnt.js";
 import { initFx, tickFx, tickDenseFx, denseFxActive, prewarmDenseFx, spawnDense, flushDense, noteDenseSpawn } from "./src/fx/particles.js";
 import { initPrecip, tickSnow } from "./src/fx/precip.js";
-import { MOON_MIN_Y, MOON_R, generateMoon, generateMoonUnderRows, joinMoonLakeWater, markMoonBuilt, moonReady, moonChunkCenters, findMoonSpawn } from "./src/world/moon.js";
+import { MOON_MIN_Y, MOON_R, generateMoon, generateMoonUnderRows, joinMoonLakeWater, markMoonBuilt, moonReady, moonChunkCenters, findMoonSpawn, isMoonGone } from "./src/world/moon.js";
 import { findPenOverwatch } from "./src/world/spawn.js";
 import { AIR, WATER, FLOWER, GLOWSTONE, MOON_WATER, LAVA, TNT, BLOCK_INFO } from "./src/core/blocks.js";
 import { resetGlowstoneMemory, clearGlowstoneDim, setGlowSeed } from "./src/world/glowstone.js";
@@ -1113,9 +1113,11 @@ function loop(now) {
     // reads the inside color, open air the outside — no per-frame work here.
     // Moon hotbar: while the reveal shows the disc the water slot becomes
     // moon water and the flower slot becomes glowstone; both restore when
-    // the moon hides again. Follows the region factor (not a duplicated
-    // threshold), so the bar and the disc always agree. Moon dimensions only.
-    const moonNow = dimHasMoon(dim) && regionByKey("moon").factor(camera.position) > 0;
+    // the moon hides again — or when no lunar block survives (the bar dies
+    // with the moon, like the snow and the low gravity). Follows the region
+    // factor (not a duplicated threshold), so the bar and the disc always
+    // agree. Moon dimensions only.
+    const moonNow = dimHasMoon(dim) && !isMoonGone() && regionByKey("moon").factor(camera.position) > 0;
     if (moonNow !== moonRevealed) {
       moonRevealed = moonNow;
       if (moonNow) {

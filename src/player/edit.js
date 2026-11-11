@@ -15,6 +15,7 @@ import { noteFlowerPlace, clearFlowerAt } from "../world/flowers.js";
 import { armReaction, clearReactionAt } from "../world/reactions.js";
 import { notePoolEdit } from "../render/poollights.js";
 import { MOON_FADE_Y } from "../render/regions.js";
+import { MOON_MIN_Y, markMoonDirty } from "../world/moon.js";
 import { notePortalEdit, notePortalEdits, notePortalFramesOnly } from "../world/portals.js";
 import { allMobs } from "../mobs/registry.js";
 import { cellBlockedByMob } from "../mobs/carry.js";
@@ -98,6 +99,7 @@ export function purgeFloatingLiquidsAround(coords) {
   const purged = [];
   for (const [x, y, z] of findFloatingLiquids(getBlock, coords)) {
     setBlock(x, y, z, AIR);
+    if (y >= MOON_MIN_Y) markMoonDirty();
     notePortalEdit(x, y, z);
     purged.push([x, y, z]);
   }
@@ -161,6 +163,7 @@ export function breakBlockAt(x, y, z, opts) {
   // the same call), so unlike the looks above it is dropped unconditionally.
   clearReactionAt(x, y, z);
   setBlock(x, y, z, AIR);
+  if (y >= MOON_MIN_Y) markMoonDirty();
   if (dimInfinite()) pinTntCellAt(x, y, z);
   notePoolEdit();
   if (batched) return [[x, y, z]];
@@ -192,6 +195,7 @@ export function tryPlace(id, px, py, pz, opts) {
   if (BLOCK_INFO[id].solid && intersectsPlayer(px, py, pz)) return null;
   if (BLOCK_INFO[id].solid && intersectsMob(px, py, pz, opts)) return null;
   setBlock(px, py, pz, id);
+  if (py >= MOON_MIN_Y) markMoonDirty();
   // Block reactions (world/reactions.js): a liquid trigger placed on a
   // reacting base is drunk at once — before portal/purge/narrow-liquid
   // bookkeeping sees it as liquid, so the drunk cell returns to air with a

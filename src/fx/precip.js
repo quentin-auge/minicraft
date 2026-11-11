@@ -13,7 +13,7 @@ import * as THREE from "three";
 import { AIR } from "../core/blocks.js";
 import { getBlock, topAt, dim } from "../core/store.js";
 import { dimHasMoon } from "../world/dimensions.js";
-import { MOON_SURFACE_Y } from "../world/moon.js";
+import { MOON_SURFACE_Y, isMoonGone } from "../world/moon.js";
 
 const PRECIP_DEFAULTS = {
   count: 700,
@@ -36,8 +36,10 @@ export const PRECIP_TYPES = [
   {
     key: "snow",
     ...PRECIP_DEFAULTS,
-    // Snow falls anywhere above moon-surface altitude, in moon dimensions.
-    active: (e) => dimHasMoon(dim) && e.y >= MOON_SURFACE_Y - 8,
+    // Snow falls anywhere above moon-surface altitude, in moon dimensions
+    // holding a surviving moon: once no MOON/MOON_WATER block remains the
+    // field retires instead of snowing over an empty sky.
+    active: (e) => dimHasMoon(dim) && !isMoonGone() && e.y >= MOON_SURFACE_Y - 8,
     // Drops land on the highest surface or the moon band, whichever is up.
     groundY: (bx, bz) => {
       const ct = topAt(dim, bx, bz);

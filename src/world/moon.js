@@ -9,7 +9,7 @@
 // pass needed.
 import { AIR, MOON, MOON_WATER } from "../core/blocks.js";
 import { hash2 } from "../core/noise.js";
-import { WORLD_RADIUS, CHUNK, getBlock, isSolid, dimInfinite, outOfWorld, key } from "../core/store.js";
+import { WORLD_RADIUS, CHUNK, getBlock, isSolid, dimInfinite, outOfWorld, key, worlds } from "../core/store.js";
 import { AIR_POCKET_CAP } from "../core/airpocket.js";
 
 export const MOON_R = WORLD_RADIUS;
@@ -28,6 +28,30 @@ export function moonReady(seed) {
 }
 export function resetMoon() {
   builtSeed = null;
+  markMoonDirty();
+}
+
+// Gone flag: true once no MOON rock and no MOON_WATER remain in the
+// overworld (ultra band-3 wipe, hand mining, rocket carve — any path).
+// Lazy + cached: mutation paths in the moon band mark dirty, the next read
+// scans the overworld map with an early exit on the first lunar block, so
+// per-frame callers (snow, gravity, hotbar) stay O(1).
+let moonGoneCache = false;
+let moonGoneDirty = true;
+export function markMoonDirty() {
+  moonGoneDirty = true;
+}
+export function isMoonGone() {
+  if (!moonGoneDirty) return moonGoneCache;
+  moonGoneDirty = false;
+  for (const id of worlds.over.values()) {
+    if (id === MOON || id === MOON_WATER) {
+      moonGoneCache = false;
+      return false;
+    }
+  }
+  moonGoneCache = true;
+  return true;
 }
 
 // Surface-defining voxels (cap shell + lake shafts): eager in worldgen,
