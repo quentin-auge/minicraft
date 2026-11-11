@@ -4,8 +4,12 @@ import { registerMobType, registerMobSource, mobType, createMob } from "./regist
 import { isCarried } from "./carry.js";
 import { registerHomingTarget } from "./homing.js";
 import { pickBlock } from "../player/edit.js";
-import { BLOCK_INFO } from "../core/blocks.js";
-import { getBlock, getBlockIn, topAt } from "../core/store.js";
+import { BLOCK_INFO, isLiquid } from "../core/blocks.js";
+import { getBlock, getBlockIn, topAt, colLiqTop, colTopIdx } from "../core/store.js";
+import { PLAYER_HW } from "../player/physics.js";
+import { mobRank } from "./mover.js";
+import { bandOf, pickSpot, shouldDodge, teleportReady, armTeleportCool, boundedXZ } from "./endspots.js";
+import { listFarmMobs } from "./farm.js";
 import { spawnBurst } from "../fx/particles.js";
 import { END_PLATFORM_RADIUS, END_PLATFORM_TOP, END_RETURN_Z, setEndCleared } from "../world/end.js";
 import { noteDragonKill } from "../world/tntunlock.js";
@@ -258,7 +262,7 @@ function makeEnderman(index) {
     z = Math.round(Math.sin(angle) * radius);
     if (Math.abs(x) <= 3 && Math.abs(z - END_RETURN_Z) <= 3) continue;
     if (Math.hypot(x, z - (END_RETURN_Z - 3)) < 5) continue;
-    if (mobsOfType("enderman").some((other) => Math.hypot(other.pos.x - x, other.pos.z - z) < 3)) continue;
+    if ([...mobs].some((o) => o.type === "enderman" && o.alive && Math.hypot(o.pos.x - x, o.pos.z - z) < 3)) continue;
     break;
   }
   const mob = {
@@ -266,6 +270,7 @@ function makeEnderman(index) {
     ...ENDERMAN_DIMS,
     yaw: 0, alive: true, t: mobHash(index, 13, 9405) * 6,
     lookTime: 0, angryTime: 0, redTime: 0,
+    nose: { along: 0, r: 0 }, tail: { along: 0, r: 0 },
   };
   model.root.scale.setScalar(ENDERMAN_SCALE);
   model.root.position.set(x, END_PLATFORM_TOP + 1, z);
@@ -427,12 +432,19 @@ function rayAabb(origin, dir, mob) {
   return far >= 0 ? near : null;
 }
 
+// DDA step budget for the stare occlusion ray: ~2 steps per meter plus
+// margin, hard-capped so a mob kilometers away in the TNT sky cannot hitch
+// the frame. An inconclusive march (steps exhausted before the body) reads
+// as not looked at.
+const MAX_STARE_STEPS = 8192;
 function endermanLookedAt(mob, camera) {
   const dir = new THREE.Vector3();
   camera.getWorldDirection(dir);
   const distance = rayAabb(camera.position, dir, mob);
-  if (distance == null || distance > 80) return false;
-  const block = pickBlock(camera.position, dir, true, distance, Math.ceil(distance * 2) + 8);
+  // No range cap: a stare reaches as far as the eye sees, walls excepted.
+  // The DDA only runs while the ray actually hits the body box.
+  if (distance == null) return false;
+  const block = pickBlock(camera.position, dir, true, distance, Math.min(Math.ceil(distance * 2) + 8, MAX_STARE_STEPS));
   if (block) {
     const d = Math.hypot(block.x + 0.5 - camera.position.x, block.y + 0.5 - camera.position.y, block.z + 0.5 - camera.position.z);
     if (d < distance - 0.2) return false;
@@ -442,92 +454,119 @@ function endermanLookedAt(mob, camera) {
 
 function teleportEnderman(mob, camera) {
   teleportNonce++;
+  const dimName = mob.dim;
   const from = mob.pos;
-  let pick = null;
-  for (let i = 0; i < 32; i++) {
-    const a = mobHash(i + teleportNonce * 31, mobSpawnCount, 9407) * Math.PI * 2;
-    const r = 5 + mobHash(mobSpawnCount + teleportNonce, i, 9408) * 13;
-    const x = Math.max(-END_PLATFORM_RADIUS + 1, Math.min(END_PLATFORM_RADIUS - 1, Math.round(from.x + Math.cos(a) * r)));
-    const z = Math.max(-END_PLATFORM_RADIUS + 1, Math.min(END_PLATFORM_RADIUS - 1, Math.round(from.z + Math.sin(a) * r)));
-    if (Math.abs(x) <= 3 && Math.abs(z - END_RETURN_Z) <= 3) continue;
-    if (mobsOfType("enderman").some((other) => other !== mob && Math.hypot(other.pos.x - x, other.pos.z - z) < 2.5)) continue;
-    if (camera && Math.hypot(camera.position.x - x, camera.position.z - z) < 4) continue;
-    const y = groundYAt(x, z);
-    if (!endermanSpotFree(x, y, z, mob.hw, mob.h)) continue;
-    if (!endermanSpotSupported(x, y, z, mob.hw)) continue;
-    pick = { x, y, z }; break;
-  }
-  if (!pick) {
-    const fx = Math.max(-END_PLATFORM_RADIUS + 1, Math.min(END_PLATFORM_RADIUS - 1, Math.round(-Math.sign(from.x || 1) * 26)));
-    const fz = Math.max(-END_PLATFORM_RADIUS + 1, Math.min(END_PLATFORM_RADIUS - 1, Math.round(from.z)));
-    const fy = groundYAt(fx, fz);
-    if (endermanSpotFree(fx, fy, fz, mob.hw, mob.h) && endermanSpotSupported(fx, fy, fz, mob.hw)) pick = { x: fx, y: fy, z: fz };
-  }
-  if (!pick) return;
+  // Bandless columns (overworld sky gap, unknown dim) fall through to the
+  // relaxation rungs, which drop the band rather than strand the mob.
+  const band = bandOf(dimName, from.y);
+  // No live body at the arrival: every same-dim mob counts (farm, other
+  // endermen, dragon), carried ones excluded — they ride the hook, not the
+  // world. Player placement can never embed a mob (tryPlace refuses), and
+  // the ≥10 m standoff below keeps arrivals off the player anyway, so only
+  // this probe keeps arrivals body-free.
+  const peers = [...listFarmMobs(), ...mobs].filter(
+    (m) => m !== mob && m.alive && !m._carried && (m.dim ?? "over") === dimName && m.pos,
+  );
+  let n = 0;
+  const rand = () => mobHash(teleportNonce, n++, 9410);
+  const { spot, stats, level } = pickSpot({
+    dim: dimName, band, from, hw: mob.hw, h: mob.h,
+    player: camera ? { x: camera.position.x, z: camera.position.z } : null,
+    groundY: (x, z, yHi) => spotGroundY(dimName, x, z, from.y, yHi, mob.hw),
+    free: (x, y, z, hw, h) => aabbFreeIn(dimName, x, y, z, hw, h),
+    supported: (x, y, z, hw) => spotSupportedDim(dimName, x, y, z, hw),
+    mobBlocked: (x, y, z, hw, h) => peers.some((o) =>
+      x + hw > o.pos.x - (o.hw ?? 0.32) && x - hw < o.pos.x + (o.hw ?? 0.32) &&
+      z + hw > o.pos.z - (o.hw ?? 0.32) && z - hw < o.pos.z + (o.hw ?? 0.32) &&
+      y + h > o.pos.y && y < o.pos.y + (o.h ?? 1)),
+    inBounds: (x, z) => spotInBounds(dimName, x, z),
+    inView: camera ? (x, y, z) => inViewSpot(camera, x, y, z, mob.h) : null,
+    los: camera ? (x, y, z) => losClearSpot(camera, x, y, z, mob.h) : null,
+    rand,
+  });
+  if (!spot) return { ok: false, stats, level, band, y: from.y };
   spawnBurst({ x: from.x, y: from.y + 1.2, z: from.z, count: 24, color: [0.55, 0.12, 0.9], speedMin: 1, speedMax: 5, life: 0.45, size: 0.12, gravity: 0 });
-  mob.root.position.set(pick.x, pick.y, pick.z);
+  mob.root.position.set(spot.x, spot.y, spot.z);
   mob.pos.copy(mob.root.position);
   mob.lookTime = 0; mob.angryTime = 0.5; mob.redTime = 0.5;
-  spawnBurst({ x: pick.x, y: mob.pos.y + 1.2, z: pick.z, count: 24, color: [0.55, 0.12, 0.9], speedMin: 1, speedMax: 5, life: 0.45, size: 0.12, gravity: 0 });
+  spawnBurst({ x: spot.x, y: mob.pos.y + 1.2, z: spot.z, count: 24, color: [0.55, 0.12, 0.9], speedMin: 1, speedMax: 5, life: 0.45, size: 0.12, gravity: 0 });
+  if (typeof console !== "undefined" && console.debug) {
+    const ring = Math.hypot(spot.x - from.x, spot.y - from.y, spot.z - from.z);
+    console.debug(`Enderman teleport L${level}: ~${ring.toFixed(1)} m`);
+  }
+  return { ok: true, stats, level, band, y: from.y };
 }
 
-// Voxel-displacement housing: a placed block intersecting the body, or a
-// removed block under the feet, teleports the Enderman instead of leaving it
-// stuck or floating. edit.js cannot call here (it is already imported above
-// for pickBlock), so main.js notifies after each voxel write.
-function isSolidCell(x, y, z) {
-  const info = BLOCK_INFO[getBlock(x, y, z)];
-  return !!info && info.solid;
-}
-
-function aabbIntersectsSolid(px, py, pz, hw, h) {
-  const x0 = Math.floor(px - hw), x1 = Math.floor(px + hw);
-  const z0 = Math.floor(pz - hw), z1 = Math.floor(pz + hw);
-  const y0 = Math.floor(py), y1 = Math.floor(py + h - 1e-4);
-  for (let by = y0; by <= y1; by++)
-    for (let bx = x0; bx <= x1; bx++)
-      for (let bz = z0; bz <= z1; bz++) {
-        if (bx + 1 <= px - hw || bx >= px + hw) continue;
-        if (bz + 1 <= pz - hw || bz >= pz + hw) continue;
-        if (by + 1 <= py || by >= py + h) continue;
-        if (isSolidCell(bx, by, bz)) return true;
-      }
+// Failed attempts funnel here: the picker stats are kept for the failure
+// toast, and the mob cools down so a spotless situation retries at 1.5 s
+// intervals instead of every frame (the old silent retry storm).
+let pendingFail = null;
+let lastFailToastAt = -Infinity;
+const FAIL_TOAST_GAP = 4;
+function tryTeleport(mob, camera, why) {
+  if (!teleportReady(mob, mob.t)) return false;
+  const { ok, stats, level, band, y } = teleportEnderman(mob, camera);
+  if (ok) return true;
+  mob.lookTime = 0;
+  armTeleportCool(mob, mob.t);
+  pendingFail = { why, band, y, stats, level };
   return false;
 }
 
-function endermanIntersectsSolid(mob) {
-  return aabbIntersectsSolid(mob.pos.x, mob.pos.y, mob.pos.z, mob.hw, mob.h);
+const FAIL_LABELS = [
+  ["view", "no view"], ["los", "blocked view"], ["near", "near player"], ["mob", "mobs"],
+  ["free", "blocked"], ["support", "no footing"], ["height", "height"],
+  ["band", "band"], ["surface", "no ground"], ["bounds", "bounds"],
+];
+// Latest failure summary for the main-loop toast relay (throttled, one
+// shot): trigger name plus the top rejection causes, e.g.
+// `Enderman: no spot via stare @y=22 band=ground (mob ×34, view ×12)`.
+// Lets a spotless Enderman say exactly where the search died instead of
+// silently grinding attempts.
+export function takeTeleportFail() {
+  if (!pendingFail) return null;
+  const { why, band, y, stats } = pendingFail;
+  pendingFail = null;
+  const now = performance.now() / 1000;
+  if (now - lastFailToastAt < FAIL_TOAST_GAP) return null;
+  lastFailToastAt = now;
+  const top = Object.entries(stats || {})
+    .filter(([, n]) => n > 0)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 3)
+    .map(([k, n]) => `${(FAIL_LABELS.find(([key]) => key === k) || [k, k])[1]} ×${n}`)
+    .join(", ");
+  return `Enderman: no spot via ${why} @y=${Math.round(y)} ${band}${top ? ` (${top})` : ""}`;
 }
 
-function spotHasSupport(px, py, pz, hw) {
+// Voxel-displacement housing: a removed block under the feet teleports the
+// Enderman instead of leaving it floating (a placed block can never embed
+// one: tryPlace refuses any solid overlapping a live mob body, so the buried
+// branch is dead code — removed). edit.js cannot call here (it is already
+// imported above for pickBlock), so main.js notifies after each voxel write.
+// All probes are dimension-bound: nothing here depends on the active
+// dimension.
+// One footing rule for arrivals, safety nets and cheat spawns alike: solid
+// ground under the footprint, or a liquid surface to float on.
+function spotSupportedDim(dimName, px, py, pz, hw) {
   const baseY = Math.floor(py + 1e-4) - 1;
+  if (baseY < 0) return false;
   const x0 = Math.floor(px - hw), x1 = Math.floor(px + hw);
   const z0 = Math.floor(pz - hw), z1 = Math.floor(pz + hw);
-  for (let bx = x0; bx <= x1; bx++)
-    for (let bz = z0; bz <= z1; bz++) {
-      if (bx + 1 <= px - hw || bx >= px + hw) continue;
-      if (bz + 1 <= pz - hw || bz >= pz + hw) continue;
-      if (isSolidCell(bx, baseY, bz)) return true;
-    }
-  return false;
+  for (let bx = x0; bx <= x1; bx++) for (let bz = z0; bz <= z1; bz++) {
+    if (bx + 1 <= px - hw || bx >= px + hw) continue;
+    if (bz + 1 <= pz - hw || bz >= pz + hw) continue;
+    if (isSolidIn(dimName, bx, baseY, bz)) return true;
+  }
+  return isLiquid(getBlockIn(dimName, Math.round(px), baseY, Math.round(pz)));
 }
 
 function endermanHasSupport(mob) {
-  return spotHasSupport(mob.pos.x, mob.pos.y, mob.pos.z, mob.hw);
+  return spotSupportedDim(mob.dim, mob.pos.x, mob.pos.y, mob.pos.z, mob.hw);
 }
 
-function endermanSpotFree(x, y, z, hw, h) {
-  return !aabbIntersectsSolid(x, y, z, hw, h);
-}
-
-function endermanSpotSupported(x, y, z, hw) {
-  return spotHasSupport(x, y, z, hw);
-}
-
-// Dimension-generic solidity probes (cheat-spawned Endermen live anywhere).
-// The End path keeps the active-store helpers above untouched; generic
-// placement and the non-End idle tick read through these so other dims never
-// depend on the active dimension being "end".
+// Dimension-generic solidity probe: no voxel read here depends on the active
+// dimension (cheat-spawned Endermen live anywhere).
 function isSolidIn(dimName, x, y, z) {
   const info = BLOCK_INFO[getBlockIn(dimName, x, y, z)];
   return !!info && info.solid;
@@ -546,19 +585,6 @@ function aabbFreeIn(dimName, px, py, pz, hw, h) {
         if (isSolidIn(dimName, bx, by, bz)) return false;
       }
   return true;
-}
-
-function supportIn(dimName, px, py, pz, hw) {
-  const baseY = Math.floor(py + 1e-4) - 1;
-  const x0 = Math.floor(px - hw), x1 = Math.floor(px + hw);
-  const z0 = Math.floor(pz - hw), z1 = Math.floor(pz + hw);
-  for (let bx = x0; bx <= x1; bx++)
-    for (let bz = z0; bz <= z1; bz++) {
-      if (bx + 1 <= px - hw || bx >= px + hw) continue;
-      if (bz + 1 <= pz - hw || bz >= pz + hw) continue;
-      if (isSolidIn(dimName, bx, baseY, bz)) return true;
-    }
-  return false;
 }
 
 function ensureEndermanMats() {
@@ -585,6 +611,7 @@ export function spawnEndermanAt(scene, x, z, y, rand = Math.random, dimName = "e
     yaw,
     alive: true, t: (rand() ?? Math.random()) * 6,
     lookTime: 0, angryTime: 0, redTime: 0,
+    nose: { along: 0, r: 0 }, tail: { along: 0, r: 0 },
   };
   model.root.scale.setScalar(ENDERMAN_SCALE);
   model.root.position.set(x, y, z);
@@ -595,17 +622,91 @@ export function spawnEndermanAt(scene, x, z, y, rand = Math.random, dimName = "e
   return mob;
 }
 
-// Highest solid top + 1, so arrivals land on player towers as well as the
-// platform instead of the hardcoded platform top.
-function groundYAt(x, z) {
-  let y = topAt("end", x, z);
-  let guard = 0;
-  while (y > END_PLATFORM_TOP && guard++ < 8) {
-    const info = BLOCK_INFO[getBlock(x, y, z)];
-    if (info && info.solid) break;
-    y--;
+// Arrival feet-Y for a candidate column: scan DOWN from the top of the
+// height window, so overhead cover (cloud decks, tree canopy, roofs) never
+// masks the floor below — the first footing inside the window wins.
+// Without this, `topAt` alone proposes the cloud top and every village
+// plaza column reads ~90 m off (dy + wrong band). The End keeps its
+// tower-aware platform scan (no overhead cover there).
+function spotGroundY(dimName, x, z, refY, yHi, hw) {
+  if (dimName === "end") {
+    let y = topAt("end", x, z);
+    let guard = 0;
+    while (y > END_PLATFORM_TOP && guard++ < 8) {
+      const info = BLOCK_INFO[getBlock(x, y, z)];
+      if (info && info.solid) break;
+      y--;
+    }
+    return y + 1;
   }
-  return y + 1;
+  const solid = topAt(dimName, x, z);
+  const liq = colLiqTop[dimName]?.get(colTopIdx(x, z)) ?? -1;
+  const hi = Math.min(Math.max(solid, liq), Math.ceil(refY + yHi));
+  const lo = Math.max(1, Math.floor(refY - yHi));
+  if (hi + 1 < lo) return null;
+  for (let y = hi + 1; y >= lo; y--) {
+    if (spotSupportedDim(dimName, x, y, z, hw)) return y;
+  }
+  return null;
+}
+
+function spotInBounds(dimName, x, z) {
+  if (dimName === "end") {
+    if (Math.abs(x) > END_PLATFORM_RADIUS || Math.abs(z) > END_PLATFORM_RADIUS) return false;
+    // The return-portal mouth stays clear, as on master.
+    if (Math.abs(x) <= 3 && Math.abs(z - END_RETURN_Z) <= 3) return false;
+    return true;
+  }
+  return boundedXZ(x, z);
+}
+
+const _spotDir = new THREE.Vector3();
+
+// Frustum position of a candidate arrival: 0 = view center, 1 = frustum
+// edge, > 1 = off-screen.
+function frustumM(camera, x, y, z, h) {
+  camera.getWorldDirection(_spotDir);
+  const dx = x - camera.position.x, dy = (y + h * 0.5) - camera.position.y, dz = z - camera.position.z;
+  const len = Math.hypot(dx, dy, dz) || 1;
+  let dyaw = Math.atan2(dx, dz) - Math.atan2(_spotDir.x, _spotDir.z);
+  while (dyaw > Math.PI) dyaw -= Math.PI * 2;
+  while (dyaw < -Math.PI) dyaw += Math.PI * 2;
+  const vHalf = THREE.MathUtils.degToRad(camera.fov / 2);
+  const hHalf = Math.atan(Math.tan(vHalf) * camera.aspect);
+  const pitchT = Math.asin(Math.min(1, Math.max(-1, dy / len)));
+  const pitchC = Math.asin(Math.min(1, Math.max(-1, _spotDir.y)));
+  return Math.max(Math.abs(dyaw) / hHalf, Math.abs(pitchT - pitchC) / vHalf);
+}
+
+// Lateral clearance off the view axis (meters at the arrival point): a
+// blinked Enderman never lands in your face, but a distant cloud dead ahead
+// (TNT sky) still validates — a pure angular gate would reject it.
+const AXIS_CLEAR_M = 2.5;
+const _axisDir = new THREE.Vector3();
+
+// In-view arrival: strictly inside the camera field with a metric off-axis
+// clearance, so a blinked Enderman stays visible without ever sitting in
+// your face. The old gate (half-to-double half-FOV) read near-center at TNT
+// ranges and pushed every TNT teleport out of view by default.
+function inViewSpot(camera, x, y, z, h) {
+  if (frustumM(camera, x, y, z, h) > 1) return false;
+  camera.getWorldDirection(_axisDir);
+  const dx = x - camera.position.x, dy = (y + h * 0.5) - camera.position.y, dz = z - camera.position.z;
+  const axial = dx * _axisDir.x + dy * _axisDir.y + dz * _axisDir.z;
+  if (axial <= 0) return false;
+  const lateral = Math.sqrt(Math.max(0, dx * dx + dy * dy + dz * dz - axial * axial));
+  return lateral >= AXIS_CLEAR_M;
+}
+
+// Line-of-sight to the arrival: the first solid strictly before the point
+// blocks the view (liquids never block). Same occlusion rule as the stare.
+function losClearSpot(camera, x, y, z, h) {
+  const tx = x, ty = y + h * 0.5, tz = z;
+  const dx = tx - camera.position.x, dy = ty - camera.position.y, dz = tz - camera.position.z;
+  const len = Math.hypot(dx, dy, dz) || 1;
+  _spotDir.set(dx / len, dy / len, dz / len);
+  const block = pickBlock(camera.position, _spotDir, true, len, Math.ceil(len * 2) + 8);
+  return !block || block.t >= len - 0.6;
 }
 
 export function notifyEndermanVoxelChange(changed, camera, dimName = null) {
@@ -623,52 +724,14 @@ export function notifyEndermanVoxelChange(changed, camera, dimName = null) {
       relevant = true; break;
     }
     if (!relevant) continue;
-    if (mob.dim === "end") {
-      if (endermanIntersectsSolid(mob) || !endermanHasSupport(mob)) teleportEnderman(mob, camera);
-      continue;
-    }
-    // Outside the End there is no platform teleport: rise in place for a
-    // free supported cell, else stay where placed.
-    if (!aabbFreeIn(mob.dim, mob.pos.x, mob.pos.y, mob.pos.z, mob.hw, mob.h) ||
-        !supportIn(mob.dim, mob.pos.x, mob.pos.y, mob.pos.z, mob.hw)) {
-      for (let t = 0; t < 6; t++) {
-        const yy = mob.pos.y + t;
-        if (aabbFreeIn(mob.dim, mob.pos.x, yy, mob.pos.z, mob.hw, mob.h) &&
-            supportIn(mob.dim, mob.pos.x, yy, mob.pos.z, mob.hw)) {
-          mob.root.position.set(mob.pos.x, yy, mob.pos.z);
-          mob.pos.copy(mob.root.position);
-          break;
-        }
-      }
-    }
+    // Any dimension: an undermined Enderman teleports out, capped to its
+    // world band (a bandless column or a full band stays in place).
+    if (!endermanHasSupport(mob)) tryTeleport(mob, camera, "undermined");
   }
 }
 
-function tickEnderman(mob, dt, camera) {
+function tickEnderman(mob, dt, camera, ctx = null) {
   mob.t += dt;
-  if (mob.dim !== "end") {
-    // Generic idle outside the End (movement rework stays with the user):
-    // face the camera, breathe the arms, hold the placed spot.
-    const dx = camera.position.x - mob.pos.x, dz = camera.position.z - mob.pos.z;
-    if (Math.hypot(dx, dz) > 0.001) mob.root.rotation.y = Math.atan2(dx, dz);
-    mob.yaw = mob.root.rotation.y;
-    const phase = mob.t * 1.8;
-    mob.armL.rotation.x = Math.sin(phase) * 0.06;
-    mob.armR.rotation.x = Math.sin(phase + 0.6) * 0.06;
-    if (!aabbFreeIn(mob.dim, mob.pos.x, mob.pos.y, mob.pos.z, mob.hw, mob.h) ||
-        !supportIn(mob.dim, mob.pos.x, mob.pos.y, mob.pos.z, mob.hw)) {
-      for (let t = 0; t < 6; t++) {
-        const yy = mob.pos.y + t;
-        if (aabbFreeIn(mob.dim, mob.pos.x, yy, mob.pos.z, mob.hw, mob.h) &&
-            supportIn(mob.dim, mob.pos.x, yy, mob.pos.z, mob.hw)) {
-          mob.root.position.set(mob.pos.x, yy, mob.pos.z);
-          break;
-        }
-      }
-    }
-    mob.pos.copy(mob.root.position);
-    return;
-  }
   if (mob.angryTime > 0) mob.angryTime = Math.max(0, mob.angryTime - dt);
   if (mob.redTime > 0) mob.redTime = Math.max(0, mob.redTime - dt);
   const dx = camera.position.x - mob.pos.x, dz = camera.position.z - mob.pos.z;
@@ -682,19 +745,34 @@ function tickEnderman(mob, dt, camera) {
   mob.eyesMat.color.setHex(mob.redTime > 0 || mob.lookTime > 0 ? 0xff2222 : 0xb44cff);
   if (mob.angryTime > 0) return;
   // Safety net for voxel changes from any source (blasts, chain batches):
-  // a buried or undermined Enderman teleports out on the next sim frame.
-  if (endermanIntersectsSolid(mob) || !endermanHasSupport(mob)) {
-    teleportEnderman(mob, camera);
+  // an undermined Enderman teleports out on the next sim frame.
+  if (!endermanHasSupport(mob)) {
+    tryTeleport(mob, camera, "undermined");
     return;
+  }
+  // Pre-contact dodge: a mob or the player about to collide teleports the
+  // Enderman out just before contact (band-capped; a full band holds).
+  if (ctx && bandOf(mob.dim, mob.pos.y) !== "none") {
+    const self = {
+      pos: mob.pos, yaw: mob.yaw, hw: mob.hw,
+      nose: mob.nose ?? { along: 0, r: 0 }, tail: mob.tail ?? { along: 0, r: 0 },
+      alive: true, dim: mob.dim, type: "enderman", speed: 0,
+    };
+    const seen = shouldDodge({
+      self, peers: ctx.mobs ?? [], player: ctx.player ?? null,
+      playerHw: PLAYER_HW, mobRank,
+    });
+    if (seen.dodge) {
+      tryTeleport(mob, camera, "dodge");
+      return;
+    }
   }
   if (endermanLookedAt(mob, camera)) {
     mob.lookTime += dt;
-    if (mob.lookTime >= 0.3) teleportEnderman(mob, camera);
+    if (mob.lookTime >= 0.3) tryTeleport(mob, camera, "stare");
   } else mob.lookTime = Math.max(0, mob.lookTime - dt * 2);
   mob.pos.copy(mob.root.position);
 }
-
-function mobsOfType(type) { return [...mobs].filter((m) => m.type === type && m.alive); }
 
 function disposeEndMob(mob) {
   mob.homingUnregister?.();
@@ -744,13 +822,13 @@ export function listEndMobs() {
 
 registerMobSource("end", listEndMobs);
 
-export function tickEndMobs(dt, camera, dimName = null) {
+export function tickEndMobs(dt, camera, dimName = null, ctx = null) {
   for (const mob of mobs) {
     if (!mob.alive) continue;
     if (dimName && mob.root) mob.root.visible = mob.dim === dimName;
     if (dimName && mob.dim !== dimName) continue;
     if (isCarried(mob)) continue; // grab hook owns the frame: frozen mid-hold
-    mobType(mob.type)?.tick?.(mob, dt, camera);
+    mobType(mob.type)?.tick?.(mob, dt, camera, ctx);
   }
 }
 

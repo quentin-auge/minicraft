@@ -81,8 +81,8 @@ import {
   rocketEditingBlocked, rocketSolidAt, rocketFlying, carryRiders,
 } from "./src/vehicles/rocket.js";
 import { initHomingTnt, fireHomingTnt, tickHomingTnt, clearHomingTnt } from "./src/mobs/homing.js";
-import { enterEndMobs, clearEndMobs, clearEndermenDim, tickEndMobs, notifyEndermanVoxelChange, dragonHealth, setDragonVictoryHook, setMobSeed } from "./src/mobs/end.js";
-import { enterFarmMobs, clearFarmMobs, tickFarmMobs, handleFarmTravel, setFarmSeed } from "./src/mobs/farm.js";
+import { enterEndMobs, clearEndMobs, clearEndermenDim, tickEndMobs, takeTeleportFail, notifyEndermanVoxelChange, dragonHealth, setDragonVictoryHook, setMobSeed } from "./src/mobs/end.js";
+import { enterFarmMobs, clearFarmMobs, listFarmMobs, tickFarmMobs, handleFarmTravel, setFarmSeed } from "./src/mobs/farm.js";
 import { spawnCatalog, spawnMobAt, spawnSelection, nextSpawnKey } from "./src/mobs/spawn.js";
 import { mobLabel, mobType, allMobs } from "./src/mobs/registry.js";
 import { openMobMenu, initMobMenu } from "./src/ui/mobmenu.js";
@@ -1088,10 +1088,11 @@ document.addEventListener("keyup", (e) => {
           // like a grapple release that re-holds.
           const dims = key ? mobType(key)?.footprint?.() : null;
           if (key && dims) {
+            const like = { hw: dims.hw, h: dims.h, alive: true, dim };
             const peers = allMobs().filter((o) => o.alive && (o.dim ?? dim) === dim);
             const spot = mobReleaseSpot(isSolid, dims.hw, dims.h,
               hit.x, hit.y, hit.z, hit.face,
-              (x, y, z) => releasePeerFree(peers, { hw: dims.hw, h: dims.h, alive: true, dim }, x, y, z));
+              (x, y, z) => releasePeerFree(peers, like, x, y, z));
             if (spot) {
               const yaw = Math.atan2(_spawnDir.x, _spawnDir.z);
               mob = spawnMobAt(key, {
@@ -1281,7 +1282,12 @@ function loop(now) {
       if (touched.length) notifyEndermanVoxelChange(touched, camera, dim);
     }, pos.x, pos.y, pos.z, scene.fog.far);
     tickHomingTnt(sdt, dim);
-    tickEndMobs(sdt, camera, dim);
+    tickEndMobs(sdt, camera, dim, {
+      mobs: listFarmMobs(),
+      player: { x: pos.x, y: pos.y, z: pos.z, vx: vel.x, vz: vel.z },
+    });
+    const enderFail = takeTeleportFail();
+    if (enderFail) toast(enderFail);
     tickFarmMobs(sdt, dim);
     // Target debug: the selection follows the aim while C is held, and
     // an active target ends when its plan does (arrival or give-up).
