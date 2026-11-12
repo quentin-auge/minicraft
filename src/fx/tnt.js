@@ -448,8 +448,8 @@ function D(R, per, min, max) { return denseCount(R, per, min, max); }
 // authored in base seconds, and the shared clock paces them.
 export const MEGA_BLAST_TIME_SCALE = 1;
 export const MEGA_BLAST_T = 2.2 * MEGA_BLAST_TIME_SCALE;
-// Pooled and ultra union shells share one cap: a full-level sphere would be
-// screens of overdraw, while R64 already reads as enormous.
+// Pooled-mega union shell cap: a full-level sphere would be screens of
+// overdraw, while R64 already reads as enormous.
 export const MEGA_UNION_SHELL_R = 64;
 function blastSeconds(s) { return s * MEGA_BLAST_TIME_SCALE; }
 function blastSpeed(v) {
@@ -579,10 +579,10 @@ function spawnMegaBlastFx(x, y, z, kind, mult = 1, fx = null) {
 }
 // Single pooled-blast light, shared by all members (uploads flush in
 // drainFxJobs, so queued members never pay per-member re-uploads).
-function poolLight(ax, ay, az, R, key, color = null) {
+function poolLight(ax, ay, az, R, key, color = null, mult = 1) {
   if (sceneRef) {
     const col = color ?? 0xff8a2a;
-    const L = new THREE.PointLight(col, 900, Math.max(60, R * 3), 1.6);
+    const L = new THREE.PointLight(col, 900 * mult, Math.max(60, R * 3), 1.6);
     L.position.set(ax + 0.5, ay + 2.5, az + 0.5);
     sceneRef.add(L);
     const life = blastSeconds(1.2);
@@ -592,10 +592,19 @@ function poolLight(ax, ay, az, R, key, color = null) {
 
 // Single ultra mix: tornado, fat shock rings, wall, trimmed Titan smoke —
 // one sim-time FX job per phase: each canonical style spawns alone through
-// the shared mega dispatcher (full recipe, particles only — no mesh shells
-// or flash spheres at full-level radius), so phases never evict each other
+// the shared mega dispatcher (particles only at full-level radius — mesh
+// shells and flash spheres would be screens of overdraw there, so the blast
+// adds its own capped one below instead), so phases never evict each other
 // from the pools. The rings burn fat and centered: ×1.4 radius, ×4
 // thickness, ×1.2 duration. The band carve underneath is unchanged.
+// Presentation (data only — the engine dispatches through the flags, never
+// a name): the inferno mix — lens burst + strong overlay + close-range FOV
+// kick, density ×1.5, light ×1.5, particles only (no flash-sphere fireball:
+// the full-level phases already read as one blast without mesh overdraw).
+const ULTRA_FX = { camBurst: true, camR: 16, overlay: [1.0, 0.8], fovKick: 5, fovRange: 96, share: 1.5, lightMult: 1.5 };
+export function ultraFxSpec() {
+  return ULTRA_FX;
+}
 const ULTRA_PHASES = [
   { style: "tornado", delay: 0 },
   { style: "rings", delay: 0.25 },
@@ -606,17 +615,18 @@ const ULTRA_RING_R = 1.4, ULTRA_RING_DUR = 1.2;
 function spawnUltraBlastFx(x, y, z, kind) {
   // lifeScale is applied when each job drains (see spawnMegaBlastFx): the
   // queued job only carries the authored phase options.
+  const f = ultraFxSpec();
   for (const phase of ULTRA_PHASES) {
     const isRing = phase.style === "rings";
     fxJobs.push({
-      x, y, z, kind, k: 1, share: 1, shells: false, shellMode: "off",
+      x, y, z, kind, k: 1, share: f.share, shells: false, shellMode: "off",
       key: phase.style, delay: 0,
       R: isRing ? ULTRA_FULL_R * ULTRA_RING_R : ULTRA_FULL_R,
       lifeScale: (phase.lifeScale ?? 1) * (isRing ? ULTRA_RING_DUR : 1),
       due: simNow + blastSeconds(phase.delay ?? 0),
     });
   }
-  poolLight(x, y, z, ULTRA_FULL_R, "ultra", 0xff7a1a);
+  poolLight(x, y, z, ULTRA_FULL_R, "ultra", 0xff7a1a, ULTRA_FX.lightMult);
 }
 
 // Ultra bands: the overworld is wiped one altitude band per blast — ground
@@ -687,12 +697,6 @@ const bandJobs = []; // { cx..cz, band, yLo, yHi, kind, cols, ci, cells, celli, 
 const blastRefreshPending = new Set(); // chunk keys
 export function bandActive() {
   return bandJobs.length > 0;
-}
-// Current front for the sustained camera shake in main.js (null when idle).
-export function bandFront() {
-  const j = bandJobs[0];
-  if (!j) return null;
-  return { x: j.cx + 0.5, y: j.cy + 0.5, z: j.cz + 0.5, r: Math.sqrt(j.front2) };
 }
 // Chunks touched by a batched blast: queue for the budgeted remesh drain
 // instead of rebuilding inline (the chain and mid-band paths both use this).
@@ -935,9 +939,8 @@ function drainBandJobs(dt) {
 
 // One band wipe: same-band lit fuses and queued blasts die with the band;
 // cross-band fuses survive unless an edge TNT chains into them. In window
-// mode everything inside the window dies. Columns carve across frames. Shake
-// fires once at full reach; main.js sustains it while the camera sits inside
-// the front via bandFront().
+// mode everything inside the window dies. Columns carve across frames; shake
+// fires once (one impulse plus decay, like mega).
 function explodeBand(cx, cy, cz, kind, refresh) {
   removeSprite(cx + "," + cy + "," + cz, kind);
   const u = dimUltra(dim);
@@ -1005,9 +1008,11 @@ function applyMegaKnockback(cx, cy, cz, kind, R = kind.radius) {
     let d = Math.hypot(dx, dy, dz);
     if (d < 0.001) { dx = 1; dy = 0; dz = 0; d = 0.001; }
     // Straight-line shove: uniform 1.5R travel from the center, always —
-    // the decaying impulse travels v0 / KNOCK_DECAY. Capped against wall
-    // tunneling (master threw at 70); bigger clusters land slightly short.
-    const spd = Math.min(75, 1.5 * R * KNOCK_DECAY);
+    // the decaying impulse travels v0 / KNOCK_DECAY. Peak capped at the R40
+    // need (1.5*40*2.2 = 132) so big pools land as far as ground launches;
+    // wall tunneling at that speed is absorbed by the 0.5-substepped X/Z
+    // movers (master threw at 70).
+    const spd = Math.min(132, 1.5 * R * KNOCK_DECAY);
     addPlayerKnockback((dx / d) * spd, (dy / d) * spd, (dz / d) * spd);
     setOnGround(false);
     return;
@@ -2084,7 +2089,7 @@ function explodePool(cx, cy, cz, kind) {
     // Knockback stays on R (max member crater): launch physics unchanged,
     // whatever the visual union looks like.
     applyMegaKnockback(ax, ay, az, kind, R);
-    // Gameplay overlays and shake retain one pool-wide centroid/range.
+    // Gameplay overlays and shake share one pool-wide centroid/range.
     if (onBlast) onBlast(ax, ay, az, Rfx, kind.key);
     if (totalCols <= 2600) {
       const touched = [];

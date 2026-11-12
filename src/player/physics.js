@@ -214,9 +214,9 @@ function tryFlyStep(body, bx, by, bz) {
   return true;
 }
 
-function moveAxisX(dx, body = playerBody, step = true, flyStep = false) {
+function moveAxisXStep(dx, body = playerBody, step = true, flyStep = false) {
   body.pos.x += dx;
-  if (dx === 0) return;
+  if (dx === 0) return false;
   const dir = dx > 0 ? 1 : -1;
   const edge = dir > 0 ? body.pos.x + PLAYER_HW : body.pos.x - PLAYER_HW;
   const cellX = Math.floor(edge);
@@ -225,22 +225,35 @@ function moveAxisX(dx, body = playerBody, step = true, flyStep = false) {
       if (!solidForMove(cellX, by, bz)) continue;
       if (dir > 0 && edge > cellX) {
         if (step) { if (!tryStep(cellX, by, bz)) body.vel.x = 0; }
-        else if (flyStep) { if (!tryFlyStep(body, cellX, by, bz)) { body.vel.x = 0; } else return; }
+        else if (flyStep) { if (!tryFlyStep(body, cellX, by, bz)) { body.vel.x = 0; } else return true; }
         else body.vel.x = 0;
-        body.pos.x = cellX - PLAYER_HW - 0.001; return;
+        body.pos.x = cellX - PLAYER_HW - 0.001; return false;
       }
       if (dir < 0 && edge < cellX + 0.999) {
         if (step) { if (!tryStep(cellX, by, bz)) body.vel.x = 0; }
-        else if (flyStep) { if (!tryFlyStep(body, cellX, by, bz)) { body.vel.x = 0; } else return; }
+        else if (flyStep) { if (!tryFlyStep(body, cellX, by, bz)) { body.vel.x = 0; } else return true; }
         else body.vel.x = 0;
-        body.pos.x = cellX + 1 + PLAYER_HW + 0.001; return;
+        body.pos.x = cellX + 1 + PLAYER_HW + 0.001; return false;
       }
     }
+  return false;
 }
 
-function moveAxisZ(dz, body = playerBody, step = true, flyStep = false) {
+function moveAxisX(dx, body = playerBody, step = true, flyStep = false) {
+  // Substepped like Y (0.5 blocks): blast knockback now peaks at 132 blocks/s,
+  // so a single frame can span several cells — one edge test at the final
+  // position would jump thin walls. Single substep at walk/fly speeds.
+  const n = Math.max(1, Math.ceil(Math.abs(dx) / 0.5));
+  const s = dx / n;
+  for (let i = 0; i < n; i++) {
+    moveAxisXStep(s, body, step, flyStep);
+    if (body.vel.x === 0) break;
+  }
+}
+
+function moveAxisZStep(dz, body = playerBody, step = true, flyStep = false) {
   body.pos.z += dz;
-  if (dz === 0) return;
+  if (dz === 0) return false;
   const dir = dz > 0 ? 1 : -1;
   const edge = dir > 0 ? body.pos.z + PLAYER_HW : body.pos.z - PLAYER_HW;
   const cellZ = Math.floor(edge);
@@ -249,17 +262,29 @@ function moveAxisZ(dz, body = playerBody, step = true, flyStep = false) {
       if (!solidForMove(bx, by, cellZ)) continue;
       if (dir > 0 && edge > cellZ) {
         if (step) { if (!tryStep(bx, by, cellZ)) body.vel.z = 0; }
-        else if (flyStep) { if (!tryFlyStep(body, bx, by, cellZ)) { body.vel.z = 0; } else return; }
+        else if (flyStep) { if (!tryFlyStep(body, bx, by, cellZ)) { body.vel.z = 0; } else return true; }
         else body.vel.z = 0;
-        body.pos.z = cellZ - PLAYER_HW - 0.001; return;
+        body.pos.z = cellZ - PLAYER_HW - 0.001; return false;
       }
       if (dir < 0 && edge < cellZ + 0.999) {
         if (step) { if (!tryStep(bx, by, cellZ)) body.vel.z = 0; }
-        else if (flyStep) { if (!tryFlyStep(body, bx, by, cellZ)) { body.vel.z = 0; } else return; }
+        else if (flyStep) { if (!tryFlyStep(body, bx, by, cellZ)) { body.vel.z = 0; } else return true; }
         else body.vel.z = 0;
-        body.pos.z = cellZ + 1 + PLAYER_HW + 0.001; return;
+        body.pos.z = cellZ + 1 + PLAYER_HW + 0.001; return false;
       }
     }
+  return false;
+}
+
+function moveAxisZ(dz, body = playerBody, step = true, flyStep = false) {
+  // Same 0.5 substep as X (see above): one edge test per frame tunnels at
+  // blast-knockback speeds.
+  const n = Math.max(1, Math.ceil(Math.abs(dz) / 0.5));
+  const s = dz / n;
+  for (let i = 0; i < n; i++) {
+    moveAxisZStep(s, body, step, flyStep);
+    if (body.vel.z === 0) break;
+  }
 }
 
 function moveAxisYStep(dy, body = playerBody, step = true) {

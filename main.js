@@ -24,7 +24,7 @@ import { flyOn, setFly, updateFly } from "./src/player/fly.js";
 import { updateTarget, breakTarget, placeAtSelection, breakBlockAt, pickBlock, tryPlace, currentBlock, flushChainBatch, purgeFloatingLiquidsAround, takeLiquidCells, endChainStroke, clearChainStroke } from "./src/player/edit.js";
 import { fireHookTarget, fireSkyHook, grapplePick, mobGrabTarget, mobReleaseTarget, cancelHook, severHook, updateHook, hookActive, hookHeldSwim, hookAnchor, tickHookFx, setMobAlpha, HELD_ALPHA } from "./src/player/hook.js";
 import { initRope } from "./src/player/rope.js";
-import { tickTNT, initTNTFx, resetTNTMemory, clearRegularTntDim, onExplode, onLiquidPurge, shakeSpecFor, bandFront, bandActive, drainBlastRemesh, queueBlastRefresh, megaImminent, megaCarveActive, megaFxActive, MEGA_BLAST_T, MEGA_BLAST_TIME_SCALE } from "./src/fx/tnt.js";
+import { tickTNT, initTNTFx, resetTNTMemory, clearRegularTntDim, onExplode, onLiquidPurge, shakeSpecFor, bandActive, drainBlastRemesh, queueBlastRefresh, megaImminent, megaCarveActive, megaFxActive, MEGA_BLAST_T, MEGA_BLAST_TIME_SCALE, ultraFxSpec } from "./src/fx/tnt.js";
 import { initFx, tickFx, tickDenseFx, denseFxActive, prewarmDenseFx, spawnDense, flushDense, noteDenseSpawn } from "./src/fx/particles.js";
 import { initPrecip, tickSnow } from "./src/fx/precip.js";
 import { MOON_MIN_Y, MOON_R, generateMoon, generateMoonUnderRows, joinMoonLakeWater, markMoonBuilt, moonReady, moonChunkCenters, findMoonSpawn, isMoonGone } from "./src/world/moon.js";
@@ -184,11 +184,23 @@ function updateBossBar() {
 }
 
 // Mega-blast camera shake (master: trauma capped at 1.5, decays 1.4/s,
-// rotational + positional jitter scaled by trauma^1.5). Three zones per
-// kind shake spec: max inside the blast, linear decay to 2x range,
-// exponential decay to 3x. Kinds without a spec don't shake.
+// rotational + positional jitter scaled by trauma^1.5). One impulse per
+// detonation, three zones per kind shake spec: max inside the blast,
+// linear decay to 2x range, exponential decay to 3x — no sustain, same
+// duration everywhere (1/2/3/4+, ground/fly, mega/ultra). Kinds without a
+// spec don't shake.
 let camTrauma = 0;
 function addCamShake(a) { camTrauma = Math.min(1.5, camTrauma + a); }
+// Flames around the lens: a camera-centered dense burst (depth test already
+// off), so every look direction burns. Shared by point-blank mega (R12) and
+// close-range ultra (spec radius).
+function spawnLensBurst(R) {
+  const FIRE = [[1, 0.8, 0.1], [1, 0.45, 0.05], [0.9, 0.1, 0.02]];
+  spawnDense({ x: camera.position.x, y: camera.position.y, z: camera.position.z, R, role: "fire", count: 3500, life: 0.9 * MEGA_BLAST_TIME_SCALE, palette: FIRE, speedMin: 2, speedMax: 10, up: 3, gravity: -4, size: 34, shape: "ball", occlude: false });
+  spawnDense({ x: camera.position.x, y: camera.position.y, z: camera.position.z, R, role: "ember", count: 1500, life: 0.7 * MEGA_BLAST_TIME_SCALE, color: [1, 0.95, 0.85], variance: [0, 0.04, 0.06], speedMin: 4, speedMax: 14, up: 5, gravity: -3, size: 26, shape: "ball", occlude: false });
+  flushDense();
+  noteDenseSpawn(1.2 * MEGA_BLAST_TIME_SCALE);
+}
 // Blast line of sight: voxel march from the eye to the blast center, blocked
 // by the first opaque cube. Cheap (≤ a few hundred Map gets) and evaluated
 // once per detonation — overlays never glare through rock.
@@ -220,8 +232,8 @@ onExplode((cx, cy, cz, radius, kindKey) => {
   addCamShake(amp);
   // Mega ignition punches the fullscreen flash; the sim branch decays it.
   // DPR dips immediately so the blast frame itself renders cheap.
-  // Point-blank (camera inside the crater): full-screen fire, max shake,
-  // FOV kick — you feel the furnace instead of watching it decay.
+  // Point-blank (camera inside the crater): full-screen fire, FOV kick.
+  // The detonation punch always fires; there is no fire tail.
   // Outside the crater the overlays need line of sight: a blast behind a
   // hill shakes the camera but never glares through rock.
   if (kindKey === "mega" || kindKey === "ultra") {
@@ -234,26 +246,21 @@ onExplode((cx, cy, cz, radius, kindKey) => {
     if (kindKey === "mega") {
       if (inside) {
         fireMegaOverlay(1.0, 1.0);
-        addCamShake(1.5);
         fovKickV = 5;
-        // Flames around the lens: a camera-centered dense burst (depth test
-        // already off), so every look direction burns.
-        const FIRE = [[1, 0.8, 0.1], [1, 0.45, 0.05], [0.9, 0.1, 0.02]];
-      spawnDense({ x: camera.position.x, y: camera.position.y, z: camera.position.z, R: 12, role: "fire", count: 3500, life: 0.9 * MEGA_BLAST_TIME_SCALE, palette: FIRE, speedMin: 2, speedMax: 10, up: 3, gravity: -4, size: 34, shape: "ball", occlude: false });
-      spawnDense({ x: camera.position.x, y: camera.position.y, z: camera.position.z, R: 12, role: "ember", count: 1500, life: 0.7 * MEGA_BLAST_TIME_SCALE, color: [1, 0.95, 0.85], variance: [0, 0.04, 0.06], speedMin: 4, speedMax: 14, up: 5, gravity: -3, size: 26, shape: "ball", occlude: false });
-      flushDense();
-      noteDenseSpawn(1.2 * MEGA_BLAST_TIME_SCALE);
-        // Furnace mode: fire around you for the blast's own lifetime, then out.
-        furnace = { cx: cx + 0.5, cy: cy + 0.5, cz: cz + 0.5, R: radius, t: simTime, burps: [0.8 * MEGA_BLAST_TIME_SCALE, 1.6 * MEGA_BLAST_TIME_SCALE], nextWave: 0.25 * MEGA_BLAST_TIME_SCALE, nextSmoke: 1.2 * MEGA_BLAST_TIME_SCALE };
+        spawnLensBurst(12);
       } else if (seen) {
         fireMegaOverlay(0.45, 0.15);
       }
-      lastMegaBlast = { x: cx + 0.5, y: cy + 0.5, z: cz + 0.5, R: radius, t: simTime };
     } else if (seen) {
-      // Ultra overlay is fixed. No point-blank furnace: its full-level
-      // radius would latch fire everywhere. Band shake already sustains
-      // through bandFront(), and band carve dips the resolution.
-      fireMegaOverlay(0.9, 0.4);
+      // Ultra overlay follows the inferno spec. Close range adds a lens
+      // burst + FOV kick like a point-blank mega; far away the overlay
+      // alone carries it. Destruction runs its normal band wipe.
+      const uf = ultraFxSpec();
+      fireMegaOverlay(uf.overlay[0], uf.overlay[1]);
+      if (uf.camBurst && dc < uf.fovRange) {
+        spawnLensBurst(uf.camR);
+        fovKickV = uf.fovKick;
+      }
     }
     fxDip = true;
     renderer.setPixelRatio(1);
@@ -267,18 +274,13 @@ let megaFlashEl = null, megaVeilEl = null;
 // Master blast timeline (sim-time seconds from detonation): every mega
 // explosion — inside or outside the crater, R=15 or a 20-mega pool — ends
 // on this clock. Presence inside only changes intensity, never duration.
-// Imported from tnt.js so particles, blast light, shake, and overlays all
-// share the doubled post-detonation timeline.
+// Imported from tnt.js so particles, blast light, and overlays all share
+// the post-detonation timeline. Shake itself is one impulse plus decay
+// (no sustain): same duration everywhere.
 const BLAST_T = MEGA_BLAST_T;
-// Last mega blast (sim-time stamped): sustains max shake + FOV while the
-// camera stays inside the crater. FOV kick decays back to 75 on sim-time.
-let lastMegaBlast = null;
+// Last-blast FOV kick decays back to 75 on sim-time.
 let fovKickV = 0;
 const BASE_FOV = 75;
-// Furnace mode: a point-blank mega keeps fire on you for BLAST_T only —
-// ember waves + crater burps + veil floor while inside; leaving the crater
-// stops it immediately.
-let furnace = null;
 function fireMegaOverlay(flash, veil) {
   if (!megaFlashEl) megaFlashEl = document.getElementById("blastFlash");
   if (!megaVeilEl) megaVeilEl = document.getElementById("fireVeil");
@@ -1344,68 +1346,6 @@ function loop(now) {
       if (megaVeilEl) {
         megaVeilEl.style.opacity = String(megaVeilV);
         if (megaVeilV <= 0) megaVeilEl.style.display = "none";
-      }
-    }
-    // Ultra bands re-top the shake while the camera sits inside the
-    // advancing front (decays naturally once outside); pause-safe, world-time.
-    const bf = bandFront();
-    if (bf) {
-      const bdx = camera.position.x - bf.x, bdy = camera.position.y - bf.y, bdz = camera.position.z - bf.z;
-      if (bdx * bdx + bdy * bdy + bdz * bdz < bf.r * bf.r) addCamShake(sdt * 2);
-    }
-    // Ground-zero sustain: while the camera stays inside the last mega
-    // crater (BLAST_T window), trauma re-tops to the cap every frame instead
-    // of decaying — the furnace keeps shaking at full blast under you.
-    if (lastMegaBlast && simTime - lastMegaBlast.t < BLAST_T) {
-      const mdx = camera.position.x - lastMegaBlast.x;
-      const mdy = camera.position.y - lastMegaBlast.y;
-      const mdz = camera.position.z - lastMegaBlast.z;
-      if (mdx * mdx + mdy * mdy + mdz * mdz < lastMegaBlast.R * lastMegaBlast.R) addCamShake(sdt * 3);
-    } else if (lastMegaBlast) {
-      lastMegaBlast = null;
-    }
-    // Furnace tick: 5 s of fire around the lens after a point-blank mega.
-    // Veil floor while inside; ember waves + crater burps follow you ~1.5 s
-    // Furnace: fire follows you, but only for the blast's own lifetime
-    // (BLAST_T — never longer) and only while you're inside the crater —
-    // the moment you leave, it stops. Intensity differs inside/outside,
-    // the timeline never does. All on sim-time (pause-safe).
-    if (furnace) {
-      const age = simTime - furnace.t;
-      const fdx = camera.position.x - furnace.cx;
-      const fdy = camera.position.y - furnace.cy;
-      const fdz = camera.position.z - furnace.cz;
-      const fin = fdx * fdx + fdy * fdy + fdz * fdz < furnace.R * furnace.R;
-      if (age > BLAST_T) {
-        furnace = null;
-      } else {
-        if (fin) {
-          // Degressive floor: same 2.2 s end as outside, brighter while in.
-          megaVeilV = Math.max(megaVeilV, 0.85 * (1 - age / BLAST_T));
-          addCamShake(sdt * 3);
-        }
-        if (fin) {
-          if (age >= furnace.nextWave) {
-            furnace.nextWave = age + 0.25 * MEGA_BLAST_TIME_SCALE;
-            const F2 = [[1, 0.8, 0.1], [1, 0.45, 0.05], [0.9, 0.1, 0.02]];
-            spawnDense({ x: camera.position.x, y: camera.position.y, z: camera.position.z, R: 12, role: "fire", count: 2200, life: 0.8 * MEGA_BLAST_TIME_SCALE, palette: F2, speedMin: 2, speedMax: 9, up: 3, gravity: -4, size: 32, shape: "ball", occlude: false });
-            spawnDense({ x: camera.position.x, y: camera.position.y, z: camera.position.z, R: 12, role: "ember", count: 1200, life: 0.7 * MEGA_BLAST_TIME_SCALE, color: [1, 0.9, 0.75], variance: [0, 0.05, 0.06], speedMin: 4, speedMax: 12, up: 5, gravity: -3, size: 24, shape: "ball", occlude: false });
-            flushDense();
-            noteDenseSpawn(1.0 * MEGA_BLAST_TIME_SCALE);
-          }
-          if (age >= furnace.nextSmoke) {
-            furnace.nextSmoke = age + 1.2 * MEGA_BLAST_TIME_SCALE;
-            spawnDense({ x: camera.position.x, y: camera.position.y, z: camera.position.z, R: 14, role: "smoke", count: 1500, life: 1.8 * MEGA_BLAST_TIME_SCALE, color: [0.25, 0.2, 0.17], variance: [0.08, 0.08, 0.08], speedMin: 1, speedMax: 5, up: 8, gravity: -3, size: 46, shape: "ball", occlude: false });
-            flushDense();
-            noteDenseSpawn(2.0 * MEGA_BLAST_TIME_SCALE);
-          }
-        }
-        while (furnace.burps.length && age >= furnace.burps[0]) {
-          furnace.burps.shift();
-          spawnDense({ x: furnace.cx, y: furnace.cy, z: furnace.cz, R: furnace.R * 0.4, role: "fire", count: 2200, life: 1.1 * MEGA_BLAST_TIME_SCALE, palette: [[1, 0.8, 0.1], [1, 0.45, 0.05], [0.9, 0.1, 0.02]], speedMin: 3, speedMax: 11, up: 10, gravity: -5, size: 30, shape: "ball" });
-          flushDense();
-          noteDenseSpawn(1.3 * MEGA_BLAST_TIME_SCALE);
-        }
       }
     }
     tickPortals(sdt, true);
