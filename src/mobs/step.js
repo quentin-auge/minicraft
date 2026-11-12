@@ -9,7 +9,7 @@
 // (stepVertical), and the shared lane teardown (dropLane). Three-free;
 // positions are plain {x, y, z}.
 import { BLOCK_INFO, isLiquid } from "../core/blocks.js";
-import { getBlock } from "../core/store.js";
+import { getBlock, dimInfinite } from "../core/store.js";
 import { dropAllowed, floatTargetY } from "./livestock.js";
 import { normYaw } from "./corridor.js";
 
@@ -35,6 +35,11 @@ export const WANDER_MAX = 10;
 export const NO_EXPIRY = 1e9;
 // Gravity for the vertical plane (farm-mob fall speed).
 export const GRAVITY = 22;
+// Support-scan depth in infinite dimensions (bounded dims scan to the y = 0
+// floor instead): outcomes stay identical — the touch rule only reads the
+// layer touching the feet, and the first solid below decides the break — at
+// bounded cost instead of walking the whole key range in a void.
+export const SUPPORT_SCAN = 8;
 // Base sim step: the mob tick integrates in exact SERVO_STEP slices, so
 // behaviour never depends on the frame's dt (V speed scales dt, never the
 // step count) — probes, corner arcs and tick-counted holds read the same
@@ -206,13 +211,18 @@ export function hasSupport(px, py, pz, hw) {
   // Footprint rule (any touching column holds): the mob walks clear of
   // a descent lip while still held, then falls it with gravity instead
   // of dropping straight onto the step's flank.
+  // Vertical datum (see ARCHITECTURE.md): bounded dims stop at the y = 0
+  // floor; infinite dims scan SUPPORT_SCAN below the feet, so platforms
+  // under y = 0 hold exactly like ground-level ones.
   const x0 = Math.floor(px - hw), x1 = Math.floor(px + hw);
   const z0 = Math.floor(pz - hw), z1 = Math.floor(pz + hw);
+  const top = Math.floor(py + 1e-3);
+  const stop = dimInfinite() ? top - SUPPORT_SCAN : 0;
   for (let bx = x0; bx <= x1; bx++)
     for (let bz = z0; bz <= z1; bz++) {
       if (bx + 1 <= px - hw || bx >= px + hw) continue;
       if (bz + 1 <= pz - hw || bz >= pz + hw) continue;
-      for (let by = Math.floor(py + 1e-3); by >= 0; by--) {
+      for (let by = top; by >= stop; by--) {
         if (isSolidCell(bx, by, bz)) {
           if (by + 1 >= py - 1e-3) return true;
           break;
@@ -237,7 +247,12 @@ export function liquidSurface(px, py, pz, hw, h) {
 
 export function groundBelow(px, py, pz) {
   const bx = Math.floor(px), bz = Math.floor(pz);
-  for (let by = Math.floor(py); by > Math.floor(py) - 8 && by >= 0; by--) {
+  const top = Math.floor(py);
+  // Vertical datum (see ARCHITECTURE.md): bounded dims stop at the y = 0
+  // floor; infinite dims scan below it — the 8-deep cap already bounds the
+  // cost either way.
+  const stop = dimInfinite() ? top - 8 : 0;
+  for (let by = top; by > top - 8 && by >= stop; by--) {
     if (isSolidCell(bx, by, bz)) return by + 1;
   }
   return null;

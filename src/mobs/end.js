@@ -5,7 +5,7 @@ import { isCarried } from "./carry.js";
 import { registerHomingTarget } from "./homing.js";
 import { pickBlock } from "../player/edit.js";
 import { BLOCK_INFO, isLiquid } from "../core/blocks.js";
-import { getBlock, getBlockIn, topAt, colLiqTop, colTopIdx } from "../core/store.js";
+import { getBlock, getBlockIn, topAt, colLiqTop, colTopIdx, dimInfinite } from "../core/store.js";
 import { PLAYER_HW } from "../player/physics.js";
 import { mobRank } from "./mover.js";
 import { bandOf, pickSpot, shouldDodge, teleportReady, armTeleportCool, boundedXZ } from "./endspots.js";
@@ -550,7 +550,9 @@ export function takeTeleportFail() {
 // ground under the footprint, or a liquid surface to float on.
 function spotSupportedDim(dimName, px, py, pz, hw) {
   const baseY = Math.floor(py + 1e-4) - 1;
-  if (baseY < 0) return false;
+  // Vertical datum (see ARCHITECTURE.md): bounded dims keep the y = 0 floor;
+  // infinite dims read footing below it too.
+  if (baseY < 0 && !dimInfinite(dimName)) return false;
   const x0 = Math.floor(px - hw), x1 = Math.floor(px + hw);
   const z0 = Math.floor(pz - hw), z1 = Math.floor(pz + hw);
   for (let bx = x0; bx <= x1; bx++) for (let bz = z0; bz <= z1; bz++) {
@@ -642,7 +644,9 @@ function spotGroundY(dimName, x, z, refY, yHi, hw) {
   const solid = topAt(dimName, x, z);
   const liq = colLiqTop[dimName]?.get(colTopIdx(x, z)) ?? -1;
   const hi = Math.min(Math.max(solid, liq), Math.ceil(refY + yHi));
-  const lo = Math.max(1, Math.floor(refY - yHi));
+  // Vertical datum (see ARCHITECTURE.md): bounded dims stop at the y = 0
+  // floor; infinite dims scan below it too.
+  const lo = dimInfinite(dimName) ? Math.floor(refY - yHi) : Math.max(1, Math.floor(refY - yHi));
   if (hi + 1 < lo) return null;
   for (let y = hi + 1; y >= lo; y--) {
     if (spotSupportedDim(dimName, x, y, z, hw)) return y;
