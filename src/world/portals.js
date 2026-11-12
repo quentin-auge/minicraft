@@ -30,6 +30,9 @@ import { DIMENSION_KEYS, dim, dimBound, key, keyXYZ, getBlock, isSolid } from ".
 import { dimFloorY, dimSpec } from "./dimensions.js";
 import { registerHaloSource } from "../render/halobake.js";
 import {
+  FILL_FLIGHT_FADE, fillBox, frameRingCells as ringCellsOf, ridingFills,
+} from "./portalfills.js";
+import {
   pos, yaw, keys,
   PLAYER_HW, PLAYER_H, EYE,
 } from "../player/physics.js";
@@ -38,6 +41,10 @@ export const PORTAL_TYPES = [
   {
     key: "end", destination: "end", enterMsg: "You entered The End",
     frame: PORTAL, fillColor: 0x000000, tunnel: "#6d28d9",
+    // Flight look only: the world fill stays the near-black End slab, the
+    // flying copy takes a readable tint so it does not vanish into the
+    // faded hull.
+    flightFill: { color: 0x150a2e, alpha: 0.75 },
     *anchorsFrom(px, py, pz) { yield* endVerticalAnchors(px, py, pz); yield* endFlatAnchors(px, py, pz); },
     evaluate(w) { return evalEndWin(w); },
     cells: endFillCells,
@@ -524,6 +531,39 @@ function fillMat(spec) {
 }
 
 const portalFills = new Map(); // key -> { win, nether, group }
+// Flight fill material: the world's fill material cloned transparent, so a
+// fill riding a hull can breathe with it. The world fill keeps its own look
+// (fog and colour included) — only the flying copy is transparent, and a
+// family may declare a flight colour when its static fill reads poorly
+// against a faded hull.
+const flightFillMats = new Map();
+export function flightFillMat(spec) {
+  let m = flightFillMats.get(spec.key);
+  if (!m) {
+    const c = fillMat(spec).clone();
+    c.transparent = true;
+    if (spec.flightFill?.color !== undefined) c.color.set(spec.flightFill.color);
+    c.userData.baseOpacity = 1;
+    c.userData.fadeOpacity = spec.flightFill?.alpha ?? FILL_FLIGHT_FADE;
+    c.opacity = 1;
+    flightFillMats.set(spec.key, m = c);
+  }
+  return m;
+}
+
+// The live fills that ride a hull holding `cellSet`: every fill whose whole
+// frame ring sits in those cells (a split ring cannot hold a fill, the same
+// scope portal validation uses). Plain data — the vehicle re-bases the box
+// into its own frame. Gate-closed windows carry no fill and never ride.
+export function ridingFillsFor(cellSet) {
+  const hasCell = (x, y, z) => cellSet.has(x + "," + y + "," + z);
+  const fills = [];
+  for (const { win } of portalFills.values()) {
+    const spec = specOf(win);
+    fills.push({ ring: frameRingCells(win), box: portalFillBox(win), spec });
+  }
+  return ridingFills(fills, hasCell);
+}
 // Every validated window, fill-backed or not: while the active dimension's
 // exits gate is closed, body overlap answers the gate instead of traveling.
 const portalWindows = new Map(); // key -> win
@@ -616,16 +656,8 @@ function rectFillCells(win) {
 }
 
 function portalFillBox(win) {
-  let x0 = Infinity, y0 = Infinity, z0 = Infinity, x1 = -Infinity, y1 = -Infinity, z1 = -Infinity;
-  for (const [x, y, z] of specOf(win).cells(win)) {
-    if (x < x0) x0 = x; if (x > x1) x1 = x;
-    if (y < y0) y0 = y; if (y > y1) y1 = y;
-    if (z < z0) z0 = z; if (z > z1) z1 = z;
-  }
-  const cx = (x0 + x1 + 1) / 2, cy = (y0 + y1 + 1) / 2, cz = (z0 + z1 + 1) / 2;
-  if (win.orient === "h") return { cx, cy, cz, sx: (x1 - x0 + 1), sy: 1, sz: (z1 - z0 + 1) };
-  if (win.face === "x") return { cx, cy, cz, sx: 1, sy: (y1 - y0 + 1), sz: (z1 - z0 + 1) };
-  return { cx, cy, cz, sx: (x1 - x0 + 1), sy: (y1 - y0 + 1), sz: 1 };
+  const b = fillBox(specOf(win).cells(win), win.orient, win.face);
+  return { cx: b.cx, cy: b.cy, cz: b.cz, sx: b.sx, sy: b.sy, sz: b.sz };
 }
 
 function layoutPortalFill(group, win) {
@@ -986,31 +1018,8 @@ function portalFacePoint(win) {
 // Real frame blocks around the window (perimeter of its bbox, filtered by the
 // spec's frame ids so omitted End corners never count).
 function frameRingCells(win) {
-  const box = portalFrameBBox(win);
-  const out = [];
-  const push = (x, y, z) => { if (isFrameCell(win, x, y, z)) out.push([x, y, z]); };
-  if (win.orient === "v") {
-    if (win.face === "x") {
-      for (let y = box.baseY; y <= box.topY; y++)
-        for (let z = box.minZ; z <= box.maxZ; z++) {
-          if (y !== box.baseY && y !== box.topY && z !== box.minZ && z !== box.maxZ) continue;
-          push(box.minX, y, z);
-        }
-    } else {
-      for (let y = box.baseY; y <= box.topY; y++)
-        for (let x = box.minX; x <= box.maxX; x++) {
-          if (y !== box.baseY && y !== box.topY && x !== box.minX && x !== box.maxX) continue;
-          push(x, y, box.minZ);
-        }
-    }
-  } else {
-    for (let x = box.minX; x <= box.maxX; x++)
-      for (let z = box.minZ; z <= box.maxZ; z++) {
-        if (x !== box.minX && x !== box.maxX && z !== box.minZ && z !== box.maxZ) continue;
-        push(x, box.baseY, z);
-      }
-  }
-  return out;
+  return ringCellsOf(portalFrameBBox(win), win.orient, win.face,
+    (x, y, z) => isFrameCell(win, x, y, z));
 }
 
 // "Seeing the portal": upright windows look at their fill face centre first,
