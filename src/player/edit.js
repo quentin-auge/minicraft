@@ -6,7 +6,7 @@ import * as THREE from "three";
 import { AIR, BLOCK_INFO, FLOWER, GLOWSTONE, TNT, isLiquid, isTntLike } from "../core/blocks.js";
 import { dim, dimInfinite, getBlock, setBlock, outOfWorld, isCellProtected } from "../core/store.js";
 import { pinTntCellAt } from "../world/tntstream.js";
-import { dimFloorY, dimHasMoon, dimTntTiersUnlocked } from "../world/dimensions.js";
+import { dimFloorY, dimTntTiersUnlocked } from "../world/dimensions.js";
 import { isTntTierUnlocked } from "../world/tntunlock.js";
 import { PLAYER_HW, PLAYER_H, pos } from "./physics.js";
 import { igniteTNT, isLitTNT, detonateNow, noteTntPlaced, kindOfBlock, trackMegaPlaced, trackRegularTntPlaced } from "../fx/tnt.js";
@@ -14,7 +14,6 @@ import { noteGlowstonePlace, noteGlowstonePlaceShared, glowVariantAt, clearGlows
 import { noteFlowerPlace, clearFlowerAt } from "../world/flowers.js";
 import { armReaction, clearReactionAt } from "../world/reactions.js";
 import { notePoolEdit } from "../render/poollights.js";
-import { MOON_FADE_Y } from "../render/regions.js";
 import { MOON_MIN_Y, markMoonDirty } from "../world/moon.js";
 import { notePortalEdit, notePortalEdits, notePortalFramesOnly } from "../world/portals.js";
 import { allMobs } from "../mobs/registry.js";
@@ -132,14 +131,6 @@ export function breakBlockAt(x, y, z, opts) {
   const batched = !!opts?.batch;
   // The dimension's floor level (null = floorless) is unbreakable by hand.
   if (y === dimFloorY(dim)) return [];
-  // Frontier rule (moon dims, discrete taps only): eye and target cell stay
-  // on the same side of the reveal plane — no breaking across it from either
-  // side, by hand or second-click TNT detonation (the normal fuse is
-  // untouched). Same eye reference as placement and the hotbar flip.
-  // Engaged chains are exempt and dig across freely. eyeY rides opts; feet
-  // are the fallback for direct callers.
-  const breakSide = (opts?.eyeY ?? pos.y) >= MOON_FADE_Y;
-  if (!batched && dimHasMoon(dim) && (y >= MOON_FADE_Y) !== breakSide) return [];
   if (isCellProtected(x, y, z)) return [];
   const bid = getBlock(x, y, z);
   if (bid === AIR) return [];
@@ -181,15 +172,6 @@ export function tryPlace(id, px, py, pz, opts) {
   // Bounded dims keep the y = 0 floor unplaceable; the infinite sky builds
   // anywhere in the key range.
   if (py < 0 && !dimInfinite()) return null;
-  // Frontier rule (moon dims, discrete taps only): eye and target cell stay
-  // on the same side of the reveal plane — no glowstone dropped from above
-  // the line, no water thrown up from below. Keyed on the eye, like the
-  // hotbar flip, so whatever the bar offers is exactly what the rule allows
-  // (a feet-keyed rule would leak a ~1.6-block straddle band). Engaged
-  // chains are exempt and cross freely (chain-placing while falling through
-  // the plane). eyeY rides opts; feet are the fallback for direct callers.
-  const side = (opts?.eyeY ?? pos.y) >= MOON_FADE_Y;
-  if (!batched && dimHasMoon(dim) && (py >= MOON_FADE_Y) !== side) return null;
   const target = getBlock(px, py, pz);
   if (!(target === AIR || isLiquid(target))) return null;
   if (BLOCK_INFO[id].solid && intersectsPlayer(px, py, pz)) return null;

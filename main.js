@@ -38,7 +38,7 @@ import { initPoolLights, tickPoolLights, resetPoolLightMemory, notePoolEdit } fr
 import { initRenderer, rebuildAll, maybeStream, streamChunks, drainChunkQueue, beginDispose, disposeSome, refreshBlocks, queueRefreshBlocks, queueRefreshKeys, takeSuspendedBuilt, setRegionFade, setRegionLiquidFog, nearestMissingDist, tickChunkFades, UNLOAD_MARGIN } from "./src/render/mesher.js";
 import { setHaloSuspended } from "./src/render/halobake.js";
 import { initChainProxy, proxyNote, proxyCull, proxyClear } from "./src/render/chainproxy.js";
-import { applyRegions, regionByKey, MOON_FADE_Y } from "./src/render/regions.js";
+import { applyRegions, regionByKey } from "./src/render/regions.js";
 import { resetItems, select, selected, selectedId, initHotbarInput, setItem, getItems } from "./src/ui/hotbar.js";
 import { initMenu, enterGame, started, isLocked } from "./src/ui/menu.js";
 import { initHelp, openHelp } from "./src/ui/help.js";
@@ -1414,16 +1414,7 @@ function loop(now) {
     const hit = rocketFlying()
       ? null
       : (rocketEditingBlocked() ? null : updateTarget(camera, selectedId()));
-    // No cursor across the moon frontier: hide the highlight when the
-    // placement cell (hit + face, like tryPlace's target) lies on the other
-    // side of the reveal plane from the eye. Visual only — hit still feeds
-    // tickChain (exempt engaged chains) and tryPlace still refuses discrete
-    // taps, so the missing cursor exactly predicts the refusal.
     let showHit = !!hit;
-    if (hit) {
-      const py = hit.y + hit.face[1];
-      if (dimHasMoon(dim) && (py >= MOON_FADE_Y) !== (camera.position.y >= MOON_FADE_Y)) showHit = false;
-    }
     if (showHit) {
       highlight.visible = true;
       highlight.position.set(hit.x + 0.5, hit.y + 0.5, hit.z + 0.5);
