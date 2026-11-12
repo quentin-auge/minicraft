@@ -22,7 +22,8 @@ import { dimUltra } from "../world/dimensions.js";
 import { CLOUD_MAX_Y } from "../world/clouds.js";
 import { rebuildChunk, isChunkBuilt, chunkKeysForColumn, refreshBlocks } from "../render/mesher.js";
 import { notePortalFramesOnly, clearPortalFills, scanWorldPortals } from "../world/portals.js";
-import { GRAVITY, pos, vel, setOnGround, addPlayerKnockback, KNOCK_DECAY } from "../player/physics.js";
+import { pos, vel, setOnGround, addPlayerKnockback, KNOCK_DECAY } from "../player/physics.js";
+import { computeMegaLaunch } from "../core/launch.js";
 import { flyOn } from "../player/fly.js";
 import { spawnBurst, spawnBurstBatch, spawnFlash, spawnFlashBatch, spawnFireballBatch, sharedFlashGeo, initBandShell, updateBandShell, hideBandShell, spawnDense, denseCount, noteDenseSpawn, resetDenseFx, flushDense } from "./particles.js";
 import { clearGlowstoneAt } from "../world/glowstone.js";
@@ -1000,11 +1001,13 @@ function explodeBand(cx, cy, cz, kind, refresh) {
 // decaying impulse (fly overwrites vel every frame, so a vel.set would die
 // on the next frame).
 function applyMegaKnockback(cx, cy, cz, kind, R = kind.radius) {
-  const px = pos.x, py = pos.y + 0.9, pz = pos.z;
-  const dx0 = px - (cx + 0.5), dy0 = py - (cy + 0.5), dz0 = pz - (cz + 0.5);
-  if (dx0 * dx0 + dy0 * dy0 + dz0 * dz0 >= R * R) return;
+  // Ground branch is the shared launcher (core/launch.js): the mob flight
+  // reads the identical arc. Fly branch stays player-only (decaying impulse
+  // through knockVel, which mobs never carry).
+  const v = computeMegaLaunch(pos.x, pos.y + 0.9, pos.z, cx, cy, cz, R);
+  if (!v) return;
   if (flyOn) {
-    let dx = dx0, dy = dy0, dz = dz0;
+    let dx = pos.x - (cx + 0.5), dy = (pos.y + 0.9) - (cy + 0.5), dz = pos.z - (cz + 0.5);
     let d = Math.hypot(dx, dy, dz);
     if (d < 0.001) { dx = 1; dy = 0; dz = 0; d = 0.001; }
     // Straight-line shove: uniform 1.5R travel from the center, always —
@@ -1017,16 +1020,7 @@ function applyMegaKnockback(cx, cy, cz, kind, R = kind.radius) {
     setOnGround(false);
     return;
   }
-  let dx = px - (cx + 0.5), dz = pz - (cz + 0.5);
-  let d0 = Math.hypot(dx, dz);
-  if (d0 < 0.001) { dx = 1; dz = 0; d0 = 0.001; } else { dx /= d0; dz /= d0; }
-  const f = Math.max(0, 1 - d0 / (R * 2));
-  const Vup = 22 + 8 * f;
-  const airT = (2 * Vup) / GRAVITY;
-  // Ballistic arc with uniform 1.5R travel from the center (V0 cap guards walls).
-  const need = 1.5 * R;
-  const V0 = Math.min(40, Math.max(4, need / Math.max(0.5, airT)));
-  vel.set(dx * V0, Vup, dz * V0);
+  vel.set(v.vx, v.vy, v.vz);
   setOnGround(false);
 }
 
@@ -1103,6 +1097,16 @@ export function initTNTFx(scene) {
 
 export function onExplode(fn) {
   onBlast = fn;
+}
+
+// Mega-pool mob hook, injected by the caller (mob modules live above this
+// one, so a static import would cycle — same reason as onLiquidPurge).
+// Fires once per pooled detonation with the pool centroid, the gameplay
+// radius R (max member crater, the same R the player knockback reads), and
+// the member spheres for crater-exact tests downstream.
+let onMegaPoolFn = null;
+export function onMegaPool(fn) {
+  onMegaPoolFn = fn;
 }
 
 // Floating-liquid purge, injected by the caller (edit.js already depends on
@@ -2089,6 +2093,8 @@ function explodePool(cx, cy, cz, kind) {
     // Knockback stays on R (max member crater): launch physics unchanged,
     // whatever the visual union looks like.
     applyMegaKnockback(ax, ay, az, kind, R);
+    // Mob ejection rides the same centroid + R through the injected hook.
+    if (onMegaPoolFn) onMegaPoolFn({ x: ax, y: ay, z: az, R, members, radii });
     // Gameplay overlays and shake share one pool-wide centroid/range.
     if (onBlast) onBlast(ax, ay, az, Rfx, kind.key);
     if (totalCols <= 2600) {

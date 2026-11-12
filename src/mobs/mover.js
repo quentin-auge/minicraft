@@ -5,6 +5,8 @@
 // the gap scan in corridor.js; farm.js owns the meshes, spawning,
 // and lifecycle. Headless rigs drive this module on live voxels.
 import { SEP_GAP, CROSS_BUDGET, PASS_OFF, PASS_BUDGET, WALL_ALLOW, worstPairPenAt } from "./collide.js";
+import { PLAYER_GRAVITY } from "../core/launch.js";
+import { dimBound, dimInfinite } from "../core/store.js";
 import { narrowPoseOk, narrowSide, narrowSense, activeNarrowPeer } from "./narrow.js";
 import { FARM_WALK_DIVISOR } from "./livestock.js";
 import {
@@ -2637,6 +2639,90 @@ function cruiseLane(mob, dt, supported, floating, res, rand = Math.random, peerG
   return true;
 }
 
+// Blast flight: a mega pool throws the mob onto the shared launcher arc
+// (core/launch.js — the exact player trajectory), integrated here at player
+// gravity, never the mob's own. While flying the whole ground machinery is
+// parked (no entry/nav/passage ticks, no plan, no separation): the arc owns
+// the frame until support returns or the timeout trips. World walls confine
+// the flight: a clamped axis dies on that axis only (glissade — the tangent
+// survives, the fall continues), so a launch never leaves the level.
+export const BLAST_FLIGHT_TIMEOUT = 6;
+export const BLAST_SUBSTEP = 0.5;
+export function launchMobBlast(mob, vx, vy, vz) {
+  dropLane(mob);
+  mob.nav = null;
+  mob.roam = null;
+  mob.followLine = null;
+  mob.passage = null;
+  mob.inPassage = false;
+  mob._plan = null;
+  mob._detour = false;
+  mob._rebase = false;
+  if (mob.vel) mob.vel.y = 0;
+  mob._blast = { vx, vy, vz, t: 0 };
+}
+function tickBlastFlight(mob, dt, pickTarget, rand) {
+  const b = mob._blast;
+  b.t += dt;
+  const finish = () => {
+    mob._blast = null;
+    mob.fallFrom = mob.pos.y;
+    if (mob.vel) mob.vel.y = 0;
+    mob.target = pickTarget(mob, rand);
+    mob.wanderT = roamSpan(rand);
+    mob.stuckT = 0;
+    mob.lastX = mob.pos.x;
+    mob.lastZ = mob.pos.z;
+    mob._adv = 0;
+  };
+  if (b.t > BLAST_FLIGHT_TIMEOUT) { finish(); return; }
+  const dimName = mob.dim ?? "over";
+  const B = dimBound(dimName);
+  const floor = dimInfinite(dimName) ? -Infinity : 1;
+  const speed = Math.hypot(b.vx, b.vy, b.vz);
+  const n = Math.max(1, Math.min(32, Math.ceil((speed * dt) / BLAST_SUBSTEP)));
+  const s = dt / n;
+  for (let i = 0; i < n; i++) {
+    b.vy -= PLAYER_GRAVITY * s;
+    let nx = mob.pos.x + b.vx * s, nz = mob.pos.z + b.vz * s;
+    // Invisible world walls (same bounds as the voxels): slide, never
+    // bounce — only the blocked axis dies.
+    const lo = -B + mob.hw, hi = B - mob.hw;
+    if (nx < lo) { nx = lo; b.vx = 0; } else if (nx > hi) { nx = hi; b.vx = 0; }
+    if (nz < lo) { nz = lo; b.vz = 0; } else if (nz > hi) { nz = hi; b.vz = 0; }
+    if (!aabbIntersectsSolid(nx, mob.pos.y, nz, mob.hw, mob.h)) {
+      mob.pos.x = nx; mob.pos.z = nz;
+    } else if (!aabbIntersectsSolid(nx, mob.pos.y, mob.pos.z, mob.hw, mob.h)) {
+      mob.pos.x = nx; b.vz = 0;
+    } else if (!aabbIntersectsSolid(mob.pos.x, mob.pos.y, nz, mob.hw, mob.h)) {
+      mob.pos.z = nz; b.vx = 0;
+    } else {
+      b.vx = 0; b.vz = 0;
+    }
+    let ny = mob.pos.y + b.vy * s;
+    if (ny < floor) { ny = floor; b.vy = 0; }
+    if (!aabbIntersectsSolid(mob.pos.x, ny, mob.pos.z, mob.hw, mob.h)) {
+      mob.pos.y = ny;
+    } else if (b.vy < 0) {
+      const g = groundBelow(mob.pos.x, mob.pos.y, mob.pos.z);
+      if (g != null && g <= mob.pos.y + 1e-3 &&
+        !aabbIntersectsSolid(mob.pos.x, g, mob.pos.z, mob.hw, mob.h)) mob.pos.y = g;
+      finish();
+      return;
+    } else {
+      b.vy = 0;
+    }
+    if (b.vy <= 0 && hasSupport(mob.pos.x, mob.pos.y, mob.pos.z, mob.hw)) {
+      finish();
+      return;
+    }
+  }
+  mob.lastX = mob.pos.x;
+  mob.lastZ = mob.pos.z;
+  mob._adv = 0;
+  if (mob.root) mob.root.rotation.y = mob.yaw;
+}
+
 // Full per-mob tick: entry attraction, stuck detection, target refresh,
 // servo/roam/wander planes, gravity/float vertical, cosmetic gait (scene
 // only). pickTarget is injected (farm.js) so this stays world-free; it now
@@ -2651,6 +2737,13 @@ export function tickFarmMob(mob, dt, pickTarget, rand = mob.rand ?? Math.random,
   if (dt > SERVO_STEP * 1.5) {
     tickFarmMob(mob, SERVO_STEP, pickTarget, rand, peers, grid, false);
     tickFarmMob(mob, dt - SERVO_STEP, pickTarget, rand, peers, grid, false);
+    if (_top) mob._plan = null;
+    return;
+  }
+  // Blast flight owns the whole tick (no ground machinery, no plan): the
+  // fixed-step split above already sliced dt, so each slice flies its share.
+  if (mob._blast) {
+    tickBlastFlight(mob, dt, pickTarget, rand);
     if (_top) mob._plan = null;
     return;
   }

@@ -296,6 +296,7 @@ registerMobSource("farm", listFarmMobs);
 export function tickFarmMobs(dt, dimName) {
   activeDim = dimName;
   sepBuf.length = 0;
+  const flyers = [];
   for (const mob of mobs) {
     if (!mob.alive) continue;
     mob.root.visible = mob.dim === dimName;
@@ -304,6 +305,9 @@ export function tickFarmMobs(dt, dimName) {
     // separation planning) so nothing can drift them mid-flight.
     if (mob.dim !== dimName || mob._riding) continue;
     if (isCarried(mob)) continue; // grab hook owns the frame: frozen, unplanned
+    // Blast flight owns its own tick (ballistic arc, no steering): out of
+    // the group plan and the separation backstop until it lands.
+    if (mob._blast) { flyers.push(mob); continue; }
     mob._peerIdx = sepBuf.length;
     sepBuf.push(mob);
   }
@@ -313,6 +317,10 @@ export function tickFarmMobs(dt, dimName) {
   // scan — same neighbor sets as a full scan, only faster (see grid.js).
   const grid = buildMobGrid(sepBuf, 3);
   planGroup(sepBuf, dt, grid);
+  for (const mob of flyers) {
+    tickFarmMob(mob, dt, pickTarget, mob.rand ?? Math.random);
+    applyDisplacementColor(mob);
+  }
   for (const mob of sepBuf) {
     tickFarmMob(mob, dt, pickTarget, mob.rand ?? Math.random, sepBuf, grid);
     applyDisplacementColor(mob);

@@ -24,7 +24,7 @@ import { flyOn, setFly, updateFly } from "./src/player/fly.js";
 import { updateTarget, breakTarget, placeAtSelection, breakBlockAt, pickBlock, tryPlace, currentBlock, flushChainBatch, purgeFloatingLiquidsAround, takeLiquidCells, endChainStroke, clearChainStroke } from "./src/player/edit.js";
 import { fireHookTarget, fireSkyHook, grapplePick, mobGrabTarget, mobReleaseTarget, cancelHook, severHook, updateHook, hookActive, hookHeldSwim, hookAnchor, tickHookFx, setMobAlpha, HELD_ALPHA } from "./src/player/hook.js";
 import { initRope } from "./src/player/rope.js";
-import { tickTNT, initTNTFx, resetTNTMemory, clearRegularTntDim, onExplode, onLiquidPurge, shakeSpecFor, bandActive, drainBlastRemesh, queueBlastRefresh, megaImminent, megaCarveActive, megaFxActive, MEGA_BLAST_T, MEGA_BLAST_TIME_SCALE, ultraFxSpec } from "./src/fx/tnt.js";
+import { tickTNT, initTNTFx, resetTNTMemory, clearRegularTntDim, onExplode, onMegaPool, onLiquidPurge, shakeSpecFor, bandActive, drainBlastRemesh, queueBlastRefresh, megaImminent, megaCarveActive, megaFxActive, MEGA_BLAST_T, MEGA_BLAST_TIME_SCALE, ultraFxSpec } from "./src/fx/tnt.js";
 import { initFx, tickFx, tickDenseFx, denseFxActive, prewarmDenseFx, spawnDense, flushDense, noteDenseSpawn } from "./src/fx/particles.js";
 import { initPrecip, tickSnow } from "./src/fx/precip.js";
 import { MOON_MIN_Y, MOON_R, generateMoon, generateMoonUnderRows, joinMoonLakeWater, markMoonBuilt, moonReady, moonChunkCenters, findMoonSpawn, isMoonGone } from "./src/world/moon.js";
@@ -83,6 +83,8 @@ import {
 import { initHomingTnt, fireHomingTnt, tickHomingTnt, clearHomingTnt } from "./src/mobs/homing.js";
 import { enterEndMobs, clearEndMobs, clearEndermenDim, tickEndMobs, takeTeleportFail, notifyEndermanVoxelChange, dragonHealth, setDragonVictoryHook, setMobSeed } from "./src/mobs/end.js";
 import { enterFarmMobs, clearFarmMobs, listFarmMobs, tickFarmMobs, handleFarmTravel, setFarmSeed } from "./src/mobs/farm.js";
+import { launchMobBlast } from "./src/mobs/mover.js";
+import { computeMegaLaunch } from "./src/core/launch.js";
 import { spawnCatalog, spawnMobAt, spawnSelection, nextSpawnKey } from "./src/mobs/spawn.js";
 import { mobLabel, mobType, allMobs } from "./src/mobs/registry.js";
 import { openMobMenu, initMobMenu } from "./src/ui/mobmenu.js";
@@ -90,7 +92,7 @@ import { anyModalOpen, anyMenuOpen, anyPanelOpen, routeMenuKey, routeMenuKeyUp }
 import {
   initTargetDebug, targetDebugKeyDown, targetDebugKeyUp, tickTargetDebug, resetTargetDebug,
 } from "./src/mobs/targets-debug.js";
-import { heldMob, tickHeld, severCarry, mobReleaseSpot, releasePeerFree, settleReleased } from "./src/mobs/carry.js";
+import { heldMob, tickHeld, severCarry, isCarried, mobReleaseSpot, releasePeerFree, settleReleased } from "./src/mobs/carry.js";
 import { endPortalFrameKeys, resetEndDimension, setEndCleared } from "./src/world/end.js";
 import { resetTntUnlocks } from "./src/world/tntunlock.js";
 import { isCheat } from "./src/core/cheat.js";
@@ -303,6 +305,17 @@ let fxDip = false;
 // Blast-stranded floating liquids collapse back to air. Injected here
 // because tnt.js must not import edit.js (edit.js already depends on it).
 onLiquidPurge((touched) => purgeFloatingLiquidsAround(touched));
+
+// Mega-pool mob ejection: same centroid + R as the player knockback, same
+// arc through the shared launcher. Carried/riding mobs keep their freeze;
+// the dragon never flies (boss, not livestock).
+onMegaPool(({ x, y, z, R }) => {
+  for (const m of listFarmMobs()) {
+    if (!m.alive || isCarried(m) || m._riding || (m.dim ?? "over") !== dim) continue;
+    const v = computeMegaLaunch(m.pos.x, m.pos.y + (m.h ?? 1.8) / 2, m.pos.z, x, y, z, R);
+    if (v) launchMobBlast(m, v.vx, v.vy, v.vz);
+  }
+});
 
 function updateCamera(dt = 0) {
   camera.position.set(pos.x, pos.y + EYE, pos.z);
