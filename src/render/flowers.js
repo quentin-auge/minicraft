@@ -121,3 +121,26 @@ function buildGeometry(variant) {
 
 export const FLOWER_GEOS = FLOWER_VARIANTS.map(buildGeometry);
 export const FLOWER_MAT = new THREE.MeshLambertMaterial({ vertexColors: true });
+
+// Flight fade depth of a flower riding a hull: deeper than the hull's own
+// 0.5, because a flower cluster is small and reads as an opaque blob at
+// half opacity.
+export const FLOWER_FLIGHT_FADE = 0.25;
+
+// Transparent clone of the static flower material, one per variant: the
+// moving hull fades its own materials (see vehicles/rocket.js), the static
+// world keeps the opaque material — a bloom never turns translucent on the
+// ground.
+const flightMats = new Map();
+export function flightFlowerMat(variant) {
+  let m = flightMats.get(variant);
+  if (!m) {
+    const c = FLOWER_MAT.clone();
+    c.transparent = true;
+    c.userData.baseOpacity = 1;
+    c.userData.fadeOpacity = FLOWER_FLIGHT_FADE;
+    c.opacity = 1;
+    flightMats.set(variant, m = c);
+  }
+  return m;
+}

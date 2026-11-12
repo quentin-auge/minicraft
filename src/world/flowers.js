@@ -48,6 +48,15 @@ export function noteFlowerPlace(x, y, z) {
   flowerAngles[dim].set(k, hash2(x, z, flowerSeed + 9102) * Math.PI * 2);
 }
 
+// Exact-look write (a vessel stamping back its own flowers, mirroring
+// noteGlowstonePlaceShared): stores the given variant + angle instead of
+// rolling, so a round trip never reshuffles a bloom.
+export function noteFlowerPlaceShared(x, y, z, v, a) {
+  const k = key(x, y, z);
+  flowerVariants[dim].set(k, v);
+  flowerAngles[dim].set(k, a);
+}
+
 // Pure reads for the mesher: missing entries fall back to variant 0 / angle
 // 0 instead of rolling, so rebuilds never compute anything.
 export function flowerVariantAt(x, y, z) {
