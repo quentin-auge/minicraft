@@ -5,7 +5,7 @@ import { isCarried } from "./carry.js";
 import { registerHomingTarget } from "./homing.js";
 import { pickBlock } from "../player/edit.js";
 import { BLOCK_INFO, isLiquid } from "../core/blocks.js";
-import { getBlock, getBlockIn, topAt, colLiqTop, colTopIdx, dimInfinite } from "../core/store.js";
+import { getBlock, getBlockIn, topAt, colLiqTop, colTopIdx, dimInfinite, outOfWorld } from "../core/store.js";
 import { PLAYER_HW } from "../player/physics.js";
 import { mobRank } from "./mover.js";
 import { bandOf, pickSpot, shouldDodge, teleportReady, armTeleportCool, boundedXZ, blastPredicates } from "./endspots.js";
@@ -676,6 +676,9 @@ function spotInBounds(dimName, x, z) {
     if (Math.abs(x) <= 3 && Math.abs(z - END_RETURN_Z) <= 3) return false;
     return true;
   }
+  // Bounds follow the dim: infinite dims roam the key range (pickSpot only
+  // ever samples near the mob), bounded dims keep the ±94 cube.
+  if (dimInfinite(dimName)) return !outOfWorld(x, 1, z, dimName);
   return boundedXZ(x, z);
 }
 
