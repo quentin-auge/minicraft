@@ -2,7 +2,7 @@
 // pre-contact dodge. Three-free (endspots only: no THREE, no scene) —
 // plain `node` direct, deterministic injected rand/probes.
 import assert from "node:assert/strict";
-import { bandOf, pickSpot, shouldDodge, teleportReady, armTeleportCool } from "../../../src/mobs/endspots.js";
+import { bandOf, pickSpot, shouldDodge, teleportReady, armTeleportCool, sphereExclude, blastPredicates } from "../../../src/mobs/endspots.js";
 
 // --- world bands: feet-Y decides, teleports never change it before L4 ---
 assert.equal(bandOf("over", 64), "ground");
@@ -217,3 +217,105 @@ assert.deepEqual(
 );
 
 console.log("enderman-bands: all PASS");
+
+// --- crater exclusion: blast geometry bans arrivals, never relaxed ---
+// Closed ball on the mid-body (same convention as the pool union).
+const crater = sphereExclude([{ x: 0, y: 60, z: 0, r: 15 }]);
+assert.equal(crater(0.5, 63, 0.5), true, 'feet under the sphere read inside');
+assert.equal(crater(20.5, 63, 0.5), false, 'past the rim reads outside');
+assert.equal(crater(15.5, 59.5, 0.5), true, 'closed ball: the rim itself is banned');
+// The picker lands outside the crater and counts the rejections.
+const cratered = {
+  ...flat,
+  from: { x: 0, y: 64, z: 0 },
+  exclude: sphereExclude([{ x: -8, y: 60, z: 0, r: 15 }]),
+};
+const craterRes = pickSpot(cratered);
+assert.ok(craterRes.spot, 'an excluded neighbourhood still lands');
+assert.equal(cratered.exclude(craterRes.spot.x, craterRes.spot.y, craterRes.spot.z), false,
+  'the winning spot sits outside the crater');
+assert.ok((craterRes.stats.crater ?? 0) > 0, 'crater rejections counted');
+// Fully excluded world: even the R5 spiral finds nothing — a clean fail,
+// never a crater arrival.
+const voidedCrater = pickSpot({ ...flat, exclude: () => true });
+assert.equal(voidedCrater.spot, null, 'total exclusion fails instead of landing inside');
+assert.equal(voidedCrater.level, null, 'total exclusion wins no rung');
+assert.ok(voidedCrater.stats.crater > 0, 'spiral rejections counted as crater');
+
+console.log("enderman-bands crater: all PASS");
+
+// --- blast descriptors: trigger and landing derive from one geometry ---
+{
+  // Balls: the caught set IS the carved void — bystanders stay put.
+  const p = blastPredicates({ spheres: [{ x: 0, y: 60, z: 0, r: 15 }] });
+  assert.equal(p.caught(0.5, 63, 0.5), true, 'inside the union is caught');
+  assert.equal(p.caught(20.5, 63, 0.5), false, 'outside the union is a bystander');
+  assert.equal(p.exclude(0.5, 63, 0.5), true, 'arrivals avoid the carved void');
+  assert.equal(p.exclude(20.5, 63, 0.5), false, 'arrivals allow intact ground');
+}
+{
+  // Wiped band: feet in range are caught (the new floor at y = 1 too — it
+  // re-places locally), arrivals need no exclusion (voxels are final).
+  const p = blastPredicates({ yLo: 1, yHi: 90 });
+  assert.equal(p.caught(0, 64, 0), true, 'band feet are caught');
+  assert.equal(p.caught(0, 1, 0), true, 'new-floor feet are caught');
+  assert.equal(p.caught(0, 120, 0), false, 'feet above the band are bystanders');
+  assert.equal(p.exclude, null, 'band arrivals read final voxels, no exclusion');
+  const open = blastPredicates({ yLo: 101, yHi: null });
+  assert.equal(open.caught(0, 500, 0), true, 'open top catches everything above');
+  assert.equal(open.caught(0, 64, 0), false, 'below the band stays put');
+}
+
+console.log("enderman-bands blast descriptors: all PASS");
+
+// --- post-wipe placement: ultra teleports fire once voxels are final, so
+// the probes alone land on what remains — no exclusion needed ---
+// Ground-band wipe: the new floor (feet y = 1) wins the first ring, same band.
+{
+  const wipedGround = {
+    ...flat,
+    from: { x: 0, y: 1, z: 0 },
+    groundY: () => 1,
+  };
+  const res = pickSpot(wipedGround);
+  assert.ok(res.spot, 'wiped ground band still lands');
+  assert.equal(res.spot.y, 1, 'the new floor wins');
+  assert.equal(res.level, 0, 'first ring, no relaxation');
+}
+// Window wipe with a surviving platform (End shape): same band, shuffle.
+{
+  const remains = {
+    dim: 'end', band: 'platform', from: { x: 0, y: 72, z: 0 },
+    hw: 0.25, h: 2.2,
+    groundY: (x, z) => (Math.abs(x) <= 36 && Math.abs(z) <= 36 ? 71 : null),
+    free: () => true,
+    supported: () => true,
+    mobBlocked: () => false,
+    inBounds: (x, z) => Math.abs(x) <= 36 && Math.abs(z) <= 36,
+    inView: () => true,
+    los: () => true,
+    rand: () => 0,
+  };
+  const res = pickSpot(remains);
+  assert.ok(res.spot, 'surviving platform still lands');
+  assert.ok(Math.abs(res.spot.x) <= 36 && Math.abs(res.spot.z) <= 36, 'shuffle stays on the platform');
+}
+// Window wipe with nothing left: clean fail, never a void arrival.
+{
+  const gone = {
+    dim: 'end', band: 'platform', from: { x: 0, y: 72, z: 0 },
+    hw: 0.25, h: 2.2,
+    groundY: () => null,
+    free: () => false,
+    supported: () => false,
+    mobBlocked: () => false,
+    inBounds: (x, z) => Math.abs(x) <= 36 && Math.abs(z) <= 36,
+    inView: () => true,
+    los: () => true,
+    rand: () => 0,
+  };
+  const res = pickSpot(gone);
+  assert.equal(res.spot, null, 'total wipe fails instead of landing in the void');
+}
+
+console.log("enderman-bands post-wipe: all PASS");

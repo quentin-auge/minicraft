@@ -843,6 +843,9 @@ function finishBandJob(job) {
   // Full-world fill resync: the only healer that reaches past the player's
   // 12-block scanner range, so no destroyed window anywhere keeps its fill.
   scanWorldPortals();
+  // Voxels are final here, so the mob hook fires now (not at queue time):
+  // the landing the probes read is the surface that remains.
+  if (onCraterFn) onCraterFn({ kind: "ultra", yLo: job.yLo, yHi: job.yHi });
 }
 const BAND_CHAIN_RADIUS = TNT_DEFAULTS.radius;
 function queueBandBoundaryChains(job, x, y, z) {
@@ -1107,6 +1110,18 @@ export function onExplode(fn) {
 let onMegaPoolFn = null;
 export function onMegaPool(fn) {
   onMegaPoolFn = fn;
+}
+
+// Crater hook for Enderman blast teleports (same injection reason): every
+// non-pool detonation reports the void it just carved so the mob side can
+// tell caught mobs from bystanders. Normal blasts report their spheres (one
+// call per batch, per-center radii); ultra bands report their wiped feet-Y
+// range (yHi null = open top) once the wipe drains, so arrivals read final
+// voxels. Mega pools never fire this — onMegaPool above already carries
+// their richer geometry, and the main handler serves both mob kinds from it.
+let onCraterFn = null;
+export function onCrater(fn) {
+  onCraterFn = fn;
 }
 
 // Floating-liquid purge, injected by the caller (edit.js already depends on
@@ -1668,6 +1683,7 @@ export function tickChain(now, refresh) {
   if (!due.length) return;
   const touched = [];
   const centers = [];
+  const spheres = [];
   for (const k of due) {
     const c = pendingChain.get(k);
     pendingChain.delete(k);
@@ -1681,11 +1697,13 @@ export function tickChain(now, refresh) {
     }
     carveNormalBlast(c.x, c.y, c.z, kind, touched);
     centers.push([c.x + 0.5, c.y + 0.5, c.z + 0.5]);
+    spheres.push({ x: c.x, y: c.y, z: c.z, r: kind.radius });
   }
   if (!centers.length) return;
   spawnBlastFxBatch(centers, kindOf("normal"));
   purgeBlastLiquids(touched);
   notePoolEdit();
+  if (onCraterFn) onCraterFn({ kind: "normal", spheres });
   // A lone chained blast keeps the snappy synchronous remesh; a batch goes
   // through the shared budgeted drain so no tick pays a rebuild avalanche.
   if (centers.length === 1) {
@@ -1771,6 +1789,7 @@ function explode(cx, cy, cz, kind, refresh) {
   carveNormalBlast(cx, cy, cz, kind, touched);
   purgeBlastLiquids(touched);
   notePoolEdit();
+  if (onCraterFn) onCraterFn({ kind: "normal", spheres: [{ x: cx, y: cy, z: cz, r: kind.radius }] });
   if (refresh) refresh(touched);
   if (kind.knockback) applyMegaKnockback(cx, cy, cz, kind);
   if (onBlast) onBlast(cx, cy, cz, kind.radius, kind.key);

@@ -24,7 +24,7 @@ import { flyOn, setFly, updateFly } from "./src/player/fly.js";
 import { updateTarget, breakTarget, placeAtSelection, breakBlockAt, pickBlock, tryPlace, currentBlock, flushChainBatch, purgeFloatingLiquidsAround, takeLiquidCells, endChainStroke, clearChainStroke } from "./src/player/edit.js";
 import { fireHookTarget, fireSkyHook, grapplePick, mobGrabTarget, mobReleaseTarget, cancelHook, severHook, updateHook, hookActive, hookHeldSwim, hookAnchor, tickHookFx, setMobAlpha, HELD_ALPHA } from "./src/player/hook.js";
 import { initRope } from "./src/player/rope.js";
-import { tickTNT, initTNTFx, resetTNTMemory, clearRegularTntDim, onExplode, onMegaPool, onLiquidPurge, shakeSpecFor, bandActive, drainBlastRemesh, queueBlastRefresh, megaImminent, megaCarveActive, megaFxActive, MEGA_BLAST_T, MEGA_BLAST_TIME_SCALE, ultraFxSpec } from "./src/fx/tnt.js";
+import { tickTNT, initTNTFx, resetTNTMemory, clearRegularTntDim, onExplode, onMegaPool, onCrater, onLiquidPurge, shakeSpecFor, bandActive, drainBlastRemesh, queueBlastRefresh, megaImminent, megaCarveActive, megaFxActive, MEGA_BLAST_T, MEGA_BLAST_TIME_SCALE, ultraFxSpec } from "./src/fx/tnt.js";
 import { initFx, tickFx, tickDenseFx, denseFxActive, prewarmDenseFx, spawnDense, flushDense, noteDenseSpawn } from "./src/fx/particles.js";
 import { initPrecip, tickSnow } from "./src/fx/precip.js";
 import { MOON_MIN_Y, MOON_R, generateMoon, generateMoonUnderRows, joinMoonLakeWater, markMoonBuilt, moonReady, moonChunkCenters, findMoonSpawn, isMoonGone } from "./src/world/moon.js";
@@ -81,7 +81,7 @@ import {
   rocketEditingBlocked, rocketSolidAt, rocketFlying, carryRiders,
 } from "./src/vehicles/rocket.js";
 import { initHomingTnt, fireHomingTnt, tickHomingTnt, clearHomingTnt } from "./src/mobs/homing.js";
-import { enterEndMobs, clearEndMobs, clearEndermenDim, tickEndMobs, takeTeleportFail, notifyEndermanVoxelChange, dragonHealth, setDragonVictoryHook, setMobSeed } from "./src/mobs/end.js";
+import { enterEndMobs, clearEndMobs, clearEndermenDim, tickEndMobs, takeTeleportFail, notifyEndermanVoxelChange, teleportBlastEndermen, dragonHealth, setDragonVictoryHook, setMobSeed } from "./src/mobs/end.js";
 import { enterFarmMobs, clearFarmMobs, listFarmMobs, tickFarmMobs, handleFarmTravel, setFarmSeed } from "./src/mobs/farm.js";
 import { launchMobBlast } from "./src/mobs/mover.js";
 import { computeMegaLaunch } from "./src/core/launch.js";
@@ -308,12 +308,27 @@ onLiquidPurge((touched) => purgeFloatingLiquidsAround(touched));
 
 // Mega-pool mob ejection: same centroid + R as the player knockback, same
 // arc through the shared launcher. Carried/riding mobs keep their freeze;
-// the dragon never flies (boss, not livestock).
-onMegaPool(({ x, y, z, R }) => {
+// the dragon never flies (boss, not livestock). Same-dim Endermen caught in
+// the member-sphere union teleport out at the same detonation.
+onMegaPool(({ x, y, z, R, members, radii }) => {
   for (const m of listFarmMobs()) {
     if (!m.alive || isCarried(m) || m._riding || (m.dim ?? "over") !== dim) continue;
     const v = computeMegaLaunch(m.pos.x, m.pos.y + (m.h ?? 1.8) / 2, m.pos.z, x, y, z, R);
     if (v) launchMobBlast(m, v.vx, v.vy, v.vz);
+  }
+  teleportBlastEndermen(dim, camera,
+    { spheres: members.map((m, i) => ({ x: m.x, y: m.y, z: m.z, r: radii[i] })) }, "mega");
+});
+
+// Other blasts, same Enderman rule: only the mobs a blast could have touched
+// teleport — normals report their spheres (one call per batch), ultras their
+// wiped range once the wipe drains, landing on whatever surface remains.
+// Mega pools never reach this hook (onMegaPool carries them).
+onCrater((ev) => {
+  if (ev.kind === "ultra") {
+    teleportBlastEndermen(dim, camera, { yLo: ev.yLo, yHi: ev.yHi }, "ultra");
+  } else {
+    teleportBlastEndermen(dim, camera, { spheres: ev.spheres }, "blast");
   }
 });
 

@@ -8,7 +8,7 @@ import { BLOCK_INFO, isLiquid } from "../core/blocks.js";
 import { getBlock, getBlockIn, topAt, colLiqTop, colTopIdx, dimInfinite } from "../core/store.js";
 import { PLAYER_HW } from "../player/physics.js";
 import { mobRank } from "./mover.js";
-import { bandOf, pickSpot, shouldDodge, teleportReady, armTeleportCool, boundedXZ } from "./endspots.js";
+import { bandOf, pickSpot, shouldDodge, teleportReady, armTeleportCool, boundedXZ, blastPredicates } from "./endspots.js";
 import { listFarmMobs } from "./farm.js";
 import { spawnBurst } from "../fx/particles.js";
 import { END_PLATFORM_RADIUS, END_PLATFORM_TOP, END_RETURN_Z, setEndCleared } from "../world/end.js";
@@ -452,7 +452,7 @@ function endermanLookedAt(mob, camera) {
   return true;
 }
 
-function teleportEnderman(mob, camera) {
+function teleportEnderman(mob, camera, exclude = null) {
   teleportNonce++;
   const dimName = mob.dim;
   const from = mob.pos;
@@ -479,6 +479,7 @@ function teleportEnderman(mob, camera) {
       x + hw > o.pos.x - (o.hw ?? 0.32) && x - hw < o.pos.x + (o.hw ?? 0.32) &&
       z + hw > o.pos.z - (o.hw ?? 0.32) && z - hw < o.pos.z + (o.hw ?? 0.32) &&
       y + h > o.pos.y && y < o.pos.y + (o.h ?? 1)),
+    exclude,
     inBounds: (x, z) => spotInBounds(dimName, x, z),
     inView: camera ? (x, y, z) => inViewSpot(camera, x, y, z, mob.h) : null,
     los: camera ? (x, y, z) => losClearSpot(camera, x, y, z, mob.h) : null,
@@ -503,9 +504,9 @@ function teleportEnderman(mob, camera) {
 let pendingFail = null;
 let lastFailToastAt = -Infinity;
 const FAIL_TOAST_GAP = 4;
-function tryTeleport(mob, camera, why) {
+function tryTeleport(mob, camera, why, exclude = null) {
   if (!teleportReady(mob, mob.t)) return false;
-  const { ok, stats, level, band, y } = teleportEnderman(mob, camera);
+  const { ok, stats, level, band, y } = teleportEnderman(mob, camera, exclude);
   if (ok) return true;
   mob.lookTime = 0;
   armTeleportCool(mob, mob.t);
@@ -516,7 +517,7 @@ function tryTeleport(mob, camera, why) {
 const FAIL_LABELS = [
   ["view", "no view"], ["los", "blocked view"], ["near", "near player"], ["mob", "mobs"],
   ["free", "blocked"], ["support", "no footing"], ["height", "height"],
-  ["band", "band"], ["surface", "no ground"], ["bounds", "bounds"],
+  ["band", "band"], ["surface", "no ground"], ["bounds", "bounds"], ["crater", "crater"],
 ];
 // Latest failure summary for the main-loop toast relay (throttled, one
 // shot): trigger name plus the top rejection causes, e.g.
@@ -537,6 +538,20 @@ export function takeTeleportFail() {
     .map(([k, n]) => `${(FAIL_LABELS.find(([key]) => key === k) || [k, k])[1]} ×${n}`)
     .join(", ");
   return `Enderman: no spot via ${why} @y=${Math.round(y)} ${band}${top ? ` (${top})` : ""}`;
+}
+
+// Blast entry: only the endermen the blast could have touched teleport —
+// through the same tryTeleport path (cooldown + fail toast) as every other
+// trigger. The descriptor carries the blast geometry (`{spheres}` for balls,
+// `{yLo, yHi}` for wiped bands/windows); both predicates derive from it.
+export function teleportBlastEndermen(dimName, camera, blast, why) {
+  const { caught, exclude } = blastPredicates(blast);
+  for (const mob of mobs) {
+    if (!mob.alive || mob.type !== "enderman" || isCarried(mob)) continue;
+    if (mob.dim !== dimName) continue;
+    if (!caught(mob.pos.x, mob.pos.y, mob.pos.z)) continue;
+    tryTeleport(mob, camera, why, exclude);
+  }
 }
 
 // Voxel-displacement housing: a removed block under the feet teleports the

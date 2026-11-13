@@ -72,6 +72,37 @@ function shuffledIdx(n, rand) {
   return o;
 }
 
+// Blast-crater exclusion for pre-carve teleports (normal/mega): arrivals
+// whose mid-body sits inside any blast sphere are banned (closed ball, same
+// convention as the pool union). Ultra teleports fire once the wipe drains,
+// so the probes read the surface that remains and no exclusion is needed.
+// Fits pickSpot's `exclude(x, y, z)` gate below.
+export function sphereExclude(spheres, midH = 1) {
+  return (x, y, z) => {
+    for (const s of spheres) {
+      const dx = x - (s.x + 0.5), dy = (y + midH) - (s.y + 0.5), dz = z - (s.z + 0.5);
+      if (dx * dx + dy * dy + dz * dz <= s.r * s.r) return true;
+    }
+    return false;
+  };
+}
+// Blast descriptor → both teleport predicates from one geometry, so the
+// trigger and the landing can never disagree: `caught` selects exactly the
+// mobs the blast could have touched, `exclude` keeps arrivals out of the
+// carved void. Balls (normal/mega, valid outside pre-carve) report spheres;
+// bands and windows (ultra, post-carve) report their wiped feet-Y range with
+// no exclusion — the probes read the surface that remains.
+export function blastPredicates(blast) {
+  if (blast.spheres) {
+    const inside = sphereExclude(blast.spheres);
+    return { caught: inside, exclude: inside };
+  }
+  const { yLo, yHi } = blast;
+  return {
+    caught: (x, y, z) => y >= yLo && (yHi == null || y <= yHi),
+    exclude: null,
+  };
+}
 // Staged destination picker. Stage k ≥ 0 widens the search one axis at a time:
 // even stages widen the XZ ring, odd stages raise the height ceiling —
 //   XY ∈ [5 + 5·⌈k/2⌉, 10 + 5·⌈k/2⌉], |ΔY surface| ∈ [0, 5 + 5·⌊k/2⌋].
@@ -91,7 +122,9 @@ function shuffledIdx(n, rand) {
 // time — R1 the player standoff, R2 the frustum, R3 the line of sight, R4
 // the band — then R5 takes the nearest free + supported cell in a small
 // spiral, ignoring everything else. Only a true void (nothing to stand on)
-// fails. An occluded spot is therefore only ever accepted once no
+// fails. The optional `exclude(x, y, z)` gate (blast craters) is never
+// relaxed: arrivals it bans count `crater` rejections on every rung and in
+// the spiral alike. An occluded spot is therefore only ever accepted once no
 // line-of-sight-clear spot exists at any range, and a same-room visible spot
 // close to the player beats every invisible one. Returns `{ spot, stats,
 // level }`: `spot` is `{x, y, z}` or null, `level` is the winning rung
@@ -99,11 +132,11 @@ function shuffledIdx(n, rand) {
 export function pickSpot({
   dim, band, from, hw, h, player = null,
   groundY, free, supported, mobBlocked, inBounds, inView = null, los = null,
-  rand = Math.random, kmax = STAGE_KMAX,
+  exclude = null, rand = Math.random, kmax = STAGE_KMAX,
 }) {
   const stats = {
     bounds: 0, near: 0, surface: 0, height: 0, band: 0, view: 0, los: 0,
-    free: 0, support: 0, mob: 0,
+    free: 0, support: 0, mob: 0, crater: 0,
   };
   const farFromPlayer = !player ? () => true : (x, z) =>
     Math.hypot(x - player.x, z - player.z) >= FAR_FROM_PLAYER;
@@ -117,6 +150,10 @@ export function pickSpot({
     const y = groundY(x, z, yHi);
     if (y == null) { stats.surface++; return null; }
     if (Math.abs(y - from.y) > yHi) { stats.height++; return null; }
+    // Blast exclusion (never relaxed, every rung): a crater arrival is
+    // rejected wherever the search looks — the mob lands outside, or via
+    // the R5 spiral when the whole neighbourhood is gone.
+    if (exclude && exclude(x, y, z)) { stats.crater++; return null; }
     if (rung <= 3 && bandOf(dim, y) !== band) { stats.band++; return null; }
     if (!free(x, y, z, hw, h)) { stats.free++; return null; }
     if (!supported(x, y, z, hw)) { stats.support++; return null; }
@@ -162,6 +199,7 @@ export function pickSpot({
         if (!inBounds(x, z)) { stats.bounds++; continue; }
         if (!free(x, y, z, hw, h)) { stats.free++; continue; }
         if (!supported(x, y, z, hw)) { stats.support++; continue; }
+        if (exclude && exclude(x, y, z)) { stats.crater++; continue; }
         if (mobBlocked && mobBlocked(x, y, z, hw, h)) { stats.mob++; continue; }
         return { spot: { x, y, z }, stats, level: 5 };
       }
