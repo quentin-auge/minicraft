@@ -261,3 +261,51 @@ export function cellBlockedByMob(peers, dimName, bx, by, bz) {
   }
   return false;
 }
+
+// Landing rule: the live same-dim bodies overlapping the hull's landing
+// box (integer cells, inclusive — the swept hull at the landing pose).
+// Riders pinned to the hull and hook-carried mobs never block (they ride
+// along); dead, other-dim, and coordinate-less bodies are skipped. Same
+// AABB test as cellBlockedByMob, generalized from one cell to the whole
+// swept box — pure, headless-testable.
+// Landing margin rule: the tallest live body under the hull footprint,
+// XZ overlap only — bodies below the box still count so the ship can hold
+// a half-block safety gap above them. Same filters as landingBlockers
+// (riders pinned to the hull and hook-carried mobs never count; dead,
+// other-dim, and coordinate-less bodies skipped); a body at/above the box
+// top never counts. Returns max(pos.y + h), -Infinity when none — pure,
+// headless-testable.
+export function tallestBlockerTop(peers, dimName, box) {
+  let top = -Infinity;
+  for (const m of peers) {
+    if (!m?.alive || m._carried || m._riding) continue;
+    if ((m.dim ?? "over") !== dimName) continue;
+    const p = m.pos ?? m;
+    const x = p.x, y = p.y, z = p.z;
+    if (x == null || y == null || z == null) continue;
+    const hw = m.hw ?? 0.32, h = m.h ?? 1;
+    if (x + hw <= box.x0 || x - hw >= box.x1 + 1) continue;
+    if (z + hw <= box.z0 || z - hw >= box.z1 + 1) continue;
+    if (box.y1 != null && y >= box.y1 + 1) continue;
+    const t = y + h;
+    if (t > top) top = t;
+  }
+  return top;
+}
+
+export function landingBlockers(peers, dimName, box) {
+  const out = [];
+  for (const m of peers) {
+    if (!m?.alive || m._carried || m._riding) continue;
+    if ((m.dim ?? "over") !== dimName) continue;
+    const p = m.pos ?? m;
+    const x = p.x, y = p.y, z = p.z;
+    if (x == null || y == null || z == null) continue;
+    const hw = m.hw ?? 0.32, h = m.h ?? 1;
+    if (x + hw <= box.x0 || x - hw >= box.x1 + 1) continue;
+    if (z + hw <= box.z0 || z - hw >= box.z1 + 1) continue;
+    if (y + h <= box.y0 || y >= box.y1 + 1) continue;
+    out.push(m);
+  }
+  return out;
+}

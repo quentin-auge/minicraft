@@ -15,9 +15,10 @@ import { noteFlowerPlace, clearFlowerAt } from "../world/flowers.js";
 import { armReaction, clearReactionAt } from "../world/reactions.js";
 import { notePoolEdit } from "../render/poollights.js";
 import { MOON_MIN_Y, markMoonDirty } from "../world/moon.js";
-import { notePortalEdit, notePortalEdits, notePortalFramesOnly } from "../world/portals.js";
+import { notePortalEdit, notePortalEdits, notePortalFramesOnly, toast } from "../world/portals.js";
 import { allMobs } from "../mobs/registry.js";
 import { cellBlockedByMob } from "../mobs/carry.js";
+import { headroomBlocked, listPads, listVessels } from "../world/rocketpad.js";
 
 export let currentBlock = null;
 const _dir = new THREE.Vector3();
@@ -176,6 +177,13 @@ export function tryPlace(id, px, py, pz, opts) {
   if (!(target === AIR || isLiquid(target))) return null;
   if (BLOCK_INFO[id].solid && intersectsPlayer(px, py, pz)) return null;
   if (BLOCK_INFO[id].solid && intersectsMob(px, py, pz, opts)) return null;
+  // Headroom rule (overworld only): no block in 6-face contact with the top
+  // of a takeoff box or an independent parked vessel, so a ship can always
+  // lift off. Discrete taps toast; chain strokes refuse silently and roll on.
+  if (dim === "over" && headroomBlocked(px, py, pz, { pads: listPads(), vessels: listVessels() })) {
+    if (!batched) toast("No block on top of ship");
+    return null;
+  }
   setBlock(px, py, pz, id);
   if (py >= MOON_MIN_Y) markMoonDirty();
   // Block reactions (world/reactions.js): a liquid trigger placed on a

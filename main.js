@@ -25,7 +25,7 @@ import { updateTarget, breakTarget, placeAtSelection, breakBlockAt, pickBlock, t
 import { fireHookTarget, fireSkyHook, grapplePick, mobGrabTarget, mobReleaseTarget, cancelHook, severHook, updateHook, hookActive, hookHeldSwim, hookAnchor, tickHookFx, setMobAlpha, HELD_ALPHA } from "./src/player/hook.js";
 import { initRope } from "./src/player/rope.js";
 import { tickTNT, initTNTFx, resetTNTMemory, clearRegularTntDim, onExplode, onMegaPool, onCrater, onLiquidPurge, shakeSpecFor, bandActive, drainBlastRemesh, queueBlastRefresh, megaImminent, megaCarveActive, megaFxActive, MEGA_BLAST_T, MEGA_BLAST_TIME_SCALE, ultraFxSpec } from "./src/fx/tnt.js";
-import { initFx, tickFx, tickDenseFx, denseFxActive, prewarmDenseFx, spawnDense, flushDense, noteDenseSpawn } from "./src/fx/particles.js";
+import { initFx, tickFx, tickDenseFx, denseFxActive, prewarmDenseFx, prewarmBursts, spawnDense, flushDense, noteDenseSpawn } from "./src/fx/particles.js";
 import { initPrecip, tickSnow } from "./src/fx/precip.js";
 import { MOON_MIN_Y, MOON_R, generateMoon, generateMoonUnderRows, joinMoonLakeWater, markMoonBuilt, moonReady, moonChunkCenters, findMoonSpawn, isMoonGone } from "./src/world/moon.js";
 import { findPenOverwatch } from "./src/world/spawn.js";
@@ -76,10 +76,10 @@ import { CHUNK, renderDist, dim, setDimension, setBlock, getBlock, isSolid, outO
 import { dimEnv, dimSpec, dimHasMoon, dimHotbar } from "./src/world/dimensions.js";
 import { EYE, setFlyStepAllow, updateFreeSwim } from "./src/player/physics.js";
 import { setExtraSolid } from "./src/player/physics.js";
+import { setMobExtraSolid } from "./src/mobs/step.js";
 import {
   initRocket, resetRocket, tickRocket, rocketTakesOver,
   rocketEditingBlocked, rocketSolidAt, rocketFlying, carryRiders,
-  cycleConeSize,
 } from "./src/vehicles/rocket.js";
 import { initHomingTnt, fireHomingTnt, tickHomingTnt, clearHomingTnt } from "./src/mobs/homing.js";
 import { enterEndMobs, clearEndMobs, clearEndermenDim, tickEndMobs, notifyEndermanVoxelChange, teleportBlastEndermen, dragonHealth, setDragonVictoryHook, setMobSeed } from "./src/mobs/end.js";
@@ -148,6 +148,7 @@ initRope(scene);
 initPortals(scene);
 initRocket(scene, addCamShake);
 setExtraSolid(rocketSolidAt);
+setMobExtraSolid(rocketSolidAt);
 buildPortalDom();
 // Fly steps up only onto bottom frames of portals with a live fill.
 setFlyStepAllow((bx, by, bz) => isLivePortalSill(bx, by, bz));
@@ -767,12 +768,14 @@ async function runTravel(dest, msg) {
 
 // Post-unlock shader warmup: pools enter the scene and compile while the
 // player already moves under closed-in fog, so blast #1 never pays
-// scene-add + compile + first upload mid-blast and entry never pays it.
+// scene-add + compile + first upload mid-blast, the first countdown never
+// pays the burst programs mid-tick, and entry never pays it.
 async function warmupFx(token) {
   await new Promise((r) => requestAnimationFrame(r));
   await new Promise((r) => requestAnimationFrame(r));
   if (token !== buildToken || !worldReady) return;
   prewarmDenseFx();
+  prewarmBursts();
   renderer.compile(scene, camera);
   compiledDims.add(dim);
   resetTNTMemory();
@@ -982,12 +985,6 @@ document.addEventListener("keydown", (e) => {
     } else {
       setFly(false);
     }
-    e.preventDefault();
-    return;
-  }
-  // The reactor cone size: T cycles how wide and far the engine jets spray.
-  if (e.code === "KeyT" && !e.repeat && started && !anyModalOpen() && isLocked()) {
-    cycleConeSize();
     e.preventDefault();
     return;
   }

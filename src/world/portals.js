@@ -31,6 +31,7 @@ import { dimFloorY, dimSpec } from "./dimensions.js";
 import { registerHaloSource } from "../render/halobake.js";
 import {
   FILL_FLIGHT_FADE, fillBox, frameRingCells as ringCellsOf, ridingFills,
+  rideSigFromKey,
 } from "./portalfills.js";
 import {
   pos, yaw, keys,
@@ -558,11 +559,32 @@ export function flightFillMat(spec) {
 export function ridingFillsFor(cellSet) {
   const hasCell = (x, y, z) => cellSet.has(x + "," + y + "," + z);
   const fills = [];
-  for (const { win } of portalFills.values()) {
+  for (const [k, { win }] of portalFills) {
     const spec = specOf(win);
-    fills.push({ ring: frameRingCells(win), box: portalFillBox(win), spec });
+    fills.push({ key: k, ring: frameRingCells(win), box: portalFillBox(win), spec });
   }
   return ridingFills(fills, hasCell);
+}
+
+// Fills a stamp puts straight back skip the validation fade-in: the riding
+// quad carried them through the flight, so at the stamp they are already
+// on screen (no blink between the dropped quad and the canonical fill).
+// The vehicle marks the window keys right before the re-validation its
+// stamp triggers; the mark is consumed on use. One hull flies at a time,
+// so each stamp replaces the previous marks.
+// The keys freeze the takeoff min, so a translated landing never matches
+// them: the stamp also marks position-free ride signatures (family + shape
+// + fill size + ring size, see portalfills.js rideSigFromKey), and a
+// re-validated window matching either mark snaps to full opacity. Exact
+// keys are consumed on use; signatures persist until the next stamp so a
+// hull carrying two same-shape portals hands both off.
+const stampedRides = new Set();
+const stampedRideSigs = new Set();
+export function noteStampedRides(keys, sigs) {
+  stampedRides.clear();
+  stampedRideSigs.clear();
+  for (const k of keys ?? []) stampedRides.add(k);
+  for (const s of sigs ?? []) stampedRideSigs.add(s);
 }
 // Every validated window, fill-backed or not: while the active dimension's
 // exits gate is closed, body overlap answers the gate instead of traveling.
@@ -763,6 +785,21 @@ function ensurePortalFill(win) {
   const k = fillKey(win);
   if (portalFills.has(k)) return;
   const spec = specOf(win);
+  const skipFade = stampedRides.delete(k) ||
+    stampedRideSigs.has(rideSigFromKey(k, portalFillBox(win), frameRingCells(win).length));
+  if (skipFade) {
+    // Stamped back with the hull that carried it: the fill never left the
+    // screen (the riding quad drops the same tick, after the canonical
+    // fill exists — see rocket.js stamp), so it snaps to full opacity
+    // instead of fading in — no blink on landing, translated or not.
+    const mesh = new THREE.Mesh(portalFillGeo, fillMat(spec));
+    const group = new THREE.Group();
+    group.add(mesh);
+    layoutPortalFill(group, win);
+    sceneRef.add(group);
+    portalFills.set(k, { win, group });
+    return;
+  }
   // Transient fade-in (see tickPortalFillFades): fills validate instantly
   // at full opacity otherwise — high-contrast slabs popping in plain sight.
   const shared = fillMat(spec);
@@ -819,6 +856,8 @@ export function clearPortalFills() {
   portalFills.clear();
   portalWindows.clear();
   gateInside = false;
+  stampedRides.clear();
+  stampedRideSigs.clear();
   for (const f of fillFades) f.clone.dispose();
   fillFades.length = 0;
 }

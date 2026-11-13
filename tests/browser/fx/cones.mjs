@@ -7,8 +7,8 @@
 //
 // The script serves the repo itself (python3, same as AGENTS.md), opens
 // ?seed=7&test=1, waits for boot, then drives tests/browser/fx/hook.js:
-// per T preset it samples the real playFx exhaust + plume and asserts both
-// ends widen with T (base disc and outward aim), the disc holds 4xSUB
+// per preset it samples the real playFx exhaust + plume and asserts both
+// ends widen with the preset (base disc and outward aim), the disc holds 4xSUB
 // centers, and every layer lives long enough to read as a cone.
 // Screenshots land in /tmp for eyeballing. Exit code reports.
 import assert from "node:assert/strict";
@@ -44,7 +44,7 @@ try {
     page.evaluate((f, c) => window.__fx.sample(f, c), fx, cone);
 
   const presets = await page.evaluate(() => window.__fx.presets());
-  assert.deepEqual(presets, ["narrow", "flare", "wide", "max"], "four T presets ship");
+  assert.deepEqual(presets, ["narrow", "flare", "wide", "max"], "four presets ship");
 
   for (const fx of ["exhaust", "plume"]) {
     const per = {};
@@ -55,7 +55,7 @@ try {
     }
     const bases = presets.map((c) => per[c].baseRadius);
     assert.ok(bases[0] < bases[1] && bases[1] < bases[2] && bases[2] < bases[3],
-      `${fx}: the base disc widens with T (${bases.map((b) => b.toFixed(2)).join(" < ")})`);
+      `${fx}: the base disc widens with the preset (${bases.map((b) => b.toFixed(2)).join(" < ")})`);
     const flares = presets.map((c) => per[c].flare);
     assert.ok(flares[0] < flares[1] && flares[1] < flares[2] && flares[2] < flares[3],
       `${fx}: the outward aim strictly widens (${flares.map((f) => f.toFixed(2)).join(" < ")})`);

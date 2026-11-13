@@ -65,3 +65,22 @@ const src = (rel) => readFileSync(fileURLToPath(new URL("../../../src/" + rel, i
   );
   console.log("PASS orders-rocket-hull");
 }
+
+// 5. Faded mob riders composite like the hull: the ride() clone is
+//    depthless on ORDERS.VEHICLE (drawn after the liquid sheets, like the
+//    hull blocks), and unride() restores the mesh order with the material.
+//    The regression this guards: the clone carried the default renderOrder 0
+//    and wrote depth, so it was drawn before the liquids and erased all
+//    water behind a transparent rider — the hull's old inversion.
+{
+  const rocket = src("vehicles/rocket.js");
+  assert.match(rocket, /c\.depthWrite = false/, "rider clone stays depthless");
+  assert.match(rocket, /o\.renderOrder = ORDERS\.VEHICLE/, "riders ride the vehicle band");
+  assert.match(rocket, /pairs\.push\(\[o, o\.material, c, o\.renderOrder\]\)/, "ride saves the mesh order");
+  assert.match(rocket, /mesh\.renderOrder = order/, "unride restores the mesh order");
+  assert.ok(
+    ORDERS.VEHICLE > ORDERS.LIQUID_INSIDE,
+    "riders are always drawn after the liquid sheets"
+  );
+  console.log("PASS orders-riders");
+}

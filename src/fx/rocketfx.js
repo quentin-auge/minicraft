@@ -146,10 +146,10 @@ export const ROCKET_FX_HALOS = {
 // variant family plugs back in by extending the registry.
 export const ROCKET_FX_HALO_KEYS = Object.keys(ROCKET_FX_HALOS);
 
-// The reactor cone widths: T picks how wide open the thruster jets spray.
-// Multipliers over the authored spread, life and outward aim, so one knob
+// The reactor cone widths: the engine plays the fixed shipped width below.
+// Multipliers over the authored spread, life and outward aim, so one preset
 // reshapes every engine plume at once. The spawn disc itself opens with
-// the preset, so T reads from the very first frame; the velocity spread
+// the preset, so the cone reads from the very first frame; the velocity spread
 // only breathes. Life stays full: short jets read as puffs, never cones.
 export const ROCKET_FX_CONE_SIZES = {
   // A tighter burn, far end doubled.
@@ -176,15 +176,8 @@ export function coneBaseMul(spreadMul, baseSlope = 0.35) {
   return 1 + (spreadMul - 1) * baseSlope;
 }
 
-// The cone sizes in cycle order (the registry's own order).
+// The cone sizes in registry order.
 export const ROCKET_FX_CONE_SIZE_KEYS = Object.keys(ROCKET_FX_CONE_SIZES);
-
-// The next cone size in the cycle, wrapping around.
-export function nextConeSize(key) {
-  const keys = ROCKET_FX_CONE_SIZE_KEYS;
-  const i = keys.indexOf(key);
-  return keys[(i + 1) % keys.length];
-}
 
 // The effect registry. Every layer names its renderer and its geometry and
 // carries every number the renderer reads: the engine holds no tuning of

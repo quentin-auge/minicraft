@@ -3,7 +3,7 @@
 // with a moving hull.
 import assert from "node:assert/strict";
 import {
-  FILL_FLIGHT_FADE, fillBox, frameRingCells, ridingFills,
+  FILL_FLIGHT_FADE, fillBox, frameRingCells, ridingFills, rideSigFromKey,
 } from "../../../src/world/portalfills.js";
 
 // --- the fill box -------------------------------------------------------
@@ -48,7 +48,7 @@ import {
 
 // --- the riding rule ----------------------------------------------------
 {
-  const fill = (ring) => ({ ring, box: { cx: 0, cy: 0, cz: 0, sx: 1, sy: 1, sz: 1 } });
+  const fill = (ring) => ({ ring, box: { cx: 0, cy: 0, cz: 0, sx: 1, sy: 1, sz: 1 }, spec: { key: "end" } });
   const cells = new Set(["0,0,0", "1,0,0", "0,1,0"]);
   const whole = fill([[0, 0, 0], [1, 0, 0], [0, 1, 0]]);
   const split = fill([[0, 0, 0], [9, 9, 9]]);
@@ -58,6 +58,65 @@ import {
   // An empty ring rides (nothing of it is outside).
   assert.equal(ridingFills([fill([])], () => false).length, 1, "an empty ring rides");
   console.log("PASS fills-riding");
+}
+
+// --- riding carries the window key --------------------------------------
+{
+  // The stamp needs the live window key to skip the validation fade-in on
+  // a fill the hull just rode back: the rule passes entries through whole.
+  const fills = [{ ring: [[0, 0, 0]], box: "b", key: "end:0,0,0", spec: { key: "end" } }];
+  const riding = ridingFills(fills, () => true);
+  assert.equal(riding.length, 1, "the riding fill survives");
+  assert.equal(riding[0].key, "end:0,0,0", "the window key rides along for the stamp");
+  assert.equal(riding[0].box, "b", "the box rides along untouched");
+  console.log("PASS fills-key");
+}
+
+// --- the stamp handoff (snapshot -> translate -> stamp) ------------------
+{
+  // The snapshot freezes the takeoff key; the stamp re-validates at the
+  // landing min, so the world-anchored keys differ whenever the ship
+  // translated — the old exact-key mark misses. The ride signature (family
+  // + shape + fill size + ring size, no min) survives the translation, so a
+  // ridden ring that re-validates still skips the fade.
+  const takeoffKey = "end:v:z:10,5,20";
+  const landingKey = "end:v:z:14,5,27";
+  const box = { sx: 3, sy: 2, sz: 1 };
+  const ringN = 16;
+  const sigTakeoff = rideSigFromKey(takeoffKey, box, ringN);
+  const sigLanding = rideSigFromKey(landingKey, box, ringN);
+  assert.notEqual(takeoffKey, landingKey, "translation changes the world-anchored key");
+  assert.equal(sigTakeoff, sigLanding, "the ride signature survives translation");
+  assert.notEqual(
+    sigTakeoff, rideSigFromKey("nether:v:z:14,5,27", box, ringN),
+    "the family is in the signature");
+  assert.notEqual(
+    sigTakeoff, rideSigFromKey(landingKey, { sx: 2, sy: 2, sz: 1 }, ringN),
+    "the fill size is in the signature");
+  assert.notEqual(
+    sigTakeoff, rideSigFromKey(landingKey, box, ringN + 2),
+    "the ring size is in the signature");
+  // The stamp timeline across ticks: the riding quad breathes with the hull
+  // (landing fade ends at full opacity), then the canonical fill is created
+  // before the quad drops (overlap in the same tick) at full opacity —
+  // because the signature hits, the 0.35 s fade path never runs.
+  const stampedSigs = new Set([sigTakeoff]);
+  const skipFade = stampedSigs.has(sigLanding);
+  assert.ok(skipFade, "the translated landing skips the fade");
+  const ticks = [
+    { riding: 0.5 + 0.5 * 0.5 }, // flight: hull faded, quad breathes along
+    { riding: 1 }, // landing fade done: quad back at full opacity
+    { riding: 1, canonical: skipFade ? 1 : 0 }, // stamp tick: overlap
+    { canonical: skipFade ? 1 : 0 }, // quad dropped: canonical alone
+  ];
+  for (const [i, t] of ticks.entries()) {
+    const live = [t.riding, t.canonical].filter((o) => o !== undefined);
+    assert.ok(live.length > 0, `tick ${i} renders a fill`);
+    assert.ok(Math.max(...live) > 0, `tick ${i} never renders zero fills`);
+  }
+  assert.equal(ticks[2].canonical, 1, "the canonical fill lands at full opacity");
+  assert.equal(ticks[3].canonical, 1, "no empty frame after the quad drops");
+  console.log("PASS fills-handoff");
 }
 
 // --- the flight fade depth ---------------------------------------------

@@ -710,6 +710,21 @@ export function prewarmDenseFx() {
   spawnDense({ x: 0.5, y: -100, z: 0.5, R: 2, count: 300, life: 0.5, size: 20, shape: "ball" });
   flushDense();
 }
+// First-countdown warmup: the burst path builds a fresh PointsMaterial +
+// geometry per call, so the very first exhaust tick would pay two program
+// links (additive embers, plain smoke) plus the flash geometry and the
+// debris pool in one frame — the lag before the countdown shows. Seed one
+// particle per variant underground with a tiny life: tickFx cleans them
+// and renderer.compile covers their programs. Called behind the menu.
+export function prewarmBursts() {
+  if (!sceneRef) return;
+  const seed = { x: 0.5, y: -100, z: 0.5, count: 1, life: 0.05, size: 0.18 };
+  spawnBurst({ ...seed, additive: true, foreground: true });
+  spawnBurst({ ...seed, additive: false });
+  spawnBurstBatch({ centers: [[0.5, -100, 0.5]], directions: [[0, -1, 0]], count: 1, life: 0.05 });
+  spawnFlash({ x: 0.5, y: -100, z: 0.5, life: 0.05 });
+  spawnDebris({ x: 0.5, y: -100, z: 0.5, R: 1, count: 1, life: 0.05 });
+}
 let lastDenseEnd = -1;
 export function noteDenseSpawn(life) {
   lastDenseEnd = Math.max(lastDenseEnd, denseFire.time + life);
