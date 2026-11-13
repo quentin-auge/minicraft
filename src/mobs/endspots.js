@@ -208,16 +208,6 @@ export function pickSpot({
   return { spot: null, stats, level: null };
 }
 
-// Teleport retry gate (anti retry-storm): a failed attempt arms a cooldown
-// on the mob; attempts while it runs are skipped. Pure in sim-time.
-export const TELEPORT_COOL = 1.5;
-export function teleportReady(mob, now) {
-  return (mob.teleportCoolUntil ?? -Infinity) <= now;
-}
-export function armTeleportCool(mob, now) {
-  mob.teleportCoolUntil = now + TELEPORT_COOL;
-}
-
 // Pre-contact dodge: true when a live same-dim peer already overlaps past
 // the push threshold (immediate contact) or will overlap past the crossing
 // budget inside the dodge horizon (very shortly before contact). The

@@ -2,7 +2,7 @@
 // pre-contact dodge. Three-free (endspots only: no THREE, no scene) —
 // plain `node` direct, deterministic injected rand/probes.
 import assert from "node:assert/strict";
-import { bandOf, pickSpot, shouldDodge, teleportReady, armTeleportCool, sphereExclude, blastPredicates } from "../../../src/mobs/endspots.js";
+import { bandOf, pickSpot, shouldDodge, sphereExclude, blastPredicates } from "../../../src/mobs/endspots.js";
 
 // --- world bands: feet-Y decides, teleports never change it before L4 ---
 assert.equal(bandOf("over", 64), "ground");
@@ -167,14 +167,6 @@ const staredRes = pickSpot(stared);
 assert.deepEqual(spotOf(staredRes), { x: 36, y: 64, z: 24 });
 assert.ok(staredRes.stats.near > 0);
 assert.equal(staredRes.level, 0);
-
-// --- retry gate: a failed attempt cools the mob down ---
-const mob = {};
-assert.equal(teleportReady(mob, 100), true);
-armTeleportCool(mob, 100);
-assert.equal(teleportReady(mob, 100), false);
-assert.equal(teleportReady(mob, 101.4), false);
-assert.equal(teleportReady(mob, 101.5), true);
 
 // --- dodge: neutral-anatomy self, farm-shaped peer ---
 const self = {

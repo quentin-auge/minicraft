@@ -81,7 +81,7 @@ import {
   rocketEditingBlocked, rocketSolidAt, rocketFlying, carryRiders,
 } from "./src/vehicles/rocket.js";
 import { initHomingTnt, fireHomingTnt, tickHomingTnt, clearHomingTnt } from "./src/mobs/homing.js";
-import { enterEndMobs, clearEndMobs, clearEndermenDim, tickEndMobs, takeTeleportFail, notifyEndermanVoxelChange, teleportBlastEndermen, dragonHealth, setDragonVictoryHook, setMobSeed } from "./src/mobs/end.js";
+import { enterEndMobs, clearEndMobs, clearEndermenDim, tickEndMobs, notifyEndermanVoxelChange, teleportBlastEndermen, dragonHealth, setDragonVictoryHook, setMobSeed } from "./src/mobs/end.js";
 import { enterFarmMobs, clearFarmMobs, listFarmMobs, tickFarmMobs, handleFarmTravel, setFarmSeed } from "./src/mobs/farm.js";
 import { launchMobBlast } from "./src/mobs/mover.js";
 import { computeMegaLaunch } from "./src/core/launch.js";
@@ -317,7 +317,7 @@ onMegaPool(({ x, y, z, R, members, radii }) => {
     if (v) launchMobBlast(m, v.vx, v.vy, v.vz);
   }
   teleportBlastEndermen(dim, camera,
-    { spheres: members.map((m, i) => ({ x: m.x, y: m.y, z: m.z, r: radii[i] })) }, "mega");
+    { spheres: members.map((m, i) => ({ x: m.x, y: m.y, z: m.z, r: radii[i] })) });
 });
 
 // Other blasts, same Enderman rule: only the mobs a blast could have touched
@@ -326,9 +326,9 @@ onMegaPool(({ x, y, z, R, members, radii }) => {
 // Mega pools never reach this hook (onMegaPool carries them).
 onCrater((ev) => {
   if (ev.kind === "ultra") {
-    teleportBlastEndermen(dim, camera, { yLo: ev.yLo, yHi: ev.yHi }, "ultra");
+    teleportBlastEndermen(dim, camera, { yLo: ev.yLo, yHi: ev.yHi });
   } else {
-    teleportBlastEndermen(dim, camera, { spheres: ev.spheres }, "blast");
+    teleportBlastEndermen(dim, camera, { spheres: ev.spheres });
   }
 });
 
@@ -1316,8 +1316,6 @@ function loop(now) {
       mobs: listFarmMobs(),
       player: { x: pos.x, y: pos.y, z: pos.z, vx: vel.x, vz: vel.z },
     });
-    const enderFail = takeTeleportFail();
-    if (enderFail) toast(enderFail);
     tickFarmMobs(sdt, dim);
     // Target debug: the selection follows the aim while C is held, and
     // an active target ends when its plan does (arrival or give-up).

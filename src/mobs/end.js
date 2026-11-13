@@ -8,7 +8,7 @@ import { BLOCK_INFO, isLiquid } from "../core/blocks.js";
 import { getBlock, getBlockIn, topAt, colLiqTop, colTopIdx, dimInfinite, outOfWorld } from "../core/store.js";
 import { PLAYER_HW } from "../player/physics.js";
 import { mobRank } from "./mover.js";
-import { bandOf, pickSpot, shouldDodge, teleportReady, armTeleportCool, boundedXZ, blastPredicates } from "./endspots.js";
+import { bandOf, pickSpot, shouldDodge, boundedXZ, blastPredicates } from "./endspots.js";
 import { listFarmMobs } from "./farm.js";
 import { spawnBurst } from "../fx/particles.js";
 import { END_PLATFORM_RADIUS, END_PLATFORM_TOP, END_RETURN_Z, setEndCleared } from "../world/end.js";
@@ -469,7 +469,7 @@ function teleportEnderman(mob, camera, exclude = null) {
   );
   let n = 0;
   const rand = () => mobHash(teleportNonce, n++, 9410);
-  const { spot, stats, level } = pickSpot({
+  const { spot, level } = pickSpot({
     dim: dimName, band, from, hw: mob.hw, h: mob.h,
     player: camera ? { x: camera.position.x, z: camera.position.z } : null,
     groundY: (x, z, yHi) => spotGroundY(dimName, x, z, from.y, yHi, mob.hw),
@@ -485,7 +485,7 @@ function teleportEnderman(mob, camera, exclude = null) {
     los: camera ? (x, y, z) => losClearSpot(camera, x, y, z, mob.h) : null,
     rand,
   });
-  if (!spot) return { ok: false, stats, level, band, y: from.y };
+  if (!spot) return false;
   spawnBurst({ x: from.x, y: from.y + 1.2, z: from.z, count: 24, color: [0.55, 0.12, 0.9], speedMin: 1, speedMax: 5, life: 0.45, size: 0.12, gravity: 0 });
   mob.root.position.set(spot.x, spot.y, spot.z);
   mob.pos.copy(mob.root.position);
@@ -495,62 +495,34 @@ function teleportEnderman(mob, camera, exclude = null) {
     const ring = Math.hypot(spot.x - from.x, spot.y - from.y, spot.z - from.z);
     console.debug(`Enderman teleport L${level}: ~${ring.toFixed(1)} m`);
   }
-  return { ok: true, stats, level, band, y: from.y };
+  return true;
 }
 
-// Failed attempts funnel here: the picker stats are kept for the failure
-// toast, and the mob cools down so a spotless situation retries at 1.5 s
-// intervals instead of every frame (the old silent retry storm).
-let pendingFail = null;
-let lastFailToastAt = -Infinity;
-const FAIL_TOAST_GAP = 4;
-function tryTeleport(mob, camera, why, exclude = null) {
-  if (!teleportReady(mob, mob.t)) return false;
-  const { ok, stats, level, band, y } = teleportEnderman(mob, camera, exclude);
-  if (ok) return true;
-  mob.lookTime = 0;
-  armTeleportCool(mob, mob.t);
-  pendingFail = { why, band, y, stats, level };
+// A spotless Enderman is removed from the world: it blinks out with the
+// launch puff instead of retrying forever (the only failure left is a true
+// void or a blast crater deeper than the picker's reach).
+function despawnEnderman(mob) {
+  spawnBurst({ x: mob.pos.x, y: mob.pos.y + 1.2, z: mob.pos.z, count: 24, color: [0.55, 0.12, 0.9], speedMin: 1, speedMax: 5, life: 0.45, size: 0.12, gravity: 0 });
+  disposeEndMob(mob);
+}
+function tryTeleport(mob, camera, exclude = null) {
+  if (teleportEnderman(mob, camera, exclude)) return true;
+  despawnEnderman(mob);
   return false;
 }
 
-const FAIL_LABELS = [
-  ["view", "no view"], ["los", "blocked view"], ["near", "near player"], ["mob", "mobs"],
-  ["free", "blocked"], ["support", "no footing"], ["height", "height"],
-  ["band", "band"], ["surface", "no ground"], ["bounds", "bounds"], ["crater", "crater"],
-];
-// Latest failure summary for the main-loop toast relay (throttled, one
-// shot): trigger name plus the top rejection causes, e.g.
-// `Enderman: no spot via stare @y=22 band=ground (mob ×34, view ×12)`.
-// Lets a spotless Enderman say exactly where the search died instead of
-// silently grinding attempts.
-export function takeTeleportFail() {
-  if (!pendingFail) return null;
-  const { why, band, y, stats } = pendingFail;
-  pendingFail = null;
-  const now = performance.now() / 1000;
-  if (now - lastFailToastAt < FAIL_TOAST_GAP) return null;
-  lastFailToastAt = now;
-  const top = Object.entries(stats || {})
-    .filter(([, n]) => n > 0)
-    .sort((a, b) => b[1] - a[1])
-    .slice(0, 3)
-    .map(([k, n]) => `${(FAIL_LABELS.find(([key]) => key === k) || [k, k])[1]} ×${n}`)
-    .join(", ");
-  return `Enderman: no spot via ${why} @y=${Math.round(y)} ${band}${top ? ` (${top})` : ""}`;
-}
-
 // Blast entry: only the endermen the blast could have touched teleport —
-// through the same tryTeleport path (cooldown + fail toast) as every other
-// trigger. The descriptor carries the blast geometry (`{spheres}` for balls,
-// `{yLo, yHi}` for wiped bands/windows); both predicates derive from it.
-export function teleportBlastEndermen(dimName, camera, blast, why) {
+// through the same tryTeleport path as every other trigger (a failure
+// removes the mob). The descriptor carries the blast geometry (`{spheres}`
+// for balls, `{yLo, yHi}` for wiped bands/windows); both predicates derive
+// from it.
+export function teleportBlastEndermen(dimName, camera, blast) {
   const { caught, exclude } = blastPredicates(blast);
   for (const mob of mobs) {
     if (!mob.alive || mob.type !== "enderman" || isCarried(mob)) continue;
     if (mob.dim !== dimName) continue;
     if (!caught(mob.pos.x, mob.pos.y, mob.pos.z)) continue;
-    tryTeleport(mob, camera, why, exclude);
+    tryTeleport(mob, camera, exclude);
   }
 }
 
@@ -748,7 +720,7 @@ export function notifyEndermanVoxelChange(changed, camera, dimName = null) {
     if (!relevant) continue;
     // Any dimension: an undermined Enderman teleports out, capped to its
     // world band (a bandless column or a full band stays in place).
-    if (!endermanHasSupport(mob)) tryTeleport(mob, camera, "undermined");
+    if (!endermanHasSupport(mob)) tryTeleport(mob, camera);
   }
 }
 
@@ -769,7 +741,7 @@ function tickEnderman(mob, dt, camera, ctx = null) {
   // Safety net for voxel changes from any source (blasts, chain batches):
   // an undermined Enderman teleports out on the next sim frame.
   if (!endermanHasSupport(mob)) {
-    tryTeleport(mob, camera, "undermined");
+    tryTeleport(mob, camera);
     return;
   }
   // Pre-contact dodge: a mob or the player about to collide teleports the
@@ -785,14 +757,15 @@ function tickEnderman(mob, dt, camera, ctx = null) {
       playerHw: PLAYER_HW, mobRank,
     });
     if (seen.dodge) {
-      tryTeleport(mob, camera, "dodge");
+      tryTeleport(mob, camera);
       return;
     }
   }
   if (endermanLookedAt(mob, camera)) {
     mob.lookTime += dt;
-    if (mob.lookTime >= 0.3) tryTeleport(mob, camera, "stare");
+    if (mob.lookTime >= 0.3) tryTeleport(mob, camera);
   } else mob.lookTime = Math.max(0, mob.lookTime - dt * 2);
+  if (!mob.alive) return;
   mob.pos.copy(mob.root.position);
 }
 
