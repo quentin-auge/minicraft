@@ -38,6 +38,10 @@ const SWIM_AREA = 10;
 const SWIM_BRAKE = 2.0;
 const SWIM_MAX = 64;
 const SWIM_SPEED = 4.2;
+// Passive float depth: feet rest this far below the liquid surface, so two
+// stacked liquids read +1 on the integer HUD (exact -1.0 would sit on the
+// block boundary and flicker the readout).
+const SWIM_SUBMERGE = 0.95;
 const HOOK_FLOAT_RISE = 1.5;
 const HOOK_SINK = 1.5;
 const FREE_SWIM_AXES = ["y", "x", "z"];
@@ -53,6 +57,13 @@ export function setYaw(v) { yaw = v; }
 export function setPitch(v) { pitch = v; }
 export let onGround = false;
 export function setOnGround(v) { onGround = v; }
+
+// Mid-jump flag for the takeoff gate: true while a jump arc is live (the
+// jump impulse fired and the feet have not touched ground since). Water
+// entries and knockback are not jumps — knockVel never sets an origin.
+export function jumpingNow() {
+  return jumpOriginY !== null && !onGround && !headInWater();
+}
 
 // Ghost pass: a movement mode (hook pull-through, future mob phases) can
 // exempt cells from collision without touching the voxel store. Ground
@@ -511,7 +522,7 @@ export function updatePlayer(dt) {
       if (surface === -Infinity) {
         vel.y -= G * dt;
       } else {
-        const targetY = surface - 1.17;
+        const targetY = surface - SWIM_SUBMERGE;
         const err = targetY - pos.y;
         if (err > SWIM_AREA) {
           vel.y += SWIM_ACCEL * dt;

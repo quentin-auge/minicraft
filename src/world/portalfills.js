@@ -61,6 +61,22 @@ export function frameRingCells(bbox, orient, face, isFrameCell) {
   return out;
 }
 
+// Ride signature: the fill key minus its world-anchored min, plus the fill
+// size and the ring size. A portal the hull carries lands at a translated
+// min, so the exact key never matches at the stamp — the signature does
+// (same family, shape and size anywhere). Different families, shapes, or
+// fill sizes never share one.
+export function rideSigFromKey(key, box, ringN = -1) {
+  const parts = String(key).split(":");
+  const head = parts.slice(0, 3).join(":");
+  const tail = parts.slice(3).join(":");
+  const m = /^-?\d+,-?\d+,-?\d+(.*)$/.exec(tail);
+  const shape = m ? m[1] : tail;
+  const size = box ? `:${box.sx}x${box.sy}x${box.sz}` : "";
+  const ring = ringN >= 0 ? `#${ringN}` : "";
+  return `${head}:${shape}${size}${ring}`;
+}
+
 // The fills of `fills` that ride a hull holding the cells `hasCell` reports.
 // Each fill is { ring, box, color, alpha }: the world cells of its frame
 // ring, its world fill box, the flying colour and the flying opacity.

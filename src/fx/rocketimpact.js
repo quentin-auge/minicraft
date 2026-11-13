@@ -101,10 +101,10 @@ const PLACEMENTS = {
   },
   // The thruster nozzles, always spraying downward — braking thrust
   // included, so the exhaust never rises into the hull. Each nozzle emits
-  // a small disc of spawn points (baseRadius, widened by T's base slope)
+  // a small disc of spawn points (baseRadius, widened by the cone's base slope)
   // instead of a single point, with each sub-center aimed slightly
   // outward (flare): the cone reads wide from its very base, and both
-  // ends widen with T.
+  // ends widen with the preset.
   nozzles(ctx, layer, props) {
     const nozzles = ctx.nozzles ?? [];
     const R = props.baseRadius ?? 0;
@@ -268,7 +268,7 @@ export function playFx(key, ctx = {}) {
     const place = PLACEMENTS[layer.place](ctx, layer, props, anchor);
     if (!place || !place.centers.length) continue;
     // ?test=1 probe: record what the engine actually sprayed, so the
-    // browser driver can assert widening/density per T preset. Inert
+    // browser driver can assert widening/density per preset. Inert
     // unless the test hook armed window.__fxProbe — zero prod impact.
     if (layer.place === "nozzles" && typeof window !== "undefined" && window.__fxProbe && window.__fxProbe.length < 20000) {
       window.__fxProbe.push({

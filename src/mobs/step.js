@@ -137,6 +137,14 @@ export function spawnRng(rand = Math.random) {
 
 export const isSolidCell = (x, y, z) => !!BLOCK_INFO[getBlock(x, y, z)]?.solid;
 
+// Extra solid for mob movement: a live out-of-store hull (the hovering
+// rocket, wired by main.js to rocketSolidAt) reads as rock to every body
+// probe below, so no mob ever walks into it. Null headless (legacy voxel
+// reads) unless a rig sets a stub. Only the overlap probes consult it —
+// support scans keep using voxels, so the hull is a wall, never a floor.
+let mobExtraSolid = null;
+export function setMobExtraSolid(fn) { mobExtraSolid = fn; }
+
 // Lane teardown shared by the servo releases: clears the lane and its
 // blend state (blend is only ever read under a lane, so resetting it here
 // is invisible everywhere else).
@@ -152,10 +160,11 @@ export function aabbIntersectsSolid(px, py, pz, hw, h) {
   for (let by = y0; by <= y1; by++)
     for (let bx = x0; bx <= x1; bx++)
       for (let bz = z0; bz <= z1; bz++) {
-        if (bx + 1 <= px - hw || bx >= px + hw) continue;
-        if (bz + 1 <= pz - hw || bz >= pz + hw) continue;
-        if (by + 1 <= py || by >= py + h) continue;
-        if (isSolidCell(bx, by, bz)) return true;
+      if (bx + 1 <= px - hw || bx >= px + hw) continue;
+      if (bz + 1 <= pz - hw || bz >= pz + hw) continue;
+      if (by + 1 <= py || by >= py + h) continue;
+      if (isSolidCell(bx, by, bz)) return true;
+      if (mobExtraSolid && mobExtraSolid(bx, by, bz)) return true;
       }
   return false;
 }

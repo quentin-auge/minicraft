@@ -9,7 +9,7 @@ import {
   ROCKET_FX_EFFECTS, ROCKET_FX_PALETTE, ROCKET_FX_CURVES,
   countdownFactor,
   ROCKET_FX_HALOS, ROCKET_FX_HALO_KEYS,
-  ROCKET_FX_CONE_SIZES, ROCKET_FX_CONE_SIZE_KEYS, ROCKET_FX_DEFAULT_CONE, nextConeSize,
+  ROCKET_FX_CONE_SIZES, ROCKET_FX_CONE_SIZE_KEYS, ROCKET_FX_DEFAULT_CONE,
   FX_LAYER_KINDS, FX_PLACES,
   fxScale, speedFactor, resolveLayer, validateRocketFx, exposedFaces,
   landingRingPoints, coneSpreadK, coneBaseMul,
@@ -209,7 +209,7 @@ const near = (a, b) => Math.abs(a - b) < 1e-9;
     assert.ok(Number.isFinite(layer.baseRadius) && Number.isFinite(layer.flare), "the base stays finite");
     assert.ok(layer.fillRadius > 0, "the cone spawns a volume, not points");
   }
-  // T opens both ends: the engine scales the outward aim and the spawn
+  // The preset opens both ends: the engine scales the outward aim and the spawn
   // disc itself through the cone slopes — the base never moves with the
   // raw preset multiplier, only with its own slope. Both ends widen
   // strictly with the presets.
@@ -218,18 +218,18 @@ const near = (a, b) => Math.abs(a - b) < 1e-9;
   assert.ok(coneBaseMul(2.0) < coneBaseMul(5.0), "the base widens with the preset");
   assert.ok(coneBaseMul(1.0) === 1, "no preset leaves the disc alone");
   const impactSrc = readFileSync(fileURLToPath(new URL("../../../src/fx/rocketimpact.js", import.meta.url)), "utf8");
-  assert.ok(!impactSrc.includes("baseRadius * cone.spreadMul"), "T never scales the base raw");
-  assert.ok(impactSrc.includes("flare: props.flare = props.flare * live.spreadMul") || impactSrc.includes("props.flare * live.spreadMul"), "T opens the outward aim");
+  assert.ok(!impactSrc.includes("baseRadius * cone.spreadMul"), "the preset never scales the base raw");
+  assert.ok(impactSrc.includes("flare: props.flare = props.flare * live.spreadMul") || impactSrc.includes("props.flare * live.spreadMul"), "the preset opens the outward aim");
   assert.ok(impactSrc.includes("spreadK: coneSpreadK(cone.spreadMul)"), "the aim slope is read once");
   assert.ok(impactSrc.includes("baseK: coneBaseMul(cone.spreadMul)"), "the base slope is read once");
   assert.ok(impactSrc.includes("smokeLife: 0.8"), "the smoke lifetime is baked");
-  assert.ok(impactSrc.includes("baseRadius = props.baseRadius * live.baseK"), "T widens the spawn disc");
-  assert.ok(impactSrc.includes("fillRadius = props.fillRadius * live.baseK"), "T widens the spawn volume");
+  assert.ok(impactSrc.includes("baseRadius = props.baseRadius * live.baseK"), "the preset widens the spawn disc");
+  assert.ok(impactSrc.includes("fillRadius = props.fillRadius * live.baseK"), "the preset widens the spawn volume");
   assert.ok(impactSrc.includes("const SUB = 8"), "the disc samples eight points per nozzle");
   assert.ok(impactSrc.includes("i % 2 === 0"), "the smoke floor emits on every second center");
   assert.ok(impactSrc.includes("window.__fxProbe"), "the ?test=1 probe is armed in the engine");
 
-  // The cone widths: both ends open x2 up to x5 with T, max shipped.
+  // The cone widths: both ends open x2 up to x5, max shipped fixed.
   assert.deepEqual(ROCKET_FX_CONE_SIZE_KEYS, Object.keys(ROCKET_FX_CONE_SIZES), "the cone registry lists its keys");
   assert.deepEqual(
     [ROCKET_FX_CONE_SIZES.flare.spreadMul, ROCKET_FX_CONE_SIZES.flare.lifeMul],
@@ -245,11 +245,6 @@ const near = (a, b) => Math.abs(a - b) < 1e-9;
     assert.equal(size.lifeMul, 1.0, `${key} keeps full reach`);
   }
   assert.equal(ROCKET_FX_DEFAULT_CONE, "max", "max ships");
-  // The cycle walks every size and comes back around.
-  let cone = ROCKET_FX_CONE_SIZE_KEYS[0];
-  for (let i = 0; i < ROCKET_FX_CONE_SIZE_KEYS.length; i++) cone = nextConeSize(cone);
-  assert.equal(cone, ROCKET_FX_CONE_SIZE_KEYS[0], "the cycle wraps around");
-  assert.equal(nextConeSize(ROCKET_FX_CONE_SIZE_KEYS[0]), ROCKET_FX_CONE_SIZE_KEYS[1], "the cycle steps to the next size");
 }
 
 // --- the hardcoded smoke ------------------------------------------------
@@ -441,6 +436,75 @@ const near = (a, b) => Math.abs(a - b) < 1e-9;
   assert.ok(liftoff, "the liftoff block exists");
   assert.ok(/landingDust\(BOOST_SPEED\)/.test(liftoff[0]), "the liftoff plays the max landing cloud");
   assert.ok(/shakeThump\(1, "liftoff"\)/.test(liftoff[0]), "the liftoff thumps the resolved landing feel");
+}
+
+// --- the landing relaunch queue ----------------------------------------------
+{
+  // SHIFT+ENTER freezes with the rest of the controls mid-landing, but a
+  // fresh press latches and fires the tick the freeze ends — no parked
+  // frame, no release-and-press round trip. Releasing first cancels;
+  // holding the chord since takeoff never latches (rising edge only).
+  const rocketSrc = readFileSync(fileURLToPath(new URL("../../../src/vehicles/rocket.js", import.meta.url)), "utf8");
+  assert.ok(rocketSrc.includes("takeoffArmed = false"), "the chord is spent on launch");
+  assert.ok(rocketSrc.includes("if (chordHeld() && !chordWas) takeoffQueued = true"), "only a fresh press queues");
+  assert.ok(rocketSrc.includes("takeoffQueued = false"), "the queue resets");
+  assert.ok(rocketSrc.includes("chordWas = chordHeld()"), "the edge tracks every tick");
+  const fin = rocketSrc.match(/function finalizeLanding\(\) \{[\s\S]*?\n\}/);
+  assert.ok(fin, "the finalize block exists");
+  assert.ok(/if \(takeoffQueued && holdTakeoff\(\)\) \{/.test(fin[0]), "the queued relaunch is gated on the chord");
+  assert.ok(fin[0].includes("rocketCanTakeOff()"), "the relaunch re-resolves the takeoff offer");
+  assert.ok(/startCountdown\(offer\)/.test(fin[0]), "the queued relaunch fires at freeze end");
+}
+
+// --- the countdown record handoff ------------------------------------------------
+{
+  // The record follows the hull from the countdown, not at liftoff: the
+  // snapshot clears the ship from the store, so a still-parked record would
+  // read as an emptied ghost and prune itself — cancelling the countdown
+  // would then restore voxels with no record left to fly them (off-pad
+  // vessels never taking off again). The cancel path re-parks through
+  // stamp() via activeVesselId instead.
+  const rocketSrc = readFileSync(fileURLToPath(new URL("../../../src/vehicles/rocket.js", import.meta.url)), "utf8");
+  const start = rocketSrc.match(/function startCountdown\(offer\) \{[\s\S]*?\n\}/);
+  assert.ok(start, "the startCountdown block exists");
+  const mark = start[0].indexOf('updateVessel(offer.vesselId, { status: "flying" })');
+  assert.ok(mark >= 0, "the countdown marks the takeoff record flying");
+  const snapCall = start[0].indexOf("snapshot(offer.ship)");
+  assert.ok(snapCall >= 0, "the countdown snapshots the resolved ship");
+  assert.ok(mark < snapCall, "the flying mark precedes the snapshot prune");
+  assert.ok(start[0].includes("activeVesselId = offer.vesselId"), "the countdown holds the active id for cancel re-park");
+}
+
+// --- the snapshot ship filter ------------------------------------------------
+{
+  // The snapshot scans a ship passed in by the resolved offer: the membership
+  // test must read the caller's set, never a bare out-of-scope name (that
+  // exact slip crashed every liftoff with `ship is not defined`).
+  const rocketSrc = readFileSync(fileURLToPath(new URL("../../../src/vehicles/rocket.js", import.meta.url)), "utf8");
+  assert.ok(rocketSrc.includes("function snapshot(shipCells)"), "the snapshot takes the resolved ship");
+  const snap = rocketSrc.match(/function snapshot\(shipCells\) \{[\s\S]*?\n\}/);
+  assert.ok(snap, "the snapshot block exists");
+  assert.ok(snap[0].includes("inShip.has("), "the scan filters on the caller's set");
+  assert.ok(!snap[0].includes("!ship.has("), "no out-of-scope ship reference survives");
+}
+
+// --- the first-countdown warmup ------------------------------------------------
+{
+  // The burst path builds material + geometry per call: without a warmup
+  // the first exhaust tick pays two program links mid-tick and the
+  // countdown overlay visibly lags. Seed particles prewarm every variant
+  // behind the menu, before renderer.compile covers their programs.
+  const parts = readFileSync(fileURLToPath(new URL("../../../src/fx/particles.js", import.meta.url)), "utf8");
+  assert.ok(/export function prewarmBursts\(\)/.test(parts), "bursts prewarm");
+  assert.ok(parts.includes("spawnBurstBatch({ centers:"), "the nozzle batch path prewarms");
+  assert.ok(parts.includes("spawnFlash({"), "the flash geometry prewarms");
+  assert.ok(parts.includes("spawnDebris({"), "the debris pool prewarms");
+  const main = readFileSync(fileURLToPath(new URL("../../../main.js", import.meta.url)), "utf8");
+  const warm = main.match(/async function warmupFx\(token\) \{[\s\S]*?\n\}/);
+  assert.ok(warm, "the warmup block exists");
+  assert.ok(warm[0].indexOf("prewarmBursts()") < warm[0].indexOf("renderer.compile("), "bursts seed before compile");
+  const rocket2 = readFileSync(fileURLToPath(new URL("../../../src/vehicles/rocket.js", import.meta.url)), "utf8");
+  assert.ok(rocket2.includes("countdownEl.textContent !== t"), "the overlay writes on change only");
 }
 
 console.log("rocketfx.test.mjs: ok");
