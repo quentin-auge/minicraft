@@ -31,6 +31,35 @@ export const GLOW_VARIANTS = [
 
 export const GLOW_VARIANT_COUNT = GLOW_VARIANTS.length;
 
+// Pad-corner ghosts: reserved variants past the 7 normal ones, reusing the
+// red/yellow look (no new textures) and rendering fog-faded: no halo, but a
+// dynamic pool lamp in the base color while the fog lets them show (the pool
+// caps ghost spots at the fog far, see render/poolspots.js).
+// Normal placements never roll them (glowVariantNear only draws 0..6 and
+// skips ghost entries when clustering); pad corners write them explicitly
+// via noteGlowstonePlaceShared. Every render-side ghost branch gates on
+// isPadGhostVariant, so the 7 normal variants never pass through one.
+export const PAD_GHOST_RED = GLOW_VARIANT_COUNT; // 7, reads as red up close
+export const PAD_GHOST_YELLOW = GLOW_VARIANT_COUNT + 1; // 8, reads as yellow
+// Corner order, clockwise from the minimum/minimum corner: red, yellow,
+// red, yellow (matches rocketpad.js PAD_LIGHTS).
+export const PAD_GHOST_VARIANTS = [PAD_GHOST_RED, PAD_GHOST_YELLOW, PAD_GHOST_RED, PAD_GHOST_YELLOW];
+export function isPadGhostVariant(v) {
+  return v === PAD_GHOST_RED || v === PAD_GHOST_YELLOW;
+}
+// Ghost look base: the normal variant index whose texture the ghost reuses.
+export function padGhostBaseVariant(v) {
+  return v === PAD_GHOST_YELLOW ? 3 : 1;
+}
+// Distance-driven opacity fade (three-free): full strength up close, gone by
+// fogFar so ghosts read as glowstones near the pad and vanish with distance.
+export const PAD_GHOST_FADE_NEAR = 24;
+export function padGhostOpacityAt(d, fogFar = 160) {
+  if (d <= PAD_GHOST_FADE_NEAR) return 1;
+  if (d >= fogFar) return 0;
+  return 1 - (d - PAD_GHOST_FADE_NEAR) / (fogFar - PAD_GHOST_FADE_NEAR);
+}
+
 function makeMaps() {
   return new Map();
 }
@@ -63,7 +92,8 @@ export function glowVariantNear(x, y, z) {
     const d2 = dx * dx + dy * dy + dz * dz;
     if (d2 < bestD) {
       const v = gv.get(k);
-      if (v !== undefined) { best = v; bestD = d2; }
+      if (v === undefined || isPadGhostVariant(v)) continue; // ghosts never seed clusters
+      best = v; bestD = d2;
     }
   }
   return best >= 0 ? best : Math.floor(hash2(x * 31 + y, z * 17 + y, glowSeed + 9201) * GLOW_VARIANT_COUNT);
@@ -117,14 +147,19 @@ export function glowstoneVariantKey(name, k) {
   return glowVariants[name].get(k);
 }
 
-// Baked-halo source: every stone tints its neighbors in every dimension,
-// so a line of 200 stones reads lit end to end with no dynamic light
-// involved (see render/halobake.js).
+// Baked-halo source: every normal stone tints its neighbors in every
+// dimension, so a line of 200 stones reads lit end to end with no dynamic
+// light involved (see render/halobake.js). Pad-corner ghosts emit no halo:
+// colorOf returns black for them, adding zero tint.
 registerHaloSource({
   key: "glowstone",
   radius: 8, // blocks, Euclidean cutoff
   gain: 2.0, // adjacent-block lift
   max: 3, // per-channel clamp against overlap blowout
   positions: (name) => glowstoneSets[name],
-  colorOf: (name, k) => GLOW_VARIANTS[glowstoneVariantKey(name, k) ?? 0].glow,
+  colorOf: (name, k) => {
+    const v = glowstoneVariantKey(name, k) ?? 0;
+    if (isPadGhostVariant(v)) return 0x000000;
+    return GLOW_VARIANTS[v].glow;
+  },
 });

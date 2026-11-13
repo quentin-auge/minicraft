@@ -4,17 +4,19 @@
 // a centered 3x4 door. Stub maps, no scene.
 import assert from "node:assert/strict";
 import { AIR, GLASS, GLOWSTONE, HULL, HULL_ACCENT, THRUSTER, PAD } from "../../../src/core/blocks.js";
-import { isCellProtected } from "../../../src/core/store.js";
-import { resetGlowstoneMemory, glowVariantAt, GLOW_VARIANTS } from "../../../src/world/glowstone.js";
+import { isCellProtected, key } from "../../../src/core/store.js";
 import {
-  ROCKET_SPEC, PAD_SPEC, PAD_LIGHTS, RIDE_BOX, rideBoardable,
+  resetGlowstoneMemory, glowVariantAt, GLOW_VARIANTS, noteGlowstonePlace,
+  noteGlowstonePlaceShared, isPadGhostVariant, padGhostBaseVariant, padGhostOpacityAt,
+} from "../../../src/world/glowstone.js";
+import { HALO_SOURCES } from "../../../src/render/halobake.js";
+import { clusterSpots, resetSpotMemory, GHOST_POOL_FAR } from "../../../src/render/poolspots.js";
+import {
+  ROCKET_SPEC, PAD_SPEC, RIDE_BOX, rideBoardable,
   partitionStampCells,
   buildRocketGrid, choosePadSite, placeRocketSite, rocketSite,
 } from "../../../src/world/rocketpad.js";
 import { rectsOverlap, computeLayout, village } from "../../../src/world/village.js";
-
-const red = GLOW_VARIANTS.findIndex((v) => v.key === "red");
-const yellow = GLOW_VARIANTS.findIndex((v) => v.key === "yellow");
 
 function stubMaps() {
   const m = new Map();
@@ -150,17 +152,68 @@ function stubMaps() {
   const pad = choosePadSite(() => 20, 0, 0, 28, 20);
   placeRocketSite(setBlock, getBlock, pad);
   assert.ok(rocketSite.placed);
-  // Corners glow red/yellow clockwise from min/min.
-  const corners = [
-    [pad.minX, pad.minZ, PAD_LIGHTS[0]],
-    [pad.minX, pad.maxZ, PAD_LIGHTS[1]],
-    [pad.maxX, pad.maxZ, PAD_LIGHTS[2]],
-    [pad.maxX, pad.minZ, PAD_LIGHTS[3]],
-  ];
-  for (const [x, z, want] of corners) {
-    assert.equal(getBlock(x, pad.vy, z), GLOWSTONE, `corner ${x},${z} glows`);
-    assert.equal(glowVariantAt(x, pad.vy, z), want === "red" ? red : yellow, `corner ${x},${z} ${want}`);
+  // Corners are glowstones — distance/fog-fading ghosts reading red/yellow
+  // up close (clockwise from min/min: red, yellow, red, yellow).
+  for (const [x, z, want] of [
+    [pad.minX, pad.minZ, "red"], [pad.minX, pad.maxZ, "yellow"],
+    [pad.maxX, pad.maxZ, "red"], [pad.maxX, pad.minZ, "yellow"],
+  ]) {
+    assert.equal(getBlock(x, pad.vy, z), GLOWSTONE, `corner ${x},${z} is glowstone`);
+    const v = glowVariantAt(x, pad.vy, z);
+    assert.ok(isPadGhostVariant(v), `corner ${x},${z} is ghost-flagged`);
+    assert.equal(GLOW_VARIANTS[padGhostBaseVariant(v)].key, want, `corner ${x},${z} reads ${want} up close`);
   }
+  // Ghosts emit no baked halo; the 7 normal variants are untouched.
+  const halo = HALO_SOURCES.find((s) => s.key === "glowstone");
+  assert.ok(halo, "glowstone halo source registered");
+  for (const [x, z] of [
+    [pad.minX, pad.minZ], [pad.minX, pad.maxZ],
+    [pad.maxX, pad.maxZ], [pad.maxX, pad.minZ],
+  ]) {
+    assert.equal(halo.colorOf("over", key(x, pad.vy, z)), 0x000000, `corner ${x},${z} bakes no halo`);
+  }
+  // Normal-glowstone control: a fresh stone far from the pad rolls a normal
+  // variant (never ghost) and keeps its halo color.
+  noteGlowstonePlace(500, 20, 500);
+  const nv = glowVariantAt(500, 20, 500);
+  assert.ok(nv >= 0 && nv < GLOW_VARIANTS.length && !isPadGhostVariant(nv), "normal stone keeps a normal variant");
+  assert.equal(halo.colorOf("over", key(500, 20, 500)), GLOW_VARIANTS[nv].glow, "normal stone keeps its halo color");
+  // Pad-corner ghosts burn pool lamps in their base red/yellow while near:
+  // the four isolated corners read as four centroid lamps (lone stones) in
+  // the base colors, floating at the stone centers.
+  const RED = GLOW_VARIANTS[1].glow, YELLOW = GLOW_VARIANTS[3].glow;
+  const sortHex = (a, b) => a - b;
+  const pcx = (pad.minX + pad.maxX) / 2 + 0.5, pcz = (pad.minZ + pad.maxZ) / 2 + 0.5;
+  const lit = clusterSpots("over", { position: { x: pcx, y: pad.vy + 3.5, z: pcz } });
+  assert.equal(lit.length, 4, "four ghost corners burn four lamps up close");
+  assert.deepEqual(lit.map((s) => s.color).sort(sortHex), [RED, RED, YELLOW, YELLOW].sort(sortHex), "ghost lamps read base red/yellow");
+  for (const s of lit) {
+    const hit = [[pad.minX, pad.minZ], [pad.minX, pad.maxZ], [pad.maxX, pad.maxZ], [pad.maxX, pad.minZ]]
+      .some(([x, z]) => Math.abs(s.x - (x + 0.5)) < 1e-9 && Math.abs(s.z - (z + 0.5)) < 1e-9);
+    assert.ok(hit, "ghost lamp floats on its corner stone");
+  }
+  // Ghost lamps die with the fog: past GHOST_POOL_FAR no corner burns, even
+  // though the pool range still reaches — while a normal stone at the same
+  // distance keeps its lamp (DIST enter rule unchanged).
+  const c0 = { x: pad.minX + 0.5, y: pad.vy + 0.5, z: pad.minZ + 0.5 };
+  const inside = clusterSpots("over", { position: { x: c0.x + 100, y: c0.y, z: c0.z } });
+  assert.equal(inside.length, 4, "ghost corners still burn inside the fog");
+  assert.deepEqual(
+    clusterSpots("over", { position: { x: c0.x + GHOST_POOL_FAR + 10, y: c0.y, z: c0.z } }),
+    [], "no ghost lamp past the fog far");
+  noteGlowstonePlaceShared(1000, 20, 1000, 2); // blue, far from everything
+  assert.deepEqual(
+    clusterSpots("over", { position: { x: 1000.5 + 190, y: 20.5, z: 1000.5 } }),
+    [], "normal stone past DIST stays dark (enter rule)");
+  const blue = clusterSpots("over", { position: { x: 1000.5 + GHOST_POOL_FAR + 10, y: 20.5, z: 1000.5 } });
+  assert.equal(blue.length, 1, "normal stone still burns past the ghost fog cap");
+  assert.equal(blue[0].color, GLOW_VARIANTS[2].glow, "normal lamp keeps its own color");
+  resetSpotMemory();
+  // Distance fade: full strength up close, gone by fog far, monotonic.
+  assert.equal(padGhostOpacityAt(0), 1, "ghost opaque up close");
+  assert.equal(padGhostOpacityAt(1000), 0, "ghost gone far away");
+  assert.ok(padGhostOpacityAt(10) >= padGhostOpacityAt(60) && padGhostOpacityAt(60) >= padGhostOpacityAt(159), "ghost fade monotonic");
+  resetGlowstoneMemory();
   // Frame accent, interior plate, rocket centered (2-cell margins).
   assert.equal(getBlock(pad.minX, pad.vy, pad.minZ + 1), HULL_ACCENT);
   assert.equal(getBlock(pad.minX + 3, pad.vy, pad.minZ + 3), PAD);

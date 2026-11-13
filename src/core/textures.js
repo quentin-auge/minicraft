@@ -6,7 +6,7 @@ import {
   GLOWSTONE, LAVA, NETHERRACK, SOULSAND,
   HULL, HULL_ACCENT, THRUSTER, PAD,
 } from "./blocks.js";
-import { GLOW_VARIANTS, GLOW_ICON_VARIANT } from "../world/glowstone.js";
+import { GLOW_VARIANTS, GLOW_ICON_VARIANT, isPadGhostVariant, padGhostBaseVariant } from "../world/glowstone.js";
 
 export function canvasTex(draw, size = 16) {
   const c = document.createElement("canvas");
@@ -472,6 +472,31 @@ const glowMatCache = new Map();
 export function glowstoneMats(v) {
   if (!glowMatCache.has(v)) glowMatCache.set(v, basicFace(GLOW_TEX[v], { fog: false }));
   return glowMatCache.get(v);
+}
+
+// Pad-corner ghost materials: one shared unlit set per ghost variant, reusing
+// the red/yellow look (same canvas texture as the base variant) but fogged
+// (fog:true) and transparent so the distance fade reads — full strength up
+// close, gone with distance/fog. Only ever built for ghost variants (every
+// caller gates on isPadGhostVariant); normal variants keep glowstoneMats.
+const ghostMatCache = new Map();
+export function ghoststoneMats(v) {
+  if (!isPadGhostVariant(v)) return glowstoneMats(v); // normals never take the ghost branch
+  if (!ghostMatCache.has(v)) {
+    ghostMatCache.set(v, basicFace(GLOW_TEX[padGhostBaseVariant(v)], { fog: true, transparent: true }));
+  }
+  return ghostMatCache.get(v);
+}
+// Per-frame distance fade: the mesher drives the shared ghost materials from
+// the camera distance (see tickPadGhostFade). Depth writes stay on at full
+// opacity so near ghosts composite like opaque cubes, off once fading.
+export function setGhostOpacity(v, o) {
+  const m = ghostMatCache.get(v);
+  if (!m) return;
+  for (const mm of m) {
+    mm.opacity = o;
+    mm.depthWrite = o >= 0.99;
+  }
 }
 
 // Moon rock: lit Lambert so glowstone pools read on it, plus an emissive

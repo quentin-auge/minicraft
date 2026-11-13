@@ -10,8 +10,8 @@
 import * as THREE from "three";
 import { AIR, FLOWER, GLOWSTONE, isLiquid } from "../core/blocks.js";
 import { chunkOf, getBlock } from "../core/store.js";
-import { glowstoneMats, materialsFor, liquidSurfaceMat } from "../core/textures.js";
-import { glowVariantAt } from "../world/glowstone.js";
+import { glowstoneMats, ghoststoneMats, materialsFor, liquidSurfaceMat } from "../core/textures.js";
+import { glowVariantAt, isPadGhostVariant } from "../world/glowstone.js";
 import { chunkVersion } from "./mesher.js";
 import { ORDERS } from "./orders.js";
 
@@ -39,7 +39,7 @@ function handleFor(id, v) {
   return "b" + id;
 }
 function matsFor(id, v) {
-  if (id === GLOWSTONE) return glowstoneMats(v);
+  if (id === GLOWSTONE) return isPadGhostVariant(v) ? ghoststoneMats(v) : glowstoneMats(v);
   // Transient liquid cubes reuse the real outside-sheet material (cached,
   // shared): same texture and opacity, so the proxy-to-mesh swap reads
   // seamless. No pocket/veil/seal pass — the real rebuild takes over.

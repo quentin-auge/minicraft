@@ -6,7 +6,7 @@ import {
   AIR, GLASS, HULL, HULL_ACCENT, THRUSTER, PAD, GLOWSTONE,
 } from "../core/blocks.js";
 import { WORLD_RADIUS, WATER_LEVEL, protectCell } from "../core/store.js";
-import { GLOW_VARIANTS, noteGlowstonePlace, noteGlowstonePlaceShared } from "./glowstone.js";
+import { noteGlowstonePlaceShared, PAD_GHOST_VARIANTS } from "./glowstone.js";
 
 // Centered odd-width stages let the rocket taper to a true central voxel.
 // The 7-wide base has a 5x5 cabin (5-high interior, floor y0, 1-thick
@@ -62,10 +62,10 @@ export function partitionStampCells(cells, structural) {
   }
   return { keep, plain };
 }
-// Corner lights, clockwise from the minimum/minimum corner.
+// Corner lights, clockwise from the minimum/minimum corner: red, yellow,
+// red, yellow (ghost variants, distance/fog-fading).
 export const PAD_LIGHTS = ["red", "yellow", "red", "yellow"];
-const PAD_LIGHT_VARIANTS = PAD_LIGHTS.map((name) =>
-  GLOW_VARIANTS.findIndex((v) => v.key === name));
+const PAD_LIGHT_GHOSTS = PAD_GHOST_VARIANTS;
 
 // Last placed site, read by the runtime every tick while parked. `version`
 // changes on every world build so the runtime can resync after a New World.
@@ -221,7 +221,8 @@ export function placeRocketSite(setBlock, getBlock, pad) {
   rocketSite.placed = false;
   rocketSite.worldCells.length = 0;
   const vy = pad.vy;
-  // Hazard plate: accent frame with red/yellow corner glowstones.
+  // Hazard plate: accent frame with red/yellow ghost-glowstone corners
+  // (distance/fog-fading, no halo; pool-lit in the base colors while near).
   for (let x = pad.minX; x <= pad.maxX; x++) {
     for (let z = pad.minZ; z <= pad.maxZ; z++) {
       const edge = x === pad.minX || x === pad.maxX || z === pad.minZ || z === pad.maxZ;
@@ -231,8 +232,7 @@ export function placeRocketSite(setBlock, getBlock, pad) {
         : -1;
       const id = corner ? GLOWSTONE : edge ? HULL_ACCENT : PAD;
       setBlock(x, vy, z, id);
-      if (corner) noteGlowstonePlaceShared(x, vy, z, PAD_LIGHT_VARIANTS[cornerV]);
-      else if (id === GLOWSTONE) noteGlowstonePlace(x, vy, z);
+      if (corner) noteGlowstonePlaceShared(x, vy, z, PAD_LIGHT_GHOSTS[cornerV]);
       protectCell(x, vy, z);
       for (let y = vy + 1; y <= vy + ROCKET_SPEC.h + 1; y++) if (getBlock(x, y, z) !== AIR) setBlock(x, y, z, AIR);
     }
@@ -249,7 +249,6 @@ export function placeRocketSite(setBlock, getBlock, pad) {
   for (const c of grid.cells) {
     const x = origin.x + c.x, y = origin.y + c.y, z = origin.z + c.z;
     setBlock(x, y, z, c.id);
-    if (c.id === GLOWSTONE) noteGlowstonePlace(x, y, z);
     protectCell(x, y, z);
     rocketSite.worldCells.push([x, y, z]);
   }

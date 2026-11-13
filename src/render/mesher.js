@@ -2,13 +2,13 @@
 // only for exposed blocks. Rebuilds stay local via refreshBlocks().
 import * as THREE from "three";
 import { AIR, BLOCK_INFO, DIRT, FLOWER, GLASS, GLOWSTONE, isLiquid } from "../core/blocks.js";
-import { WORLD_RADIUS, CHUNK, renderDist, getBlock, topAt, colTopIdx, colOcc, dim, dimInfinite, chunkOf, ensureChunkArea, rimRefreshKeys, key } from "../core/store.js";
+import { WORLD_RADIUS, CHUNK, renderDist, getBlock, topAt, colTopIdx, colOcc, dim, dimInfinite, chunkOf, ensureChunkArea, rimRefreshKeys, key, keyXYZ } from "../core/store.js";
 import { createPocketCache, isPocketAir } from "../core/airpocket.js";
-import { materialsFor, liquidSurfaceMat, glowstoneMats } from "../core/textures.js";
+import { materialsFor, liquidSurfaceMat, glowstoneMats, ghoststoneMats, setGhostOpacity } from "../core/textures.js";
 import { FLOWER_GEOS, FLOWER_MAT } from "./flowers.js";
 import { haloRadius, bakeHaloTint, isHaloSuspended } from "./halobake.js";
 import { flowerVariantAt, flowerAngleAt } from "../world/flowers.js";
-import { GLOW_VARIANT_COUNT, glowVariantAt } from "../world/glowstone.js";
+import { glowVariantAt, isPadGhostVariant, padGhostOpacityAt, glowstoneBlocks, glowstoneVariantKey, PAD_GHOST_RED, PAD_GHOST_YELLOW } from "../world/glowstone.js";
 import { variantAt, VARIANT_BLOCKS } from "../world/reactions.js";
 import { variantMaterials, shellMaterial, shellGeometry, trackShellMaterial, syncShellFade, untrackShellMaterials } from "./reactions.js";
 import { regionOf, regionByKey } from "./regions.js";
@@ -166,7 +166,7 @@ function applyMatFade(m, o) {
 function ctxFor(region) {
   return {
     mats: (id) => regionMaterials(region, "b:" + id, () => getMats(id)),
-    glowMats: (v) => regionMaterials(region, "g:" + v, () => glowstoneMats(v)),
+    glowMats: (v) => regionMaterials(region, "g:" + v, () => (isPadGhostVariant(v) ? ghoststoneMats(v) : glowstoneMats(v))),
     liquidMat: (id, role) =>
       regionMaterials(region, "l:" + id + ":" + role, () => liquidSurfaceMat(id, role)),
   };
@@ -607,24 +607,31 @@ export function rebuildChunk(cx, cz, fade = false) {
   // Glowstone: one unlit InstancedMesh per color variant (unexposed stones
   // are skipped like every other cube). Overworld stones stay always visible
   // (the unlit texture shines at full strength from any distance); stones
-  // inside a reveal region fade with it.
+  // inside a reveal region fade with it. Pad-corner ghosts ride the same
+  // fan-out but with fogged, distance-faded materials (ghoststoneMats) and
+  // no light — every ghost branch below gates on isPadGhostVariant, so the
+  // 7 normal variants keep the exact path they had.
   if (glows.length) {
-    const perVariant = [];
-    for (let v = 0; v < GLOW_VARIANT_COUNT; v++) perVariant.push([]);
-    for (const [gx, gy, gz] of glows) perVariant[glowVariantAt(gx, gy, gz)].push([gx, gy, gz]);
-    for (let v = 0; v < GLOW_VARIANT_COUNT; v++) {
-      const list = perVariant[v];
+    const perVariant = new Map();
+    for (const [gx, gy, gz] of glows) {
+      const v = glowVariantAt(gx, gy, gz);
+      let arr = perVariant.get(v);
+      if (!arr) { arr = []; perVariant.set(v, arr); }
+      arr.push([gx, gy, gz]);
+    }
+    for (const [v, list] of perVariant) {
       if (!list.length) continue;
+      const mats = isPadGhostVariant(v) ? ghoststoneMats(v) : glowstoneMats(v);
       const { rest, groups, restTop: rt, restBottom: rb } = partitionRegion(GLOWSTONE, list);
       if (rt > restTop) restTop = rt;
     if (rb < restBottom) restBottom = rb;
       if (rest.length) {
-        const mesh = buildBoxes(rest, glowstoneMats(v));
+        const mesh = buildBoxes(rest, mats);
         restGroup.add(mesh);
         meshes.set("glowstone_" + v, mesh);
       }
       for (const g of groups.values()) {
-        const mesh = buildBoxes(g.list, regionMaterials(g.region, "g:" + v, () => glowstoneMats(v)));
+        const mesh = buildBoxes(g.list, regionMaterials(g.region, "g:" + v, () => (isPadGhostVariant(v) ? ghoststoneMats(v) : glowstoneMats(v))));
         registerRegionMesh(g.region, mesh);
         sceneRef.add(mesh);
         meshes.set("glowstone_" + g.region.key + "_" + v, mesh);
@@ -735,6 +742,7 @@ function finishFade(i) {
 // Loader-exempt wall clock (see Pause contract): runs in every loop branch
 // next to maybeStream, paused or not.
 export function tickChunkFades(dt, px, eyeY, pz, fogFar) {
+  tickPadGhostFade(px, eyeY, pz, fogFar);
   for (let i = fading.length - 1; i >= 0; i--) {
     const f = fading[i];
     // Beyond the fogged range the fade is invisible: snap it shut at once.
@@ -744,6 +752,32 @@ export function tickChunkFades(dt, px, eyeY, pz, fogFar) {
     const e = t * t * (3 - 2 * t);
     for (const c of f.clones) c.m.opacity = c.base * e;
     if (t >= 1) finishFade(i);
+  }
+}
+
+// Pad-corner ghost distance fade: shared ghost materials go transparent
+// with camera distance (padGhostOpacityAt against the live fog far), so the
+// corners read as glowstones up close and vanish with distance/fog. Only the
+// ghost variants are ever touched (gated on isPadGhostVariant through the
+// variant key); normal glowstone materials keep fog:false, opacity 1. Pad
+// ghosts live in rest (overworld plate); region clones keep their reveal
+// fade and the fogged ghost texture.
+export function tickPadGhostFade(px, eyeY, pz, fogFar) {
+  const set = glowstoneBlocks(dim);
+  if (!set || !set.size) return;
+  const best = new Map(); // ghost variant -> min distance^2
+  for (const k of set) {
+    const v = glowstoneVariantKey(dim, k);
+    if (!isPadGhostVariant(v)) continue;
+    const [x, y, z] = keyXYZ(k);
+    const dx = x + 0.5 - px, dy = y + 0.5 - eyeY, dz = z + 0.5 - pz;
+    const d2 = dx * dx + dy * dy + dz * dz;
+    if (best.get(v) === undefined || d2 < best.get(v)) best.set(v, d2);
+  }
+  for (const v of [PAD_GHOST_RED, PAD_GHOST_YELLOW]) {
+    const d2 = best.get(v);
+    if (d2 === undefined) continue;
+    setGhostOpacity(v, padGhostOpacityAt(Math.sqrt(d2), fogFar));
   }
 }
 
