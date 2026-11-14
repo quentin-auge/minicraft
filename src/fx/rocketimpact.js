@@ -9,7 +9,7 @@
 // (see src/render/orders.js), so the rocket's own effects never sit under
 // the world's transparent bands.
 import { spawnBurst, spawnBurstBatch, spawnFlashBatch, spawnDebris, coneBasis } from "./particles.js";
-import { ROCKET_FX_EFFECTS, ROCKET_FX_HALOS, ROCKET_FX_HALO_KEYS, ROCKET_FX_CONE_SIZES, ROCKET_FX_DEFAULT_CONE, ROCKET_FX_PALETTE, fxScale, resolveLayer, landingRingPoints, coneSpreadK, coneBaseMul } from "./rocketfx.js";
+import { ROCKET_FX_EFFECTS, ROCKET_FX_HALOS, ROCKET_FX_HALO_KEYS, ROCKET_FX_REACTOR_DIAMETERS, ROCKET_FX_DEFAULT_DIAMETER, ROCKET_FX_REACTOR_DEPTHS, ROCKET_FX_DEFAULT_DEPTH, ROCKET_FX_PALETTE, fxScale, resolveLayer, landingRingPoints, coneSpreadK, coneBaseMul } from "./rocketfx.js";
 import { ORDERS } from "../render/orders.js";
 
 // Where a layer's particles start and which way they spray.
@@ -211,7 +211,8 @@ const RENDERERS = {
 //
 // `ctx` carries the situation, never the styling:
 //   factor     the normalized input the effect's curve reads (0 .. 1)
-//   cone       the key of the chosen reactor cone size
+//   diameter   the key of the chosen reactor diameter
+//   depth      the key of the chosen reactor depth
 //   faces      the walls a carve exposed (the face placements)
 //   nozzles    the thruster positions (the nozzle placement)
 //   x, y, z    the hull's min corner; halfW/halfD its footprint
@@ -233,23 +234,24 @@ export function playFx(key, ctx = {}) {
   const halo = effect.halo ? ROCKET_FX_HALOS[ROCKET_FX_HALO_KEYS[0]] : null;
   const layers = halo ? [...effect.layers, ...halo.layers] : effect.layers;
   // The tuned numbers, read once per effect: the smoke envelope's
-  // density/height/lifetime and the cone slopes. One struct, no
-  // per-layer re-reads.
-  const cone = ROCKET_FX_CONE_SIZES[ctx.cone] ?? ROCKET_FX_CONE_SIZES[ROCKET_FX_DEFAULT_CONE] ?? { spreadMul: 1, lifeMul: 1 };
+  // density/height/lifetime, the diameter slopes and the depth lifetime.
+  // One struct, no per-layer re-reads.
+  const diameter = ROCKET_FX_REACTOR_DIAMETERS[ctx.diameter] ?? ROCKET_FX_REACTOR_DIAMETERS[ROCKET_FX_DEFAULT_DIAMETER] ?? { spreadMul: 1 };
+  const depth = ROCKET_FX_REACTOR_DEPTHS[ctx.depth] ?? ROCKET_FX_REACTOR_DEPTHS[ROCKET_FX_DEFAULT_DEPTH] ?? { lifeMul: 1 };
   const live = {
     smokeY: { height: 0.2, density: 1.5 },
     smokeLife: 0.8,
-    spreadK: coneSpreadK(cone.spreadMul),
-    baseK: coneBaseMul(cone.spreadMul),
-    spreadMul: cone.spreadMul,
-    lifeMul: cone.lifeMul,
+    spreadK: coneSpreadK(diameter.spreadMul),
+    baseK: coneBaseMul(diameter.spreadMul),
+    spreadMul: diameter.spreadMul,
+    lifeMul: depth.lifeMul,
   };
-  // One cone size for every engine plume: the selected preset opens the
-  // outward aim wide (x2–x5 on the far end) while the velocity spread
-  // breathes with the aim slope — and the spawn disc itself widens with
-  // the base slope, so a wide preset reads wide from the very first
-  // frame instead of only downstream. Life stays full either way, so the
-  // jets never shrink back into puffs.
+  // The shipped diameter for every engine plume: narrow opens the outward
+  // aim (x2 on the far end) while the velocity spread breathes with the
+  // aim slope — and the spawn disc itself widens with the base slope, so
+  // the cone reads wide from the very first frame instead of only
+  // downstream. The shipped depth shortens each jet along its thrust axis
+  // without changing that width.
   for (const layer of layers) {
     const rampValue = layer.ramp ? (ctx.ramp?.[layer.ramp.on] ?? 0) : 0;
     const props = resolveLayer(layer, { scale, ramp: rampValue, amount: ctx.amount ?? 0, smokeY: live.smokeY });
@@ -272,7 +274,8 @@ export function playFx(key, ctx = {}) {
     // unless the test hook armed window.__fxProbe — zero prod impact.
     if (layer.place === "nozzles" && typeof window !== "undefined" && window.__fxProbe && window.__fxProbe.length < 20000) {
       window.__fxProbe.push({
-        fx: key, cone: ctx.cone ?? null, centers: place.centers.length,
+        fx: key, diameter: ctx.diameter ?? null, depth: ctx.depth ?? null,
+        centers: place.centers.length,
         count: props.count, spread: props.spread, life: props.life,
         flare: props.flare ?? null, baseRadius: props.baseRadius ?? null,
       });

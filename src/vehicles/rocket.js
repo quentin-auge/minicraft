@@ -39,8 +39,9 @@ import { rideSigFromKey } from "../world/portalfills.js";
 import { severHook } from "../player/hook.js";
 import { refreshBlocks, queueRefreshBlocks } from "../render/mesher.js";
 import { ORDERS } from "../render/orders.js";
-import { exposedFaces, speedFactor, countdownFactor, fxScale, ROCKET_FX_DEFAULT_CONE } from "../fx/rocketfx.js";
+import { exposedFaces, speedFactor, countdownFactor, fxScale } from "../fx/rocketfx.js";
 import { playFx } from "../fx/rocketimpact.js";
+import { REACTOR_SETUP, mergeReactors } from "./reactors.js";
 import { dimTntTiersUnlocked } from "../world/dimensions.js";
 import { isTntTierUnlocked } from "../world/tntunlock.js";
 import { villageFrames } from "../world/village.js";
@@ -936,18 +937,27 @@ function tickCountdown(dt) {
 
 // Nozzle world positions: the ship's THRUSTER cells, just under the hull.
 // A shipless exotic (no thruster aboard) falls back to the vessel bottom
-// corners so every flight still reads engine-driven.
+// corners so every flight still reads engine-driven. Reactors then merge on
+// the thin footprint axes (src/vehicles/reactors.js): a 1x1 cube keeps a
+// single nozzle instead of four coincident ones.
 function thrusterNozzles() {
   const out = [];
   for (const c of modelCells) {
     if (c.id !== THRUSTER || c.extra) continue;
     out.push([origin.x + c.lx + 0.5, origin.y + c.ly - 0.15, origin.z + c.lz + 0.5]);
   }
-  if (out.length || !vesselBox) return out;
+  if (!out.length && vesselBox) {
+    const v = vesselBox;
+    for (const [lx, lz] of [[v.x0, v.z0], [v.x1, v.z0], [v.x0, v.z1], [v.x1, v.z1]])
+      out.push([origin.x + lx + 0.5, origin.y + v.y0 - 0.15, origin.z + lz + 0.5]);
+  }
+  if (!vesselBox) return out;
   const v = vesselBox;
-  for (const [lx, lz] of [[v.x0, v.z0], [v.x1, v.z0], [v.x0, v.z1], [v.x1, v.z1]])
-    out.push([origin.x + lx + 0.5, origin.y + v.y0 - 0.15, origin.z + lz + 0.5]);
-  return out;
+  const bounds = {
+    x0: origin.x + v.x0, x1: origin.x + v.x1,
+    z0: origin.z + v.z0, z1: origin.z + v.z1,
+  };
+  return mergeReactors(out, bounds, REACTOR_SETUP.merge);
 }
 
 // One batched exhaust burst across all thrusters: a single Points cloud
@@ -958,7 +968,7 @@ function thrusterNozzles() {
 function spawnExhaust() {
   const nozzles = thrusterNozzles();
   if (!nozzles.length) return;
-  playFx("exhaust", { nozzles, cone: ROCKET_FX_DEFAULT_CONE });
+  playFx("exhaust", { nozzles, diameter: REACTOR_SETUP.diameter, depth: REACTOR_SETUP.depth });
   shake(SHAKE.burn);
 }
 
@@ -1452,7 +1462,7 @@ function tickFlight(dt) {
 function spawnThrustPlume(L) {
   const nozzles = thrusterNozzles();
   if (!nozzles.length) return;
-  playFx("plume", { nozzles, ramp: { level: L }, cone: ROCKET_FX_DEFAULT_CONE });
+  playFx("plume", { nozzles, ramp: { level: L }, diameter: REACTOR_SETUP.diameter, depth: REACTOR_SETUP.depth });
 }
 
 // Underside contact (pure rules in ./rocketbox.js, driven here): any
