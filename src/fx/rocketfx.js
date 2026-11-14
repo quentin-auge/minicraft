@@ -3,10 +3,13 @@
 // Three-free on purpose: this module owns data and pure logic only, the
 // spawners live in rocketimpact.js.
 //
-// The spec has three parts:
-//   ROCKET_FX_EFFECTS  key -> { key, label, curve, origin, layers }
-//   ROCKET_FX_PALETTE  the colour roles a layer points at
-//   ROCKET_FX_CURVES   the factor ramps a speed feeds
+// The spec has these parts:
+//   ROCKET_FX_EFFECTS           key -> { key, label, curve, origin, layers }
+//   ROCKET_FX_PALETTE           the colour roles a layer points at
+//   ROCKET_FX_CURVES            the factor ramps a speed feeds
+//   ROCKET_FX_REACTOR_DIAMETERS the shipped nozzle cone width
+//   ROCKET_FX_REACTOR_DEPTHS    the shipped nozzle jet reach
+//   ROCKET_FX_DEFAULT_MERGE     the shipped footprint merge threshold
 //
 // A layer is { kind, place, ...props }. `kind` picks the renderer (flash /
 // burst / debris), `place` picks the geometry (faces, faceCentroid,
@@ -146,28 +149,31 @@ export const ROCKET_FX_HALOS = {
 // variant family plugs back in by extending the registry.
 export const ROCKET_FX_HALO_KEYS = Object.keys(ROCKET_FX_HALOS);
 
-// The reactor cone widths: the engine plays the fixed shipped width below.
-// Multipliers over the authored spread, life and outward aim, so one preset
-// reshapes every engine plume at once. The spawn disc itself opens with
-// the preset, so the cone reads from the very first frame; the velocity spread
-// only breathes. Life stays full: short jets read as puffs, never cones.
-export const ROCKET_FX_CONE_SIZES = {
-  // A tighter burn, far end doubled.
-  narrow: { key: "narrow", label: "Flare narrow (x2)", spreadMul: 2.0, lifeMul: 1.0 },
-  // The reference flare, far end tripled.
-  flare: { key: "flare", label: "Flare (x3)", spreadMul: 3.0, lifeMul: 1.0 },
-  // Wider still, far end quadrupled: barely a jet at all.
-  wide: { key: "wide", label: "Flare wide (x4)", spreadMul: 4.0, lifeMul: 1.0 },
-  // Fully open, far end quintupled: an engulfing fireball.
-  max: { key: "max", label: "Flare max (x5)", spreadMul: 5.0, lifeMul: 1.0 },
+// The reactor diameter: a multiplier over the authored spread and outward
+// aim, so this one setup widens every engine plume at once. The spawn disc
+// itself opens with the setup, so the cone reads from the very first frame;
+// the velocity spread only breathes.
+export const ROCKET_FX_REACTOR_DIAMETERS = {
+  // The shipped burn, far end doubled.
+  narrow: { key: "narrow", label: "Narrow (x2)", spreadMul: 2.0 },
 };
 
-// The shipped cone width.
-export const ROCKET_FX_DEFAULT_CONE = "max";
+// The shipped diameter.
+export const ROCKET_FX_DEFAULT_DIAMETER = "narrow";
 
-// How a preset reshapes a plume: the aim slope breathes the velocity
-// spread, the base slope opens the spawn disc — both ends widen, so a
-// wide preset reads wide from the very first frame, not only downstream.
+// The reactor depth: a multiplier over every nozzle layer's lifetime, so this
+// one setup stretches each jet's reach without changing its width.
+export const ROCKET_FX_REACTOR_DEPTHS = {
+  // The shipped trail, a short jet.
+  shorter: { key: "shorter", label: "Shorter (x0.3)", lifeMul: 0.3 },
+};
+
+// The shipped depth.
+export const ROCKET_FX_DEFAULT_DEPTH = "shorter";
+
+// How the shipped diameter reshapes a plume: the aim slope breathes the velocity
+// spread, the base slope opens the spawn disc — both ends widen, so the
+// shipped setup reads wide from the very first frame, not only downstream.
 export function coneSpreadK(spreadMul, aimSlope = 0.15) {
   return 1 + (spreadMul - 1) * aimSlope;
 }
@@ -176,8 +182,9 @@ export function coneBaseMul(spreadMul, baseSlope = 0.35) {
   return 1 + (spreadMul - 1) * baseSlope;
 }
 
-// The cone sizes in registry order.
-export const ROCKET_FX_CONE_SIZE_KEYS = Object.keys(ROCKET_FX_CONE_SIZES);
+// The shipped merge threshold: a footprint side of at most 2 cells collapses
+// its nozzles to the side's middle. The pad rocket (7 wide) never merges.
+export const ROCKET_FX_DEFAULT_MERGE = 2;
 
 // The effect registry. Every layer names its renderer and its geometry and
 // carries every number the renderer reads: the engine holds no tuning of
@@ -634,8 +641,9 @@ function layerProblems(name, layers, factors) {
 // known geometry, every prop the renderer reads present and finite, a
 // palette role that exists, and a scale map that names factors the effect's
 // curve really has. The halo variants are held to the same contract
-// (they play on the landing curve), and every cone size names finite
-// positive multipliers. Returns the problems it found (empty when sound).
+// (they play on the landing curve), and every diameter/depth names finite
+// positive multipliers with known defaults. Returns the problems it found
+// (empty when sound).
 export function validateRocketFx() {
   const problems = [];
   for (const [key, effect] of Object.entries(ROCKET_FX_EFFECTS)) {
@@ -652,15 +660,24 @@ export function validateRocketFx() {
     if (!halo.layers || !halo.layers.length) problems.push(`halo.${key}: no layers`);
     problems.push(...layerProblems(`halo.${key}`, halo.layers ?? [], landingFactors));
   }
-  for (const [key, size] of Object.entries(ROCKET_FX_CONE_SIZES)) {
-    if (size.key !== key) problems.push(`cone.${key}: the key does not match its registry key`);
-    for (const prop of ["spreadMul", "lifeMul"]) {
-      const value = size[prop];
-      if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
-        problems.push(`cone.${key}: ${prop} is missing or not a positive finite number`);
-      }
+  for (const [key, size] of Object.entries(ROCKET_FX_REACTOR_DIAMETERS)) {
+    if (size.key !== key) problems.push(`diameter.${key}: the key does not match its registry key`);
+    const value = size.spreadMul;
+    if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
+      problems.push(`diameter.${key}: spreadMul is missing or not a positive finite number`);
     }
   }
-  if (!(ROCKET_FX_DEFAULT_CONE in ROCKET_FX_CONE_SIZES)) problems.push("the default cone size names no known size");
+  if (!(ROCKET_FX_DEFAULT_DIAMETER in ROCKET_FX_REACTOR_DIAMETERS)) problems.push("the default diameter names no known diameter");
+  for (const [key, depth] of Object.entries(ROCKET_FX_REACTOR_DEPTHS)) {
+    if (depth.key !== key) problems.push(`depth.${key}: the key does not match its registry key`);
+    const value = depth.lifeMul;
+    if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
+      problems.push(`depth.${key}: lifeMul is missing or not a positive finite number`);
+    }
+  }
+  if (!(ROCKET_FX_DEFAULT_DEPTH in ROCKET_FX_REACTOR_DEPTHS)) problems.push("the default depth names no known depth");
+  if (!Number.isInteger(ROCKET_FX_DEFAULT_MERGE) || ROCKET_FX_DEFAULT_MERGE < 1) {
+    problems.push("the merge threshold is missing or not a positive integer");
+  }
   return problems;
 }

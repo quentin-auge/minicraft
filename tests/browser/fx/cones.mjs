@@ -7,10 +7,9 @@
 //
 // The script serves the repo itself (python3, same as AGENTS.md), opens
 // ?seed=7&test=1, waits for boot, then drives tests/browser/fx/hook.js:
-// per preset it samples the real playFx exhaust + plume and asserts both
-// ends widen with the preset (base disc and outward aim), the disc holds 4xSUB
-// centers, and every layer lives long enough to read as a cone.
-// Screenshots land in /tmp for eyeballing. Exit code reports.
+// it samples the real playFx exhaust + plume for the shipped setup and
+// asserts the cone sprayed from the full nozzle grid with a positive life
+// and count. Screenshots land in /tmp for eyeballing. Exit code reports.
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 
@@ -44,35 +43,26 @@ try {
     page.evaluate((f, c) => window.__fx.sample(f, c), fx, cone);
 
   const presets = await page.evaluate(() => window.__fx.presets());
-  assert.deepEqual(presets, ["narrow", "flare", "wide", "max"], "four presets ship");
+  assert.deepEqual(presets, ["narrow"], "only the shipped setup remains");
 
   for (const fx of ["exhaust", "plume"]) {
-    const per = {};
-    for (const cone of presets) {
-      const s = await sample(fx, cone);
-      assert.ok(s.length > 0, `${fx}/${cone}: the engine sprayed`);
-      per[cone] = s[0];
-    }
-    const bases = presets.map((c) => per[c].baseRadius);
-    assert.ok(bases[0] < bases[1] && bases[1] < bases[2] && bases[2] < bases[3],
-      `${fx}: the base disc widens with the preset (${bases.map((b) => b.toFixed(2)).join(" < ")})`);
-    const flares = presets.map((c) => per[c].flare);
-    assert.ok(flares[0] < flares[1] && flares[1] < flares[2] && flares[2] < flares[3],
-      `${fx}: the outward aim strictly widens (${flares.map((f) => f.toFixed(2)).join(" < ")})`);
-    for (const cone of presets) {
-      assert.equal(per[cone].centers, 32, `${fx}/${cone}: 4 nozzles x 8 sub-centers`);
-      assert.ok(per[cone].life >= 0.3, `${fx}/${cone}: lives long enough to read (life ${per[cone].life})`);
-      assert.ok(per[cone].count >= 1, `${fx}/${cone}: emits particles`);
-    }
-    const spreads = presets.map((c) => per[c].spread);
-    assert.ok(spreads[3] / spreads[0] < 3, `${fx}: the velocity spread breathes, never inverts (${spreads.map((s) => s.toFixed(2)).join(", ")})`);
-    console.log(`PASS ${fx}: base ${bases.map((b) => b.toFixed(2)).join(" < ")}, flare ${flares.map((f) => f.toFixed(2)).join(" < ")}, life ${per.max.life}, spread ${spreads.map((s) => s.toFixed(2)).join(", ")}`);
+    const s = await sample(fx, presets[0]);
+    assert.ok(s.length > 0, `${fx}/narrow: the engine sprayed`);
+    const p = s[0];
+    assert.equal(p.diameter, "narrow", `${fx}: the shipped diameter sprayed`);
+    assert.equal(p.depth, "shorter", `${fx}: the shipped depth sprayed`);
+    assert.equal(p.centers, 32, `${fx}/narrow: 4 nozzles x 8 sub-centers`);
+    assert.ok(Number.isFinite(p.baseRadius) && p.baseRadius > 0, `${fx}/narrow: the spawn disc opened`);
+    assert.ok(Number.isFinite(p.flare) && p.flare > 0, `${fx}/narrow: the outward aim opened`);
+    assert.ok(p.life > 0, `${fx}/narrow: the jet keeps a positive life (life ${p.life})`);
+    assert.ok(p.count >= 1, `${fx}/narrow: emits particles`);
+    console.log(`PASS ${fx}: base ${p.baseRadius.toFixed(2)}, flare ${p.flare.toFixed(2)}, life ${p.life}, spread ${p.spread}`);
   }
 
-  // Screenshots for eyeballing: narrow vs max, exhaust + plume in view.
+  // Screenshots for eyeballing: the shipped cone, exhaust + plume in view.
   // One call emits a dozen puffs on the live cadence and steps the
   // particle clock, so the shot shows the integrated steady-state cone.
-  for (const [fx, cone] of [["plume", "narrow"], ["plume", "max"], ["exhaust", "max"]]) {
+  for (const [fx, cone] of [["plume", "narrow"], ["exhaust", "narrow"]]) {
     await page.evaluate((f, c) => window.__fx.sampleInView(f, c), fx, cone);
     await new Promise((r) => setTimeout(r, 300));
     await page.screenshot({ path: `/tmp/cone-${fx}-${cone}.png` });

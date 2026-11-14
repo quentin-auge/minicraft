@@ -9,7 +9,9 @@ import {
   ROCKET_FX_EFFECTS, ROCKET_FX_PALETTE, ROCKET_FX_CURVES,
   countdownFactor,
   ROCKET_FX_HALOS, ROCKET_FX_HALO_KEYS,
-  ROCKET_FX_CONE_SIZES, ROCKET_FX_CONE_SIZE_KEYS, ROCKET_FX_DEFAULT_CONE,
+  ROCKET_FX_REACTOR_DIAMETERS, ROCKET_FX_DEFAULT_DIAMETER,
+  ROCKET_FX_REACTOR_DEPTHS, ROCKET_FX_DEFAULT_DEPTH,
+  ROCKET_FX_DEFAULT_MERGE,
   FX_LAYER_KINDS, FX_PLACES,
   fxScale, speedFactor, resolveLayer, validateRocketFx, exposedFaces,
   landingRingPoints, coneSpreadK, coneBaseMul,
@@ -209,42 +211,41 @@ const near = (a, b) => Math.abs(a - b) < 1e-9;
     assert.ok(Number.isFinite(layer.baseRadius) && Number.isFinite(layer.flare), "the base stays finite");
     assert.ok(layer.fillRadius > 0, "the cone spawns a volume, not points");
   }
-  // The preset opens both ends: the engine scales the outward aim and the spawn
+  // The setup opens both ends: the engine scales the outward aim and the spawn
   // disc itself through the cone slopes — the base never moves with the
-  // raw preset multiplier, only with its own slope. Both ends widen
-  // strictly with the presets.
+  // raw setup multiplier, only with its own slope.
   assert.ok(coneSpreadK(2.0) > 1 && coneBaseMul(2.0) > 1, "narrow opens aim and base");
-  assert.ok(coneSpreadK(2.0) < coneSpreadK(5.0), "the aim widens with the preset");
-  assert.ok(coneBaseMul(2.0) < coneBaseMul(5.0), "the base widens with the preset");
-  assert.ok(coneBaseMul(1.0) === 1, "no preset leaves the disc alone");
+  assert.ok(coneBaseMul(1.0) === 1, "the neutral multiplier leaves the disc alone");
   const impactSrc = readFileSync(fileURLToPath(new URL("../../../src/fx/rocketimpact.js", import.meta.url)), "utf8");
-  assert.ok(!impactSrc.includes("baseRadius * cone.spreadMul"), "the preset never scales the base raw");
-  assert.ok(impactSrc.includes("flare: props.flare = props.flare * live.spreadMul") || impactSrc.includes("props.flare * live.spreadMul"), "the preset opens the outward aim");
-  assert.ok(impactSrc.includes("spreadK: coneSpreadK(cone.spreadMul)"), "the aim slope is read once");
-  assert.ok(impactSrc.includes("baseK: coneBaseMul(cone.spreadMul)"), "the base slope is read once");
+  assert.ok(!impactSrc.includes("baseRadius * diameter.spreadMul"), "the setup never scales the base raw");
+  assert.ok(impactSrc.includes("flare: props.flare = props.flare * live.spreadMul") || impactSrc.includes("props.flare * live.spreadMul"), "the setup opens the outward aim");
+  assert.ok(impactSrc.includes("spreadK: coneSpreadK(diameter.spreadMul)"), "the aim slope is read once");
+  assert.ok(impactSrc.includes("baseK: coneBaseMul(diameter.spreadMul)"), "the base slope is read once");
+  assert.ok(impactSrc.includes("lifeMul: depth.lifeMul"), "the depth drives the jet lifetime");
   assert.ok(impactSrc.includes("smokeLife: 0.8"), "the smoke lifetime is baked");
-  assert.ok(impactSrc.includes("baseRadius = props.baseRadius * live.baseK"), "the preset widens the spawn disc");
-  assert.ok(impactSrc.includes("fillRadius = props.fillRadius * live.baseK"), "the preset widens the spawn volume");
+  assert.ok(impactSrc.includes("baseRadius = props.baseRadius * live.baseK"), "the setup widens the spawn disc");
+  assert.ok(impactSrc.includes("fillRadius = props.fillRadius * live.baseK"), "the setup widens the spawn volume");
   assert.ok(impactSrc.includes("const SUB = 8"), "the disc samples eight points per nozzle");
   assert.ok(impactSrc.includes("i % 2 === 0"), "the smoke floor emits on every second center");
   assert.ok(impactSrc.includes("window.__fxProbe"), "the ?test=1 probe is armed in the engine");
 
-  // The cone widths: both ends open x2 up to x5, max shipped fixed.
-  assert.deepEqual(ROCKET_FX_CONE_SIZE_KEYS, Object.keys(ROCKET_FX_CONE_SIZES), "the cone registry lists its keys");
-  assert.deepEqual(
-    [ROCKET_FX_CONE_SIZES.flare.spreadMul, ROCKET_FX_CONE_SIZES.flare.lifeMul],
-    [3.0, 1.0], "flare triples the far end at full reach");
-  assert.deepEqual(
-    [ROCKET_FX_CONE_SIZES.max.spreadMul, ROCKET_FX_CONE_SIZES.max.lifeMul],
-    [5.0, 1.0], "max quintuples the far end at full reach");
-  assert.ok(ROCKET_FX_CONE_SIZE_KEYS.length >= 3, "several cone widths ship");
-  assert.ok(ROCKET_FX_DEFAULT_CONE in ROCKET_FX_CONE_SIZES, "the shipped width is a known width");
-  for (const [key, size] of Object.entries(ROCKET_FX_CONE_SIZES)) {
+  // The single shipped diameter: both ends open x2.
+  assert.deepEqual(Object.keys(ROCKET_FX_REACTOR_DIAMETERS), ["narrow"], "only the shipped diameter remains");
+  assert.equal(ROCKET_FX_REACTOR_DIAMETERS.narrow.spreadMul, 2.0, "narrow doubles the far end");
+  assert.equal(ROCKET_FX_DEFAULT_DIAMETER, "narrow", "narrow ships");
+  for (const [key, size] of Object.entries(ROCKET_FX_REACTOR_DIAMETERS)) {
     assert.equal(size.key, key, `${key} carries its registry key`);
     assert.equal(typeof size.label, "string");
-    assert.equal(size.lifeMul, 1.0, `${key} keeps full reach`);
+    assert.ok(size.spreadMul > 0, `${key} carries a positive width`);
   }
-  assert.equal(ROCKET_FX_DEFAULT_CONE, "max", "max ships");
+
+  // The single shipped depth: a short jet that keeps its width.
+  assert.deepEqual(Object.keys(ROCKET_FX_REACTOR_DEPTHS), ["shorter"], "only the shipped depth remains");
+  assert.equal(ROCKET_FX_REACTOR_DEPTHS.shorter.lifeMul, 0.3, "shorter ships the x0.3 trail");
+  assert.equal(ROCKET_FX_DEFAULT_DEPTH, "shorter", "shorter ships");
+
+  // The single shipped merge threshold.
+  assert.equal(ROCKET_FX_DEFAULT_MERGE, 2, "merge <=2 ships");
 }
 
 // --- the hardcoded smoke ------------------------------------------------
