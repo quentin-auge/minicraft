@@ -8,7 +8,8 @@ import { AIR, STONE, WATER, LAVA } from "../../../src/core/blocks.js";
 import { setDimension, resetWorld, setBlock, getBlock } from "../../../src/core/store.js";
 import { LIVESTOCK_SPECS, specCircles, MOB_FLOAT_FRAC, floatTargetY } from "../../../src/mobs/livestock.js";
 import { FARM_WALK, tickFarmMob, aabbIntersectsSolid } from "../../../src/mobs/mover.js";
-import { liquidSurface, shoreExitTarget, strideTarget, stepShoreHop, GRAVITY, NO_EXPIRY } from "../../../src/mobs/step.js";
+import { liquidSurface, shoreExitTarget, strideTarget, stepShoreHop, GRAVITY, NO_EXPIRY, trueLiquidSurfaceTopAt } from "../../../src/mobs/step.js";
+import { FLOAT_ACCEL, FLOAT_AREA, FLOAT_BRAKE, FLOAT_MAX, floatTargetY as buoyTargetY, floatVelY, dampFloatEntryVelY } from "../../../src/core/floatability.js";
 import { mobCanFloat } from "../../../src/mobs/registry.js";
 import { planPath, assignNav, pickStrategy } from "../../../src/mobs/nav.js";
 import { createTarget } from "../../../src/mobs/targets.js";
@@ -451,5 +452,84 @@ console.log("PASS float-lava-crossing");
   assert.ok(Math.abs(mob.pos.y - feet) < 0.06, `rise: floats back up to the surface (y=${mob.pos.y.toFixed(3)})`);
 }
 console.log("PASS float-rise-from-depth");
+
+// --- shared buoyancy law: mob and player step the same velocities --------
+{
+  assert.equal(FLOAT_ACCEL, 8, "buoyancy accel matches the player swim");
+  assert.equal(FLOAT_AREA, 10, "buoyancy far-zone matches the player swim");
+  assert.equal(FLOAT_BRAKE, 2.0, "buoyancy spring rate matches the player swim");
+  assert.equal(FLOAT_MAX, 64, "buoyancy clamp matches the player swim");
+  // Deep zone: pure acceleration.
+  assert.ok(Math.abs(floatVelY(0, 20, DT) - 8 * DT) < 1e-12, "deep: vel += 8*dt");
+  // Near zone: spring toward err*4 at dt*4.
+  const want = 1 * 4;
+  assert.ok(Math.abs(floatVelY(0, 1, DT) - (want * Math.min(1, DT * 4))) < 1e-12, "near: spring chase");
+  // Entry damping mirrors the player controller (*0.3).
+  assert.ok(Math.abs(dampFloatEntryVelY(-10) - -3) < 1e-12, "entry: keeps 30% of the fall");
+  // Clamp both ways.
+  assert.equal(floatVelY(1000, 20, DT), FLOAT_MAX, "clamp top");
+  assert.equal(floatVelY(-1000, -5, DT), -FLOAT_MAX, "clamp bottom");
+  // Per-body depth only: same surface, distinct targets.
+  assert.ok(Math.abs(buoyTargetY(13, 0.95) - 12.05) < 1e-12, "player depth 0.95");
+  assert.ok(Math.abs(buoyTargetY(13, PIG_H / 3) - floatTargetY(13, PIG_H)) < 1e-12, "mob depth h/3");
+}
+console.log("PASS float-shared-law");
+
+// --- tall lava column: same fast rise as the player, with the top pop ----
+function buildTallColumn(liquid, depthTop) {
+  resetWorld("over");
+  setDimension("over");
+  clearEntryClaims();
+  for (let x = 0; x <= 12; x++) for (let z = 0; z <= 12; z++) setBlock(x, 0, z, STONE);
+  for (let y = 1; y <= depthTop; y++)
+    for (let x = 4; x <= 8; x++) for (let z = 4; z <= 8; z++) setBlock(x, y, z, liquid);
+}
+{
+  buildTallColumn(WATER, 12);
+  const SURFACE = 13;
+  assert.equal(trueLiquidSurfaceTopAt(6.5, 6.5, 0.32, 1.0), SURFACE, "true surface reads the column top from depth");
+  const feet = floatTargetY(SURFACE, PIG_H);
+  const mob = makeMob("pig", 6.5, 1.0, 6.5, 0);
+  mob.target = null;
+  mob.wanderT = 0;
+  let minY = Infinity, maxY = -Infinity, ticksToLevel = -1;
+  for (let t = 0; t < 600; t++) {
+    tickFarmMob(mob, DT, (m, r) => strideTarget(m, null, r) ?? m.target, mob.rand);
+    minY = Math.min(minY, mob.pos.y);
+    maxY = Math.max(maxY, mob.pos.y);
+    if (ticksToLevel < 0 && mob.pos.y >= feet - 0.1) ticksToLevel = t;
+    assert.ok(!aabbIntersectsSolid(mob.pos.x, mob.pos.y, mob.pos.z, mob.hw, mob.h),
+      `column: body in wall @tick${t}`);
+    // Keep the rise purely vertical: pin the drift back to the column.
+    mob.pos.x = 6.5; mob.pos.z = 6.5;
+  }
+  assert.ok(minY >= 0.95, `column: never sinks (minY=${minY.toFixed(3)})`);
+  assert.ok(ticksToLevel >= 0 && ticksToLevel < 300, `column: fast rise like the player (${ticksToLevel} ticks)`);
+  assert.ok(maxY > feet + 0.05, `column: overshoot pop above the float level (maxY=${maxY.toFixed(3)} vs ${feet.toFixed(3)})`);
+  assert.ok(Math.abs(mob.pos.y - feet) < 0.15, `column: settles at the float level (y=${mob.pos.y.toFixed(3)})`);
+}
+console.log("PASS float-tall-column-pop");
+
+// --- tall lava column reads exactly like water -----------------------------
+{
+  buildTallColumn(LAVA, 12);
+  const SURFACE = 13;
+  assert.equal(trueLiquidSurfaceTopAt(6.5, 6.5, 0.32, 1.0), SURFACE, "lava: true surface reads the column top");
+  const feet = floatTargetY(SURFACE, PIG_H);
+  const mob = makeMob("pig", 6.5, 1.0, 6.5, 0);
+  mob.target = null;
+  mob.wanderT = 0;
+  let maxY = -Infinity;
+  for (let t = 0; t < 600; t++) {
+    tickFarmMob(mob, DT, (m, r) => strideTarget(m, null, r) ?? m.target, mob.rand);
+    maxY = Math.max(maxY, mob.pos.y);
+    assert.ok(!aabbIntersectsSolid(mob.pos.x, mob.pos.y, mob.pos.z, mob.hw, mob.h),
+      `lava-column: body in wall @tick${t}`);
+    mob.pos.x = 6.5; mob.pos.z = 6.5;
+  }
+  assert.ok(maxY > feet + 0.05, `lava-column: same pop as water (maxY=${maxY.toFixed(3)})`);
+  assert.ok(Math.abs(mob.pos.y - feet) < 0.15, `lava-column: settles at the float level (y=${mob.pos.y.toFixed(3)})`);
+}
+console.log("PASS float-tall-lava-pop");
 
 console.log("float.test.mjs: ALL PASS");

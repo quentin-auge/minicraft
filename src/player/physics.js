@@ -5,6 +5,7 @@ import * as THREE from "three";
 import { isLiquid } from "../core/blocks.js";
 import { isUp, isDown, isLeft, isRight, isJump, isSprint } from "./keys.js";
 import { dragAir, steerAir, clampFall, gravityAt, KNOCK_DECAY, knockCutoff } from "../core/launch.js";
+import { floatTargetY, floatVelY, dampFloatEntryVelY } from "../core/floatability.js";
 import { getBlock, isSolid, colLiqTop, colTopIdx, dim } from "../core/store.js";
 import { dimSpec, dimHasMoon } from "../world/dimensions.js";
 import { MOON_MIN_Y, isMoonGone } from "../world/moon.js";
@@ -25,10 +26,6 @@ export const STEP_SPEED = 9.5;
 export const STEP_UP = 12;
 export const STEP_UP_EASE = 0.03;
 export const STEP_UP_MIN = 4;
-const SWIM_ACCEL = 8;
-const SWIM_AREA = 10;
-const SWIM_BRAKE = 2.0;
-const SWIM_MAX = 64;
 const SWIM_SPEED = 4.2;
 // Passive float depth: feet rest this far below the liquid surface, so two
 // stacked liquids read +1 on the integer HUD (exact -1.0 would sit on the
@@ -499,7 +496,7 @@ export function updatePlayer(dt) {
     }
   }
   if (!bounced) {
-    if (inWater && !wasInWater && vel.y < 0) vel.y *= 0.3;
+    if (inWater && !wasInWater && vel.y < 0) vel.y = dampFloatEntryVelY(vel.y);
     wasInWater = inWater;
   }
 
@@ -526,16 +523,13 @@ export function updatePlayer(dt) {
       if (surface === -Infinity) {
         vel.y -= G * dt;
       } else {
-        const targetY = surface - SWIM_SUBMERGE;
-        const err = targetY - pos.y;
-        if (err > SWIM_AREA) {
-          vel.y += SWIM_ACCEL * dt;
-        } else {
-          const want = err * 4;
-          vel.y += (want - vel.y) * Math.min(1, dt * SWIM_BRAKE * 2);
-        }
+        // Shared buoyancy law (core/floatability.js): deep water accelerates
+        // upward, near the surface a spring chases the float level — the
+        // same rule mob floaters step through, so both bodies rise and pop
+        // identically. Per-body depth only (player 0.95 here).
+        const targetY = floatTargetY(surface, SWIM_SUBMERGE);
+        vel.y = floatVelY(vel.y, targetY - pos.y, dt);
       }
-      vel.y = Math.min(Math.max(vel.y, -SWIM_MAX), SWIM_MAX);
     }
   } else {
     stepFromWater = false;

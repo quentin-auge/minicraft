@@ -6,6 +6,7 @@
 // and lifecycle. Headless rigs drive this module on live voxels.
 import { SEP_GAP, CROSS_BUDGET, PASS_OFF, PASS_BUDGET, WALL_ALLOW, worstPairPenAt } from "./collide.js";
 import { stepAir, gravityAt } from "../core/launch.js";
+import { dampFloatEntryVelY } from "../core/floatability.js";
 import { dimBound, dimInfinite } from "../core/store.js";
 import { mobXZLimit, mobLevelHalf } from "../world/level.js";
 import { MOON_MIN_Y, isMoonGone, moonDimHas } from "../world/moon.js";
@@ -2926,6 +2927,13 @@ export function tickFarmMob(mob, dt, pickTarget, rand = mob.rand ?? Math.random,
   const floating = surface != null;
   const floatDrive = floating && mobCanFloat(mob);
   const supported = floating || hasSupport(mob.pos.x, mob.pos.y, mob.pos.z, mob.hw);
+  // Water-entry damping, mirrored from the player controller: a falling
+  // body entering liquid keeps 30% of its downward velocity. _wasFloating
+  // tracks the previous slice so fixed-step sub-slices damp exactly once.
+  if (floating && !(mob._wasFloating ?? floating) && (mob.vel.y ?? 0) < 0) {
+    mob.vel.y = dampFloatEntryVelY(mob.vel.y);
+  }
+  mob._wasFloating = floating;
   mob.hopCd = Math.max(0, (mob.hopCd ?? 0) - dt);
   if (supported && !floating) mob.fallFrom = mob.pos.y;
   // An active shore hop owns the whole slice: steering, buoyancy, and

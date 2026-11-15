@@ -16,6 +16,7 @@ import { normYaw } from "./corridor.js";
 import { GRAVITY, TERMINAL_VELOCITY, applyGravity, clampFall, gravityAt } from "../core/launch.js";
 import { MOON_MIN_Y, isMoonGone, moonDimHas } from "../world/moon.js";
 import { mobXZLimit } from "../world/level.js";
+import { floatVelY } from "../core/floatability.js";
 
 // Base stride speed straight from master's pig/cow walk; the divisor slows
 // it to a farm amble (FARM_WALK lives in mover.js beside its tuning).
@@ -303,6 +304,33 @@ export function waterSurfaceTopAt(px, pz, hw, topY, depth = 8) {
         if (bz + 1 <= pz - hw || bz >= pz + hw) continue;
         if (isLiquid(getBlock(bx, by, bz))) top = top == null ? by + 1 : Math.max(top, by + 1);
       }
+  return top;
+}
+
+// True liquid surface above a footprint: scans upward from the feet through
+// the continuous liquid column to its top (tall Nether lava columns
+// included). Unlike liquidSurface (body overlap only) or waterSurfaceTopAt
+// (downward scan from a guess), this is the surface the shared buoyancy law
+// rises toward — the same surface the player reads through colLiqTop.
+export function trueLiquidSurfaceTopAt(px, pz, hw, py, maxScan = 96) {
+  const x0 = Math.floor(px - hw), x1 = Math.floor(px + hw);
+  const z0 = Math.floor(pz - hw), z1 = Math.floor(pz + hw);
+  const layerWet = (by) => {
+    for (let bx = x0; bx <= x1; bx++)
+      for (let bz = z0; bz <= z1; bz++) {
+        if (bx + 1 <= px - hw || bx >= px + hw) continue;
+        if (bz + 1 <= pz - hw || bz >= pz + hw) continue;
+        if (isLiquid(getBlock(bx, by, bz))) return true;
+      }
+    return false;
+  };
+  const start = Math.floor(py);
+  if (!layerWet(start)) return null;
+  let top = start + 1;
+  for (let by = start + 1; by <= start + maxScan; by++) {
+    if (!layerWet(by)) break;
+    top = by + 1;
+  }
   return top;
 }
 
@@ -911,8 +939,10 @@ export function strideTarget(mob, heading = null, rand = Math.random, minD = WAN
   return null;
 }
 
-// Vertical plane: float on liquids (2/3 out), stand when supported,
-// otherwise gravity — every descent falls, including legal 1-block steps.
+// Vertical plane: shared buoyancy on liquids (core/floatability.js — the
+// same rise acceleration, near-surface spring, and overshoot pop as the
+// player swim), stand when supported, otherwise gravity — every descent
+// falls, including legal 1-block steps.
 // Landing snaps to the support top so feet stay exact: without it mobs
 // would hover after a fall and every later drop would read too deep.
 // Takes the pre-move support state (surface/floating/supported computed
@@ -925,8 +955,27 @@ export function strideTarget(mob, heading = null, rand = Math.random, minD = WAN
 // from.
 export function stepVertical(mob, dt, surface, floating, supported) {
   if (floating) {
-    mob.pos.y += (floatTargetY(surface, mob.h) - mob.pos.y) * Math.min(1, dt * 4);
-    mob.vel.y = 0;
+    // Same law as the player swim: rise toward the TRUE surface (tall
+    // columns included), keep the velocity so a fast rise overshoots the
+    // float level — the pop — before gravity takes over once dry.
+    // Per-body depth only (mobs ride h/3 under the surface).
+    const ts = trueLiquidSurfaceTopAt(mob.pos.x, mob.pos.z, mob.hw, mob.pos.y) ?? surface;
+    const target = floatTargetY(ts, mob.h);
+    mob.vel.y = floatVelY(mob.vel.y ?? 0, target - mob.pos.y, dt);
+    const ny = mob.pos.y + mob.vel.y * dt;
+    if (!aabbIntersectsSolid(mob.pos.x, ny, mob.pos.z, mob.hw, mob.h)) {
+      mob.pos.y = ny;
+    } else {
+      mob.vel.y = 0;
+      const g = groundBelow(mob.pos.x, mob.pos.y, mob.pos.z);
+      if (g != null && g <= mob.pos.y + 1e-3) {
+        if (!aabbIntersectsSolid(mob.pos.x, g, mob.pos.z, mob.hw, mob.h)) {
+          mob.pos.y = g;
+        } else {
+          landUnwedged(mob, g);
+        }
+      }
+    }
   } else if (supported) {
     mob.vel.y = 0;
   } else {
