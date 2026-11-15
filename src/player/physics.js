@@ -4,6 +4,7 @@
 import * as THREE from "three";
 import { isLiquid } from "../core/blocks.js";
 import { isUp, isDown, isLeft, isRight, isJump, isSprint } from "./keys.js";
+import { dragAir, steerAir, clampFall, gravityAt, KNOCK_DECAY, knockCutoff } from "../core/launch.js";
 import { getBlock, isSolid, colLiqTop, colTopIdx, dim } from "../core/store.js";
 import { dimSpec, dimHasMoon } from "../world/dimensions.js";
 import { MOON_MIN_Y, isMoonGone } from "../world/moon.js";
@@ -11,7 +12,6 @@ import { MOON_MIN_Y, isMoonGone } from "../world/moon.js";
 export const PLAYER_HW = 0.3;
 export const PLAYER_H = 1.8;
 export const EYE = 1.62;
-export const GRAVITY = 37.44;
 export const WALK = 4.4;
 export const SPRINT = 7.2;
 export const JUMP_MIN = 8.2;
@@ -21,15 +21,6 @@ export const JUMP_RAMP = 0.25;
 export const JUMP_BOOST_ACCEL = 40;
 export const JUMP_BOOST_TIME = 0.15;
 export const JUMP_BUFFER = 0.2;
-export const AIR_STEER = 2.5;
-export const AIR_SPRINT = 1.35;
-// Grapple-release inertia: linear horizontal bleed (FLING_LIN) from the
-// first frame after the fling, so the trajectory is a parabola with a
-// vertical asymptote end to end. Below FLING_SNAP the fall reads vertical.
-// Tuned halfway between no-input release (lower bound) and held-UP release
-// (upper bound, steering preserves speed): half the lower-bound bleed.
-export const FLING_LIN = 0.45;
-export const FLING_SNAP = 1.0;
 export const STEP_SPEED = 9.5;
 export const STEP_UP = 12;
 export const STEP_UP_EASE = 0.03;
@@ -43,8 +34,7 @@ const SWIM_SPEED = 4.2;
 // stacked liquids read +1 on the integer HUD (exact -1.0 would sit on the
 // block boundary and flicker the readout).
 const SWIM_SUBMERGE = 0.95;
-const HOOK_FLOAT_RISE = 1.5;
-const HOOK_SINK = 1.5;
+const HOOK_SWIM_LIFT = 1.5;
 const FREE_SWIM_AXES = ["y", "x", "z"];
 
 export const pos = new THREE.Vector3(0, 20, 0);
@@ -92,10 +82,10 @@ let stepUpClearY = 0;
 let stepFromWater = false;
 let wasInWater = false;
 let airT = 0;
-// Time since the last grapple fling (Infinity when inactive): drives the
-// linear horizontal bleed above. Stamped by hook release via noteFling.
-let flingT = Infinity;
-export function noteFling() { flingT = 0; }
+// Thrown arcs need no state: grapple flings, mega launches, and fly exits
+// are all just initial velocities — steering preserves them with input, the
+// shared mob bleed settles them without. Mobs read the same gravity and
+// bleed through core/launch.js, so both bodies fall identically.
 let jumpBuffer = 0;
 let jumpOriginY = null;
 let jumpPeakY = null;
@@ -106,22 +96,31 @@ let prevSpace = false;
 export const keys = {};
 
 // Knockback impulse shared by every movement mode: blasts add to it, each
-// frame applies it on top of the mode's own velocity, then it decays.
-// Walk mode keeps its direct vel.set path (unchanged feel); fly mode, which
-// overwrites vel every frame, reads the impulse through here instead.
+// frame applies it on top of the mode's own velocity, then it decays at the
+// shared KNOCK_DECAY — a passive impulse travels v0 / KNOCK_DECAY blocks,
+// so blast code calibrates its initial speed as travel distance x
+// KNOCK_DECAY. Walk mode keeps its direct vel.set path (unchanged feel);
+// fly mode, which overwrites vel every frame, reads the impulse through
+// here instead. Leaving fly sheds a pending impulse by design.
 export const knockVel = new THREE.Vector3();
-// Decay rate: a passive impulse travels v0 / KNOCK_DECAY blocks, so blast
-// code calibrates its initial speed as travel distance x KNOCK_DECAY.
-export const KNOCK_DECAY = 2.2;
+// Peak impulse since the last settle: the kill floor scales with it, so
+// big-pool punches die below a share of their own peak while small pools
+// keep the fixed floor.
+let knockPeak = 0;
 export function addPlayerKnockback(x, y, z) {
   knockVel.x += x;
   knockVel.y += y;
   knockVel.z += z;
+  const m = knockVel.length();
+  if (m > knockPeak) knockPeak = m;
 }
 export function tickKnockback(dt) {
   const k = Math.exp(-KNOCK_DECAY * dt);
   knockVel.multiplyScalar(k);
-  if (knockVel.lengthSq() < 0.25) knockVel.set(0, 0, 0);
+  if (knockVel.lengthSq() < knockCutoff(knockPeak) ** 2) {
+    knockVel.set(0, 0, 0);
+    knockPeak = 0;
+  }
 }
 
 // Spawn selection lives in the active dimension's spec (`DIMENSIONS`:
@@ -135,6 +134,7 @@ export function spawnPlayer() {
   setPitch(0);
   vel.set(0, 0, 0);
   knockVel.set(0, 0, 0);
+  knockPeak = 0;
   onGround = false;
   stepDown = false;
   stepUp = false;
@@ -252,9 +252,10 @@ function moveAxisXStep(dx, body = playerBody, step = true, flyStep = false) {
 }
 
 function moveAxisX(dx, body = playerBody, step = true, flyStep = false) {
-  // Substepped like Y (0.5 blocks): blast knockback now peaks at 132 blocks/s,
-  // so a single frame can span several cells — one edge test at the final
-  // position would jump thin walls. Single substep at walk/fly speeds.
+  // Substepped like Y (0.5 blocks): combined fly + blast speeds peak near
+  // 60 blocks/s, so a single frame can span several cells — one edge test
+  // at the final position would jump thin walls. Single substep at
+  // walk/fly speeds.
   const n = Math.max(1, Math.ceil(Math.abs(dx) / 0.5));
   const s = dx / n;
   for (let i = 0; i < n; i++) {
@@ -359,18 +360,30 @@ const _fwd = new THREE.Vector3();
 const _right = new THREE.Vector3();
 const _move = new THREE.Vector3();
 
-// Shared look-relative thrust used by Fly and the held-grapple free swim.
-// Returns the pre-knockback thrust so the swim can tell idle float from
-// deliberate vertical input.
-function setLookThrust(speed, sprintSpeed) {
-  const cp = Math.cos(pitch);
-  _fwd.set(-Math.sin(yaw) * cp, Math.sin(pitch), -Math.cos(yaw) * cp);
+// Shared WASD→_move mapping, raw and unscaled (callers normalize): W/S
+// ride the look direction — pitch-aware for air/fly/swim, flat for ground
+// so looking down never slows walking — while A/D always strafe
+// horizontal. One mapping, every mover reads the same input.
+function readKeysMove(pitchAware) {
+  if (pitchAware) {
+    const cp = Math.cos(pitch);
+    _fwd.set(-Math.sin(yaw) * cp, Math.sin(pitch), -Math.cos(yaw) * cp);
+  } else {
+    _fwd.set(-Math.sin(yaw), 0, -Math.cos(yaw));
+  }
   _right.set(Math.cos(yaw), 0, -Math.sin(yaw));
   _move.set(0, 0, 0);
   if (isUp(keys)) _move.add(_fwd);
   if (isDown(keys)) _move.sub(_fwd);
   if (isRight(keys)) _move.add(_right);
   if (isLeft(keys)) _move.sub(_right);
+}
+
+// Shared look-relative thrust used by Fly and the held-grapple free swim.
+// Returns the pre-knockback thrust so the swim can tell idle float from
+// deliberate vertical input.
+function setLookThrust(speed, sprintSpeed) {
+  readKeysMove(true);
   const sprint = isSprint(keys);
   if (_move.lengthSq() > 0) _move.normalize().multiplyScalar(sprint ? sprintSpeed : speed);
   vel.set(_move.x, _move.y, _move.z);
@@ -398,8 +411,8 @@ export function updateFreeSwim(dt) {
   const thrust = setLookThrust(SWIM_SPEED, SPRINT);
   const eyeWet = eyeInWater();
   const surfaceCell = eyeWet && !eyeDeepInWater();
-  if (surfaceCell && Math.abs(thrust.y) < 1e-9) vel.y = HOOK_FLOAT_RISE + knockVel.y;
-  else if (!eyeWet && thrust.y <= 1e-9) vel.y = -HOOK_SINK + knockVel.y;
+  if (surfaceCell && Math.abs(thrust.y) < 1e-9) vel.y = HOOK_SWIM_LIFT + knockVel.y;
+  else if (!eyeWet && thrust.y <= 1e-9) vel.y = -HOOK_SWIM_LIFT + knockVel.y;
   const vx = vel.x, vy = vel.y, vz = vel.z;
   let nx = 0, ny = 0, nz = 0;
   for (const axis of FREE_SWIM_AXES) {
@@ -421,22 +434,12 @@ export function updateFreeSwim(dt) {
 }
 
 export function updatePlayer(dt) {
-  // Low gravity near the Moon and above (master rule): one factor per
-  // frame, shared by every acceleration and energy calc below so arcs
-  // stay consistent. Dies with the moon: no lunar blocks left, no low-g.
-  const G = dimHasMoon(dim) && !isMoonGone() && pos.y >= MOON_MIN_Y ? GRAVITY * 0.5 : GRAVITY;
-  _fwd.set(-Math.sin(yaw), 0, -Math.cos(yaw));
-  _right.set(Math.cos(yaw), 0, -Math.sin(yaw));
-  _move.set(0, 0, 0);
-  const w = isUp(keys);
-  const s = isDown(keys);
-  const d = isRight(keys);
-  const a = isLeft(keys);
+  // One sky, one gravity: the low-g rule near the Moon and above is shared
+  // with mobs (core/launch.js gravityAt). Dies with the moon: no lunar
+  // blocks left, no low-g.
+  const G = gravityAt(dimHasMoon(dim), isMoonGone(), pos.y, MOON_MIN_Y);
+  readKeysMove(false);
   const sprintKey = isSprint(keys);
-  if (w) _move.add(_fwd);
-  if (s) _move.sub(_fwd);
-  if (d) _move.add(_right);
-  if (a) _move.sub(_right);
 
   let inWater = headInWater();
   const enteredWater = inWater && !wasInWater;
@@ -536,33 +539,29 @@ export function updatePlayer(dt) {
     }
   } else {
     stepFromWater = false;
+    // Unit input direction; the branches scale it (walk/sprint speed on the
+    // ground, steer target in the air).
+    if (_move.lengthSq() > 0) _move.normalize();
     const sprint = sprintKey && _move.lengthSq() > 0;
     const speed = sprint ? SPRINT : WALK;
-    if (_move.lengthSq() > 0) _move.normalize().multiplyScalar(speed);
     if ((!onGround && !stepUp)) {
+      // One additive rule, shared with every thrown body: the pitch-aware
+      // input ADDS a velocity component instead of re-aiming the body, so
+      // momentum survives steering (no input: the shared mob bleed shapes
+      // the glide into a vertical fall). W/S fly the look direction —
+      // level mouse steers like a strafe, mouse-down dives, mouse-up brakes
+      // the fall — while A/D stay horizontal. Gravity stays single-sourced
+      // in the vertical chain below.
+      readKeysMove(true);
       if (_move.lengthSq() > 0) {
-        const k = Math.min(1, AIR_STEER * dt);
-        const curSpd = Math.hypot(vel.x, vel.z);
-        const airTarget = Math.max(curSpd, Math.min(speed * AIR_SPRINT, WALK * 3));
-        vel.x += (_move.x * (airTarget / speed) - vel.x) * k;
-        vel.z += (_move.z * (airTarget / speed) - vel.z) * k;
-      } else if (flingT < Infinity) {
-        // No input after a grapple fling: continuous linear drag from
-        // release on — the arc steepens all the way to vertical.
-        flingT += dt;
-        const vh = Math.hypot(vel.x, vel.z);
-        if (vh < FLING_SNAP) { vel.x = 0; vel.z = 0; flingT = Infinity; }
-        else {
-          const drag = Math.exp(-FLING_LIN * dt);
-          vel.x *= drag; vel.z *= drag;
-        }
-      }
+        _move.normalize();
+        steerAir(vel, _move.x, _move.y, _move.z, dt);
+      } else if (!dragAir(vel, dt)) { vel.x = 0; vel.z = 0; }
     } else {
       airT = 0;
-      flingT = Infinity;
       if (_move.lengthSq() > 0) {
-        vel.x += (_move.x - vel.x) * Math.min(1, dt * 12);
-        vel.z += (_move.z - vel.z) * Math.min(1, dt * 12);
+        vel.x += (_move.x * speed - vel.x) * Math.min(1, dt * 12);
+        vel.z += (_move.z * speed - vel.z) * Math.min(1, dt * 12);
       } else {
         const friction = Math.max(0, 1 - dt * 5);
         vel.x *= friction; vel.z *= friction;
@@ -598,7 +597,7 @@ export function updatePlayer(dt) {
       vel.y = JUMP_MIN; onGround = false; stepDown = false; stepUp = false;
       jumpOriginY = pos.y; jumpPeakY = pos.y; jumpHoldContinuous = true; lastSpaceDownY = pos.y; airT = 0;
     }
-    if (vel.y < -40) vel.y = -40;
+    clampFall(vel);
   }
   wasOnGround = onGround;
   collide(dt);

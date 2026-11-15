@@ -22,8 +22,8 @@ import { dimUltra } from "../world/dimensions.js";
 import { CLOUD_MAX_Y } from "../world/clouds.js";
 import { rebuildChunk, isChunkBuilt, chunkKeysForColumn, refreshBlocks } from "../render/mesher.js";
 import { notePortalFramesOnly, clearPortalFills, scanWorldPortals } from "../world/portals.js";
-import { pos, vel, setOnGround, addPlayerKnockback, KNOCK_DECAY } from "../player/physics.js";
-import { computeMegaLaunch } from "../core/launch.js";
+import { pos, vel, setOnGround, addPlayerKnockback } from "../player/physics.js";
+import { computeMegaLaunch, megaFlyShove } from "../core/launch.js";
 import { flyOn } from "../player/fly.js";
 import { spawnBurst, spawnBurstBatch, spawnFlash, spawnFlashBatch, spawnFireballBatch, sharedFlashGeo, initBandShell, updateBandShell, hideBandShell, spawnDense, denseCount, noteDenseSpawn, resetDenseFx, flushDense } from "./particles.js";
 import { PALETTES } from "./palettes.js";
@@ -1011,20 +1011,18 @@ function applyMegaKnockback(cx, cy, cz, kind, R = kind.radius) {
   const v = computeMegaLaunch(pos.x, pos.y + 0.9, pos.z, cx, cy, cz, R);
   if (!v) return;
   if (flyOn) {
-    let dx = pos.x - (cx + 0.5), dy = (pos.y + 0.9) - (cy + 0.5), dz = pos.z - (cz + 0.5);
-    let d = Math.hypot(dx, dy, dz);
-    if (d < 0.001) { dx = 1; dy = 0; dz = 0; d = 0.001; }
-    // Straight-line shove: uniform 1.5R travel from the center, always —
-    // the decaying impulse travels v0 / KNOCK_DECAY. Peak capped at the R40
-    // need (1.5*40*2.2 = 132) so big pools land as far as ground launches;
-    // wall tunneling at that speed is absorbed by the 0.5-substepped X/Z
-    // movers (master threw at 70).
-    const spd = Math.min(132, 1.5 * R * KNOCK_DECAY);
-    addPlayerKnockback((dx / d) * spd, (dy / d) * spd, (dz / d) * spd);
+    // Straight-line shove along the mega→player line — the shared launcher
+    // calibrates it (uniform 1.5R travel, brief KNOCK_DECAY punch), so this
+    // branch is only the range gate plus the impulse handoff.
+    const s = megaFlyShove(pos.x, pos.y + 0.9, pos.z, cx, cy, cz, R);
+    if (!s) return;
+    addPlayerKnockback(s.vx, s.vy, s.vz);
     setOnGround(false);
     return;
   }
   vel.set(v.vx, v.vy, v.vz);
+  // No arming: the one airborne rule shapes the 1.5R parabola from here,
+  // and converges it to vertical if nothing catches the body.
   setOnGround(false);
 }
 

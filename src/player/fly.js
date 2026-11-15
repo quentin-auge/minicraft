@@ -9,6 +9,8 @@ export const FLY = 10;
 
 export let flyOn = false;
 export function setFly(v) {
+  // Leaving fly keeps the last fly velocity: the one airborne rule shapes
+  // the drop from there like every other thrown body.
   flyOn = v;
 }
 

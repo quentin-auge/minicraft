@@ -19,6 +19,14 @@ export const MOON_THICK = 5;
 export const MOON_MIN_Y = 850;
 export const MOON_SURFACE_Y = MOON_MIN_Y + MOON_R;
 
+// Moon skies per dimension key: registered by world/dimensions.js at spec
+// build, so three-free movers (mobs) read the same low-g sky as the player
+// without importing the dimension registry. Headless rigs that never
+// register read no moon — full gravity everywhere.
+const moonDims = new Set();
+export function registerMoonDim(k) { moonDims.add(k); }
+export function moonDimHas(k) { return moonDims.has(k); }
+
 // Fill state per world seed: underside complete (the surface always builds
 // with the world; meshing of the shell follows via chunk refresh).
 // resetMoon clears it; every New World regenerates from empty.

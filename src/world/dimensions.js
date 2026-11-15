@@ -37,6 +37,7 @@ import {
 } from "./nether.js";
 import { villageFrames } from "./village.js";
 import { isLockedTntTier, isTntTierUnlocked } from "./tntunlock.js";
+import { registerMoonDim } from "./moon.js";
 
 // The TNT sky is the first infinite dimension: voxels stream around the
 // player with no walls (see tntstream.js), so the store lifts its bounds.
@@ -153,6 +154,7 @@ export const DIMENSIONS = [
 ];
 
 const byKey = new Map(DIMENSIONS.map((s) => [s.key, s]));
+for (const s of DIMENSIONS) if (s.moon) registerMoonDim(s.key);
 export function dimSpec(key) {
   return byKey.get(key);
 }

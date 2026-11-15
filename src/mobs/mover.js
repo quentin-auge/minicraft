@@ -5,8 +5,9 @@
 // the gap scan in corridor.js; farm.js owns the meshes, spawning,
 // and lifecycle. Headless rigs drive this module on live voxels.
 import { SEP_GAP, CROSS_BUDGET, PASS_OFF, PASS_BUDGET, WALL_ALLOW, worstPairPenAt } from "./collide.js";
-import { PLAYER_GRAVITY } from "../core/launch.js";
+import { stepAir, gravityAt } from "../core/launch.js";
 import { dimBound, dimInfinite } from "../core/store.js";
+import { MOON_MIN_Y, isMoonGone, moonDimHas } from "../world/moon.js";
 import { narrowPoseOk, narrowSide, narrowSense, activeNarrowPeer } from "./narrow.js";
 import { FARM_WALK_DIVISOR } from "./livestock.js";
 import {
@@ -2639,12 +2640,12 @@ function cruiseLane(mob, dt, supported, floating, res, rand = Math.random, peerG
   return true;
 }
 
-// Blast flight: a mega pool throws the mob onto the shared launcher arc
-// (core/launch.js — the exact player trajectory), integrated here at player
-// gravity, never the mob's own. While flying the whole ground machinery is
-// parked (no entry/nav/passage ticks, no plan, no separation): the arc owns
-// the frame until support returns or the timeout trips. World walls confine
-// the flight: a clamped axis dies on that axis only (glissade — the tangent
+// Blast flight: a mega pool throws the mob through the one shared airborne
+// rule (core/launch.js stepAir — the exact player trajectory), so both bodies
+// fly identically. While flying the whole ground machinery is parked (no
+// entry/nav/passage ticks, no plan, no separation): the arc owns the frame
+// until support returns or the timeout trips. World walls confine the
+// flight: a clamped axis dies on that axis only (glissade — the tangent
 // survives, the fall continues), so a launch never leaves the level.
 export const BLAST_FLIGHT_TIMEOUT = 6;
 export const BLAST_SUBSTEP = 0.5;
@@ -2654,12 +2655,12 @@ export function launchMobBlast(mob, vx, vy, vz) {
   mob.roam = null;
   mob.followLine = null;
   mob.passage = null;
-  mob.inPassage = false;
+  mob.inPassage = null;
   mob._plan = null;
   mob._detour = false;
   mob._rebase = false;
   if (mob.vel) mob.vel.y = 0;
-  mob._blast = { vx, vy, vz, t: 0 };
+  mob._blast = { x: vx, y: vy, z: vz, t: 0 };
 }
 function tickBlastFlight(mob, dt, pickTarget, rand) {
   const b = mob._blast;
@@ -2679,40 +2680,51 @@ function tickBlastFlight(mob, dt, pickTarget, rand) {
   const dimName = mob.dim ?? "over";
   const B = dimBound(dimName);
   const floor = dimInfinite(dimName) ? -Infinity : 1;
-  const speed = Math.hypot(b.vx, b.vy, b.vz);
+  // One sky, one gravity: the Moon low-g rule reads through the same shared
+  // helper as the player.
+  const G = gravityAt(moonDimHas(dimName), isMoonGone(), mob.pos.y, MOON_MIN_Y);
+  const speed = Math.hypot(b.x, b.y, b.z);
   const n = Math.max(1, Math.min(32, Math.ceil((speed * dt) / BLAST_SUBSTEP)));
   const s = dt / n;
   for (let i = 0; i < n; i++) {
-    b.vy -= PLAYER_GRAVITY * s;
-    let nx = mob.pos.x + b.vx * s, nz = mob.pos.z + b.vz * s;
+    // The one airborne rule, no input: gravity, then the exponential bleed,
+    // snapped below AIR_SNAP — a bottomless fall converges to vertical.
+    if (!stepAir(b, s, G)) { b.x = 0; b.z = 0; }
+    let nx = mob.pos.x + b.x * s, nz = mob.pos.z + b.z * s;
     // Invisible world walls (same bounds as the voxels): slide, never
     // bounce — only the blocked axis dies.
     const lo = -B + mob.hw, hi = B - mob.hw;
-    if (nx < lo) { nx = lo; b.vx = 0; } else if (nx > hi) { nx = hi; b.vx = 0; }
-    if (nz < lo) { nz = lo; b.vz = 0; } else if (nz > hi) { nz = hi; b.vz = 0; }
+    if (nx < lo) { nx = lo; b.x = 0; } else if (nx > hi) { nx = hi; b.x = 0; }
+    if (nz < lo) { nz = lo; b.z = 0; } else if (nz > hi) { nz = hi; b.z = 0; }
     if (!aabbIntersectsSolid(nx, mob.pos.y, nz, mob.hw, mob.h)) {
       mob.pos.x = nx; mob.pos.z = nz;
     } else if (!aabbIntersectsSolid(nx, mob.pos.y, mob.pos.z, mob.hw, mob.h)) {
-      mob.pos.x = nx; b.vz = 0;
+      mob.pos.x = nx; b.z = 0;
     } else if (!aabbIntersectsSolid(mob.pos.x, mob.pos.y, nz, mob.hw, mob.h)) {
-      mob.pos.z = nz; b.vx = 0;
+      mob.pos.z = nz; b.x = 0;
     } else {
-      b.vx = 0; b.vz = 0;
+      b.x = 0; b.z = 0;
     }
-    let ny = mob.pos.y + b.vy * s;
-    if (ny < floor) { ny = floor; b.vy = 0; }
+    let ny = mob.pos.y + b.y * s;
+    if (ny < floor) { ny = floor; b.y = 0; }
     if (!aabbIntersectsSolid(mob.pos.x, ny, mob.pos.z, mob.hw, mob.h)) {
       mob.pos.y = ny;
-    } else if (b.vy < 0) {
+    } else if (b.y < 0) {
       const g = groundBelow(mob.pos.x, mob.pos.y, mob.pos.z);
       if (g != null && g <= mob.pos.y + 1e-3 &&
         !aabbIntersectsSolid(mob.pos.x, g, mob.pos.z, mob.hw, mob.h)) mob.pos.y = g;
       finish();
       return;
     } else {
-      b.vy = 0;
+      b.y = 0;
     }
-    if (b.vy <= 0 && hasSupport(mob.pos.x, mob.pos.y, mob.pos.z, mob.hw)) {
+    if (b.y <= 0 && hasSupport(mob.pos.x, mob.pos.y, mob.pos.z, mob.hw)) {
+      finish();
+      return;
+    }
+    // Liquid contact ends the flight — the float plane takes over next
+    // tick instead of sinking through water to the floor.
+    if (liquidSurface(mob.pos.x, mob.pos.y, mob.pos.z, mob.hw, mob.h) != null) {
       finish();
       return;
     }

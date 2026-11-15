@@ -18,7 +18,7 @@
 // forced back under the liquid): the top submerged cell floats, deeper cells
 // swim freely, and nobody leaves the water while held. In open air it freezes
 // the player until release.
-import { pos, vel, yaw, pitch, playerBody, collideBody, headInWater, setOnGround, setGhostPass, noteFling, PLAYER_HW, PLAYER_H, EYE } from "./physics.js";
+import { pos, vel, yaw, pitch, playerBody, collideBody, headInWater, setOnGround, setGhostPass, knockVel, PLAYER_HW, PLAYER_H, EYE } from "./physics.js";
 import { dim, isSolid } from "../core/store.js";
 import { dimSpec } from "../world/dimensions.js";
 import { skyGrappleTarget } from "../world/tntstream.js";
@@ -642,10 +642,8 @@ export function cancelHook(fling = true) {
     const dist = Math.hypot(dx, dy, dz) || 1;
     if (fling && !headInWater()) {
       vel.set(dx / dist * spec.flingSpeed, dy / dist * spec.flingSpeed, dz / dist * spec.flingSpeed);
-      noteFling();
     } else if (headInWater()) {
       vel.set(dx / dist * spec.pullSpeed, dy / dist * spec.pullSpeed, dz / dist * spec.pullSpeed);
-      noteFling();
     }
   } else if (hook) {
     setOnGround(landingSupported(pos.x, pos.y, pos.z));
@@ -723,6 +721,8 @@ function pullSelfToAnchor(dt) {
   const px = pos.x, py = pos.y, pz = pos.z;
   const n = Math.max(1, Math.ceil(step / spec.substep));
   vel.set(dx / dist * spec.pullSpeed, dy / dist * spec.pullSpeed, dz / dist * spec.pullSpeed);
+  // A pending blast impulse rides the pull and bends it — never lost.
+  vel.add(knockVel);
   for (let i = 0; i < n; i++) {
     collideBody(dt / n, playerBody, true);
   }

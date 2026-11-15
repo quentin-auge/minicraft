@@ -12,6 +12,8 @@ import { BLOCK_INFO, isLiquid } from "../core/blocks.js";
 import { getBlock, dimInfinite } from "../core/store.js";
 import { dropAllowed, floatTargetY } from "./livestock.js";
 import { normYaw } from "./corridor.js";
+import { GRAVITY, TERMINAL_VELOCITY, applyGravity, clampFall, gravityAt } from "../core/launch.js";
+import { MOON_MIN_Y, isMoonGone, moonDimHas } from "../world/moon.js";
 
 // Base stride speed straight from master's pig/cow walk; the divisor slows
 // it to a farm amble (FARM_WALK lives in mover.js beside its tuning).
@@ -33,8 +35,11 @@ export const WANDER_MAX = 10;
 // Latched targets never expire on their own (refresh comes from arrival,
 // stuck, re-decide, or span timeout — never from this clock).
 export const NO_EXPIRY = 1e9;
-// Gravity for the vertical plane (farm-mob fall speed).
-export const GRAVITY = 22;
+// One sky, one gravity: the vertical plane falls at the same shared rate
+// as the player and every thrown body (core/launch.js) — no mob-specific
+// tuning. Mobs steer nothing airborne, so every descent converges to a pure
+// vertical drop.
+export { GRAVITY, TERMINAL_VELOCITY } from "../core/launch.js";
 // Support-scan depth in infinite dimensions (bounded dims scan to the y = 0
 // floor instead): outcomes stay identical — the touch rule only reads the
 // layer touching the feet, and the first solid below decides the break — at
@@ -517,7 +522,10 @@ export function stepVertical(mob, dt, surface, floating, supported) {
   } else if (supported) {
     mob.vel.y = 0;
   } else {
-    mob.vel.y = Math.max(-30, mob.vel.y - GRAVITY * dt);
+    // One sky, one gravity: plain falls read the same lunar rule as blast
+    // flights and the player — no lunar blocks left, no low-g.
+    applyGravity(mob.vel, dt, gravityAt(moonDimHas(mob.dim ?? "over"), isMoonGone(), mob.pos.y, MOON_MIN_Y));
+    clampFall(mob.vel);
     const ny = mob.pos.y + mob.vel.y * dt;
     if (!aabbIntersectsSolid(mob.pos.x, ny, mob.pos.z, mob.hw, mob.h)) {
       mob.pos.y = ny;
