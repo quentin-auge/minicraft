@@ -11,6 +11,7 @@
 import { BLOCK_INFO, isLiquid } from "../core/blocks.js";
 import { getBlock, dimInfinite } from "../core/store.js";
 import { dropAllowed, floatTargetY } from "./livestock.js";
+import { mobCanFloat } from "./registry.js";
 import { normYaw } from "./corridor.js";
 import { GRAVITY, TERMINAL_VELOCITY, applyGravity, clampFall, gravityAt } from "../core/launch.js";
 import { MOON_MIN_Y, isMoonGone, moonDimHas } from "../world/moon.js";
@@ -178,6 +179,29 @@ export function aabbIntersectsSolid(px, py, pz, hw, h) {
   return false;
 }
 
+// Worst body-vs-rock overlap depth (max intersection volume over the
+// overlapped solid cells), or 0 for a free pose. Lets an already-touching
+// floating hull hold or ease off a contact without ever deepening it.
+export function bodyOverlapDepth(px, py, pz, hw, h) {
+  const x0 = Math.floor(px - hw), x1 = Math.floor(px + hw);
+  const z0 = Math.floor(pz - hw), z1 = Math.floor(pz + hw);
+  const y0 = Math.floor(py), y1 = Math.floor(py + h - 1e-4);
+  let worst = 0;
+  for (let by = y0; by <= y1; by++)
+    for (let bx = x0; bx <= x1; bx++)
+      for (let bz = z0; bz <= z1; bz++) {
+        const ox = Math.min(px + hw, bx + 1) - Math.max(px - hw, bx);
+        if (ox <= 0) continue;
+        const oz = Math.min(pz + hw, bz + 1) - Math.max(pz - hw, bz);
+        if (oz <= 0) continue;
+        const oy = Math.min(py + h, by + 1) - Math.max(py, by);
+        if (oy <= 0) continue;
+        if (isSolidCell(bx, by, bz)) worst = Math.max(worst, ox * oy * oz);
+        else if (mobExtraSolid && mobExtraSolid(bx, by, bz)) worst = Math.max(worst, ox * oy * oz);
+      }
+  return worst;
+}
+
 // Nose box against the voxels, with the passing grace on the SIDE walls
 // only. A wall in front of the nose blocks it exactly as before — the head
 // must stop before it enters the wall ahead, dead ends included. A wall
@@ -261,6 +285,142 @@ export function liquidSurface(px, py, pz, hw, h) {
       for (let bz = z0; bz <= z1; bz++)
         if (isLiquid(getBlock(bx, by, bz))) top = top == null ? by + 1 : Math.max(top, by + 1);
   return top;
+}
+
+// Highest liquid surface top under a footprint, scanning down from topY.
+// Unlike liquidSurface (which only reads liquid overlapping the body),
+// this finds the surface a move would float on, including water beside or
+// just below the current feet level.
+export function waterSurfaceTopAt(px, pz, hw, topY, depth = 8) {
+  let top = null;
+  const x0 = Math.floor(px - hw), x1 = Math.floor(px + hw);
+  const z0 = Math.floor(pz - hw), z1 = Math.floor(pz + hw);
+  const start = Math.floor(topY);
+  for (let by = start; by > start - depth; by--)
+    for (let bx = x0; bx <= x1; bx++)
+      for (let bz = z0; bz <= z1; bz++) {
+        if (bx + 1 <= px - hw || bx >= px + hw) continue;
+        if (bz + 1 <= pz - hw || bz >= pz + hw) continue;
+        if (isLiquid(getBlock(bx, by, bz))) top = top == null ? by + 1 : Math.max(top, by + 1);
+      }
+  return top;
+}
+
+// Floating locomotion is active when the body overlaps liquid and the mob
+// has the float capability. Callers may pass the precomputed floating
+// state; otherwise it is read from the current pose.
+export function mobFloatDrive(mob, floating = null) {
+  const wet = floating ?? (liquidSurface(mob.pos.x, mob.pos.y, mob.pos.z, mob.hw, mob.h) != null);
+  return wet && mobCanFloat(mob);
+}
+
+// Tolerance when comparing a liquid surface against ground level: feet and
+// surfaces are integer tops, this only absorbs float dust — never a drop.
+export const SWIM_LEVEL_EPS = 0.05;
+
+// Expected floating feet level over a cell, or null when there is no
+// swimmable surface there. One rule everywhere: the surface must sit at the
+// reference level or at most a block above it — never below. No floor is
+// ever read: buoyancy is the support, for every liquid alike.
+export function floatLevelAt(mob, x, z, refY) {
+  const surface = waterSurfaceTopAt(x, z, mob.hw, refY + mob.h + 1);
+  if (surface == null) return null;
+  if (surface < refY - SWIM_LEVEL_EPS || surface > refY + 1 + SWIM_LEVEL_EPS) return null;
+  return { surface, y: floatTargetY(surface, mob.h) };
+}
+
+// Exact shore-height tolerance for floating exits: the shore top may touch
+// the water surface level, but never stand above it.
+export const SHORE_EXIT_EPS = 1e-3;
+
+// Ballistic hop duration: a leap is a burst, not a cruise — horizontal
+// speed runs well above walk pace and the arc stays short, so the peak
+// clears the shore with the minimum the physics demands, never a moon
+// jump. Longer exits simply leap faster, not longer.
+export function shoreHopDuration(dist) {
+  return Math.max(0.25, Math.min(0.5, dist / 4.0));
+}
+
+// Player-style water exit for a floating mover: the first solid column
+// ahead whose top is at most the water surface level, with dry support and
+// headroom for the body. Returns a ballistic hop descriptor (constant
+// horizontal velocity plus gravity, solved to land exactly on the shore)
+// or null.
+export function shoreExitTarget(mob, dx, dz) {
+  const len = Math.hypot(dx, dz) || 1;
+  const nx = dx / len, nz = dz / len;
+  const surface = liquidSurface(mob.pos.x, mob.pos.y, mob.pos.z, mob.hw, mob.h)
+    ?? waterSurfaceTopAt(mob.pos.x, mob.pos.z, mob.hw, mob.pos.y + mob.h + 1);
+  if (surface == null) return null;
+  const feetY = mob.pos.y;
+  const maxDrop = mob.maxDrop ?? 1;
+  for (let t = mob.hw + 0.05; t <= mob.hw + 1.5; t += 0.15) {
+    const px = mob.pos.x + nx * t, pz = mob.pos.z + nz * t;
+    let top = null;
+    for (let by = Math.ceil(surface + 0.1); by >= Math.floor(surface - 2); by--) {
+      if (isSolidCell(Math.floor(px), by, Math.floor(pz))) { top = by + 1; break; }
+    }
+    if (top == null) continue;
+    // The first solid column ahead decides: a shore standing above the
+    // surface is a wall, never an exit — the scan ends here instead of
+    // looking past it for land further out.
+    if (top > surface + SHORE_EXIT_EPS) return null;
+    if (top < feetY - maxDrop - 1e-3) continue;
+    const tx = Math.floor(px) + 0.5, tz = Math.floor(pz) + 0.5, ty = top + 0.01;
+    if (aabbIntersectsSolid(tx, ty, tz, mob.hw, mob.h)) continue;
+    const gx = tx + Math.sin(mob.yaw) * mob.nose.along;
+    const gz = tz + Math.cos(mob.yaw) * mob.nose.along;
+    if (aabbIntersectsSolid(gx, ty, gz, mob.nose.r, mob.h)) continue;
+    if (liquidSurface(tx, ty, tz, mob.hw, mob.h) != null) continue;
+    if (!centerHeadroom(tx, ty, tz, mob.h)) continue;
+    // Ballistic clearance: solve the arc first, then require the body to
+    // clear the mid-flight column at the arc's own predicted peak.
+    const dist = Math.hypot(tx - mob.pos.x, tz - mob.pos.z);
+    const dur = shoreHopDuration(dist);
+    const vy0 = (ty - feetY + 0.5 * GRAVITY * dur * dur) / Math.max(1e-3, dur);
+    const peak = (vy0 * vy0) / (2 * GRAVITY);
+    const vx = (tx - mob.pos.x) / Math.max(1e-3, dur);
+    const vz = (tz - mob.pos.z) / Math.max(1e-3, dur);
+    // Ballistic clearance along the whole arc, not just its peak: a hop
+    // starting nose-close to the rim must not graze the rim's top corner
+    // on the way up. Sampled poses reject what the midpoint alone misses.
+    let clear = true;
+    for (const k of [0.15, 0.35, 0.6, 0.85]) {
+      const tt = k * dur;
+      const ax = mob.pos.x + vx * tt, az = mob.pos.z + vz * tt;
+      const ay = feetY + vy0 * tt - 0.5 * GRAVITY * tt * tt;
+      if (aabbIntersectsSolid(ax, ay, az, mob.hw, mob.h)) { clear = false; break; }
+    }
+    if (!clear) continue;
+    return { fromX: mob.pos.x, fromY: feetY, fromZ: mob.pos.z, toX: tx, toY: ty, toZ: tz, t: 0, dur, vx, vz, vy0, peak };
+  }
+  return null;
+}
+
+// Advance a floating shore-hop: constant horizontal velocity plus gravity —
+// a true parabolic jump solved to land exactly on the shore top.
+// Returns true on touchdown.
+export function stepShoreHop(mob, dt) {
+  const hp = mob.hop;
+  hp.t += dt;
+  const t = Math.min(hp.t, hp.dur);
+  mob.pos.x = hp.fromX + hp.vx * t;
+  mob.pos.z = hp.fromZ + hp.vz * t;
+  mob.pos.y = hp.fromY + hp.vy0 * t - 0.5 * GRAVITY * t * t;
+  mob.vel.x = hp.vx;
+  mob.vel.z = hp.vz;
+  mob.vel.y = hp.vy0 - GRAVITY * t;
+  if (hp.t >= hp.dur) {
+    mob.hop = null;
+    mob.hopCd = 1.0;
+    mob.pos.x = hp.toX;
+    mob.pos.z = hp.toZ;
+    mob.pos.y = hp.toY;
+    mob.vel.y = 0;
+    mob.fallFrom = hp.toY;
+    return true;
+  }
+  return false;
 }
 
 export function groundBelow(px, py, pz) {
@@ -377,6 +537,32 @@ export function diagonalSweepFree(mob, ax, az, levelA, bx, bz, levelB) {
   return true;
 }
 
+// Whole-step water entry for a float-capable mover still on dry land: each
+// of the core and nose columns validates either dry (ground within drop,
+// headroom clear) or floating (surface at the feet level or at most a block
+// above — never below — with headroom fit at the float level). Deep water
+// needs no floor: buoyancy is the support, and a dry pit beside water keeps
+// reading as a pit since each column keeps its own rule. The hull itself
+// stays checked at the current dry level by the caller, so walking onto
+// the edge never clips: the descent below the bank top happens through the
+// vertical plane once the body overlaps water.
+export function floatEntryOkAt(mob, x, z, refY, yaw, noseAlong = null) {
+  const nose = noseAlong ?? mob.nose.along;
+  for (let i = 0; i < 2; i++) {
+    const along = i === 0 ? 0 : nose;
+    const cx = x + Math.sin(yaw) * along, cz = z + Math.cos(yaw) * along;
+    const surface = waterSurfaceTopAt(cx, cz, 0.05, refY + mob.h + 1);
+    if (surface != null && surface >= refY - SWIM_LEVEL_EPS && surface <= refY + 1 + SWIM_LEVEL_EPS) {
+      if (!centerHeadroom(cx, floatTargetY(surface, mob.h), cz, mob.h)) return false;
+      continue;
+    }
+    const g = groundBelow(cx, refY + 1, cz);
+    if (g == null || !dropAllowed(refY, g, mob.maxDrop ?? 1)) return false;
+    if (!centerHeadroom(cx, g, cz, mob.h)) return false;
+  }
+  return true;
+}
+
 // A whole cell walks at its own level: the body fits, the head has room,
 // the feet are dry. One rule behind the step scan (stairs.js) and the
 // tread-width read below, so both agree on what fits.
@@ -411,13 +597,22 @@ export function treadWide(mob, cx, cz, level, yaw) {
 // Whole-cell walkability for branch classification: column solid-free over
 // the body height, dry feet, legal ground underfoot with headroom above it.
 // Same unified rule as the stepper, cell-quantized for neighbourhood tests.
-export function makeCellFree(mob) {
+// Floating movers may pass floating = true: reachable water counts as free
+// here, while mouth classification keeps calling the dry default.
+export function makeCellFree(mob, floating = false) {
+  const floatDrive = floating && mobCanFloat(mob);
   return (bx, bz) => {
     const refY = mob.pos.y;
     for (let by = Math.floor(refY); by <= Math.floor(refY + mob.h - 1e-4); by++) {
       if (isSolidCell(bx, by, bz)) return false;
     }
-    if (isLiquid(getBlock(bx, Math.floor(refY), bz))) return false;
+    if (isLiquid(getBlock(bx, Math.floor(refY), bz))) {
+      if (!floatDrive) return false;
+      const fl = floatLevelAt(mob, bx + 0.5, bz + 0.5, refY);
+      if (!fl) return false;
+      if (aabbIntersectsSolid(bx + 0.5, fl.y, bz + 0.5, mob.hw, mob.h)) return false;
+      return centerHeadroom(bx + 0.5, fl.y, bz + 0.5, mob.h);
+    }
     const g = groundBelow(bx + 0.5, refY + 1, bz + 0.5);
     if (g == null) return false;
     // The cell rule stays strict: a cell one level below the feet reads
@@ -464,19 +659,66 @@ export function makeStepOk(mob, supported, floating, noseAlong, yaw, footNose = 
   // sits inside the body box, so an unshrunk nose would veto the very
   // shoulder graze the shrunk body allows. shrink 0 keeps legacy exact.
   const nr = hwShrink > 0 ? Math.max(0.05, mob.nose.r - hwShrink) : mob.nose.r;
+  const floatDrive = floating && mobCanFloat(mob);
   return (nx, nz) => {
     const wallLim = mobXZLimit(mob.dim ?? "over", mob.pos.y);
     if (wallLim != null) {
       const lim = wallLim - hw;
       if (nx < -lim || nx > lim || nz < -lim || nz > lim) return false;
     }
-    if (aabbIntersectsSolid(nx, mob.pos.y, nz, hw, mob.h)) return false;
+    // Floating movers keep every physical check: bodies and noses never
+    // enter rock. Only the support rule changes from dry ground to a
+    // reachable float level.
+    let y = mob.pos.y;
+    if (floatDrive) {
+      const fl = floatLevelAt(mob, nx, nz, mob.pos.y);
+      if (!fl) return false;
+      y = fl.y;
+    }
+    if (aabbIntersectsSolid(nx, y, nz, hw, mob.h)) return false;
     const gx = nx + Math.sin(yaw) * noseAlong, gz = nz + Math.cos(yaw) * noseAlong;
+    // Soft nose (the step commit): a snout hanging over a drop never vetoes
+    // and a wall BESIDE it is a graze, not a block — the mob rounds a newel
+    // post instead of stalling on its snout. A wall straight ahead still
+    // stops the body. Probed at the step level (the float level afloat),
+    // like every other disc check here.
     if (soft) {
       if (!noseOverDrop(mob, nx, nz, yaw) &&
-        noseHitsSolid(gx, mob.pos.y, gz, nr + 0.03, mob.h, Math.sin(yaw), Math.cos(yaw), SOFT_NOSE_GRACE)) return false;
-    } else if (aabbIntersectsSolid(gx, mob.pos.y, gz, nr, mob.h)) return false;
-    if (floating) return true;
+        noseHitsSolid(gx, y, gz, nr + 0.03, mob.h, Math.sin(yaw), Math.cos(yaw), SOFT_NOSE_GRACE)) return false;
+    } else if (aabbIntersectsSolid(gx, y, gz, nr, mob.h)) return false;
+    if (floatDrive) {
+      if (centerHeadroom(nx, y, nz, mob.h)) return true;
+      // Contact slide: an already-touching floating hull may hold its line
+      // or ease off the contact, never deepen it — the swimmer walks
+      // itself off a grazed bank instead of beaching there.
+      const cur = bodyOverlapDepth(mob.pos.x, y, mob.pos.z, hw, mob.h);
+      if (cur <= 1e-9) return false;
+      const cand = bodyOverlapDepth(nx, y, nz, hw, mob.h);
+      if (cand > cur + 1e-9) return false;
+      return centerHeadroom(nx, y, nz, mob.h);
+    }
+    // Water entry for float-capable movers still on dry land: validate the
+    // whole step (core + nose columns) with buoyancy as support, so deep
+    // water reads as swimmable instead of a floor-depth air wall. The hull
+    // itself stays checked at the current dry level above, so walking onto
+    // the edge never clips: the descent below the bank top happens through
+    // the vertical plane once the body overlaps water.
+    if (!floating && mobCanFloat(mob) && (mob._transNoDiveT ?? 0) <= 0 && floatEntryOkAt(mob, nx, nz, mob.pos.y, yaw, foot)) return true;
+    // Vetoed dive (lottery ignore): the mob never steps onto liquid — a
+    // shallow pool reads as a wall, not a staircase, until stuck re-picks
+    // it away. Covers the core and nose columns alike.
+    if (!floating && (mob._transNoDiveT ?? 0) > 0) {
+      const wetBelow = (x, z) => {
+        const bx = Math.floor(x), bz = Math.floor(z);
+        for (let by = Math.floor(mob.pos.y); by >= Math.floor(mob.pos.y) - (mob.maxDrop ?? 1) - 1; by--) {
+          if (isLiquid(getBlock(bx, by, bz))) return true;
+        }
+        return false;
+      };
+      if (wetBelow(nx, nz)) return false;
+      const gx = nx + Math.sin(yaw) * foot, gz = nz + Math.cos(yaw) * foot;
+      if (wetBelow(gx, gz)) return false;
+    }
     // Bounded drift, gated on the takeoff level: legal descents keep
     // their glide, falls over void drop straight from the first tick.
     if (!supported) {
@@ -583,19 +825,50 @@ export function descendOk(mob, nx, nz) {
 // shared validation behind the farm picker and roam commits: picked
 // targets never aim through walls, over cliffs, or uphill, so fences,
 // house walls, and troughs bound targets emergently — no pen fork.
+//
+// Float-capable movers additionally validate mixed dry/water segments:
+// water samples must hold a continuous reachable float level, dry-to-water
+// entries must stay within the buoyant transition, and water-to-dry steps
+// must land on a shore at most at the water surface level.
 export function segmentWalkable(mob, x0, z0, x1, z1) {
+  const floatCapable = mobCanFloat(mob);
   const dist = Math.hypot(x1 - x0, z1 - z0);
   const steps = Math.max(1, Math.ceil(dist / 0.5));
   let prevG = groundBelow(x0, mob.pos.y + 1, z0);
-  if (prevG == null) return false;
+  const startFloat = floatCapable ? floatLevelAt(mob, x0, z0, mob.pos.y) : null;
+  if (prevG == null && !startFloat) return false;
+  let prevWet = startFloat != null;
+  let prevSurface = startFloat?.surface ?? null;
+  let prevY = startFloat?.y ?? mob.pos.y;
   for (let i = 1; i <= steps; i++) {
     const t = i / steps;
     const x = x0 + (x1 - x0) * t, z = z0 + (z1 - z0) * t;
+    const fl = floatCapable ? floatLevelAt(mob, x, z, prevY) : null;
+    if (fl && prevWet && Math.abs(fl.surface - prevSurface) > 1e-3) return false;
+    if (fl) {
+      // Water en route only needs a continuous level surface with headroom:
+      // the hull may graze a bank while crossing (the drive's contact slide
+      // resolves it), so no body-fit veto here.
+      if (!centerHeadroom(x, fl.y, z, mob.h)) return false;
+      prevWet = true;
+      prevSurface = fl.surface;
+      prevY = fl.y;
+      continue;
+    }
     if (aabbIntersectsSolid(x, mob.pos.y, z, mob.hw, mob.h)) return false;
     const g = groundBelow(x, mob.pos.y + 1, z);
     if (g == null) return false;
-    if (g > prevG + (mob.stepUp ?? 0) + 1e-3 || prevG - g > mob.maxDrop + 1e-3) return false;
+    if (prevWet) {
+      // Water-to-dry exit: only a shore at most at the water surface level
+      // is plannable; the executor performs the physical hop onto it.
+      if (prevSurface == null || g > prevSurface + SHORE_EXIT_EPS) return false;
+    } else if (g > prevG + (mob.stepUp ?? 0) + 1e-3 || prevG - g > mob.maxDrop + 1e-3) {
+      return false;
+    }
     prevG = g;
+    prevWet = false;
+    prevSurface = null;
+    prevY = g;
     if (!centerHeadroom(x, g, z, mob.h)) return false;
   }
   return true;
@@ -607,16 +880,31 @@ export function segmentWalkable(mob, x0, z0, x1, z1) {
 // wander stride (4–10 m); lane-drop follow-throughs pass a shorter one so
 // a mob can commit a step or two out of a mouth instead of re-deciding.
 export function strideTarget(mob, heading = null, rand = Math.random, minD = WANDER_MIN, maxD = WANDER_MAX) {
+  const floatCapable = mobCanFloat(mob);
   for (let t = 0; t < 12; t++) {
     const h = heading ?? rand() * Math.PI * 2;
     const dist = minD + rand() * (maxD - minD);
     const sx = Math.floor(mob.pos.x + Math.sin(h) * dist) + 0.5;
     const sz = Math.floor(mob.pos.z + Math.cos(h) * dist) + 0.5;
     const gy = groundBelow(sx, mob.pos.y + 1, sz);
-    if (gy == null) continue;
-    if (!dropAllowed(mob.pos.y, gy, mob.maxDrop ?? 1, mob.stepUp ?? 0)) continue;
-    if (isLiquid(getBlock(Math.floor(sx), gy, Math.floor(sz)))) continue;
-    if (!centerHeadroom(sx, gy, sz, mob.h)) continue;
+    let destOk = gy != null
+      && dropAllowed(mob.pos.y, gy, mob.maxDrop ?? 1, mob.stepUp ?? 0)
+      && !isLiquid(getBlock(Math.floor(sx), gy, Math.floor(sz)))
+      && centerHeadroom(sx, gy, sz, mob.h);
+    if (!destOk && floatCapable) {
+      // Wet destinations validate through the floating rules; dry
+      // destinations that fail the dry drop rule are left to the mixed
+      // segment validator, which admits only legal shore exits.
+      const fl = floatLevelAt(mob, sx, sz, mob.pos.y);
+      if (fl && !aabbIntersectsSolid(sx, fl.y, sz, mob.hw, mob.h)
+        && centerHeadroom(sx, fl.y, sz, mob.h)) {
+        destOk = true;
+      } else if (gy != null && !isLiquid(getBlock(Math.floor(sx), gy, Math.floor(sz)))
+        && centerHeadroom(sx, gy, sz, mob.h)) {
+        destOk = true;
+      }
+    }
+    if (!destOk) continue;
     if (!segmentWalkable(mob, mob.pos.x, mob.pos.z, sx, sz)) continue;
     return { x: sx, z: sz };
   }

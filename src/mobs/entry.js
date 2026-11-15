@@ -41,7 +41,9 @@
 // head-on at a 2-wide with no commit is captured outright (captureTwoWide,
 // deterministic backstop after a refused or empty violet scan): the passage
 // opens with no approach walk.
-import { ENTRY_P, ENTRY_SCAN_T, ENTRY_TIMEOUT, ENTRY_COOL_T, CARDINALS, findEntries, dirVec, snapCardinal, isTwoWideMouth, mouthPairCells, mouthKey, mouthCellKey } from "./corridor.js";
+import { ENTRY_P, ENTRY_SCAN_T, ENTRY_TIMEOUT, ENTRY_COOL_T, CARDINALS, findEntries, findWaterEntries, dirVec, snapCardinal, isTwoWideMouth, mouthPairCells, mouthKey, mouthCellKey } from "./corridor.js";
+import { isLiquid } from "../core/blocks.js";
+import { getBlock } from "../core/store.js";
 import { makeCellFree, makeCellSolid, dropLane, NO_EXPIRY, segmentWalkable } from "./step.js";
 import { roamSpan, ARRIVE_D, SPAN_MAX, exitMouth } from "./roam.js";
 import { navOnPath } from "./nav.js";
@@ -235,6 +237,19 @@ export function entryTick(mob, dt, rand = Math.random, ctx = {}) {
   // unconditionally (a corridor genuinely continuing takes over).
   // Wanderers and roam commits take both.
   const found = findEntries(mob.pos.x, mob.pos.z, makeCellFree(mob), makeCellSolid(mob));
+  // Water-mouth scan (dry approach only): 1-wide water tunnels and 2-wide
+  // water doors draw the same violet lifecycle when the mob still stands
+  // on dry land. A floating mob never scans these (the mover only calls
+  // entryTick on dry ground, and the water draw below re-checks).
+  if (!ctx.floating) {
+    const waterCell = (bx, bz) => isLiquid(getBlock(bx, Math.ceil(mob.pos.y) - 1, bz));
+    const wet = findWaterEntries(mob.pos.x, mob.pos.z, makeCellFree(mob), makeCellSolid(mob), waterCell);
+    if (wet.length > 0) {
+      const merged = [...found, ...wet].sort((a, b) => a.dist - b.dist);
+      found.length = 0;
+      for (const e of merged) found.push(e);
+    }
+  }
   if (found.length === 0) return false;
   // Head-on only: a mouth behind the facing is never drawn — this is what
   // lets a mob walk out of a mouth instead of instantly turning back in
@@ -294,6 +309,10 @@ export function entryTick(mob, dt, rand = Math.random, ctx = {}) {
   }
   releasePassage(mob);
   passageClaims.set(pickKey, mob);
+  // Entry commits outrank the contact lottery: a drawn mouth clears any
+  // held dive/exit veto so the approach walk can thread water.
+  mob._transNoDiveT = 0;
+  mob._transNoExitT = 0;
   if (mob.followLine?.touch === true) {
     // Pending guided slide: keep the line (no drop, no free pivot toward
     // the mouth) — the servo erects the hole-ward touch once the nose
@@ -416,7 +435,12 @@ export function passageTick(mob, dt, supported, floating, rand = Math.random, pi
     return;
   }
   const axis = snapCardinal(p.axis);
-  const mouth = isTwoWideMouth(Math.floor(mob.pos.x), Math.floor(mob.pos.z), axis, makeCellFree(mob), makeCellSolid(mob));
+  // Hold check reads dry or water pair rows (a water-door crossing holds
+  // while the pair rows read water); flanks stay solid-only either way.
+  const dryFree = makeCellFree(mob);
+  const waterCell = (bx, bz) => isLiquid(getBlock(bx, Math.ceil(mob.pos.y) - 1, bz));
+  const holdFree = (bx, bz) => dryFree(bx, bz) || waterCell(bx, bz);
+  const mouth = isTwoWideMouth(Math.floor(mob.pos.x), Math.floor(mob.pos.z), axis, holdFree, makeCellSolid(mob));
   const r = mob.roam;
   const broken = r && r.mode && mob.target !== r.tgt;
   const arrivedC = r && r.mode === "commit" && mob.target &&

@@ -63,6 +63,7 @@ function makeMob(x, z, yaw, seed, idx) {
     type: "pig", dim: "over", pos: { x, y: FEET, z }, vel: { y: 0 },
     hw: shape.hw, h: shape.h, nose: shape.nose, tail: shape.tail,
     maxDrop: 1, alive: true, root: null,
+    floatCapable: true,
     yaw, yawTarget: yaw, target: null, wanderT: NO_EXPIRY,
     legPhase: 0, speed: FARM_WALK, rand: mulberry32(seed),
     stuckT: 0, lastX: x, lastZ: z, fallFrom: FEET, lane: null, servoStall: 0,

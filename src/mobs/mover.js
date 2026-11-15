@@ -17,6 +17,8 @@ import {
   ENTRY_COOL_T, LEAVE_FRESH_T, mobHeadsToCooledMouth, insideCooledMouth,
 } from "./corridor.js";
 import { entryTick, passageTick } from "./entry.js";
+import { transitionTick, armTransitionVeto, tickTransitionTimers, exitVetoed } from "./transitions.js";
+import { mobCanFloat } from "./registry.js";
 import { navTick, navCommit, navPlanAllows, navPathDistance, navCellOnPath, NAV_BAND } from "./nav.js";
 import { maybeStepCommit, isStepCommit } from "./stairs.js";
 import { queryMobGrid, buildMobGrid } from "./grid.js";
@@ -25,6 +27,7 @@ import {
   liquidSurface, footingOk, footingOkAt, groundBelow, headroomOk,
   makeCellFree, makeCellSolid, makeStepOk, descendOk, turnTo,
   moveClamped, moveVector, driveToward, dropLane, spawnRng, stepVertical,
+  mobFloatDrive, shoreExitTarget, stepShoreHop, floatLevelAt, floatEntryOkAt, waterSurfaceTopAt, centerHeadroom,
   SERVO_STEP, VIRTUAL_W, NO_EXPIRY, slideDeflect, segmentWalkable,
 } from "./step.js";
 import {
@@ -32,7 +35,7 @@ import {
   latchTouchWall, latchFlankTouch, measureWallTake, cornerTurn,
   sameWallFace, connectedTake, tipOuterCorner, wallQuitHeading, wallQuitCommit,
   exitMouth, tryGuidedErect, guidedDock, entryStallLatch,
-  GENTLE_RATE, GENTLE_FRESH_TICKS,
+  GENTLE_RATE, GENTLE_FRESH_TICKS, HEADON_TOL,
 } from "./roam.js";
 // Re-exports: the headless rigs read shared physics through this module.
 export { aabbIntersectsSolid, segmentWalkable } from "./step.js";
@@ -1308,7 +1311,7 @@ function wrapStepOk(mob, stepOk) {
 // cruise, junction blend, dead-end seek). Sense, engage, and the lane
 // drives run in order; each drive owns its motion.
 export function servoTick(mob, dt, supported, floating, rand = Math.random, pickTarget = null, peerGate = null, peers = null, turnGate = null) {
-  if (!supported || floating) { mob.lane = null; return false; }
+  if (!supported || (floating && !mobCanFloat(mob))) { mob.lane = null; return false; }
   // R2 upkeep first: the latched line below biases this very tick's pull.
   if (mob._narrow) mob.followLine = null;
   upkeepFollowLine(mob, dt);
@@ -1324,11 +1327,11 @@ export function servoTick(mob, dt, supported, floating, rand = Math.random, pick
   // hole-ward touch as soon as the nose meets the wall — no drop to a free
   // commit, no pivot toward the mouth.
   if (mob.lane && mob.roam?.entry) tryGuidedErect(mob, dt, supported, floating, rand);
-  let sense = senseLane(mob);
+  let sense = senseLane(mob, supported, floating);
   const pre = mob._narrow ? undefined : tryPreLane(mob, dt, supported, floating, sense, rand);
   if (pre === "touch") {
     // Contact latch erected the lane: sense again along it, virtual wall up.
-    sense = senseLane(mob);
+    sense = senseLane(mob, supported, floating);
     // Plan priority: a ride latched across the planned line is dropped
     // at once — the plan's steering owns the mob.
     if (planVetoesRail(mob, mob.lane?.axis)) {
@@ -1505,7 +1508,7 @@ export function servoTick(mob, dt, supported, floating, rand = Math.random, pick
     // classifier reports a dead end. Turn into the arm (same wall, same
     // relative side, blue stays on) instead of flipping; true dead ends
     // and pocket backs have no walkable arm and keep the seek below.
-    const inner = touchRide ? innerTurn(mob, prevAxis) : null;
+    const inner = touchRide ? innerTurn(mob, prevAxis, supported, floating) : null;
     if (inner == null) return seekDeadEnd(mob, dt, supported, floating, peers);
     mob.lane = { axis: inner.axis, entry: oppositeYaw(inner.axis), lockX: cx, lockZ: cz };
     mob.followLine = inner.followLine;
@@ -1536,7 +1539,7 @@ export function servoTick(mob, dt, supported, floating, rand = Math.random, pick
     // face and wedges the nose on the tip instead of hugging it. Blocked
     // nose means a corridor situation (jog, notch), so a tunneled lane
     // keeps driving; anything else releases to roam now.
-    const keep = followExit(mob, prevAxis);
+    const keep = followExit(mob, prevAxis, supported, floating);
   if (!keep) {
     let corner = sense.fwdOpen ? cornerTurn(mob, prevAxis) : null;
     // Same wall only: corner rounding onto a disconnected wall (past
@@ -1551,7 +1554,7 @@ export function servoTick(mob, dt, supported, floating, rand = Math.random, pick
     // clear of the jamb and re-measures the turn with clearance instead
     // of grinding in place. Walkable takes still turn at once; outside
     // the fresh window nothing changes.
-    if (corner != null && freshFromMouth(mob) && !takeWalkable(mob, corner.axis)) corner = null;
+    if (corner != null && freshFromMouth(mob) && !takeWalkable(mob, corner.axis, supported, floating)) corner = null;
     if (corner != null) {
       // Plan priority: a corner that leaves the planned line is not
       // taken — the ride ends and the plan's steering owns the mob.
@@ -1624,7 +1627,7 @@ export function servoTick(mob, dt, supported, floating, rand = Math.random, pick
       let corner = null;
       if (keep.axis === prevAxis && wallEndsAhead(mob, prevAxis) && sense.fwdOpen) {
         const early = tipOuterCorner(mob, prevAxis);
-        if (early != null && takeWalkable(mob, early.axis)) corner = early;
+        if (early != null && takeWalkable(mob, early.axis, supported, floating)) corner = early;
       }
       if (corner != null) {
         // Plan priority: the tip take must serve the planned line too.
@@ -1666,7 +1669,7 @@ export function servoTick(mob, dt, supported, floating, rand = Math.random, pick
 // descendOk gates pit mouths: a legal drop into a local minimum reads as a
 // wall (the drives below refuse it too), so the lane U-turns at the lip
 // instead of cruising in. The drives keep the real nose reach.
-function senseLane(mob) {
+function senseLane(mob, supported, floating) {
   const axisProbe = mob.lane ? mob.lane.axis : snapCardinal(mob.yaw);
   const fitBody = (yaw) => {
     // Same passing grace as the drives: an offset shoulder grazes the
@@ -1674,11 +1677,11 @@ function senseLane(mob) {
     // the grazed forward probe fakes a dead end and the lane U-turns
     // mid-crossing (rail flip-flop). Window/settle state comes from the
     // last tick, which is exactly the pose being sensed.
-    const base = makeStepOk(mob, true, false, 0, yaw, 0, wallShrink(mob));
+    const base = makeStepOk(mob, supported, floating, 0, yaw, 0, wallShrink(mob));
     return wrapStepOk(mob, (nx, nz) => base(nx, nz) && descendOk(mob, nx, nz));
   };
   const pointFree = (nx, nz, dirYaw) => fitBody(dirYaw)(nx, nz);
-  const cellFreeReal = makeCellFree(mob);
+  const cellFreeReal = makeCellFree(mob, mobFloatDrive(mob, floating));
   const v = virtualWall(mob);
   const cellFree = v
     ? (bx, bz) => (v.side * ((v.latIsX ? bx : bz) + 0.5 - v.V) > 0 ? false : cellFreeReal(bx, bz))
@@ -1717,6 +1720,16 @@ function senseLane(mob) {
   return { axisProbe, cellFree, opens, fwdOpen, walled: closed ? closed.walled : walled };
 }
 
+// Install a floating shore-hop arc along (dx, dz) when the exact height
+// rule admits it. The validator solves the ballistic arc, so installing
+// is just latching it. Returns true when the hop latched.
+function installShoreHop(mob, dx, dz) {
+  const hop = shoreExitTarget(mob, dx, dz);
+  if (!hop) return false;
+  mob.hop = hop;
+  return true;
+}
+
 // Pre-lane flow: a 50/50 touch latch on a plain wall when the way ahead is
 // blocked (contact may stick or keep roaming — straight-on draws lots 50/50,
 // oblique keeps its direction; refusals hold the next latch off), else a
@@ -1733,7 +1746,111 @@ function senseLane(mob) {
 function tryPreLane(mob, dt, supported, floating, sense, rand = Math.random) {
   if (mob.roam?.entry || mob.roam?.smooth) return undefined;
   if (!mob.lane && (mob.followCool ?? 0) <= 0) {
+    const headon = mob.yawTarget == null || Math.abs(normYaw(mob.yawTarget - mob.yaw)) <= HEADON_TOL;
+    // A latched plan or maneuver outranks the lottery: the planner already
+    // validated the water route (float-walk only plans surface-level
+    // exits), so planned contacts walk the legacy line with no draw.
+    const planned = mob.nav != null || mob._detour === true || (mob._turnAway ?? 0) > 0;
+    // Dry-water lottery first (dry, head-on, probe over reachable water):
+    // one draw per approach — dive walks straight in, ride latches the
+    // edge without a fresh draw, ignore vetoes both until stuck re-picks
+    // the mob away. Oblique approaches keep the legacy line (no draw).
+    if (!floating && mobCanFloat(mob) && headon && !planned) {
+      const qx = mob.pos.x + Math.sin(mob.yaw) * (mob.hw + 0.15);
+      const qz = mob.pos.z + Math.cos(mob.yaw) * (mob.hw + 0.15);
+      if (waterSurfaceTopAt(qx, qz, 0, mob.pos.y + mob.h + 1) != null
+        && floatEntryOkAt(mob, qx, qz, mob.pos.y, mob.yaw, mob.nose.along)) {
+        const res = transitionTick(mob, { kind: "dry-water", frontal: true, floating }, mob.trng ?? rand);
+        const intent = res?.intent ?? mob._transDecision ?? null;
+        if (intent === "ride") {
+          armTransitionVeto(mob, intent);
+          const th = mob.target ? Math.atan2(mob.target.x - mob.pos.x, mob.target.z - mob.pos.z) : null;
+          const axis = latchTouchWall(mob, dt, sense.axisProbe, th, rand, { skipDraw: true });
+          if (axis != null) {
+            // Latched: clear the edge so the post-ride contact redraws
+            // fresh (cooldown-gated) instead of replaying this ride.
+            mob._transPrev = null;
+            mob._transDecision = null;
+            mob.lane = { axis, entry: oppositeYaw(axis), lockX: -1, lockZ: -1 };
+            mob.stuckT = 0;
+            return "touch";
+          }
+          // No line to latch: hold the bank (dive vetoed above) and grind
+          // until stuck re-picks the mob away — never dive on a failed ride.
+          return undefined;
+        }
+        if (intent === "ignore") {
+          armTransitionVeto(mob, intent);
+          mob.followCool = FOLLOW_COOL;
+          return undefined;
+        }
+        // Dive (or cooled fallback): walk straight in on foot — the dry
+        // stepper validates water columns with buoyancy as support.
+        return undefined;
+      }
+      transitionTick(mob, null);
+    }
     if (!sense.fwdOpen) {
+      // Floating exit lottery: a float-capable mob facing straight into a
+      // blocked shore draws exit/ride/ignore (frontal only — flank grazes
+      // keep the legacy latch below). The hop validator still owns the
+      // exact height rule, so a drawn exit past validation just rides.
+      // A broken contact re-arms the rising edge. Planned contacts skip
+      // the draw and hop out on the legacy line.
+      let contact = null, chx = 0, chz = 0;
+      if (mobFloatDrive(mob, floating) && headon) {
+        chx = Math.sin(mob.yaw); chz = Math.cos(mob.yaw);
+        const blocked = !makeStepOk(mob, true, true, mob.nose.along, mob.yaw)(
+          mob.pos.x + chx * (mob.hw + 0.15), mob.pos.z + chz * (mob.hw + 0.15));
+        if (blocked && planned) {
+          if (installShoreHop(mob, chx, chz)) {
+            mob.lane = null;
+            mob.stuckT = 0;
+            return true;
+          }
+        } else if (blocked) {
+          const shore = shoreExitTarget(mob, chx, chz);
+          contact = { kind: shore ? "shore-low" : "shore-high", frontal: true, floating };
+        }
+      }
+      if (contact == null) {
+        // Broken contact re-arms the rising edge (both dry and afloat:
+        // the 0.47 m nose probe reads open here).
+        transitionTick(mob, null);
+      } else {
+        const res = transitionTick(mob, contact, mob.trng ?? rand);
+        const intent = res?.intent ?? mob._transDecision ?? null;
+        if (intent === "exit") {
+          if (installShoreHop(mob, chx, chz)) {
+            mob.lane = null;
+            mob.stuckT = 0;
+            return true;
+          }
+        } else if (intent === "ride") {
+          armTransitionVeto(mob, intent);
+          const th = mob.target ? Math.atan2(mob.target.x - mob.pos.x, mob.target.z - mob.pos.z) : null;
+          const axis = latchTouchWall(mob, dt, sense.axisProbe, th, rand, { skipDraw: true });
+          if (axis != null) {
+            // Latched: clear the contact so the post-ride contact redraws
+            // fresh (cooldown-gated) instead of replaying this ride.
+            mob._transPrev = null;
+            mob._transDecision = null;
+            mob.lane = { axis, entry: oppositeYaw(axis), lockX: -1, lockZ: -1 };
+            mob.stuckT = 0;
+            return "touch";
+          }
+          return undefined;
+        } else if (intent === "ignore") {
+          armTransitionVeto(mob, intent);
+          mob.followCool = FOLLOW_COOL;
+          return undefined;
+        }
+        if (installShoreHop(mob, chx, chz)) {
+          mob.lane = null;
+          mob.stuckT = 0;
+          return true;
+        }
+      }
       const th = mob.target ? Math.atan2(mob.target.x - mob.pos.x, mob.target.z - mob.pos.z) : null;
       const axis = latchTouchWall(mob, dt, sense.axisProbe, th, rand);
       if (axis != null) {
@@ -1742,6 +1859,11 @@ function tryPreLane(mob, dt, supported, floating, sense, rand = Math.random) {
         return "touch";
       }
     } else {
+      // Flank graze keeps the legacy 50/50 latch (no lottery draw) — and
+      // re-arms the lottery edge only when no decision is held (a stored
+      // exit/ride/ignore belongs to the nose probe below, which replays
+      // or clears it on its own range).
+      if (!mob._transDecision) transitionTick(mob, null);
       const axis = latchFlankTouch(mob, dt, sense.axisProbe, rand);
       if (axis != null) {
         mob.lane = { axis, entry: oppositeYaw(axis), lockX: -1, lockZ: -1 };
@@ -1763,7 +1885,7 @@ function tryPreLane(mob, dt, supported, floating, sense, rand = Math.random) {
 // blue) continues uninterrupted. Returns null for true dead ends and
 // pocket backs (faces without a walkable arm), which keep the dead-end
 // seek.
-function innerTurn(mob, prevAxis) {
+function innerTurn(mob, prevAxis, supported, floating) {
   const rel = mob.followLine.rel ?? 1;
   const order = [normYaw(prevAxis + rel * Math.PI / 2), normYaw(prevAxis - rel * Math.PI / 2)];
   for (const Q of order) {
@@ -1779,7 +1901,7 @@ function innerTurn(mob, prevAxis) {
     // blocked by a stranger wall keeps the seek (U-turn) instead.
     if (!connectedTake(mob, prevAxis, m.cell)) continue;
     const nx = mob.pos.x + qx * 1.0, nz = mob.pos.z + qz * 1.0;
-    if (!makeStepOk(mob, true, false, 0, Q, 0)(nx, nz) || !descendOk(mob, nx, nz)) continue;
+    if (!makeStepOk(mob, supported, floating, 0, Q, 0)(nx, nz) || !descendOk(mob, nx, nz)) continue;
     // Hole-ward lines round gently like exit rides (see followExit below).
     // Parallel rides keep their offset across the rounding, never sliding.
     const gentle = mob.followLine.gentle === true || mob.followLine.guideKey != null;
@@ -1827,10 +1949,10 @@ function adoptCornerTurn(mob, corner, cx, cz, res) {
 // below): the body fits a step ahead with no pit drop — the wall
 // measurement alone can keep a straight the nose is already grinding into,
 // wedging the ride instead of turning.
-function takeWalkable(mob, E) {
+function takeWalkable(mob, E, supported, floating) {
   const [ex, ez] = dirVec(E);
   const nx = mob.pos.x + ex * PROBE_DIST, nz = mob.pos.z + ez * PROBE_DIST;
-  return makeStepOk(mob, true, false, 0, E, 0)(nx, nz) && descendOk(mob, nx, nz);
+  return makeStepOk(mob, supported, floating, 0, E, 0)(nx, nz) && descendOk(mob, nx, nz);
 }
 
 // The followed wall ends within lookahead: the straight reads nothing from
@@ -1870,7 +1992,7 @@ function wallEndsAhead(mob, axis) {
 // further out is another wall), perpendiculars must start at the old
 // wall's tip (see connectedTake). A true wall end returns null
 // (release, corner rounding, or cruise out).
-function followExit(mob, prevAxis) {
+function followExit(mob, prevAxis, supported, floating) {
   const rel = mob.followLine.rel ?? 1;
   const entry = oppositeYaw(prevAxis);
   const options = [prevAxis,
@@ -1911,7 +2033,7 @@ function followExit(mob, prevAxis) {
     // connectedTake below still verify the plane and the tip, so true ends
     // and rooms keep releasing.
     const win = measure(E, null) ?? measure(E, ahead(E)) ?? measure(E, ahead2(E));
-    if (!win || !takeWalkable(mob, E)) continue;
+    if (!win || !takeWalkable(mob, E, supported, floating)) continue;
     // Cooled mouth: never TURN back into it (the entry-draw gate alone would
     // let a servo turn stroll straight back in). Straight continuations stay
     // exempt: the arrival's own exit threads through on the same line, and a
@@ -2798,10 +2920,25 @@ export function tickFarmMob(mob, dt, pickTarget, rand = mob.rand ?? Math.random,
     return;
   }
   // Support state first: entry attraction only walks on dry ground.
+  // Floating locomotion is gated by the float capability; vertical
+  // buoyancy itself stays universal for any submerged body.
   const surface = liquidSurface(mob.pos.x, mob.pos.y, mob.pos.z, mob.hw, mob.h);
   const floating = surface != null;
+  const floatDrive = floating && mobCanFloat(mob);
   const supported = floating || hasSupport(mob.pos.x, mob.pos.y, mob.pos.z, mob.hw);
-  if (supported) mob.fallFrom = mob.pos.y;
+  mob.hopCd = Math.max(0, (mob.hopCd ?? 0) - dt);
+  if (supported && !floating) mob.fallFrom = mob.pos.y;
+  // An active shore hop owns the whole slice: steering, buoyancy, and
+  // navigation all yield until touchdown.
+  if (mob.hop) {
+    stepShoreHop(mob, dt);
+    mob.lastX = mob.pos.x;
+    mob.lastZ = mob.pos.z;
+    mob.legPhase += dt * mob.speed * 4;
+    if (mob.root) mob.root.rotation.y = mob.yaw;
+    if (_top) mob._plan = null;
+    return;
+  }
   // Navigation (a latched target): the planner owns the goal, so the
   // tick below runs with the entry draw, the passage state, and the
   // random re-picks paused — the planned commit drives the mob instead.
@@ -2850,11 +2987,16 @@ export function tickFarmMob(mob, dt, pickTarget, rand = mob.rand ?? Math.random,
       if (!mob._lineOff) mob._passSide = 0;
     }
   }
+  // Contact-lottery timers (transitions.js): one draw per contact, refusals
+  // hold the next draw off. The veto timers make ignore/ride decisions
+  // survive until the stuck detector re-picks the mob away.
+  tickTransitionTimers(mob, dt);
   const entryHold = supported && !floating ? entryTick(mob, dt, rand, { supported, floating, pickTarget }) : false;
   // 2-wide crossing state: maintained while the mouth holds, draws the exit
   // at the first hold tick and closes with cooldown at the leave
   // (passageTick owns it; lane owners and entry commits are exempt).
-  if (supported && !floating) passageTick(mob, dt, supported, floating, rand, pickTarget);
+  // A live water-door passage also ticks while floating.
+  if ((supported && !floating) || mob.passage) passageTick(mob, dt, supported, floating, rand, pickTarget);
   const peersEff = peers;
   if (!entryHold && !navHold) {
     mob.wanderT -= dt;
@@ -3151,7 +3293,7 @@ export function tickFarmMob(mob, dt, pickTarget, rand = mob.rand ?? Math.random,
   // wins, so the nav commit is re-published before the step below.
   if (navHold) navCommit(mob);
   let roamed = false;
-  if (!servoed && supported && !floating) {
+  if (!servoed && supported && (!floating || floatDrive)) {
     // Latched while navigating: the plan owns the commit, so the decide
     // branch stays off and the peer dodge never re-aims the mob away
     // from its path.
@@ -3163,7 +3305,7 @@ export function tickFarmMob(mob, dt, pickTarget, rand = mob.rand ?? Math.random,
   // the mutual turn-away instead of churning release/re-pick forever.
   // Stationary mobs, holders, smooth crossings, and entry commits never
   // maneuver — their peers' episodes yield instead.
-  if (!mob.lane && peersEff && supported && !floating && (mob.speed ?? 0) > 0 &&
+  if (!mob.lane && peersEff && supported && (!floating || floatDrive) && (mob.speed ?? 0) > 0 &&
     mobRank(mob) < 3 && mob.roam?.smooth !== true && mob.roam?.entry !== true && !isStepCommit(mob) &&
     !(mob._turnAway > 0)) {
     grindWatchTick(mob, dt, supported, floating, peersEff, grid);
@@ -3172,7 +3314,7 @@ export function tickFarmMob(mob, dt, pickTarget, rand = mob.rand ?? Math.random,
   // drive — and it aims at mob.target, which a step commit keeps on the
   // landing cell (down the drop, never away from it). Grounded, roamStep
   // drives (roamed) so this never runs.
-  if (mob.target && !servoed && !roamed) {
+  if (mob.target && !servoed && !roamed && (!floating || floatDrive)) {
     // Legal-step gate (non-jumping walkers): never up, down at most
     // maxDrop. A deeper drop is a vertical air wall — rejected exactly
     // like solid, so the stuck detector re-picks instead of cliff walking.
@@ -3220,6 +3362,40 @@ export function tickFarmMob(mob, dt, pickTarget, rand = mob.rand ?? Math.random,
       plan ? plan.heading : cruise ?? Math.atan2(mob.target.x - mob.pos.x, mob.target.z - mob.pos.z);
     driveToward(mob, dt, slideDeflect(mob, dt, goal, supported, floating),
       makeWander, moveClamped, { gated: false, turnOk: turnGiveGate });
+  }
+  // Floating shore exit: a float-capable mob facing straight into a legal
+  // low shore hops out instead of grinding the rim. The forward step must
+  // already refuse; the hop validator owns the exact height rule. The exit
+  // shares the contact lottery (a held ride/ignore vetoes the hop until
+  // the veto runs out); a same-tick lane-flow draw replays instead of
+  // re-rolling, so this path draws only when the lane flow never saw it.
+  // Planned contacts skip the draw and hop on the legacy line.
+  if (floatDrive && !mob.hop && (mob.hopCd ?? 0) <= 0 && !exitVetoed(mob)
+    && Math.abs(normYaw(mob.yawTarget - mob.yaw)) <= HEADON_TOL) {
+    const hx = Math.sin(mob.yaw), hz = Math.cos(mob.yaw);
+    const blocked = !makeStepOk(mob, true, true, mob.nose.along, mob.yaw)(
+      mob.pos.x + hx * (mob.hw + 0.15), mob.pos.z + hz * (mob.hw + 0.15));
+    if (!blocked) {
+      // Open nose: no contact on this range — re-arm the edge (the lane
+      // flow above may still hold a 1 m contact; its own replay owns it).
+      if (!mob.lane) transitionTick(mob, null);
+    } else if (mob.nav != null || mob._detour === true || (mob._turnAway ?? 0) > 0) {
+      if (installShoreHop(mob, hx, hz)) {
+        mob._transPrev = null;
+        mob._transDecision = null;
+      }
+    } else {
+      const shore = shoreExitTarget(mob, hx, hz);
+      const res = transitionTick(
+        mob, { kind: shore ? "shore-low" : "shore-high", frontal: true, floating }, mob.trng ?? rand);
+      const intent = res?.intent ?? mob._transDecision ?? null;
+      if (intent === "ride" || intent === "ignore") {
+        armTransitionVeto(mob, intent);
+      } else if (installShoreHop(mob, hx, hz)) {
+        mob._transPrev = null;
+        mob._transDecision = null;
+      }
+    }
   }
   // One-tick plan: consumed above (roam or wander) or ignored (servo) —
   // never carried over, the planner re-runs (and re-latches holds) every
@@ -3272,6 +3448,14 @@ export function sepSpotFree(mob, x, z) {
   if (wallLim != null) {
     const lim = wallLim - mob.hw;
     if (x < -lim || x > lim || z < -lim || z > lim) return false;
+  }
+  if (mobFloatDrive(mob)) {
+    const fl = floatLevelAt(mob, x, z, mob.pos.y);
+    if (!fl) return false;
+    if (aabbIntersectsSolid(x, fl.y, z, mob.hw, mob.h)) return false;
+    const gx = x + Math.sin(mob.yaw) * mob.nose.along, gz = z + Math.cos(mob.yaw) * mob.nose.along;
+    if (aabbIntersectsSolid(gx, fl.y, gz, mob.nose.r, mob.h)) return false;
+    return centerHeadroom(x, fl.y, z, mob.h);
   }
   if (aabbIntersectsSolid(x, mob.pos.y, z, mob.hw, mob.h)) return false;
   const gx = x + Math.sin(mob.yaw) * mob.nose.along, gz = z + Math.cos(mob.yaw) * mob.nose.along;

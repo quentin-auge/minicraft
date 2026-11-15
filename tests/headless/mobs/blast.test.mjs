@@ -49,6 +49,7 @@ function makeCow(x, z, yaw = 0) {
     type: 'cow', dim: 'over', pos: { x, y: FLOOR, z }, vel: { y: 0 },
     hw: shape.hw, h: shape.h, nose: shape.nose, tail: shape.tail,
     maxDrop: spec.drop ?? 1, alive: true, root: null,
+    floatCapable: true,
     yaw, yawTarget: yaw, target: { x, z }, wanderT: 1e9,
     legPhase: 0, speed: FARM_WALK, rand: () => 0.37,
     stuckT: 0, lastX: x, lastZ: z, fallFrom: FLOOR, lane: null, servoStall: 0,

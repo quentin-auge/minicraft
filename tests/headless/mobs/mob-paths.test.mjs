@@ -5,7 +5,7 @@
 import assert from "node:assert/strict";
 import { AIR, STONE, LOG, WATER } from "../../../src/core/blocks.js";
 import { setDimension, resetWorld, setBlock, getBlock } from "../../../src/core/store.js";
-import { LIVESTOCK_SPECS, specCircles } from "../../../src/mobs/livestock.js";
+import { LIVESTOCK_SPECS, specCircles, floatTargetY } from "../../../src/mobs/livestock.js";
 import { FARM_WALK, tickFarmMob, aabbIntersectsSolid, segmentWalkable, freshFromMouth } from "../../../src/mobs/mover.js";
 import { strideTarget, liquidSurface, makeCellFree, makeCellSolid } from "../../../src/mobs/step.js";
 import { entryTick, pickEntryTarget, clearEntryClaims } from "../../../src/mobs/entry.js";
@@ -111,6 +111,7 @@ function makeTestMob(kind, x, y, z, yaw) {
     type: kind, dim: "over", pos: { x, y, z }, vel: { y: 0 },
     hw: shape.hw, h: shape.h, nose: shape.nose, tail: shape.tail,
     maxDrop: spec.drop ?? 1, alive: true, root: null,
+    floatCapable: true,
     yaw, yawTarget: yaw, target: null, wanderT: NO_EXPIRY,
     legPhase: 0, speed: FARM_WALK,
     stuckT: 0, lastX: x, lastZ: z, fallFrom: y, lane: null, servoStall: 0,
@@ -1739,17 +1740,24 @@ console.log("PASS village-door");
 // mouth holds or cooldowns). ---
 {
   // Floating is legal (pool, trough): no wall penetration, no sinking, and
-  // any above-ground tick floats on liquid or lands from it.
+  // any above-ground tick floats on liquid, lands from it, or rides a
+  // validated hop arc (water entry/exit jumps are ballistic flight, still
+  // body-clean every tick).
   const assertSoakClean = (trace, label, feet) => {
     let prevY = null;
     for (let i = 0; i < trace.length; i++) {
       const p = trace[i];
       assert.ok(!aabbIntersectsSolid(p.x, p.y, p.z, 0.32, 1.3), `${label}: body in wall @tick${i} (${p.x.toFixed(2)},${p.z.toFixed(2)})`);
-      assert.ok(p.y >= feet - 0.05, `${label}: sunk @tick${i} (y=${p.y.toFixed(3)})`);
+      // Support level follows the water when floating: the floor is the
+      // shared 1/3-submerged float level, not the dry feet. Hop ticks fly
+      // a validated arc and are exempt (still body-clean above).
+      const surface = liquidSurface(p.x, p.y, p.z, 0.32, 1.3);
+      const floor = surface != null ? floatTargetY(surface, 1.3) : feet;
+      assert.ok(p.hop || p.y >= floor - 0.05, `${label}: sunk @tick${i} (y=${p.y.toFixed(3)})`);
       if (Math.abs(p.y - feet) >= 0.05) {
         const floating = liquidSurface(p.x, p.y, p.z, 0.32, 1.3) != null;
         const landing = prevY != null && p.y < prevY + 1e-6 && p.y <= feet + 0.75;
-        assert.ok(floating || landing, `${label}: airborne off water @tick${i} (y=${p.y.toFixed(3)})`);
+        assert.ok(floating || landing || p.hop, `${label}: airborne off water @tick${i} (y=${p.y.toFixed(3)})`);
       }
       prevY = p.y;
     }
@@ -1793,7 +1801,7 @@ console.log("PASS village-door");
       try {
         for (let t = 0; t < 2000; t++) {
           tickFarmMob(mob, DT, (m, rand) => strideTarget(m, null, rand) ?? m.target);
-          trace.push({ x: mob.pos.x, y: mob.pos.y, z: mob.pos.z });
+          trace.push({ x: mob.pos.x, y: mob.pos.y, z: mob.pos.z, hop: mob.hop != null });
           path += Math.hypot(mob.pos.x - px, mob.pos.z - pz);
           px = mob.pos.x; pz = mob.pos.z;
           maxD = Math.max(maxD, Math.hypot(mob.pos.x - sx, mob.pos.z - sz));

@@ -329,6 +329,118 @@ export function findEntries(px, pz, cellFree, cellSolid) {
   return out;
 }
 
+// Water-mouth proximity entries: same boundary-detector geometry as
+// findEntries, but the mouth row plus the two depth rows must read water
+// (isWaterCell) while the flanks stay solid-only and the approach row stays
+// dry with an open side — dry-approach only by construction (a floating
+// mob never draws these; the mover only scans them on dry land). Returns
+// the same entry shapes plus water: true, so entry.js reuses the violet
+// commit lifecycle and the 2-wide crossing machinery unchanged.
+export function findWaterEntries(px, pz, cellFree, cellSolid, isWaterCell) {
+  const out = [];
+  const seen = new Set();
+  const cf = makeCache(cellFree, Math.floor(px), Math.floor(pz));
+  const cs = cellSolid ?? ((bx, bz) => !cf(bx, bz));
+  const cw = (bx, bz) => (isWaterCell ? isWaterCell(bx, bz) : false);
+  const cx = Math.floor(px), cz = Math.floor(pz);
+  const R = Math.ceil(ENTRY_R_2W) + 1;
+  const R2 = (ENTRY_R_2W + 0.5 + 1e-9) * (ENTRY_R_2W + 0.5 + 1e-9);
+  const pairSign = (bx, bz, qx, qz, lx, lz) => (qx === bx + lx && qz === bz + lz) ? 1 : -1;
+  const spanCells = (bx, bz, w, qx, qz) => (w === 1 ? [[bx, bz]] : [[bx, bz], [qx, qz]]);
+  const outerCells = (bx, bz, lx, lz, w, qx, qz) => {
+    if (w === 1) return [[bx + lx, bz + lz], [bx - lx, bz - lz]];
+    const s = pairSign(bx, bz, qx, qz, lx, lz);
+    return [[bx - lx * s, bz - lz * s], [qx + lx * s, qz + lz * s]];
+  };
+  // Solid-only flank support (tunnel banks, never water or drops).
+  const flanksSolid = (bx, bz, fx, fz, lx, lz, w, qx, qz) => {
+    for (const [ox, oz] of outerCells(bx, bz, lx, lz, w, qx, qz)) {
+      if (!cs(ox, oz)) return false;
+      let file = 0;
+      for (let k = 0; k <= 2; k++) {
+        if (cs(ox + fx * k, oz + fz * k)) file++;
+      }
+      let row = 1;
+      for (const s of [1, -1]) {
+        for (let k = 1; row < MIN_FLANK && cs(ox + lx * k * s, oz + lz * k * s); k++) row++;
+      }
+      if (file < MIN_FLANK && row < MIN_FLANK) return false;
+    }
+    return true;
+  };
+  const approachOpen = (bx, bz, fx, fz, lx, lz, w, qx, qz) => {
+    for (const [ax, az] of spanCells(bx, bz, w, qx, qz)) {
+      if (!cf(ax - fx, az - fz)) return false;
+    }
+    return outerCells(bx, bz, lx, lz, w, qx, qz)
+      .some(([ox, oz]) => cf(ox - fx, oz - fz));
+  };
+  const mouthMatch = (bx, bz, fx, fz, lx, lz, w, qx, qz) => {
+    for (const [mx, mz] of spanCells(bx, bz, w, qx, qz)) {
+      if (!cw(mx, mz)) return false;
+      for (let k = 1; k <= 2; k++) {
+        if (!cw(mx + fx * k, mz + fz * k)) return false;
+      }
+    }
+    if (!flanksSolid(bx, bz, fx, fz, lx, lz, w, qx, qz)) return false;
+    return approachOpen(bx, bz, fx, fz, lx, lz, w, qx, qz);
+  };
+  // 2-wide water passage: pair rows read water, flanks hardened solid.
+  const mouthMatch2 = (bx, bz, fx, fz, lx, lz, qx, qz) => {
+    for (const [mx, mz] of [[bx, bz], [qx, qz]]) {
+      if (!cw(mx, mz)) return false;
+      for (let k = 1; k <= 2; k++) {
+        if (!cw(mx + fx * k, mz + fz * k)) return false;
+      }
+    }
+    const s = pairSign(bx, bz, qx, qz, lx, lz);
+    const o1x = bx - lx * s, o1z = bz - lz * s;
+    const o2x = qx + lx * s, o2z = qz + lz * s;
+    if (!pairFlanksHardened(o1x, o1z, o2x, o2z, fx, fz, lx, lz, cs)) return false;
+    return approachOpen(bx, bz, fx, fz, lx, lz, 2, qx, qz);
+  };
+  for (let bx = cx - R; bx <= cx + R; bx++) {
+    for (let bz = cz - R; bz <= cz + R; bz++) {
+      const mx = bx + 0.5 - px, mz = bz + 0.5 - pz;
+      if (mx * mx + mz * mz > R2) continue;
+      for (const axis of CARDINALS) {
+        const [fx, fz] = dirVec(axis);
+        const lx = -fz, lz = fx;
+        {
+          const key = `w1:${bx},${bz},${axis}`;
+          if (!seen.has(key) && mouthMatch(bx, bz, fx, fz, lx, lz, 1)) {
+            const x = bx + 0.5, z = bz + 0.5;
+            const dist = entryDist(px, pz, x, z);
+            if (dist <= ENTRY_R_1W + 1e-9) {
+              seen.add(key);
+              out.push({ kind: "one", bx, bz, x, z, axis, dist, water: true });
+            }
+          }
+        }
+        for (const s of [1, -1]) {
+          const qx = bx + lx * s, qz = bz + lz * s;
+          const lox = Math.min(bx, qx), loz = Math.min(bz, qz);
+          const hix = Math.max(bx, qx), hiz = Math.max(bz, qz);
+          const lineAxis = fx === 0 ? "ns" : "ew";
+          const key = `w2:${lox},${loz}|${hix},${hiz}|${lineAxis}`;
+          if (seen.has(key)) continue;
+          if (!mouthMatch2(bx, bz, fx, fz, lx, lz, qx, qz)) continue;
+          const x = (bx + 0.5 + qx + 0.5) / 2, z = (bz + 0.5 + qz + 0.5) / 2;
+          const dist = entryDist(px, pz, x, z);
+          if (dist > ENTRY_R_2W + 1e-9) continue;
+          seen.add(key);
+          out.push({
+            kind: "two", bx, bz, qx, qz, x, z, axis, dist, water: true,
+            ax: bx + 0.5, az: bz + 0.5, bx2: qx + 0.5, bz2: qz + 0.5,
+          });
+        }
+      }
+    }
+  }
+  out.sort((a, b) => a.dist - b.dist);
+  return out;
+}
+
 // Turn-tunnel gate: a non-touch lane may only turn onto an exit whose first
 // step stays tunneled — neither side of the C→A segment fully open (on each
 // side at least one of the two segment-flanking cells, current or ahead, is

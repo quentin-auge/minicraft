@@ -20,7 +20,7 @@ import {
 import {
   makeStepOk, makeCellFree, makeCellSolid, turnTo, moveClamped, moveVector, driveToward, strideTarget,
   dropLane, TURN_RATE, VIRTUAL_W, NO_EXPIRY, SPIN, descendOk, slideDeflect,
-  segmentWalkable, aabbIntersectsSolid,
+  segmentWalkable, aabbIntersectsSolid, mobFloatDrive,
 } from "./step.js";
 import { activeNarrowPeer } from "./narrow.js";
 import { WALL_ALLOW } from "./collide.js";
@@ -111,7 +111,7 @@ export function measureWallTake(mob, axis, sideDir, origin = null, range = FOLLO
   const latIsX = ax === 0;
   const ox = origin ? origin.x : mob.pos.x, oz = origin ? origin.z : mob.pos.z;
   const cx = Math.floor(ox), cz = Math.floor(oz);
-  const cellFree = makeCellFree(mob);
+  const cellFree = makeCellFree(mob, mobFloatDrive(mob));
   for (let k = 1; k < 4; k++) {
     const bx = cx + sx * k, bz = cz + sz * k;
     if (!cellFree(bx, bz)) {
@@ -148,7 +148,7 @@ function latchVirtual(mob, axis, sideDir, range = FOLLOW_RANGE + 0.05) {
   const m = measureWallTake(mob, axis, sideDir, null, range);
   if (!m) return false;
   const [lax, laz] = dirVec(axis);
-  const cellFree = makeCellFree(mob);
+  const cellFree = makeCellFree(mob, mobFloatDrive(mob));
   const lcx = Math.floor(mob.pos.x), lcz = Math.floor(mob.pos.z);
   if (!cellFree(lcx - laz, lcz + lax) && !cellFree(lcx + laz, lcz - lax)) return false;
   const rel = yawDiff(sideDir, normYaw(axis - Math.PI / 2)) < 1e-9 ? 1 : -1;
@@ -697,7 +697,7 @@ function wallTip(mob, travelAxis) {
   // the face is gone — without this the tip sails past the mouth and
   // connected takes diverge between open and walled geometries.
   const mobLat = s > 0 ? F - 1 : F;
-  const cellFree = makeCellFree(mob);
+  const cellFree = makeCellFree(mob, mobFloatDrive(mob));
   const mcx = Math.floor(mob.pos.x), mcz = Math.floor(mob.pos.z);
   const solidAt = (k) => {
     const bx = travelIsX ? mcx + ux * k : rowLat;
@@ -773,7 +773,7 @@ export function upkeepFollowLine(mob, dt) {
   // wall-follower passing through a pen hole runs red, never blue.
   if ((vw.fresh ?? 0) > 0) vw.fresh--;
   if (vw.touch === true) vw.t = (vw.t ?? 0) + dt;
-  const [bax, baz] = dirVec(mob.lane.axis); const cellFree = makeCellFree(mob);
+  const [bax, baz] = dirVec(mob.lane.axis); const cellFree = makeCellFree(mob, mobFloatDrive(mob));
   const bcx = Math.floor(mob.pos.x), bcz = Math.floor(mob.pos.z);
   if (!cellFree(bcx - baz, bcz + bax) && !cellFree(bcx + baz, bcz - bax)) {
     mob.followLine = null;

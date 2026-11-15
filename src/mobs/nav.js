@@ -16,13 +16,14 @@
 import { getBlock } from "../core/store.js";
 import { isLiquid } from "../core/blocks.js";
 import {
-  groundBelow, centerHeadroom, aabbIntersectsSolid, hasSupport, NO_EXPIRY,
+  groundBelow, centerHeadroom, aabbIntersectsSolid, hasSupport, floatLevelAt,
+  SHORE_EXIT_EPS, liquidSurface, NO_EXPIRY,
   diagonalSweepFree, treadWide,
 } from "./step.js";
 import { dropAllowed } from "./livestock.js";
 import { dirVec, normYaw } from "./corridor.js";
 import { cornerCrossing, stairDiagonal, VIA_LEAVE_DROP } from "./stairs.js";
-import { mobType } from "./registry.js";
+import { mobType, mobCanFloat } from "./registry.js";
 import { contactGoalTiers, targetCells, targetKind } from "./targets.js";
 
 // Traversal strategy registry (stable keys).
@@ -56,6 +57,77 @@ const DIRS8 = [
 // drops, so it costs more than the straight diagonal and the planner
 // prefers the cardinal way whenever one exists.
 const STAIR_DETOUR_COST = 0.6;
+
+// One floating step from a plan node: water, dry, or a legal shore exit.
+// Water nodes carry their surface so the search keeps levels continuous;
+// dry nodes behave exactly like ground-walk nodes.
+function floatStep(ctx, from, x, z) {
+  const mob = ctx.mob;
+  const cx = x + 0.5, cz = z + 0.5;
+  const fl = floatLevelAt(mob, cx, cz, from.y);
+  if (fl) {
+    if (from.wet && Math.abs(fl.surface - (from.surface ?? fl.surface)) > 1e-3) return null;
+    // Water neighbours only need a continuous level surface with headroom:
+    // the hull may graze a bank while crossing (the drive's contact slide
+    // resolves it), so no body-fit veto here.
+    if (!centerHeadroom(cx, fl.y, cz, mob.h)) return null;
+    return { y: fl.y, wet: true, surface: fl.surface };
+  }
+  if (from.wet) {
+    const g = groundBelow(cx, from.y + 1, cz);
+    if (g == null || from.surface == null || g > from.surface + SHORE_EXIT_EPS) return null;
+    if (g < from.y - (mob.maxDrop ?? 1) - 1e-3) return null;
+    if (aabbIntersectsSolid(cx, g, cz, mob.hw, mob.h)) return null;
+    if (!ctx.walkable(x, g, z)) return null;
+    return { y: g, wet: false, surface: null };
+  }
+  const g = ctx.groundLevel(x, z, from.y);
+  if (g == null) return null;
+  if (!ctx.walkable(x, g, z)) return null;
+  return { y: g, wet: false, surface: null };
+}
+
+// Floating traversal for walk+float mobs: the dry branch is ground-walk
+// unchanged, while reachable water plans at the shared float level and
+// only surface-level shores are plannable exits.
+function floatWalkNeighbors(ctx, node) {
+  const out = [];
+  for (const [dx, dz] of DIRS8) {
+    const to = floatStep(ctx, node, node.x + dx, node.z + dz);
+    if (!to) continue;
+    if (dx && dz) {
+      if (!floatStep(ctx, node, node.x + dx, node.z)) continue;
+      if (!floatStep(ctx, node, node.x, node.z + dz)) continue;
+    }
+    out.push({ x: node.x + dx, y: to.y, z: node.z + dz, wet: to.wet, surface: to.surface, cost: dx && dz ? Math.SQRT2 : 1 });
+  }
+  return out;
+}
+
+// Floating start cell: a submerged float-capable mob plans from its
+// expected float level instead of requiring dry support below it.
+function floatStartCell(mob) {
+  const wet = liquidSurface(mob.pos.x, mob.pos.y, mob.pos.z, mob.hw, mob.h) != null;
+  if (wet && mobCanFloat(mob)) {
+    const fl = floatLevelAt(mob, mob.pos.x, mob.pos.z, mob.pos.y);
+    if (fl) {
+      return { x: Math.floor(mob.pos.x), y: fl.y, z: Math.floor(mob.pos.z), wet: true, surface: fl.surface };
+    }
+  }
+  const g = startCell(mob);
+  if (!g) return null;
+  return { ...g, wet: false, surface: null };
+}
+
+registerTraversalStrategy({
+  key: "float-walk",
+  capabilities: ["walk", "float"],
+  // Flat for execution and the green overlay: the surface path is drawn
+  // as floor squares at the planned float levels.
+  moves3D: false,
+  startCell: floatStartCell,
+  neighbors: floatWalkNeighbors,
+});
 
 // Ground walk: flat and step-down ground only (never up — walkers have
 // no jump capability yet), dry feet, body and headroom clear. Diagonal
@@ -334,7 +406,7 @@ function planToGoals(mob, opts, goalCells, tier) {
   const capabilities = resolveCapabilities(mob, opts);
   const strategy = pickStrategy(capabilities);
   if (!strategy) return null;
-  const start = startCell(mob);
+  const start = strategy.startCell ? strategy.startCell(mob) : startCell(mob);
   if (!start) return null;
   goalCells = capGoals(goalCells, start);
   const goals = new Set(goalCells.map(cellKey));
@@ -402,6 +474,10 @@ export function assignNav(mob, target, opts = {}) {
     return null;
   }
   const route = routeOf(plan.cells);
+  // A latched plan outranks the contact lottery: clear any held dive/exit
+  // veto so the planned water route stays walkable.
+  mob._transNoDiveT = 0;
+  mob._transNoExitT = 0;
   mob.nav = {
     target,
     path: plan.cells,

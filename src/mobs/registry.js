@@ -76,6 +76,17 @@ export function mobLabel(key) {
   return key[0].toUpperCase() + key.slice(1);
 }
 
+// Whether this mob can steer on liquid surfaces. Explicit per-mob
+// overrides win (headless rigs set floatCapable directly); otherwise the
+// registered `float` capability decides. Vertical buoyancy can remain
+// universal while only float-capable movers steer and exit.
+export function mobCanFloat(mob) {
+  if (!mob) return false;
+  if (mob.floatCapable != null) return mob.floatCapable === true;
+  const caps = mob.capabilities ?? mobType(mob.type)?.capabilities;
+  return caps?.float === true;
+}
+
 export function createMob(key, context) {
   const spec = mobType(key);
   if (!spec?.create) return null;

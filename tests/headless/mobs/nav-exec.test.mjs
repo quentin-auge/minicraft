@@ -39,6 +39,7 @@ function makeMob(x, y, z, yaw = 0, type = "pig") {
     type, dim: "over", pos: { x, y, z }, vel: { y: 0 },
     hw: shape.hw, h: shape.h, nose: shape.nose, tail: shape.tail,
     maxDrop: spec.drop ?? 1, alive: true, root: null,
+    floatCapable: true,
     yaw, yawTarget: yaw, target: null, wanderT: NO_EXPIRY,
     legPhase: 0, speed: FARM_WALK,
     stuckT: 0, lastX: x, lastZ: z, fallFrom: y, lane: null, servoStall: 0,
