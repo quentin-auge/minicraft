@@ -6,6 +6,7 @@
 // on a running build (double-regen protection); everything else stays
 // clickable, with no spinner.
 import { registerMenu, resumePointer } from "./menus.js";
+import { isResumeCode, isEscapeCode } from "../player/keys.js";
 export let started = false;
 export let locked = false;
 
@@ -88,8 +89,8 @@ registerMenu({
   layer: "overlay",
   isOpen: () => started && !locked,
   onKeydown(e, ctx) {
-    if (e.code === "Enter" || e.code === "NumpadEnter" || e.code === "Escape") {
-      if (!e.repeat) resumePointer(ctx, { hint: false, defer: e.code === "Escape" });
+    if (isResumeCode(e.code)) {
+      if (!e.repeat) resumePointer(ctx, { hint: false, defer: isEscapeCode(e.code) });
       e.preventDefault();
       return true;
     }

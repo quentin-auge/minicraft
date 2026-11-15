@@ -7,6 +7,7 @@
 // the next ticked kind on keyup.
 import { moveCursor, toggleAtCursor } from "../mobs/spawn.js";
 import { registerMenu, openModal, closeModal } from "./menus.js";
+import { isMenuUpCode, isMenuDownCode, isJumpCode, isSpawnPickerCode } from "../player/keys.js";
 
 export let mobMenuOpen = false;
 
@@ -82,9 +83,9 @@ registerMenu({
   // and Escape included, with no effect) so game input freezes with the sim.
   onKeydown(e) {
     if (!mobMenuOpen) return false;
-    if (e.code === "ArrowUp") { mobMenuMove(-1); e.preventDefault(); return true; }
-    if (e.code === "ArrowDown") { mobMenuMove(1); e.preventDefault(); return true; }
-    if (e.code === "Space") {
+    if (isMenuUpCode(e.code)) { mobMenuMove(-1); e.preventDefault(); return true; }
+    if (isMenuDownCode(e.code)) { mobMenuMove(1); e.preventDefault(); return true; }
+    if (isJumpCode(e.code)) {
       if (!e.repeat) mobMenuToggle();
       e.preventDefault();
       return true;
@@ -93,7 +94,7 @@ registerMenu({
     return true;
   },
   onKeyup(e) {
-    if (e.code === "KeyB" && mobMenuOpen) {
+    if (isSpawnPickerCode(e.code) && mobMenuOpen) {
       closeMobMenu();
       e.preventDefault();
       return true;

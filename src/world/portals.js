@@ -37,6 +37,7 @@ import {
   pos, yaw, keys,
   PLAYER_HW, PLAYER_H, EYE,
 } from "../player/physics.js";
+import { isUp, isDown, isLeft, isRight } from "../player/keys.js";
 
 export const PORTAL_TYPES = [
   {
@@ -1409,10 +1410,10 @@ function moveDir() {
   const fx = -Math.sin(yaw), fz = -Math.cos(yaw);
   const rx = Math.cos(yaw), rz = -Math.sin(yaw);
   let dx = 0, dz = 0;
-  if (keys["KeyW"] || keys["ArrowUp"]) { dx += fx; dz += fz; }
-  if (keys["KeyS"] || keys["ArrowDown"]) { dx -= fx; dz -= fz; }
-  if (keys["KeyD"] || keys["ArrowRight"]) { dx += rx; dz += rz; }
-  if (keys["KeyA"] || keys["ArrowLeft"]) { dx -= rx; dz -= rz; }
+  if (isUp(keys)) { dx += fx; dz += fz; }
+  if (isDown(keys)) { dx -= fx; dz -= fz; }
+  if (isRight(keys)) { dx += rx; dz += rz; }
+  if (isLeft(keys)) { dx -= rx; dz -= rz; }
   if (dx === 0 && dz === 0) { dx = fx; dz = fz; }
   return { x: dx, z: dz };
 }

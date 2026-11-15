@@ -27,6 +27,7 @@ import { footprintTouches, stopBelow, bodyOverlapCells } from "./rocketbox.js";
 import {
   pos, vel, keys, yaw, pitch, jumpingNow, setOnGround, WALK, PLAYER_HW, PLAYER_H,
 } from "../player/physics.js";
+import { isUp, isDown, isLeft, isRight, isSprint, isConfirm } from "../player/keys.js";
 import { FLY, flyOn } from "../player/fly.js";
 import { clearGlowstoneAt, noteGlowstonePlace, noteGlowstonePlaceShared, glowVariantAt } from "../world/glowstone.js";
 import { MOON_MIN_Y, markMoonDirty } from "../world/moon.js";
@@ -56,7 +57,7 @@ const LANDING_FADE = 0.5;
 // Safety margin: while the landing box is blocked the hull holds this far
 // above the tallest blocking mob top, so bodies walk under it.
 const LANDING_MARGIN = 0.5;
-// Down-held lateral glide: while ArrowDown is held the heading/strafe
+// Down-held lateral glide: while Down is held the heading/strafe
 // vector keeps a walk-pace floor instead of dying with |vy|, so the mouse
 // heading and a deliberate strafe glide the hull in XZ over the herd
 // (see tickFlight). The Y hold below is rate-limited, so crossing mixed
@@ -712,9 +713,7 @@ function holdTakeoff() {
 
 // The launch chord itself, ignoring the fly-mode veto.
 function chordHeld() {
-  const shift = keys["ShiftLeft"] || keys["ShiftRight"] || keys["Shift"];
-  const enter = keys["Enter"] || keys["NumpadEnter"];
-  return !!shift && !!enter;
+  return isSprint(keys) && isConfirm(keys);
 }
 
 function pinPilot() {
@@ -1299,7 +1298,7 @@ function tickFlight(dt) {
   _right.set(Math.cos(yaw), 0, -Math.sin(yaw));
   // Ramped boost factor: acceleration, caps, and thrust glide instead of
   // stepping, so the camera never feels a pop.
-  const boostTarget = (keys["ShiftLeft"] || keys["ShiftRight"] || keys["Shift"]) ? 1 : 0;
+  const boostTarget = isSprint(keys) ? 1 : 0;
   boostF += (boostTarget - boostF) * Math.min(1, BOOST_RAMP * dt);
   if (Math.abs(boostF - boostTarget) < 0.001) boostF = boostTarget;
   const cap = MAX_SPEED + (BOOST_SPEED - MAX_SPEED) * boostF;
@@ -1308,17 +1307,17 @@ function tickFlight(dt) {
     // the look pitch (level gaze = full, straight up/down = zero). The
     // strafe vector adds before normalization; velocity eases toward the
     // target instead of stepping, so LEFT/RIGHT never jolts. While
-    // ArrowDown is held the vector keeps a walk-pace floor even when the
+    // Down is held the vector keeps a walk-pace floor even when the
     // hold zeroes the climb, so the mouse heading and the strafe glide
     // the hull in XZ over the herd — the Y hold below is rate-limited,
     // so gliding across mixed tops reads as a swell, never a flicker.
     // Free descent keeps the same vector, climb-slaved as always.
     _hv.set(0, 0, 0);
     _hv.add(_fwd);
-    if (keys["ArrowRight"]) _hv.add(_right);
-    if (keys["ArrowLeft"]) _hv.sub(_right);
+    if (isRight(keys)) _hv.add(_right);
+    if (isLeft(keys)) _hv.sub(_right);
     const hBase = Math.abs(rvel.y) * Math.max(0, Math.cos(pitch));
-    _hv.normalize().multiplyScalar(keys["ArrowDown"] ? Math.max(hBase, DOWN_SLIDE) : hBase);
+    _hv.normalize().multiplyScalar(isDown(keys) ? Math.max(hBase, DOWN_SLIDE) : hBase);
     const k = Math.min(1, H_SMOOTH * dt);
     rvel.x += (_hv.x - rvel.x) * k;
     rvel.z += (_hv.z - rvel.z) * k;
@@ -1326,8 +1325,8 @@ function tickFlight(dt) {
     const accel = ACCEL * (1 + boostF);
     let upAccel = 0;
     let downAccel = 0;
-    if (keys["ArrowUp"]) { rvel.y += accel * dt; upAccel = accel; }
-    if (keys["ArrowDown"]) { rvel.y -= accel * dt; downAccel = accel; }
+    if (isUp(keys)) { rvel.y += accel * dt; upAccel = accel; }
+    if (isDown(keys)) { rvel.y -= accel * dt; downAccel = accel; }
     // The liftoff is a real push, not a kick: the engines stay lit while
     // the hull accelerates off the pad, and the camera rumbles with the
     // burn — the landing fade in reverse, decaying as the push ends.
@@ -1382,7 +1381,7 @@ function tickFlight(dt) {
     // then Z-only, so steering glides along the herd instead of into it.
     // The systematic carve runs every substep even held, so a refused slide
     // carves through the rock it overlaps instead of merging into it.
-    if (keys["ArrowDown"] && slideVetoAt(origin.x, origin.z)) {
+    if (isDown(keys) && slideVetoAt(origin.x, origin.z)) {
       origin.x -= sx; origin.z -= sz;
       origin.x += sx;
       if (slideVetoAt(origin.x, origin.z)) origin.x -= sx;

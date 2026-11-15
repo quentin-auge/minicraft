@@ -3,6 +3,7 @@
 // Dropped from master: jump streak speed boost, grapple, fly, mob collision.
 import * as THREE from "three";
 import { isLiquid } from "../core/blocks.js";
+import { isUp, isDown, isLeft, isRight, isJump, isSprint } from "./keys.js";
 import { getBlock, isSolid, colLiqTop, colTopIdx, dim } from "../core/store.js";
 import { dimSpec, dimHasMoon } from "../world/dimensions.js";
 import { MOON_MIN_Y, isMoonGone } from "../world/moon.js";
@@ -366,11 +367,11 @@ function setLookThrust(speed, sprintSpeed) {
   _fwd.set(-Math.sin(yaw) * cp, Math.sin(pitch), -Math.cos(yaw) * cp);
   _right.set(Math.cos(yaw), 0, -Math.sin(yaw));
   _move.set(0, 0, 0);
-  if (keys["KeyW"] || keys["ArrowUp"]) _move.add(_fwd);
-  if (keys["KeyS"] || keys["ArrowDown"]) _move.sub(_fwd);
-  if (keys["KeyD"] || keys["ArrowRight"]) _move.add(_right);
-  if (keys["KeyA"] || keys["ArrowLeft"]) _move.sub(_right);
-  const sprint = keys["ShiftLeft"] || keys["ShiftRight"] || keys["Shift"];
+  if (isUp(keys)) _move.add(_fwd);
+  if (isDown(keys)) _move.sub(_fwd);
+  if (isRight(keys)) _move.add(_right);
+  if (isLeft(keys)) _move.sub(_right);
+  const sprint = isSprint(keys);
   if (_move.lengthSq() > 0) _move.normalize().multiplyScalar(sprint ? sprintSpeed : speed);
   vel.set(_move.x, _move.y, _move.z);
   // Blast knockback rides on top of the thrust and decays away.
@@ -427,11 +428,11 @@ export function updatePlayer(dt) {
   _fwd.set(-Math.sin(yaw), 0, -Math.cos(yaw));
   _right.set(Math.cos(yaw), 0, -Math.sin(yaw));
   _move.set(0, 0, 0);
-  const w = keys["KeyW"] || keys["ArrowUp"];
-  const s = keys["KeyS"] || keys["ArrowDown"];
-  const d = keys["KeyD"] || keys["ArrowRight"];
-  const a = keys["KeyA"] || keys["ArrowLeft"];
-  const sprintKey = !!(keys["ShiftLeft"] || keys["ShiftRight"] || keys["Shift"]);
+  const w = isUp(keys);
+  const s = isDown(keys);
+  const d = isRight(keys);
+  const a = isLeft(keys);
+  const sprintKey = isSprint(keys);
   if (w) _move.add(_fwd);
   if (s) _move.sub(_fwd);
   if (d) _move.add(_right);
@@ -439,7 +440,7 @@ export function updatePlayer(dt) {
 
   let inWater = headInWater();
   const enteredWater = inWater && !wasInWater;
-  const spaceNow = !!(keys["Space"] || keys[" "] || keys["/"]);
+  const spaceNow = isJump(keys);
   const spaceJustPressed = spaceNow && !prevSpace;
   const spaceJustReleased = !spaceNow && prevSpace;
   jumpBuffer = Math.max(0, jumpBuffer - dt);

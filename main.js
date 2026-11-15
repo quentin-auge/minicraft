@@ -76,6 +76,11 @@ import { CHUNK, renderDist, dim, setDimension, setBlock, getBlock, isSolid, outO
 import { dimEnv, dimSpec, dimHasMoon, dimHotbar } from "./src/world/dimensions.js";
 import { EYE, setFlyStepAllow, updateFreeSwim } from "./src/player/physics.js";
 import { setExtraSolid } from "./src/player/physics.js";
+import {
+  isSprint, isConfirmCode, isFlyCode, isGrappleCode, isGrappleButton,
+  isHelpCode, isSpawnPickerCode, isTargetDebugCode, isWorldCycleCode, isSpeedCycleCode,
+  isHotbarPrevCode, isHotbarNextCode, isDebugCode,
+} from "./src/player/keys.js";
 import { setMobExtraSolid } from "./src/mobs/step.js";
 import {
   initRocket, resetRocket, tickRocket, rocketTakesOver,
@@ -940,7 +945,7 @@ document.addEventListener("mousedown", (e) => {
       }
       chainAnchorPush(chain, bt.x, bt.y, bt.z);
     }
-  } else if (e.button === 1) {
+  } else if (isGrappleButton(e.button)) {
     camera.getWorldDirection(_hookDir);
     // Sky-grapple fallback (TNT dimension only): a miss synthesizes a cloud
     // past the fog instead of fizzling. Refusals (fly/hooked) stay refused.
@@ -952,7 +957,7 @@ document.addEventListener("mousedown", (e) => {
 document.addEventListener("mouseup", (e) => {
   if (e.button === 0) chainReleaseLeft(chain);
   if (e.button === 2) chainReleaseRight(chain);
-  if (e.button === 1 && hookActive()) cancelHook(true);
+  if (isGrappleButton(e.button) && hookActive()) cancelHook(true);
 });
 document.addEventListener("contextmenu", (e) => e.preventDefault());
 
@@ -972,9 +977,9 @@ document.addEventListener("keydown", (e) => {
   // Help float (hold H, works even before Play): shows while held, hides on
   // release (see keyup); the lock is kept throughout so there is no mouse.
   // Repeats while open are consumed above.
-  if (e.code === "KeyH" && !e.repeat && !anyPanelOpen()) { openHelp(); e.preventDefault(); return; }
-  if (e.code === "Equal" && !e.repeat) { toggleDebug(); return; }
-  if (e.code === "KeyF" && !e.repeat && started && !anyModalOpen()) {
+  if (isHelpCode(e.code) && !e.repeat && !anyPanelOpen()) { openHelp(); e.preventDefault(); return; }
+  if (isDebugCode(e.code) && !e.repeat) { toggleDebug(); return; }
+  if (isFlyCode(e.code) && !e.repeat && started && !anyModalOpen()) {
     // No fly toggle while the rocket holds the player (piloting or the
     // landing animation); the parked cabin keeps fly on (no prompt, no
     // takeoff until it is off).
@@ -988,7 +993,7 @@ document.addEventListener("keydown", (e) => {
     e.preventDefault();
     return;
   }
-  if (e.code === "KeyG" && !e.repeat && started && !anyModalOpen() && isLocked()) {
+  if (isGrappleCode(e.code) && !e.repeat && started && !anyModalOpen() && isLocked()) {
     if (rocketTakesOver()) { e.preventDefault(); return; }
     camera.getWorldDirection(_hookDir);
     if (!fireHookTarget(grapplePick, camera.position, _hookDir)) {
@@ -1002,14 +1007,14 @@ document.addEventListener("keydown", (e) => {
   // closed) plus never mid-build, so a stray keypress can't disturb boot,
   // New World, or a running transition (travelTo no-ops while busy anyway).
   const WORLD_CYCLE = ["over", "end", "nether", "tnt"];
-  if (e.code === "KeyZ" && !e.repeat && started && !anyModalOpen() && isLocked() && !building && isCheat()) {
+  if (isWorldCycleCode(e.code) && !e.repeat && started && !anyModalOpen() && isLocked() && !building && isCheat()) {
     if (rocketTakesOver()) { e.preventDefault(); return; }
     const at = WORLD_CYCLE.indexOf(dim);
     debugTravelTo(WORLD_CYCLE[(at + 1) % WORLD_CYCLE.length]);
     e.preventDefault();
     return;
   }
-  if (e.code === "KeyV" && !e.repeat && started && !anyModalOpen() && isLocked() && isCheat()) {
+  if (isSpeedCycleCode(e.code) && !e.repeat && started && !anyModalOpen() && isLocked() && isCheat()) {
     gameSpeed = GAME_SPEEDS[(GAME_SPEEDS.indexOf(gameSpeed) + 1) % GAME_SPEEDS.length];
     toast(`Speed ×${gameSpeed}`);
     e.preventDefault();
@@ -1025,7 +1030,7 @@ document.addEventListener("keydown", (e) => {
   // its dimension rules, and debug mobs roam free until the persistence
   // rule clears them. No spot reads as No spot, like a release that
   // re-holds.
-  if (e.code === "KeyB" && !e.repeat && started && !anyPanelOpen() && isLocked() && isCheat()) {
+  if (isSpawnPickerCode(e.code) && !e.repeat && started && !anyPanelOpen() && isLocked() && isCheat()) {
     bDown = true;
     bPressT = performance.now();
     if (bHoldTimer) clearTimeout(bHoldTimer);
@@ -1041,7 +1046,7 @@ document.addEventListener("keydown", (e) => {
   // Target debug (requires ?cheat=1): C aims a target, C held expands the
   // selection on the aimed block's face plane, C released arms it, and C
   // again on a mob sends it there. C while a mob walks cancels the target.
-  if (e.code === "KeyC" && !e.repeat && started && !anyModalOpen() && isLocked() && !building && isCheat()) {
+  if (isTargetDebugCode(e.code) && !e.repeat && started && !anyModalOpen() && isLocked() && !building && isCheat()) {
     targetDebugKeyDown(camera);
     e.preventDefault();
     return;
@@ -1053,8 +1058,8 @@ document.addEventListener("keydown", (e) => {
   // launching and grabbing share no input. No release while the rocket
   // takes over (countdown/flight) either: a held mob stays held for the
   // whole trip.
-  if ((e.code === "Enter" || e.code === "NumpadEnter") && !e.repeat && started && !anyModalOpen() && isLocked() && !building) {
-    const launchChord = keys["ShiftLeft"] || keys["ShiftRight"] || keys["Shift"];
+  if (isConfirmCode(e.code) && !e.repeat && started && !anyModalOpen() && isLocked() && !building) {
+    const launchChord = isSprint(keys);
     if (!hookActive() && !launchChord) {
       camera.getWorldDirection(_hookDir);
       const held = heldMob();
@@ -1077,8 +1082,8 @@ document.addEventListener("keydown", (e) => {
   }
   keys[e.code] = true;
   keys[e.key] = true;
-  if (e.code === "KeyK") select(selected - 1);
-  if (e.code === "KeyL") select(selected + 1);
+  if (isHotbarPrevCode(e.code)) select(selected - 1);
+  if (isHotbarNextCode(e.code)) select(selected + 1);
   if (["Space", "Slash", "Tab", "ArrowUp", "ArrowDown"].includes(e.code) || e.key === " ") e.preventDefault();
 });
 
@@ -1091,12 +1096,12 @@ document.addEventListener("keyup", (e) => {
     requestLock: requestLockNow,
     canResume: () => started && !isLocked() && !anyPanelOpen(),
   });
-  if (e.code === "KeyH" && floatConsumed) {
+  if (isHelpCode(e.code) && floatConsumed) {
     keys[e.code] = false;
     keys[e.key] = false;
     return;
   }
-  if (e.code === "KeyB" && floatConsumed) {
+  if (isSpawnPickerCode(e.code) && floatConsumed) {
     if (bHoldTimer) { clearTimeout(bHoldTimer); bHoldTimer = 0; }
     bDown = false;
     keys[e.code] = false;
@@ -1104,10 +1109,10 @@ document.addEventListener("keyup", (e) => {
     if (started && !isLocked() && !anyPanelOpen()) requestLockNow();
     return;
   }
-  if (e.code === "KeyG" && hookActive()) cancelHook(true);
-  if ((e.code === "Enter" || e.code === "NumpadEnter") && hookActive()) cancelHook(true);
-  if (e.code === "KeyC" && isCheat()) targetDebugKeyUp();
-  if (e.code === "KeyB") {
+  if (isGrappleCode(e.code) && hookActive()) cancelHook(true);
+  if (isConfirmCode(e.code) && hookActive()) cancelHook(true);
+  if (isTargetDebugCode(e.code) && isCheat()) targetDebugKeyUp();
+  if (isSpawnPickerCode(e.code)) {
     if (bHoldTimer) { clearTimeout(bHoldTimer); bHoldTimer = 0; }
     // The float release above already returned; a quick tap (menu never
     // opened) places the next ticked kind.

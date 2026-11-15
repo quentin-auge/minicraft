@@ -3,6 +3,7 @@
 // Releasing H hides it again. No buttons, no backdrop click; Enter and
 // Escape do nothing on the float — only the release closes it.
 import { registerMenu, openFloat, closeModal } from "./menus.js";
+import { isHelpCode } from "../player/keys.js";
 export let helpOpen = false;
 
 const el = () => document.getElementById("help");
@@ -37,7 +38,7 @@ registerMenu({
     return true;
   },
   onKeyup(e) {
-    if (e.code === "KeyH" && helpOpen) {
+    if (isHelpCode(e.code) && helpOpen) {
       closeHelp();
       e.preventDefault();
       return true;
