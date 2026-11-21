@@ -278,6 +278,15 @@ const descendTick = (peers, o, vyIn) => {
   // held glide carves instead of merging.
   assert.ok(rocketSrc.indexOf("const { exhausted } = carveAt(origin, sy < 0);") < rocketSrc.indexOf("if (sy < 0 && groundBelowTouch()) {"), "the carve runs before the pause");
   assert.ok(rocketSrc.includes("function holdZoneAt(ox, oz)"), "the mob hold probe stays");
+  // The unbreakable floor level is a liquid surface to the flight: never
+  // carved (the sweep and the stamp clearance skip it), a real landing
+  // spot (the raw probes hold the ship), never a lateral block.
+  assert.ok(rocketSrc.includes("if (floor != null && y === floor) continue;"), "the carve skips the floor level");
+  assert.ok(rocketSrc.includes("stampFloor != null && y === stampFloor"), "the stamp clearance skips the floor level");
+  assert.ok(rocketSrc.includes("footprintTouches(getBlock, origin.x, origin.z, vesselBox, by)"), "the landing contact reads the raw world (the floor lands the ship)");
+  assert.ok(rocketSrc.includes("stopBelow(getBlock, origin.x, origin.y, origin.z, vesselBox)"), "the stop rule reads the raw world (the floor lands the ship)");
+  assert.ok(rocketSrc.includes("const id = getBlock(x, y, z);"), "the blocked fallback reads the raw world");
+  assert.ok(rocketSrc.includes("if (floor != null && y === floor) return false;"), "the blocked fallback skips the floor like a liquid");
   // Diagonal-low landing: the fringe column past the posed box survives a
   // descent but not a level glide.
   {

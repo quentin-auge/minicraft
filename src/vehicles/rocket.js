@@ -43,7 +43,7 @@ import { ORDERS } from "../render/orders.js";
 import { exposedFaces, speedFactor, countdownFactor, fxScale } from "../fx/rocketfx.js";
 import { playFx } from "../fx/rocketimpact.js";
 import { REACTOR_SETUP, mergeReactors } from "./reactors.js";
-import { dimTntTiersUnlocked } from "../world/dimensions.js";
+import { dimTntTiersUnlocked, dimFloorY } from "../world/dimensions.js";
 import { isTntTierUnlocked } from "../world/tntunlock.js";
 import { villageFrames } from "../world/village.js";
 import { listFarmMobs } from "../mobs/farm.js";
@@ -1381,11 +1381,10 @@ function tickFlight(dt) {
   const bw = vesselBox.x1 - vesselBox.x0, bd = vesselBox.z1 - vesselBox.z0;
   for (let i = 0; i < steps; i++) {
     origin.x += sx; origin.y += sy; origin.z += sz;
-    if (origin.x < -WORLD_RADIUS) { origin.x = -WORLD_RADIUS; rvel.x = 0; }
-    if (origin.x > WORLD_RADIUS - bw) { origin.x = WORLD_RADIUS - bw; rvel.x = 0; }
-    if (origin.z < -WORLD_RADIUS) { origin.z = -WORLD_RADIUS; rvel.z = 0; }
-    if (origin.z > WORLD_RADIUS - bd) { origin.z = WORLD_RADIUS - bd; rvel.z = 0; }
-    if (origin.y < 1) { origin.y = 1; rvel.y = Math.max(0, rvel.y); }
+    // No clamp of any kind — XZ or Y — on the flight: the hull goes
+    // everywhere. The unbreakable floor level is the one surface it can
+    // never tear: it poses on it like on water (see the probes below) and
+    // the carve skips it, so the slab always survives the crossing.
     // Mob-aware lateral slide, Down-held only (see slideVetoAt): refuse
     // the XZ axes whose destination column would overlap a body, X-only
     // then Z-only, so steering glides along the herd instead of into it.
@@ -1476,7 +1475,10 @@ function spawnThrustPlume(L) {
 // Underside contact (pure rules in ./rocketbox.js, driven here): any
 // non-air block (solids, liquids and flowers all hold the ship up, so it
 // sits on water and meadows alike instead of sinking through them).
-// Landing contact: the underside posed on a block.
+// Landing contact: the underside posed on a block. The unbreakable floor
+// level holds the ship like a liquid surface: never carved (see
+// carveBoxAt) and never a lateral block, but a real landing spot — the
+// hull poses on it like on water.
 function footprintTouch(by) {
   return footprintTouches(getBlock, origin.x, origin.z, vesselBox, by);
 }
@@ -1489,12 +1491,15 @@ function groundBelowTouch() {
 
 // Lateral fallback: a hull cell still overlapping a solid after the carve
 // (protected cells, budget cut) holds laterally instead of embedding —
-// never a voxel write. Liquids never block. Descent-aware like the carve
-// (same `flightCarveBox` selector): a descending hull tests the posed x/z
-// box, so fringe outside the landed bbox never blocks.
+// never a voxel write. Liquids and the unbreakable floor level never
+// block. Descent-aware like the carve (same `flightCarveBox` selector): a
+// descending hull tests the posed x/z box, so fringe outside the landed
+// bbox never blocks.
 function cellBlocks(x, y, z) {
   const id = getBlock(x, y, z);
   if (id === AIR || isLiquid(id)) return false;
+  const floor = dimFloorY();
+  if (floor != null && y === floor) return false;
   return true;
 }
 function boxBlocked(descending = false) {
@@ -1619,6 +1624,7 @@ function clearVesselCell(x, y, z, id) {
 // advance).
 function carveBoxAt(o, b) {
   const { x0, y0, z0, x1, y1, z1 } = b;
+  const floor = dimFloorY();
   const cleared = [];
   let tntHit = false;
   let budget = CARVE_MAX;
@@ -1631,6 +1637,9 @@ function carveBoxAt(o, b) {
         if (id === AIR) continue;
         if (isLiquid(id)) continue;
         if (isCellProtected(x, y, z)) continue;
+        // The unbreakable floor level never carves: the hull crosses the
+        // world floor without breaking the slab that seals the void.
+        if (floor != null && y === floor) continue;
         if (isTntLike(id)) tntHit = true;
         clearVesselCell(x, y, z, id);
         cleared.push([x, y, z]);
@@ -1716,11 +1725,14 @@ function stamp() {
   for (const c of modelCells) if (c.id !== AIR) hullKeys.add((ox + c.lx) + "," + (oy + c.ly) + "," + (oz + c.lz));
   // Shared clear kernel behind the passenger clearance and the hull stamp:
   // solids only, same guards, TNT-noted, index-cleaned through
-  // `clearVesselCell`. Hull-air cells (c.id === AIR) never reach it.
+  // `clearVesselCell`. Hull-air cells (c.id === AIR) never reach it. The
+  // unbreakable floor level never carves, like the flight sweep above.
+  const stampFloor = dimFloorY();
   const tryClearTerrain = (x, y, z) => {
     const cur = getBlock(x, y, z);
     if (cur === AIR || isLiquid(cur)) return false;
     if (isCellProtected(x, y, z) || keepFrames.has(key(x, y, z))) return false;
+    if (stampFloor != null && y === stampFloor) return false;
     if (isTntLike(cur)) tntCells.push([x, y, z]);
     clearVesselCell(x, y, z, cur);
     carved.push([x, y, z]);

@@ -23,6 +23,7 @@ import { applyDisplacementColor } from "./displacement-color.js";
 import { clearEntryClaims } from "./entry.js";
 import { village } from "../world/village.js";
 import { dimSpec } from "../world/dimensions.js";
+import { mobXZLimit } from "../world/level.js";
 import { hash2 } from "../core/noise.js";
 import { isCarried } from "./carry.js";
 
@@ -305,6 +306,16 @@ export function tickFarmMobs(dt, dimName) {
     // separation planning) so nothing can drift them mid-flight.
     if (mob.dim !== dimName || mob._riding) continue;
     if (isCarried(mob)) continue; // grab hook owns the frame: frozen, unplanned
+    // Out-of-level mob: a body beyond its dim's XZ level walls despawns
+    // silently. Repopulation waits for the next portal travel, like every
+    // other herd shrink. No Y floor check: inside the level the terrain fills
+    // to the unbreakable y = 0 floor, and the floorless TNT sky has no mobs.
+    const wallLim = mobXZLimit(dimName, mob.pos.y);
+    if (wallLim != null &&
+        (Math.abs(mob.pos.x) > wallLim || Math.abs(mob.pos.z) > wallLim)) {
+      disposeFarmMob(mob);
+      continue;
+    }
     // Blast flight owns its own tick (ballistic arc, no steering): out of
     // the group plan and the separation backstop until it lands.
     if (mob._blast) { flyers.push(mob); continue; }

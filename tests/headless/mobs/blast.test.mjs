@@ -429,4 +429,59 @@ function flyUntilLanded(m, maxTicks = 480) {
   console.log('moon: plain falls share the low-g');
 }
 
+// Level walls: mobs wall at their dim's level edge — the overworld at any
+// altitude (the Moon band runs to +oo until planets arrive), the Nether
+// island and the End platform square at any altitude.
+{
+  resetWorld('over'); setDimension('over'); clearEntryClaims();
+  buildFloor(92, 100, -4, 4);
+  const edge = makeCow(95.5, 0.5);
+  edge.target = { x: 99.5, z: 0.5 };
+  for (let t = 0; t < 180; t++) tickFarmMob(edge, DT, () => edge.target, edge.rand);
+  assert.ok(edge.pos.x <= 96 - edge.hw + 1e-6, `ground mob stopped at invisible wall (x=${edge.pos.x})`);
+  // High platform: still walled, no ceiling yet.
+  for (let x = 60; x <= 110; x++) for (let z = -4; z <= 4; z++) setBlock(x, 900, z, STONE);
+  const low = makeCow(80.5, 0.5);
+  low.pos.y = 901; low.fallFrom = 901;
+  low.target = { x: 105.5, z: 0.5 };
+  for (let t = 0; t < 180; t++) tickFarmMob(low, DT, () => low.target, low.rand);
+  assert.ok(low.pos.x <= 96 - low.hw + 1e-6, `sky mob walled (x=${low.pos.x})`);
+  console.log('level walls: ground band and sky: ok');
+}
+
+// Nether parity: the island walls at ±96 with the same rebound, any
+// altitude — the Nether level is its 193x193 field.
+{
+  resetWorld('nether'); setDimension('nether'); clearEntryClaims();
+  for (let x = -110; x <= 110; x++) for (let z = -110; z <= 110; z++) setBlock(x, 0, z, STONE);
+  const m = makeCow(90.5, 0.5);
+  m.dim = 'nether';
+  const v = computeMegaLaunch(m.pos.x, m.pos.y + m.h / 2, m.pos.z, 80, 0, 0, 15);
+  assert.ok(v && v.vx > 0, 'nether wall-bound body launches outward');
+  launchMobBlast(m, v.vx, v.vy, v.vz);
+  flyUntilLanded(m);
+  assert.ok(!m._blast, 'walled nether flight ends');
+  assert.ok(Math.abs(m.pos.x) <= 96 && Math.abs(m.pos.z) <= 96,
+    `stays inside the island (got ${m.pos.x.toFixed(2)})`);
+  assert.ok(m.pos.x < 96 - m.hw - 0.5, `rebounded inward off the nether wall (got ${m.pos.x.toFixed(2)})`);
+  console.log(`nether wall-bounce: x ${m.pos.x.toFixed(2)}`);
+}
+
+// End parity: the 73x73 platform square walls at ±36 with the same rebound.
+{
+  resetWorld('end'); setDimension('end'); clearEntryClaims();
+  for (let x = -36; x <= 36; x++) for (let z = -36; z <= 36; z++) setBlock(x, 0, z, STONE);
+  const m = makeCow(33.5, 0.5);
+  m.dim = 'end';
+  const v = computeMegaLaunch(m.pos.x, m.pos.y + m.h / 2, m.pos.z, 30, 0, 0, 15);
+  assert.ok(v && v.vx > 0, 'end wall-bound body launches outward');
+  launchMobBlast(m, v.vx, v.vy, v.vz);
+  flyUntilLanded(m);
+  assert.ok(!m._blast, 'walled end flight ends');
+  assert.ok(Math.abs(m.pos.x) <= 36 && Math.abs(m.pos.z) <= 36,
+    `stays inside the platform (got ${m.pos.x.toFixed(2)})`);
+  assert.ok(m.pos.x < 36 - m.hw - 0.5, `rebounded inward off the end wall (got ${m.pos.x.toFixed(2)})`);
+  console.log(`end wall-bounce: x ${m.pos.x.toFixed(2)}`);
+}
+
 console.log('blast.test.mjs: ALL PASS');

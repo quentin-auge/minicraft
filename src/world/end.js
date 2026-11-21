@@ -5,8 +5,9 @@ import { key, protectCell, resetWorld, setBlock, setDimension } from "../core/st
 // The whole level is its floor: a one-block platform at the dimension's
 // floorY (== dimFloorY("end")); kept as a literal because module top-level
 // code cannot read the registry (dimensions.js imports this module).
+// The platform is a 73x73 square: HALF is the half-extent per axis.
 export const END_PLATFORM_TOP = 0;
-export const END_PLATFORM_RADIUS = 36;
+export const END_PLATFORM_HALF = 36;
 export const END_RETURN_Z = 16;
 export const END_RETURN_BASE_Y = END_PLATFORM_TOP + 1;
 export const END_SPAWN = { x: 0, y: END_PLATFORM_TOP, z: END_RETURN_Z - 3, yaw: 0 };
@@ -35,7 +36,7 @@ export function resetEndDimension() {
 
 export function generateEndDimension(floorY = END_PLATFORM_TOP) {
   resetEndDimension();
-  const R = END_PLATFORM_RADIUS;
+  const R = END_PLATFORM_HALF;
   for (let x = -R; x <= R; x++) {
     for (let z = -R; z <= R; z++) {
       setBlock(x, floorY, z, ENDSTONE);

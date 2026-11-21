@@ -7,6 +7,7 @@
 import { SEP_GAP, CROSS_BUDGET, PASS_OFF, PASS_BUDGET, WALL_ALLOW, worstPairPenAt } from "./collide.js";
 import { stepAir, gravityAt } from "../core/launch.js";
 import { dimBound, dimInfinite } from "../core/store.js";
+import { mobXZLimit, mobLevelHalf } from "../world/level.js";
 import { MOON_MIN_Y, isMoonGone, moonDimHas } from "../world/moon.js";
 import { narrowPoseOk, narrowSide, narrowSense, activeNarrowPeer } from "./narrow.js";
 import { FARM_WALK_DIVISOR } from "./livestock.js";
@@ -2660,7 +2661,14 @@ export function launchMobBlast(mob, vx, vy, vz) {
   mob._detour = false;
   mob._rebase = false;
   if (mob.vel) mob.vel.y = 0;
-  mob._blast = { x: vx, y: vy, z: vz, t: 0 };
+  const dimName = mob.dim ?? "over";
+  // Walls captured at launch (level edge under the mob): the whole flight
+  // rebounds off them — a ground-band blast never throws a mob out of its level.
+  const launchLim = mobXZLimit(dimName, mob.pos.y);
+  const wallLim = launchLim != null &&
+    Math.abs(mob.pos.x) <= launchLim && Math.abs(mob.pos.z) <= launchLim
+    ? launchLim : null;
+  mob._blast = { x: vx, y: vy, z: vz, t: 0, wallLim };
 }
 function tickBlastFlight(mob, dt, pickTarget, rand) {
   const b = mob._blast;
@@ -2678,8 +2686,15 @@ function tickBlastFlight(mob, dt, pickTarget, rand) {
   };
   if (b.t > BLAST_FLIGHT_TIMEOUT) { finish(); return; }
   const dimName = mob.dim ?? "over";
-  const B = dimBound(dimName);
-  const floor = dimInfinite(dimName) ? -Infinity : 1;
+  const wallLim = "wallLim" in b ? b.wallLim : mobXZLimit(dimName, mob.pos.y);
+  const B = wallLim ?? dimBound(dimName);
+  // No false floor in the void: beyond the level's XZ extent (or in a
+  // wallless dim) there are no voxels at y = 0, so a blast flight must
+  // fall through instead of sticking at y = 1 forever.
+  const half = mobLevelHalf(dimName);
+  const outsideLevel = half != null &&
+    (Math.abs(mob.pos.x) > half || Math.abs(mob.pos.z) > half);
+  const floor = (dimInfinite(dimName) || half == null || outsideLevel) ? -Infinity : 1;
   // One sky, one gravity: the Moon low-g rule reads through the same shared
   // helper as the player.
   const G = gravityAt(moonDimHas(dimName), isMoonGone(), mob.pos.y, MOON_MIN_Y);
@@ -2691,11 +2706,13 @@ function tickBlastFlight(mob, dt, pickTarget, rand) {
     // snapped below AIR_SNAP — a bottomless fall converges to vertical.
     if (!stepAir(b, s, G)) { b.x = 0; b.z = 0; }
     let nx = mob.pos.x + b.x * s, nz = mob.pos.z + b.z * s;
-    // Invisible world walls (same bounds as the voxels): slide, never
-    // bounce — only the blocked axis dies.
+    // Invisible level walls: rebound off the level border so a launch
+    // never throws a mob out of the level.
     const lo = -B + mob.hw, hi = B - mob.hw;
-    if (nx < lo) { nx = lo; b.x = 0; } else if (nx > hi) { nx = hi; b.x = 0; }
-    if (nz < lo) { nz = lo; b.z = 0; } else if (nz > hi) { nz = hi; b.z = 0; }
+    if (nx < lo) { nx = lo; b.x = wallLim != null ? Math.abs(b.x) : 0; }
+    else if (nx > hi) { nx = hi; b.x = wallLim != null ? -Math.abs(b.x) : 0; }
+    if (nz < lo) { nz = lo; b.z = wallLim != null ? Math.abs(b.z) : 0; }
+    else if (nz > hi) { nz = hi; b.z = wallLim != null ? -Math.abs(b.z) : 0; }
     if (!aabbIntersectsSolid(nx, mob.pos.y, nz, mob.hw, mob.h)) {
       mob.pos.x = nx; mob.pos.z = nz;
     } else if (!aabbIntersectsSolid(nx, mob.pos.y, mob.pos.z, mob.hw, mob.h)) {
@@ -3180,6 +3197,11 @@ export function tickFarmMob(mob, dt, pickTarget, rand = mob.rand ?? Math.random,
 // each: drops deeper than maxDrop are air walls for pushes exactly as
 // for steps, so herds never shove each other off cliffs.
 export function sepSpotFree(mob, x, z) {
+  const wallLim = mobXZLimit(mob.dim ?? "over", mob.pos.y);
+  if (wallLim != null) {
+    const lim = wallLim - mob.hw;
+    if (x < -lim || x > lim || z < -lim || z > lim) return false;
+  }
   if (aabbIntersectsSolid(x, mob.pos.y, z, mob.hw, mob.h)) return false;
   const gx = x + Math.sin(mob.yaw) * mob.nose.along, gz = z + Math.cos(mob.yaw) * mob.nose.along;
   if (aabbIntersectsSolid(gx, mob.pos.y, gz, mob.nose.r, mob.h)) return false;

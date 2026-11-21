@@ -11,7 +11,7 @@ import { mobRank } from "./mover.js";
 import { bandOf, pickSpot, shouldDodge, boundedXZ, blastPredicates } from "./endspots.js";
 import { listFarmMobs } from "./farm.js";
 import { spawnBurst } from "../fx/particles.js";
-import { END_PLATFORM_RADIUS, END_PLATFORM_TOP, END_RETURN_Z, setEndCleared } from "../world/end.js";
+import { END_PLATFORM_HALF, END_PLATFORM_TOP, END_RETURN_Z, setEndCleared } from "../world/end.js";
 import { noteDragonKill } from "../world/tntunlock.js";
 import { hash2 } from "../core/noise.js";
 
@@ -257,7 +257,7 @@ function makeEnderman(index) {
   let x = 0, z = 0;
   for (let attempt = 0; attempt < 40; attempt++) {
     const angle = Math.PI * 2 * (index / 10) + (mobHash(index, attempt, 9403) - 0.5) * 1.2;
-    const radius = 7 + mobHash(attempt, index, 9404) * (END_PLATFORM_RADIUS - 11);
+    const radius = 7 + mobHash(attempt, index, 9404) * (END_PLATFORM_HALF - 11);
     x = Math.round(Math.cos(angle) * radius);
     z = Math.round(Math.sin(angle) * radius);
     if (Math.abs(x) <= 3 && Math.abs(z - END_RETURN_Z) <= 3) continue;
@@ -643,7 +643,7 @@ function spotGroundY(dimName, x, z, refY, yHi, hw) {
 
 function spotInBounds(dimName, x, z) {
   if (dimName === "end") {
-    if (Math.abs(x) > END_PLATFORM_RADIUS || Math.abs(z) > END_PLATFORM_RADIUS) return false;
+    if (Math.abs(x) > END_PLATFORM_HALF || Math.abs(z) > END_PLATFORM_HALF) return false;
     // The return-portal mouth stays clear, as on master.
     if (Math.abs(x) <= 3 && Math.abs(z - END_RETURN_Z) <= 3) return false;
     return true;

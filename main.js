@@ -1302,9 +1302,10 @@ function loop(now) {
     }
     // Per-dimension floor, bounded dims only (overworld: below -20 means out
     // of the world, so respawn). respawnY: null (TNT sky) means no floor: the
-    // fall never ends.
+    // fall never ends. A piloting player never respawns — the rocket dives
+    // with no clamp of its own, and thrust can always climb back out.
     const floorY = dimSpec(dim).respawnY;
-    if (floorY != null && pos.y < floorY) {
+    if (floorY != null && pos.y < floorY && !rocketFlying()) {
       vel.set(0, 0, 0);
       severHook();
       dropHeldMob();

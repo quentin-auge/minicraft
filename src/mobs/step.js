@@ -14,6 +14,7 @@ import { dropAllowed, floatTargetY } from "./livestock.js";
 import { normYaw } from "./corridor.js";
 import { GRAVITY, TERMINAL_VELOCITY, applyGravity, clampFall, gravityAt } from "../core/launch.js";
 import { MOON_MIN_Y, isMoonGone, moonDimHas } from "../world/moon.js";
+import { mobXZLimit } from "../world/level.js";
 
 // Base stride speed straight from master's pig/cow walk; the divisor slows
 // it to a farm amble (FARM_WALK lives in mover.js beside its tuning).
@@ -353,6 +354,11 @@ export function makeStepOk(mob, supported, floating, noseAlong, yaw, footNose = 
   // shoulder graze the shrunk body allows. shrink 0 keeps legacy exact.
   const nr = hwShrink > 0 ? Math.max(0.05, mob.nose.r - hwShrink) : mob.nose.r;
   return (nx, nz) => {
+    const wallLim = mobXZLimit(mob.dim ?? "over", mob.pos.y);
+    if (wallLim != null) {
+      const lim = wallLim - hw;
+      if (nx < -lim || nx > lim || nz < -lim || nz > lim) return false;
+    }
     if (aabbIntersectsSolid(nx, mob.pos.y, nz, hw, mob.h)) return false;
     const gx = nx + Math.sin(yaw) * noseAlong, gz = nz + Math.cos(yaw) * noseAlong;
     if (aabbIntersectsSolid(gx, mob.pos.y, gz, nr, mob.h)) return false;
