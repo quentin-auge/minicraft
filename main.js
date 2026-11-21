@@ -20,7 +20,7 @@ import {
   spawnPlayer, updatePlayer, tickKnockback,
 } from "./src/player/physics.js";
 import * as player from "./src/player/physics.js";
-import { flyOn, setFly, updateFly } from "./src/player/fly.js";
+import { flyOn, setFly, setFlyMul, updateFly } from "./src/player/fly.js";
 import { updateTarget, breakTarget, placeAtSelection, breakBlockAt, pickBlock, tryPlace, currentBlock, flushChainBatch, purgeFloatingLiquidsAround, takeLiquidCells, endChainStroke, clearChainStroke } from "./src/player/edit.js";
 import { fireHookTarget, fireSkyHook, grapplePick, mobGrabTarget, mobReleaseTarget, cancelHook, severHook, updateHook, hookActive, hookHeldSwim, hookAnchor, tickHookFx, setMobAlpha, HELD_ALPHA } from "./src/player/hook.js";
 import { initRope } from "./src/player/rope.js";
@@ -410,6 +410,11 @@ const _seedPinned = Number.isFinite(_seedNum);
 function rollSeed() {
   return _seedPinned ? _seedNum : Math.floor(Math.random() * 100000);
 }
+
+// Session fly-speed multiplier: ?flymul=<factor> scales the player's base
+// and sprint fly speeds (see fly.js) — the rocket caps keep reading the
+// bare FLY, so deep-space speed is never affected. Invalid values ignored.
+setFlyMul(Number(new URLSearchParams(location.search).get("flymul")));
 
 // Held-mob teardown (travel, New World, respawn): opaque again first, then
 // the pure state sever — the mob stays where the pose left it, movers resume.
