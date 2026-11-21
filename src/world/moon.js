@@ -47,9 +47,82 @@ export function resetMoon() {
 let moonGoneCache = false;
 let moonGoneDirty = true;
 export function markMoonDirty() {
+  moonScan = null; // a direct mark aborts any background scan: the next
   moonGoneDirty = true;
 }
+// Deferred gone-flag invalidation for band wipes: a wipe clears six-figure
+// cell counts, and every per-cell bump would rescan the full overworld map
+// on the next frame (gravity, hotbar, snow and the reveal read it per frame).
+// While deferred, reads stay cached on the pre-wipe state — the wipe reads
+// "alive" throughout, which is also what gravity and the hotbar want. The
+// rescan itself is sliced across frames once the carve settles (see
+// beginMoonGoneScan below) instead of firing as one frame-hitch at flush.
+// Nesting-safe, and resetMoonDirty covers wipes dropped mid-flight
+// (travel/New World): the fresh world rescans once.
+let moonDirtyDefer = 0;
+let moonDirtyPending = false;
+export function deferMoonDirty() {
+  moonDirtyDefer++;
+}
+export function resetMoonDirty() {
+  moonDirtyDefer = 0;
+  moonDirtyPending = false;
+  markMoonDirty();
+}
+export function noteMoonDirty() {
+  if (moonDirtyDefer > 0) moonDirtyPending = true;
+  else markMoonDirty();
+}
+// Background gone-scan: started once the wipe's carve settles, pumped a few
+// milliseconds per frame by the blast drain, so the multi-million-entry map
+// rescan never lands as one hitch. Reads stay cached (stale-alive) while it
+// runs; completion finalizes the cache exactly like a synchronous scan. Any
+// new churn restarts it (defer counter or a fresh pending note); any direct
+// mark aborts it (sync scan on next read).
+let moonScan = null; // { it, defer } while running
+export function moonGoneScanActive() {
+  return moonScan !== null;
+}
+export function beginMoonGoneScan() {
+  if (!moonDirtyPending) {
+    // Nothing noted during the wipe (ground-only bands): no rescan needed.
+    moonDirtyDefer = 0;
+    return;
+  }
+  moonScan = { it: null, defer: moonDirtyDefer };
+  moonDirtyDefer = 0;
+  moonDirtyPending = false;
+  moonGoneDirty = true;
+}
+export function pumpMoonGoneScan(budgetMs = 2) {
+  if (!moonScan) return true;
+  if (moonScan.defer !== moonDirtyDefer || moonDirtyPending) {
+    // Churned mid-scan (chained blast, fresh notes): restart from the top.
+    moonScan = { it: null, defer: moonDirtyDefer };
+    moonDirtyDefer = 0;
+    moonDirtyPending = false;
+  }
+  const deadline = performance.now() + budgetMs;
+  if (!moonScan.it) moonScan.it = worlds.over.values();
+  let n = 0;
+  for (;;) {
+    const r = moonScan.it.next();
+    if (r.done) break;
+    if (r.value === MOON || r.value === MOON_WATER) {
+      moonScan = null;
+      moonGoneCache = false;
+      moonGoneDirty = false;
+      return true;
+    }
+    if ((++n & 1023) === 0 && performance.now() >= deadline) return false;
+  }
+  moonScan = null;
+  moonGoneCache = true;
+  moonGoneDirty = false;
+  return true;
+}
 export function isMoonGone() {
+  if (moonScan) return moonGoneCache; // background scan running: stay cached
   if (!moonGoneDirty) return moonGoneCache;
   moonGoneDirty = false;
   for (const id of worlds.over.values()) {

@@ -11,6 +11,7 @@ import { flowerVariantAt, flowerAngleAt } from "../world/flowers.js";
 import { glowVariantAt, isPadGhostVariant, padGhostOpacityAt, glowstoneBlocks, glowstoneVariantKey, PAD_GHOST_RED, PAD_GHOST_YELLOW } from "../world/glowstone.js";
 import { variantAt, VARIANT_BLOCKS } from "../world/reactions.js";
 import { variantMaterials, shellMaterial, shellGeometry, trackShellMaterial, syncShellFade, untrackShellMaterials } from "./reactions.js";
+import { selectBallInstances } from "../world/ultravol.js";
 import { regionOf, regionByKey } from "./regions.js";
 import { ORDERS } from "./orders.js";
 
@@ -367,6 +368,126 @@ function disposeChunk(ck) {
     if (rk) { const set = regionMeshes.get(rk); if (set) { set.delete(m); if (!set.size) regionMeshes.delete(rk); } }
   }
   chunkMeshes.delete(ck);
+}
+
+// Frontier dispose for blast wipes: a fully-emptied chunk drops its meshes
+// at the carve frontier (cheap: nothing left to bake or upload) instead of
+// waiting for the budgeted rebuild, so the void reads instantly while the
+// rebuild drain keeps 60 fps. End state matches a rebuilt empty chunk
+// (dispose + empty registration + version bumps); callers probe emptiness
+// first via store.chunkHasVoxels — never call on a chunk holding voxels.
+export function clearChunkMeshes(cx, cz) {
+  const ck = cx + "_" + cz;
+  topMaxCache.delete(ck);
+  disposeChunk(ck);
+  bumpVersion(ck);
+  chunkMeshes.set(ck, new Map());
+}
+
+// Rotation signatures of the liquid face dirs: instance matrices are composed
+// through the same Object3D path as writeLiquidQuad, so the 9 rotation floats
+// match exactly — no Euler math, no epsilon.
+let liquidSigs = null;
+function liquidDirOf(a, o) {
+  if (!liquidSigs) {
+    liquidSigs = LIQUID_DIRS.map(([rx, ry]) => {
+      const m = new THREE.Matrix4().compose(
+        new THREE.Vector3(),
+        new THREE.Quaternion().setFromEuler(new THREE.Euler(rx, ry, 0)),
+        new THREE.Vector3(1, 1, 1));
+      const e = m.elements;
+      return [e[0], e[1], e[2], e[4], e[5], e[6], e[8], e[9], e[10]];
+    });
+  }
+  for (let d = 0; d < 6; d++) {
+    const s = liquidSigs[d];
+    if (a[o] === s[0] && a[o + 1] === s[1] && a[o + 2] === s[2] &&
+        a[o + 4] === s[3] && a[o + 5] === s[4] && a[o + 6] === s[5] &&
+        a[o + 8] === s[6] && a[o + 9] === s[7] && a[o + 10] === s[8]) return d;
+  }
+  return -1;
+}
+
+// Instance cells of one mesh, recovered from translation (every mesh kind
+// writes cell+0.5 translations; liquid quads add the face offset, unwound
+// through the rotation signature above). Null on unknown layout.
+function readInstanceCells(mesh) {
+  const a = mesh.instanceMatrix.array;
+  const n = mesh.count;
+  const liquid = mesh.geometry === liquidGeo;
+  const cells = new Array(n);
+  for (let i = 0; i < n; i++) {
+    const o = i * 16;
+    if (liquid) {
+      const d = liquidDirOf(a, o);
+      if (d < 0) return null;
+      cells[i] = [
+        Math.round(a[o + 12] - 0.5 - LIQUID_OFF[d][0] * 0.5),
+        Math.round(a[o + 13] - 0.5 - LIQUID_OFF[d][1] * 0.5),
+        Math.round(a[o + 14] - 0.5 - LIQUID_OFF[d][2] * 0.5),
+      ];
+    } else {
+      cells[i] = [Math.round(a[o + 12] - 0.5), Math.round(a[o + 13] - 0.5), Math.round(a[o + 14] - 0.5)];
+    }
+  }
+  return cells;
+}
+
+// In-place compaction to the kept indices (instance buffer + tint buffer).
+function compactInstances(mesh, keep) {
+  const a = mesh.instanceMatrix.array;
+  const c = mesh.instanceColor ? mesh.instanceColor.array : null;
+  for (let j = 0; j < keep.length; j++) {
+    const s = keep[j] * 16, t = j * 16;
+    if (s !== t) for (let k = 0; k < 16; k++) a[t + k] = a[s + k];
+    if (c) {
+      const ss = keep[j] * 3, tt = j * 3;
+      if (ss !== tt) { c[tt] = c[ss]; c[tt + 1] = c[ss + 1]; c[tt + 2] = c[ss + 2]; }
+    }
+  }
+  mesh.count = keep.length;
+  mesh.instanceMatrix.needsUpdate = true;
+  if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+}
+
+// Celestial wipe filtering: remove a wipe ball's cells from a chunk's meshes
+// in place, so the void reads the frame the carve frontier passes instead of
+// waiting for a budgeted rebuild — with none of a rebuild's cost (no voxel
+// walk, no halo bake, no re-allocation, one buffer upload per touched mesh).
+// Exactness follows ultravol.selectBallInstances: sky-isolated balls never
+// newly expose a kept face, pocket or tint; near-surface survivors fall back
+// to a full rebuild (returns false, nothing mutated). Mid-fade chunks also
+// fall back (their clones share the geometry under a material ramp).
+// Only wipe drains call this, and only for celestial (ball) jobs — box
+// wipes carve adjacent survivors and need real rebuilds.
+export function filterChunkBall(cx, cz, ball) {
+  const ck = cx + "_" + cz;
+  if (fadingCks.has(ck)) return false;
+  const meshes = chunkMeshes.get(ck);
+  if (!meshes) return true; // nothing rendered: already void
+  const parts = [];
+  let exact = true;
+  for (const mesh of meshes.values()) {
+    const cells = readInstanceCells(mesh);
+    if (!cells) return false; // unknown matrix layout: rebuild instead
+    const sel = selectBallInstances(cells, ball);
+    if (!sel.exact) exact = false;
+    parts.push({ mesh, keep: sel.keep, removed: cells.length - sel.keep.length });
+  }
+  if (!exact) return false;
+  let keptTotal = 0, removedTotal = 0;
+  for (const p of parts) { keptTotal += p.keep.length; removedTotal += p.removed; }
+  if (removedTotal === 0) return true; // nothing inside the ball: already correct
+  if (keptTotal === 0) {
+    clearChunkMeshes(cx, cz);
+    return true;
+  }
+  topMaxCache.delete(ck); // the top may have dropped with the wiped cells
+  for (const p of parts) {
+    if (!p.removed) continue;
+    compactInstances(p.mesh, p.keep);
+  }
+  return true;
 }
 
 export function rebuildChunk(cx, cz, fade = false) {

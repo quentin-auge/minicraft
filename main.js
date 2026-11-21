@@ -72,7 +72,7 @@ const GLOW_SUSPENDED = new Set(["glowstone"]);
 let wasBridgeHeld = false;
 let wasChainHeld = false;
 const bridgeTouchedUnion = [];
-import { CHUNK, renderDist, dim, setDimension, setBlock, getBlock, isSolid, outOfWorld, worlds } from "./src/core/store.js";
+import { CHUNK, renderDist, dim, setDimension, setBlock, getBlock, isSolid, outOfWorld, worlds, noteFrameBudget } from "./src/core/store.js";
 import { dimEnv, dimSpec, dimHasMoon, dimHotbar } from "./src/world/dimensions.js";
 import { EYE, setFlyStepAllow, updateFreeSwim } from "./src/player/physics.js";
 import { setExtraSolid } from "./src/player/physics.js";
@@ -1169,6 +1169,7 @@ function loop(now) {
   requestAnimationFrame(loop);
   const dt = Math.min(0.05, (now - last) / 1000);
   const sdt = dt * gameSpeed;
+  noteFrameBudget(now - last); // adaptive drain budgets (120 Hz+ screens)
   last = now;
   // Pause = pointer unlocked (menu) or help open: everything sim and visual
   // freezes; only the loader, the debug readout, and the final render run.

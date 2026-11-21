@@ -24,6 +24,21 @@ export function renderDist(name = dim) {
   return renderDists.get(name) ?? (dimInfinite(name) ? TNT_RENDER_DIST : RENDER_DIST);
 }
 
+// Adaptive frame budgets: drains size their millisecond slices by the
+// measured display refresh (EMA of rAF deltas, fed by main.js), so 120 Hz+
+// screens hold their rate instead of paying desktop-sized slices per frame.
+// 1 at 60 Hz, ~0.5 at 120 Hz, floored so slow machines never starve further.
+let budgetScale = 1;
+export function frameBudgetScale() {
+  return budgetScale;
+}
+export function noteFrameBudget(frameMs) {
+  if (!(frameMs > 0) || frameMs > 250) return; // tab-switch spike: ignore
+  const target = Math.min(Math.max(frameMs, 1000 / 240), 1000 / 30);
+  const want = Math.min(1, Math.max(0.35, (1000 / 60) / target));
+  budgetScale += (want - budgetScale) * 0.05;
+}
+
 // Lazy chunk sources: dimensions whose world is materialized chunk-by-chunk
 // register a generator here. The mesher asks for a column's chunk before
 // reading it, so generation and rendering share one streaming path.
@@ -274,4 +289,15 @@ export function isSolid(x, y, z) {
 
 export function chunkOf(v) {
   return Math.floor(v / CHUNK);
+}
+
+export function chunkHasVoxels(cx, cz) {
+  const occ = colOcc[dim];
+  const x1 = cx * CHUNK, z1 = cz * CHUNK;
+  for (let x = x1; x < x1 + CHUNK; x++) {
+    for (let z = z1; z < z1 + CHUNK; z++) {
+      if (occ.get(colTopIdx(x, z))) return true;
+    }
+  }
+  return false;
 }

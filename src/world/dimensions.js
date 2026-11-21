@@ -38,6 +38,9 @@ import {
 import { villageFrames } from "./village.js";
 import { isLockedTntTier, isTntTierUnlocked } from "./tntunlock.js";
 import { registerMoonDim } from "./moon.js";
+import { ULTRA_MARGIN, ULTRA_Y_LO } from "./ultravol.js";
+import { END_WIPE_HALF, END_WIPE_TOP } from "./end.js";
+import { NETHER_WIPE_HALF, NETHER_WIPE_TOP } from "./nether.js";
 
 // The TNT sky is the first infinite dimension: voxels stream around the
 // player with no walls (see tntstream.js), so the store lifts its bounds.
@@ -75,11 +78,12 @@ export const DIMENSIONS = [
     respawnY: null,
     env: TNT_ENV,
     infinite: true,
-    // No moon, no space fade (TNT_ENV.space), no bands: ultras wipe an
-    // ignition-centered window instead (256-disc, ±256: height matches the
-    // radius). Sky-grapple allowed (synthesized lattice clouds past the fog).
+    // No moon, no space fade (TNT_ENV.space): the streaming sky has no fixed
+    // level, so ultras wipe an ignition-centered cube instead (half-side
+    // 256 plus the shared margin). Sky-grapple allowed (synthesized lattice
+    // clouds past the fog).
     moon: false,
-    ultra: { bands: false, windowR: 256, windowHalfH: 256 },
+    ultra: { bands: false, cubeR: 256 + ULTRA_MARGIN },
     skyGrapple: true,
     generate: (seed) => generateTntDimension(seed),
     generateAsync: (seed) => bootTntStream(seed),
@@ -110,7 +114,9 @@ export const DIMENSIONS = [
       space: false,
     },
     moon: false,
-    ultra: { bands: false, windowR: 256, windowHalfH: 90 },
+    // Fixed level box (platform plus margin, open headroom): the whole
+    // platform fits, so the ignition point no longer matters.
+    ultra: { bands: false, box: { half: END_WIPE_HALF, y0: ULTRA_Y_LO, y1: END_WIPE_TOP } },
     skyGrapple: false,
     generate: () => generateEndDimension(dimFloorY("end")),
     generateAsync: async (_seed, aborted) => {
@@ -140,7 +146,9 @@ export const DIMENSIONS = [
     },
     fullView: true,
     moon: false,
-    ultra: { bands: false, windowR: 256, windowHalfH: 256 },
+    // Fixed level box (terrain plus margin on XZ, past the highest volcano
+    // peak on top): summits go even from a sea-level ignition.
+    ultra: { bands: false, box: { half: NETHER_WIPE_HALF, y0: ULTRA_Y_LO, y1: NETHER_WIPE_TOP } },
     skyGrapple: false,
     ambient: "nether",
     generate: (seed) => generateNetherDimension(seed, dimFloorY("nether")),
@@ -190,10 +198,11 @@ export function dimHasMoon(key) {
   return byKey.get(key)?.moon ?? false;
 }
 
-// Ultra wipe mode. Bands slice the overworld by altitude; everywhere else a
-// window opens around the ignition (radius + half-height, both tunable per
-// dimension). Bands are opt-in.
-const DEFAULT_ULTRA = { bands: false, windowR: 256, windowHalfH: 90 };
+// Ultra wipe mode. The overworld resolves one band box per blast through
+// ultravol.js; every other dimension carries its own wipe volume in the
+// spec — a fixed level box (End/Nether) or an ignition-centered cube half-
+// side (streaming TNT sky). Boxes are opt-in per dimension.
+const DEFAULT_ULTRA = { bands: false, cubeR: 256 + ULTRA_MARGIN };
 export function dimUltra(key) {
   return { ...DEFAULT_ULTRA, ...byKey.get(key)?.ultra };
 }

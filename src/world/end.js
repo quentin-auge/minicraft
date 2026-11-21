@@ -1,6 +1,7 @@
 // End dimension voxel generation and per-world boss progression.
 import { ENDSTONE, PORTAL } from "../core/blocks.js";
 import { key, protectCell, resetWorld, setBlock, setDimension } from "../core/store.js";
+import { ULTRA_MARGIN } from "./ultravol.js";
 
 // The whole level is its floor: a one-block platform at the dimension's
 // floorY (== dimFloorY("end")); kept as a literal because module top-level
@@ -11,6 +12,11 @@ export const END_PLATFORM_HALF = 36;
 export const END_RETURN_Z = 16;
 export const END_RETURN_BASE_Y = END_PLATFORM_TOP + 1;
 export const END_SPAWN = { x: 0, y: END_PLATFORM_TOP, z: END_RETURN_Z - 3, yaw: 0 };
+// Ultra wipe box: platform plus margin on XZ, open headroom on top. The
+// bottom is ULTRA_Y_LO (shared, in ultravol); y = 0 stays spared by the
+// carve rule, and the platform cells stay protected anyway.
+export const END_WIPE_HALF = END_PLATFORM_HALF + ULTRA_MARGIN;
+export const END_WIPE_TOP = 100;
 
 let endCleared = false;
 let returnFrameKeys = [];

@@ -35,6 +35,7 @@ import {
   registerChunkSource, resetWorld, setBlock, setDimension,
 } from "../core/store.js";
 import { GLOW_VARIANTS, GLOW_VARIANT_COUNT, noteGlowstonePlaceShared } from "./glowstone.js";
+import { ULTRA_MARGIN } from "./ultravol.js";
 
 export const NETHER_FIRE_LEVEL = 12;
 export const NETHER_RETURN_BASE_Y = 30;
@@ -93,6 +94,14 @@ const MOUTH_SEP = 0.12;
 const S = WORLD_RADIUS;
 const SIZE = 2 * S + 1;
 const CHUNK_RADIUS = Math.ceil(S / CHUNK);
+// Hard ceiling of volcano geometry: peak = 260 + floor(hash2 * 24), and
+// hash2 can hit 1.0 outright — so 284, not 283.
+// Ultra wipe box: volcanoes sit within ±S and mouth shelves land inside,
+// so S plus margin holds every structure; the top clears the highest peak.
+// The bottom is ULTRA_Y_LO (shared, in ultravol); y = 0 stays spared.
+export const NETHER_PEAK_MAX = 284;
+export const NETHER_WIPE_HALF = S + ULTRA_MARGIN;
+export const NETHER_WIPE_TOP = NETHER_PEAK_MAX + ULTRA_MARGIN;
 
 let netherSeed = 1;
 // Bottom of the level, threaded from the dimension spec (dimFloorY) through
