@@ -18,9 +18,10 @@ import {
 } from "./corridor.js";
 import { entryTick, passageTick } from "./entry.js";
 import { navTick, navCommit, navPlanAllows, navPathDistance, navCellOnPath, NAV_BAND } from "./nav.js";
+import { maybeStepCommit, isStepCommit } from "./stairs.js";
 import { queryMobGrid, buildMobGrid } from "./grid.js";
 import {
-  aabbIntersectsSolid, noseHitsSolid, hasSupport,
+  aabbIntersectsSolid, noseHitsSolid, noseOverDrop, hasSupport,
   liquidSurface, footingOk, footingOkAt, groundBelow, headroomOk,
   makeCellFree, makeCellSolid, makeStepOk, descendOk, turnTo,
   moveClamped, moveVector, driveToward, dropLane, spawnRng, stepVertical,
@@ -188,6 +189,10 @@ export const SERVO_STALL_T = 0.1;
 function stallReleaseArmed(mob) {
   return mob.servoStall > SERVO_STALL_T && !passSlideActive(mob) && !mob._yieldHold && !mob._narrow;
 }
+// How long a dead-end seek may turn the mob in place against a rail end it
+// cannot pass (sim-seconds). After that the rail is released: the seek is
+// a way out, not a prison.
+export const DEAD_END_STALL_T = 1.5;
 // Grind-episode window (s): re-grinding the same peer inside this counts
 // the next episode (escalating yield); past it the slate is clean.
 export const GRIND_WINDOW = 4;
@@ -1181,11 +1186,13 @@ export function exitFresh1(mob) {
 // moving-wall obstacles only (-1, never planned); JAUNE 2-wide exits and
 // threads hold (4, legacy cascade, 2-wide steering untouched); SORTIE-1
 // 1-wide exits hold (3, legacy-paced line, never steer/detach/abort);
-// BLUE covers every laned touch ride (1) — including entry-carrying guided
-// rides, which detach like pure blues instead of holding for their hole;
-// VIOLET is the unlaned entry commit only (2, yields to exits and rails);
-// FREE roam yields to everyone (0, legacy cascade, never flags). Pure
-// reads, no rand stream.
+// a mob walking a staircase holds too (3, the step phase: it owns its
+// level change and nobody yanks it off the stairs); BLUE covers every
+// laned touch ride (1) — including entry-carrying guided rides, which
+// detach like pure blues instead of holding for their hole; VIOLET is the
+// unlaned entry commit only (2, yields to exits and rails); FREE roam
+// yields to everyone (0, legacy cascade, never flags). Pure reads, no
+// rand stream.
 export function mobRank(mob) {
   // A mob on a plan is the top tier: it holds its line and everybody
   // else yields to it (the forecast plans it first, the rank gates below
@@ -1309,6 +1316,10 @@ export function servoTick(mob, dt, supported, floating, rand = Math.random, pick
   // a rail mid-maneuver would kill the away commit the very next tick and
   // ram the peer again at full stride the tick after.
   if (mob._turnAway > 0 && !mob.lane) return false;
+  // The step commit (stairs.js) owns a lane-less mob that walks a drop:
+  // the stairs read as a 1-wide passage (the drop edges are walls), so a
+  // rail would engage there and take the drive over the step commit.
+  if (!mob.lane && isStepCommit(mob)) return false;
   // Pending guided slide: an entry commit riding its touch line erects the
   // hole-ward touch as soon as the nose meets the wall — no drop to a free
   // commit, no pivot toward the mouth.
@@ -1992,12 +2003,7 @@ function dropRail(mob) {
 function noseBlockedAt(mob, x, z, yaw) {
   const dx = Math.sin(yaw), dz = Math.cos(yaw);
   // A nose over a drop must not turn the air-wall guard into a solid wall.
-  const reach = mob.nose.along;
-  const steps = Math.max(1, Math.ceil(reach / 0.25));
-  for (let i = 1; i <= steps; i++) {
-    const t = reach * i / steps;
-    if (groundBelow(x + dx * t, mob.pos.y + 1, z + dz * t) !== mob.pos.y) return false;
-  }
+  if (noseOverDrop(mob, x, z, yaw)) return false;
   const nx = x + dx * mob.nose.along, nz = z + dz * mob.nose.along;
   // The passing grace, on the SIDE walls only: the offset shoulder already
   // grazes the wall face up to WALL_ALLOW deep, and the offset carries the
@@ -2098,7 +2104,22 @@ function seekDeadEnd(mob, dt, supported, floating, peers = null) {
     // Still advancing: keep seeking with the forward axis restored.
     mob.lane = { axis: forward, entry: oppositeYaw(forward), lockX: -1, lockZ: -1 };
     mob.stuckT = 0;
+    mob._seekStall = 0;
     return true;
+  }
+  // A rail whose end the mob cannot pass (the head of a staircase, a newel
+  // post): the dead-end seek would turn it in place forever, and the rail
+  // would hold it against the corner forever. Bounded: after a stretch of
+  // no progress the rail is released and the mob decides again (it walks
+  // away, or takes the stairs).
+  mob._seekStall = (mob._seekStall ?? 0) + dt;
+  if ((mob._seekStall ?? 0) > DEAD_END_STALL_T) {
+    mob._seekStall = 0;
+    dropFollowLine(mob);
+    dropLane(mob);
+    mob.followCool = FOLLOW_COOL;
+    mob.stuckT = 0;
+    return false;
   }
   // Wedged seek (a peer hard-blocks the nose): release like a stalled
   // cruise instead of grinding in place — the roam routes around the
@@ -2861,7 +2882,10 @@ export function tickFarmMob(mob, dt, pickTarget, rand = mob.rand ?? Math.random,
       if (peers == null) {
         // Smooth crossings hold in place instead of re-picking: the span
         // watchdog (roamStep timedOut → decide) owns the only release.
-        if (mob.stuckT >= STUCK_T && mob.roam?.smooth !== true) {
+        // Step commits hold too: mounting a tread slows the walk past the
+        // stillness gate, and the flight never abandons while treads
+        // remain — re-picking would yank the mob off the stairs mid-flight.
+        if (mob.stuckT >= STUCK_T && mob.roam?.smooth !== true && !isStepCommit(mob)) {
           mob.target = pickTarget(mob, rand);
           mob.wanderT = roamSpan(rand);
           mob.stuckT = 0;
@@ -2887,7 +2911,9 @@ export function tickFarmMob(mob, dt, pickTarget, rand = mob.rand ?? Math.random,
       // Holders never maneuver either (rank >= 3: exiting or threading —
       // walls forbid sidesteps, so a frank detour would shove the hold —
       // keep the slowed line and let the backstop clear residue instead).
-      if ((mob.stuckT >= STUCK_T || progStuck) && mob.roam?.smooth !== true && mobRank(mob) < 3) {
+      // Step commits never maneuver either (same first-tick reason as
+      // below: the mode owns its axis until the stairs run out).
+      if ((mob.stuckT >= STUCK_T || progStuck) && mob.roam?.smooth !== true && !isStepCommit(mob) && mobRank(mob) < 3) {
         // Shuffle within snout-sweep range of walls: no forced maneuver —
         // its turn would sweep the snout along the rock — hand decide a
         // fresh wall-aware commit instead (open headings read clearance),
@@ -2953,8 +2979,11 @@ export function tickFarmMob(mob, dt, pickTarget, rand = mob.rand ?? Math.random,
     mob.lastX = mob.pos.x;
     mob.lastZ = mob.pos.z;
     // Target refresh on arrival or span expiry — wanderT never doubles as
-    // another signal.
-    if (!mob.target || Math.hypot(dx, dz) < ARRIVE_D || mob.wanderT <= 0) {
+    // another signal. Step commits exempt: the waypoint file owns their
+    // arrival (roamStep advances it cell by cell), and a refresh here
+    // would re-arm a finite wanderT — the expiry below would then decide
+    // mid-flight, yanking the mob off the stairs.
+    if (!isStepCommit(mob) && (!mob.target || Math.hypot(dx, dz) < ARRIVE_D || mob.wanderT <= 0)) {
       mob._detour = false;
       mob._planHold = null;
       mob._rebase = false;
@@ -3066,8 +3095,9 @@ export function tickFarmMob(mob, dt, pickTarget, rand = mob.rand ?? Math.random,
   // goal if the new parallel doesn't walk); commit identity kept so the
   // stride survives (tgt follows target). Free roam commits only: entries
   // fly claimed slots, smooth crossings fly locked lines, detours fly
-  // validated lines, lanes fly rails.
-  if (mob._rebase && !mob.lane && !mob._detour && mob.roam && !mob.roam.entry && !mob.roam.smooth && mob.target) {
+  // validated lines, step commits fly their waypoint file, lanes fly
+  // rails.
+  if (mob._rebase && !mob.lane && !mob._detour && mob.roam && !mob.roam.entry && !mob.roam.smooth && !isStepCommit(mob) && mob.target) {
     mob._rebase = false;
     const dx = mob.target.x - mob.pos.x, dz = mob.target.z - mob.pos.z;
     const d = Math.hypot(dx, dz);
@@ -3100,6 +3130,22 @@ export function tickFarmMob(mob, dt, pickTarget, rand = mob.rand ?? Math.random,
   if (peersEff) slow = Math.min(slow, followSlow(mob, peersEff, grid));
   let savedSpeed = 0;
   if (slow !== 1) { savedSpeed = mob.speed; mob.speed *= slow; }
+  // The standing step offer: a drop straight ahead (the mob is at the
+  // head of a flight) is taken without a draw, so the staircase is walked
+  // instead of ridden. It is offered BEFORE the servo, because the flight
+  // reads as a 1-wide passage — the drop edges are walls — and a rail
+  // latched there would keep the drive and starve the commit (the mob
+  // then alternates wall-follow / 1-wide and never walks the stairs).
+  // Never steals a healthy wall-follow touch ride (that ride is the mob's
+  // own business) — but a ride that is not making progress (the mob stuck
+  // at a stair head) is fair game, or the rail would keep it there.
+  // Never a latched plan, an entry commit or a 2-wide crossing.
+  if (supported && !floating && !mob.nav &&
+      (mob.followLine?.touch !== true || (mob.stuckT ?? 0) >= STUCK_T) &&
+      mob.roam?.entry !== true && !mob.passage && !isStepCommit(mob) &&
+      (mob._turnAway ?? 0) <= 0) {
+    maybeStepCommit(mob, rand, true);
+  }
   const servoed = servoTick(mob, dt, supported, floating, rand, pickTarget, lanePeerGate, peersEff, turnGate);
   // A lane release hands the mob an exit commit of its own; the plan
   // wins, so the nav commit is re-published before the step below.
@@ -3118,10 +3164,14 @@ export function tickFarmMob(mob, dt, pickTarget, rand = mob.rand ?? Math.random,
   // Stationary mobs, holders, smooth crossings, and entry commits never
   // maneuver — their peers' episodes yield instead.
   if (!mob.lane && peersEff && supported && !floating && (mob.speed ?? 0) > 0 &&
-    mobRank(mob) < 3 && mob.roam?.smooth !== true && mob.roam?.entry !== true &&
+    mobRank(mob) < 3 && mob.roam?.smooth !== true && mob.roam?.entry !== true && !isStepCommit(mob) &&
     !(mob._turnAway > 0)) {
     grindWatchTick(mob, dt, supported, floating, peersEff, grid);
   } else if (!mob.lane) mob._peerStall = 0;
+  // While airborne roamStep is skipped and this fallback is the only
+  // drive — and it aims at mob.target, which a step commit keeps on the
+  // landing cell (down the drop, never away from it). Grounded, roamStep
+  // drives (roamed) so this never runs.
   if (mob.target && !servoed && !roamed) {
     // Legal-step gate (non-jumping walkers): never up, down at most
     // maxDrop. A deeper drop is a vertical air wall — rejected exactly
@@ -3141,14 +3191,33 @@ export function tickFarmMob(mob, dt, pickTarget, rand = mob.rand ?? Math.random,
     // through shallow contact on the committed heading (the backstop clears
     // the residue), and only true blockers earn a stuck re-pick below.
     const makeWander = () => {
-      const base = makeStepOk(mob, supported, floating, mob.nose.along, mob.yaw, 0, wallShrink(mob));
+      // A corner crossing falls over the void it stepped off into: the
+      // void is the way down, not a wall. A stair drive (a step commit, a
+      // plan on a narrow flight) uses the soft nose as well: rounding a
+      // corner grazes the wall it passes, and the snout must not veto
+      // the crossing.
+      const edge = mob.roam?.land != null;
+      const soft = isStepCommit(mob) || mob.roam?.nav === true || edge;
+      const base = makeStepOk(mob, supported, floating, mob.nose.along, mob.yaw, 0, wallShrink(mob), soft, edge);
       return blockedByMob ? (nx, nz) => base(nx, nz) && !blockedByMob(nx, nz) : base;
     };
     // Forced headings cruise open-loop (plan or detour alike); free
     // wander keeps the raw heading. Last-resort chase slides along walls
     // instead of grinding into them (same deflection as roam commits,
-    // full stride while turning).
-    const goal = plan ? plan.heading : cruise ?? Math.atan2(mob.target.x - mob.pos.x, mob.target.z - mob.pos.z);
+    // full stride while turning). A step commit falling between treads
+    // keeps its locked heading instead of homing the landing centre —
+    // homing would S-turn the fall (the body overshoots the target
+    // mid-air, then the drive yanks it back), while a straight glide
+    // lands it on the tread it walked off toward.
+    // A corner crossing aims at its landing: the mob has left the tread
+    // and must drift onto the tread beyond while it falls. Every other
+    // step commit keeps its locked heading instead of homing the landing
+    // centre — homing would S-turn the fall (the body overshoots the
+    // target mid-air, then the drive yanks it back), while a straight
+    // glide lands it on the tread it walked off toward.
+    const goal = mob.roam?.land ? Math.atan2(mob.roam.land.x - mob.pos.x, mob.roam.land.z - mob.pos.z) :
+      isStepCommit(mob) ? mob.roam.heading :
+      plan ? plan.heading : cruise ?? Math.atan2(mob.target.x - mob.pos.x, mob.target.z - mob.pos.z);
     driveToward(mob, dt, slideDeflect(mob, dt, goal, supported, floating),
       makeWander, moveClamped, { gated: false, turnOk: turnGiveGate });
   }
@@ -3177,6 +3246,8 @@ export function tickFarmMob(mob, dt, pickTarget, rand = mob.rand ?? Math.random,
     Math.floor(mob.pos.x), Math.floor(mob.pos.z), a, cellFree, cellSolid));
   mob.inPassage = !mob.oneWide && (heldInside || ridingInside);
   mob.tunnelPass = mob.roam?.entry === true;
+  // Step commit tint (stairs.js): yellow iff the step commit owns the mob.
+  mob.stepping = isStepCommit(mob);
   // Vertical plane (support state computed above, pre-move).
   stepVertical(mob, dt, surface, floating, supported);
   // Cosmetic: alternating leg swing + tail sway while walking (scene only).

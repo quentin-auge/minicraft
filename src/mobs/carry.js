@@ -97,6 +97,7 @@ export function resetMobMotion(mob) {
   mob.blendT = 0;
   mob.entryScanT = 0;
   mob.roam = null;
+  mob.stepping = false;
 }
 
 // Release entry: the same reset, plus unfreezing the movers, plus the

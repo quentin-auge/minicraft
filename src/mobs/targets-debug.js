@@ -7,7 +7,8 @@
 // on a wall, a volume — as a single translucent green box in its own
 // extent, outlined by its 12 subtle edges, and the planned path in the
 // same green — as floor squares while the mob walks, as cubes when it
-// moves in 3D. The targeted mob is painted green too. A
+// moves in 3D, and as cubes on the very steps where a ground plan changes
+// level. The targeted mob is painted green too. A
 // target with no path is refused at once; an arrival clears the overlay;
 // a C press while a mob walks cancels everything.
 //
@@ -189,10 +190,15 @@ function refreshOverlay() {
   signature = sig;
   const m = new THREE.Matrix4();
   let n = 0;
-  // The path: floor squares for a mob that walks, cubes for a 3D one.
+  // The path: floor squares for a mob that walks, cubes for a 3D one. A
+  // ground plan draws its level changes as cubes too: a cell whose level
+  // differs from the previous one is a step, so it reads as a 1-block
+  // cube; the rest stays a floor slab.
+  let prevY = null;
   for (const c of path) {
     if (n >= capacity) break;
-    if (state.pathFlat) {
+    const step = state.pathFlat ? (prevY != null && c.y !== prevY) : true;
+    if (!step) {
       m.makeScale(1, PATH_SLAB, 1);
       // The slab floats a hair above the cell's floor: its own bottom
       // face never shares the terrain's.
@@ -200,6 +206,7 @@ function refreshOverlay() {
     } else {
       m.makeTranslation(c.x + 0.5, c.y + 0.5, c.z + 0.5);
     }
+    prevY = c.y;
     overlay.setMatrixAt(n++, m);
   }
   overlay.count = n;

@@ -15,9 +15,12 @@ export const FARM_WALK_DIVISOR = 2.2;
 
 // Quadruped body plan, in body-length units straight from master's pig/cow
 // builders: a new farm animal is data here, never a builder fork.
+// drop is the deepest legal step down, stepUp the highest legal step UP
+// (0 for every walker today — the jump capability will raise it together
+// with its jump velocity).
 export const LIVESTOCK_SPECS = {
   pig: {
-    hw: 0.32, h: 0.92, drop: 1,
+    hw: 0.32, h: 0.92, drop: 1, stepUp: 0,
     body: { size: [0.86, 0.62, 1.16], at: [0, 0.6, 0] },
     head: { size: [0.52, 0.52, 0.46], at: [0, 0.76, 0.68] },
     snout: { size: [0.3, 0.2, 0.14], at: [0, 0.68, 0.94] },
@@ -27,7 +30,7 @@ export const LIVESTOCK_SPECS = {
     colors: { body: 0xf2aeb2, leg: 0x8f5a5e, snout: 0xd98286 },
   },
   cow: {
-    hw: 0.32, h: 1.3, drop: 1,
+    hw: 0.32, h: 1.3, drop: 1, stepUp: 0,
     body: { size: [0.9, 0.72, 1.26], at: [0, 0.78, 0] },
     spots: [
       { size: [0.28, 0.02, 0.32], at: [0.12, 1.15, -0.18] },
@@ -144,8 +147,19 @@ export function pickPenSpawns(pen, cellAt) {
 // maxDrop (per mob type; jumpers will add stepUp/jumpV beside it). A deeper
 // drop is a vertical air wall — impassable like solid, treated as such by
 // the mover. Pure and headless-testable.
-export function dropAllowed(fromY, groundY, maxDrop) {
-  return groundY <= fromY + 1e-3 && fromY - groundY <= maxDrop + 1e-3;
+//
+// stepUp is the height the kind may step UP (0 for every walker today);
+// the jump capability (registry.js) will raise it together with jumpV, so
+// the predicate needs no fork when the first jumper ships.
+//
+// fromY reads as the stance level: a supported mob stands up to 1e-3
+// above its tread (the support touch tolerance — see hasSupport), and an
+// exact one-block drop measured from the fractional feet fails at a float
+// epsilon. Every caller passes either an integer level or a supported
+// stance, so flooring to the tread changes nothing but the epsilon.
+export function dropAllowed(fromY, groundY, maxDrop, stepUp = 0) {
+  const f = Math.floor(fromY + 1e-3);
+  return groundY <= f + stepUp + 1e-3 && f - groundY <= maxDrop + 1e-3;
 }
 
 // Buoyancy target: 2/3 of the body above the liquid surface.

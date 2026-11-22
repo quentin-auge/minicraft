@@ -51,6 +51,9 @@ export const SUPPORT_SCAN = 8;
 // step count) — probes, corner arcs and tick-counted holds read the same
 // at any speed. Tall frames recurse (bounded by the 0.05 s dt clamp).
 export const SERVO_STEP = 1 / 60;
+// How deep a side wall may cut into the soft nose before it reads as a
+// block: the snout scrapes the newel post it rounds, it never buries in it.
+export const SOFT_NOSE_GRACE = 0.05;
 
 const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
 
@@ -280,14 +283,48 @@ export function groundBelow(px, py, pz) {
 // overhanging a dead-end back wall would veto the very steps that walk
 // out of it. yaw is injectable so corridor probes can test directions
 // other than the current facing.
-export function footingOkAt(mob, x, z, refY, yaw, noseAlong = null) {
+//
+// The head reads against the level the BODY lands on, not against the
+// takeoff. A staircase is one tread deep, so the snout reaches the next
+// tread — one level below the tread the body steps onto — long before
+// the body gets there. Bounding the head by the takeoff made every
+// staircase read as a cliff two levels down: the stair walker stalled on
+// the first tread, and the deflection that guards the drive slid it
+// sideways instead (the left/right parasite turns). Bounding the head by
+// the landing level keeps it hanging over the next tread, exactly as it
+// does when a body walks down a flight. The body itself still obeys
+// maxDrop from the takeoff, so a cliff, a pit and a ledge still refuse.
+export function footingOkAt(mob, x, z, refY, yaw, noseAlong = null, edge = false) {
   const nose = noseAlong ?? mob.nose.along;
-  for (let i = 0; i < 2; i++) {
-    const along = i === 0 ? 0 : nose;
-    const g = groundBelow(x + Math.sin(yaw) * along, refY + 1, z + Math.cos(yaw) * along);
-    if (g == null || !dropAllowed(refY, g, mob.maxDrop)) return false;
+  const gCore = groundBelow(x, refY + 1, z);
+  if (gCore == null) {
+    // A corner crossing steps off the tread: the void under the body is
+    // the way down, not a wall.
+    if (!edge) return false;
+    return true;
   }
+  if (!dropAllowed(refY, gCore, mob.maxDrop, mob.stepUp ?? 0)) return false;
+  if (!nose) return true;
+  const nx = x + Math.sin(yaw) * nose, nz = z + Math.cos(yaw) * nose;
+  const gNose = groundBelow(nx, refY + 1, nz);
+  if (gNose == null) return edge;
+  if (gNose > refY + (mob.stepUp ?? 0) + 1e-3) return false;
+  // At most maxDrop below the level the body lands on: one tread further.
+  if (refY - gNose > mob.maxDrop + (refY - gCore) + 1e-3) return false;
   return true;
+}
+
+// Does the snout hang over a drop? The servo reads the same way: a nose
+// over a drop must not turn the air-wall guard into a solid wall.
+export function noseOverDrop(mob, x, z, yaw) {
+  const dx = Math.sin(yaw), dz = Math.cos(yaw);
+  const reach = mob.nose.along;
+  const steps = Math.max(1, Math.ceil(reach / 0.25));
+  for (let i = 1; i <= steps; i++) {
+    const t = reach * i / steps;
+    if (groundBelow(x + dx * t, mob.pos.y + 1, z + dz * t) !== mob.pos.y) return true;
+  }
+  return false;
 }
 
 export function footingOk(mob, x, z, refY) {
@@ -297,18 +334,78 @@ export function footingOk(mob, x, z, refY) {
 // Headroom over the core + nose columns at their own ground (tail excluded
 // like above): a narrow pillar under the nose on the lower step blocks the
 // descent like a wall.
-export function headroomOkAt(mob, x, z, refY, yaw, noseAlong = null) {
+export function headroomOkAt(mob, x, z, refY, yaw, noseAlong = null, edge = false) {
   const nose = noseAlong ?? mob.nose.along;
   for (let i = 0; i < 2; i++) {
     const along = i === 0 ? 0 : nose;
     const cx = x + Math.sin(yaw) * along, cz = z + Math.cos(yaw) * along;
-    if (!centerHeadroom(cx, groundBelow(cx, refY + 1, cz), cz, mob.h)) return false;
+    const g = groundBelow(cx, refY + 1, cz);
+    // A corner crossing hangs over the void: there is no floor to clear.
+    if (g == null) { if (edge) continue; return false; }
+    if (!centerHeadroom(cx, g, cz, mob.h)) return false;
   }
   return true;
 }
 
 export function headroomOk(mob, x, z, refY) {
   return headroomOkAt(mob, x, z, refY, mob.yaw);
+}
+
+// Diagonal sweep clearance: a body driven straight oblique from one cell
+// centre to a diagonal neighbour's crosses the shared corner point, so
+// either corner square can flank the body at body height — a corner cell
+// that reads walkable at its own ground level (a lower tread, a standable
+// top) may still carry a solid flank inside the swept band (the spiral's
+// central column beside lower treads). Refuse the diagonal when any solid
+// overlaps the swept band [min(levelA, levelB), max + h] along the
+// diagonal, sampled at quarter points with the body box (the midpoint is
+// exactly the shared corner). Wide treads never sweep: they walk
+// axis-separated, row then column at the takeoff level, so only corner
+// (lone-tread, vector-driven) diagonals read this — callers gate on
+// treadWide below. Body only, like walkable; the nose stays out the same
+// way. Pure, fixed sample order: plans stay deterministic.
+export function diagonalSweepFree(mob, ax, az, levelA, bx, bz, levelB) {
+  const dx = bx - ax, dz = bz - az;
+  if (!dx || !dz) return true;
+  const lo = Math.min(levelA, levelB), hi = Math.max(levelA, levelB);
+  for (const t of [0.25, 0.5, 0.75]) {
+    const px = ax + 0.5 + dx * t, pz = az + 0.5 + dz * t;
+    for (let py = Math.floor(lo); py <= Math.floor(hi); py++) {
+      if (aabbIntersectsSolid(px, py, pz, mob.hw, mob.h)) return false;
+    }
+  }
+  return true;
+}
+
+// A whole cell walks at its own level: the body fits, the head has room,
+// the feet are dry. One rule behind the step scan (stairs.js) and the
+// tread-width read below, so both agree on what fits.
+export function cellFitsLevel(mob, cx, cy, cz) {
+  const x = cx + 0.5, z = cz + 0.5;
+  if (aabbIntersectsSolid(x, cy, z, mob.hw, mob.h)) return false;
+  if (!centerHeadroom(x, cy, z, mob.h)) return false;
+  if (isLiquid(getBlock(cx, Math.floor(cy), cz))) return false;
+  return true;
+}
+
+// Tread width across the travel axis: a tread flanked at the same level
+// by at least one fitting neighbour cell is WIDE (two blocks or more) —
+// the mob turns to take it perpendicularly and walks it axis-separated, so
+// it never sweeps a corner. A lone tread is a corner tread — driven
+// straight oblique, never blocked on the corner. Shared by the flight
+// builder (stairs.js) and the planner (nav.js) so both agree on which
+// diagonals sweep.
+export function treadWide(mob, cx, cz, level, yaw) {
+  const px = Math.cos(yaw), pz = -Math.sin(yaw);
+  for (const s of [1, -1]) {
+    const nx = Math.round(cx + px * s), nz = Math.round(cz + pz * s);
+    if (nx === cx && nz === cz) continue;
+    const g = groundBelow(nx + 0.5, level + 1, nz + 0.5);
+    if (g == null || Math.abs(g - level) > 1e-3) continue;
+    if (!cellFitsLevel(mob, nx, g, nz)) continue;
+    return true;
+  }
+  return false;
 }
 
 // Whole-cell walkability for branch classification: column solid-free over
@@ -322,7 +419,11 @@ export function makeCellFree(mob) {
     }
     if (isLiquid(getBlock(bx, Math.floor(refY), bz))) return false;
     const g = groundBelow(bx + 0.5, refY + 1, bz + 0.5);
-    if (g == null || !dropAllowed(refY, g, mob.maxDrop)) return false;
+    if (g == null) return false;
+    // The cell rule stays strict: a cell one level below the feet reads
+    // as unwalkable, so a staircase never passes for a tunnel mouth (the
+    // entry scan would draw the stairs as a hole to walk into).
+    if (!dropAllowed(refY, g, mob.maxDrop, mob.stepUp ?? 0)) return false;
     return centerHeadroom(bx + 0.5, g, bz + 0.5, mob.h);
   };
 }
@@ -346,7 +447,17 @@ export function makeCellSolid(mob) {
 // footNose overrides the circle offset for the void probes: the corridor
 // classifier passes 0 (body-only direction sensing, so 1-cell arms ending
 // in a wall still read open), the drive passes the real nose reach.
-export function makeStepOk(mob, supported, floating, noseAlong, yaw, footNose = null, hwShrink = 0) {
+// soft turns the nose into a soft probe (the step commit only): a snout
+// hanging over a drop never vetoes, and a wall BESIDE it is a graze, not
+// a block — so a mob rounds a newel post instead of stalling on its
+// snout. A wall straight ahead still stops the body.
+// edge lets the body columns pass over a VOID (no ground at all) instead
+// of reading it as an air wall: the corner crossing of a staircase
+// (stairs.js) steps off the tread and drops onto the next one, so the
+// void under the crossing is the way, not a wall. Only the void is
+// relaxed — solids stay exact, and the drop limit still applies to the
+// columns that do have ground.
+export function makeStepOk(mob, supported, floating, noseAlong, yaw, footNose = null, hwShrink = 0, soft = false, edge = false) {
   const foot = footNose ?? noseAlong;
   const hw = hwShrink > 0 ? Math.max(0.05, mob.hw - hwShrink) : mob.hw;
   // Same shrink on the nose disc (passing only): at noseAlong 0 the disc
@@ -361,15 +472,18 @@ export function makeStepOk(mob, supported, floating, noseAlong, yaw, footNose = 
     }
     if (aabbIntersectsSolid(nx, mob.pos.y, nz, hw, mob.h)) return false;
     const gx = nx + Math.sin(yaw) * noseAlong, gz = nz + Math.cos(yaw) * noseAlong;
-    if (aabbIntersectsSolid(gx, mob.pos.y, gz, nr, mob.h)) return false;
+    if (soft) {
+      if (!noseOverDrop(mob, nx, nz, yaw) &&
+        noseHitsSolid(gx, mob.pos.y, gz, nr + 0.03, mob.h, Math.sin(yaw), Math.cos(yaw), SOFT_NOSE_GRACE)) return false;
+    } else if (aabbIntersectsSolid(gx, mob.pos.y, gz, nr, mob.h)) return false;
     if (floating) return true;
     // Bounded drift, gated on the takeoff level: legal descents keep
     // their glide, falls over void drop straight from the first tick.
     if (!supported) {
-      return mob.fallFrom - mob.pos.y <= mob.maxDrop + 1e-3 && footingOkAt(mob, nx, nz, mob.fallFrom, yaw, foot);
+      return mob.fallFrom - mob.pos.y <= mob.maxDrop + 1e-3 && footingOkAt(mob, nx, nz, mob.fallFrom, yaw, foot, edge);
     }
-    if (!footingOkAt(mob, nx, nz, mob.pos.y, yaw, foot)) return false;
-    return headroomOkAt(mob, nx, nz, mob.pos.y, yaw, foot);
+    if (!footingOkAt(mob, nx, nz, mob.pos.y, yaw, foot, edge)) return false;
+    return headroomOkAt(mob, nx, nz, mob.pos.y, yaw, foot, edge);
   };
 }
 
@@ -480,7 +594,7 @@ export function segmentWalkable(mob, x0, z0, x1, z1) {
     if (aabbIntersectsSolid(x, mob.pos.y, z, mob.hw, mob.h)) return false;
     const g = groundBelow(x, mob.pos.y + 1, z);
     if (g == null) return false;
-    if (g > prevG + 1e-3 || prevG - g > mob.maxDrop + 1e-3) return false;
+    if (g > prevG + (mob.stepUp ?? 0) + 1e-3 || prevG - g > mob.maxDrop + 1e-3) return false;
     prevG = g;
     if (!centerHeadroom(x, g, z, mob.h)) return false;
   }
@@ -500,7 +614,7 @@ export function strideTarget(mob, heading = null, rand = Math.random, minD = WAN
     const sz = Math.floor(mob.pos.z + Math.cos(h) * dist) + 0.5;
     const gy = groundBelow(sx, mob.pos.y + 1, sz);
     if (gy == null) continue;
-    if (!dropAllowed(mob.pos.y, gy, mob.maxDrop ?? 1)) continue;
+    if (!dropAllowed(mob.pos.y, gy, mob.maxDrop ?? 1, mob.stepUp ?? 0)) continue;
     if (isLiquid(getBlock(Math.floor(sx), gy, Math.floor(sz)))) continue;
     if (!centerHeadroom(sx, gy, sz, mob.h)) continue;
     if (!segmentWalkable(mob, mob.pos.x, mob.pos.z, sx, sz)) continue;

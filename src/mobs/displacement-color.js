@@ -1,8 +1,9 @@
 // Displacement-mode tint (?color=1 only): purple entry approach, orange
 // while a live 2-wide passage holds (over any ride — the thread owns the
-// inside), blue touch rides, red true 1-wide lanes, natural coats
-// otherwise. Debug paint only — steering never reads it; headless rigs
-// assert the mover flags (`tunnelPass`/`wallFollow`/`oneWide`/`inPassage`),
+// inside), red true 1-wide lanes, yellow while a staircase is walked
+// (the step phase), blue touch rides, natural coats otherwise. Debug
+// paint only — steering never reads it; headless rigs assert the mover
+// flags (`tunnelPass`/`wallFollow`/`oneWide`/`inPassage`/`stepping`),
 // never the paint.
 //
 // The paint itself belongs to `paint.js` (the one owner of a mob's
@@ -22,14 +23,26 @@ const wallBlueMat = new THREE.MeshStandardMaterial({ color: 0x2255ff, roughness:
 const laneRedMat = new THREE.MeshStandardMaterial({ color: 0xff3333, roughness: 0.9 });
 const tunnelPurpleMat = new THREE.MeshStandardMaterial({ color: 0x9933ff, roughness: 0.9 });
 const passageOrangeMat = new THREE.MeshStandardMaterial({ color: 0xff8800, roughness: 0.9 });
+const stepYellowMat = new THREE.MeshStandardMaterial({ color: 0xffdd22, roughness: 0.9 });
+
+// The modes and their order, strongest first: the violet entry commit,
+// the orange 2-wide thread, the red 1-wide rail, the yellow staircase
+// (the step phase), the blue wall ride. One list, so a new mode is one
+// entry — the mover's flags are the only inputs (headless rigs assert
+// the flags, never the paint).
+const MODE_ORDER = [
+  { flag: "tunnelPass", mat: tunnelPurpleMat },
+  { flag: "inPassage", mat: passageOrangeMat },
+  { flag: "oneWide", mat: laneRedMat },
+  { flag: "stepping", mat: stepYellowMat },
+  { flag: "wallFollow", mat: wallBlueMat },
+];
 
 // The colour the mob's displacement mode asks for (null: the natural
-// coat).
+// coat). Red and blue never hold together (a lane is one or the other),
+// so the order between them is behaviour-neutral.
 function modeColor(mob) {
-  if (mob.tunnelPass) return tunnelPurpleMat;
-  if (mob.inPassage) return passageOrangeMat;
-  if (mob.wallFollow) return wallBlueMat;
-  if (mob.oneWide) return laneRedMat;
+  for (const mode of MODE_ORDER) if (mob[mode.flag]) return mode.mat;
   return null;
 }
 

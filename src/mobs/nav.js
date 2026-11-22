@@ -16,10 +16,12 @@
 import { getBlock } from "../core/store.js";
 import { isLiquid } from "../core/blocks.js";
 import {
-  groundBelow, centerHeadroom, aabbIntersectsSolid, NO_EXPIRY,
+  groundBelow, centerHeadroom, aabbIntersectsSolid, hasSupport, NO_EXPIRY,
+  diagonalSweepFree, treadWide,
 } from "./step.js";
 import { dropAllowed } from "./livestock.js";
 import { dirVec, normYaw } from "./corridor.js";
+import { cornerCrossing, stairDiagonal, VIA_LEAVE_DROP } from "./stairs.js";
 import { mobType } from "./registry.js";
 import { contactGoalTiers, targetCells, targetKind } from "./targets.js";
 
@@ -50,11 +52,20 @@ const DIRS8 = [
   [1, 0], [-1, 0], [0, 1], [0, -1],
   [1, 1], [1, -1], [-1, 1], [-1, -1],
 ];
+// A corner crossing is a detour: the mob walks wide around the core and
+// drops, so it costs more than the straight diagonal and the planner
+// prefers the cardinal way whenever one exists.
+const STAIR_DETOUR_COST = 0.6;
 
 // Ground walk: flat and step-down ground only (never up — walkers have
 // no jump capability yet), dry feet, body and headroom clear. Diagonal
 // moves never cut a corner: both orthogonal neighbours must walk from
-// the same node, so corridors stay cardinal.
+// the same node, so corridors stay cardinal — and a corner (lone-tread,
+// vector-driven) diagonal must sweep clear: no solid in either corner
+// square inside the swept band, so a walkable-at-its-own-level corner (a
+// lower tread, a standable top) never flanks the body at body height (the
+// spiral's central column). Wide treads walk axis-separated and never
+// sweep, so they keep the old rule.
 registerTraversalStrategy({
   key: "ground-walk",
   capabilities: ["walk"],
@@ -68,14 +79,38 @@ registerTraversalStrategy({
       const g = ctx.groundLevel(node.x + dx, node.z + dz, node.y);
       if (g == null) continue;
       if (!ctx.walkable(node.x + dx, g, node.z + dz)) continue;
+      let stair = null;
       if (dx && dz) {
-        const gx = ctx.groundLevel(node.x + dx, node.z, node.y);
-        const gz = ctx.groundLevel(node.x, node.z + dz, node.y);
-        if (gx == null || gz == null) continue;
-        if (!ctx.walkable(node.x + dx, gx, node.z)) continue;
-        if (!ctx.walkable(node.x, gz, node.z + dz)) continue;
+        // A stair diagonal: the flight turns around a solid corner (a
+        // newel post), and the mob walks the crossing point clear of it
+        // and drops onto the tread beyond. The corner cells do not walk,
+        // so the plain corner rule would refuse the whole staircase.
+        // Only a DROP is a staircase: a flat corner (the end of a wall)
+        // keeps the plain rule, its body would never fit the crossing.
+        //
+        // The same rule the step scan reads (stairs.js): the diagonal is
+        // walkable whenever the body can sweep the corner, and around a
+        // core it takes the crossing point. Both must agree, or the plan
+        // would refuse a staircase the yellow commit walks.
+        if (g < node.y) {
+          stair = stairDiagonal(ctx.mob, node.x, node.z, dx, dz, node.y);
+          if (!stair) continue;
+        } else {
+          const gx = ctx.groundLevel(node.x + dx, node.z, node.y);
+          const gz = ctx.groundLevel(node.x, node.z + dz, node.y);
+          if (gx == null || gz == null) continue;
+          if (!ctx.walkable(node.x + dx, gx, node.z)) continue;
+          if (!ctx.walkable(node.x, gz, node.z + dz)) continue;
+          const yaw = Math.atan2(dx, dz);
+          if (!treadWide(ctx.mob, node.x + dx, node.z + dz, g, yaw) &&
+            !diagonalSweepFree(ctx.mob, node.x, node.z, node.y, node.x + dx, node.z + dz, g)) continue;
+        }
       }
-      out.push({ x: node.x + dx, y: g, z: node.z + dz, cost: dx && dz ? Math.SQRT2 : 1 });
+      // A corner crossing is a detour: the mob walks wide around the core
+      // and drops, so it costs more than the straight diagonal and the
+      // planner prefers the cardinal way whenever one exists.
+      out.push({ x: node.x + dx, y: g, z: node.z + dz,
+        cost: dx && dz ? Math.SQRT2 + (stair ? STAIR_DETOUR_COST : 0) : 1 });
     }
     return out;
   },
@@ -109,16 +144,13 @@ export const NAV_BLOCKED_T = 0.3;
 // The route must shrink by this much to count as progress (a push that
 // slides the mob sideways does not).
 export const NAV_PROGRESS = 0.05;
-// A mob that does not move AT ALL (not even a slide) for this long is
-// wedged for good: the plan cannot be walked and the mob gives up
-// rather than pressing on.
-export const NAV_STILL_T = 1.0;
 // Two routes are the same way when their remaining lengths agree within
 // this much (a route shifted by a push keeps its shape; a detour around
 // a new wall is longer).
 export const NAV_SAME_ROUTE = 1.0;
-// The replan is uncapped: a blocked mob replans until it arrives. Only a
-// world without any path left ends the plan (the mob gives up).
+// The replan is uncapped: a blocked mob replans until it arrives. A route
+// that exists is never abandoned — only a world without any path left
+// ends the plan (there is nothing left to arrive at).
 
 function cellKey(c) {
   return `${c.x},${c.y},${c.z}`;
@@ -133,24 +165,41 @@ function resolveCapabilities(mob, opts = {}) {
 // The cell the mob stands in: the support cell under its feet. Null
 // when it is not grounded (mid-air, or over a void) — no plan starts
 // from thin air.
+//
+// A mob at a tread lip straddles two cells: its centre already hangs over
+// the next one while the feet still stand on the tread behind. The centre
+// alone would then read a level below the feet and refuse to plan, so the
+// support is read from the whole footprint — the cell that holds the mob
+// up owns the plan.
 function startCell(mob) {
-  const g = groundBelow(mob.pos.x, mob.pos.y + 1, mob.pos.z);
-  if (g == null) return null;
-  if (Math.abs(mob.pos.y - g) > 0.6) return null;
-  return { x: Math.floor(mob.pos.x), y: g, z: Math.floor(mob.pos.z) };
+  const cx = Math.floor(mob.pos.x), cz = Math.floor(mob.pos.z);
+  const g0 = groundBelow(mob.pos.x, mob.pos.y + 1, mob.pos.z);
+  if (g0 != null && Math.abs(mob.pos.y - g0) <= 0.6) return { x: cx, y: g0, z: cz };
+  const hw = mob.hw ?? 0.3;
+  let best = null;
+  for (let bx = Math.floor(mob.pos.x - hw); bx <= Math.floor(mob.pos.x + hw); bx++) {
+    for (let bz = Math.floor(mob.pos.z - hw); bz <= Math.floor(mob.pos.z + hw); bz++) {
+      const g = groundBelow(bx + 0.5, mob.pos.y + 0.6, bz + 0.5);
+      if (g == null || g > mob.pos.y + 0.6) continue;
+      if (!best || g > best.g) best = { g, x: bx, z: bz };
+    }
+  }
+  if (!best) return null;
+  return { x: best.x, y: best.g, z: best.z };
 }
 
 function makeCtx(mob, maxDrop, obstacles = null) {
+  const stepUp = mob.stepUp ?? 0;
   return {
     mob,
     maxDrop,
     obstacles,
     // Ground top under a cell, when the step from `fromY` is legal
-    // (never up, at most maxDrop down).
+    // (never up for a walker, at most maxDrop down).
     groundLevel: (x, z, fromY) => {
       const g = groundBelow(x + 0.5, fromY + 1, z + 0.5);
       if (g == null) return null;
-      if (!dropAllowed(fromY, g, maxDrop)) return null;
+      if (!dropAllowed(fromY, g, maxDrop, stepUp)) return null;
       return g;
     },
     // A whole feet cell walks: the body fits, the head has room, the
@@ -392,12 +441,16 @@ export function clearNav(mob) {
 }
 
 // The planned line as cell centers — the polyline the mob follows — with
-// the cumulative length along it (the route comparison reads it).
+// the cumulative length along it (the route comparison reads it). The line
+// is 3D: a staircase descends, so the level is part of the line and of its
+// length. A spiral folds back on itself in plan (two legs share the same
+// footprint one floor apart), and only the level tells them apart.
 function routeOf(cells) {
-  const points = cells.map((c) => ({ x: c.x + 0.5, z: c.z + 0.5 }));
+  const points = cells.map((c) => ({ x: c.x + 0.5, z: c.z + 0.5, y: c.y }));
   const cum = [0];
   for (let i = 0; i + 1 < points.length; i++) {
-    cum.push(cum[i] + Math.hypot(points[i + 1].x - points[i].x, points[i + 1].z - points[i].z));
+    cum.push(cum[i] + Math.hypot(points[i + 1].x - points[i].x, points[i + 1].z - points[i].z,
+      (points[i + 1].y ?? 0) - (points[i].y ?? 0)));
   }
   return { points, cum, length: cum[cum.length - 1] ?? 0 };
 }
@@ -405,7 +458,7 @@ function routeOf(cells) {
 function segLen(pts, i) {
   const a = pts[i], b = pts[i + 1];
   if (!b) return 0;
-  return Math.hypot(b.x - a.x, b.z - a.z);
+  return Math.hypot(b.x - a.x, b.z - a.z, (b.y ?? 0) - (a.y ?? 0));
 }
 
 // Arrived: the mob stands on one of the target blocks — its centre is
@@ -484,8 +537,11 @@ function pressedAtSide(mob, nav) {
 }
 
 // Closest point on the planned line: a narrow window around the current
-// arc (the path may fold back on itself, so a wide scan could jump to
-// the wrong leg) with a global fallback when the mob is far off the line.
+// arc (the path may fold back on itself, so a wide scan could jump to the
+// wrong leg) with a global fallback when the mob is far off the line.
+// The projection is 3D: on a spiral two legs share the same footprint one
+// floor apart, and only the level tells the mob's own leg from the one
+// above it.
 function projectPath(nav, pos) {
   const pts = nav.points;
   if (pts.length < 2) return null;
@@ -494,12 +550,12 @@ function projectPath(nav, pos) {
   const scan = (from, to) => {
     for (let i = from; i < to; i++) {
       const a = pts[i], b = pts[i + 1];
-      const dx = b.x - a.x, dz = b.z - a.z;
+      const dx = b.x - a.x, dz = b.z - a.z, dy = (b.y ?? 0) - (a.y ?? 0);
       const len2 = dx * dx + dz * dz;
       let t = 0;
       if (len2 > 1e-9) t = Math.max(0, Math.min(1, ((pos.x - a.x) * dx + (pos.z - a.z) * dz) / len2));
-      const px = a.x + dx * t, pz = a.z + dz * t;
-      const d = Math.hypot(pos.x - px, pos.z - pz);
+      const px = a.x + dx * t, pz = a.z + dz * t, py = (a.y ?? 0) + dy * t;
+      const d = Math.hypot(pos.x - px, pos.z - pz, (pos.y ?? 0) - py);
       if (!best || d < best.d) best = { d, x: px, z: pz, arc: i + t };
       // The distance to the nearest planned CELL — the band the mob's
       // centre must stay inside.
@@ -632,21 +688,105 @@ export function navOnPath(mob, x, z, radius = 1.2) {
   return false;
 }
 
+// The stair diagonal the plan takes at the mob's position: the next
+// planned cell is a diagonal DROP. The body must cross that corner
+// OBLIQUELY — an axis-separated move would put the core over the void
+// corner and stall there — so the commit targets the landing tread and
+// drives diagonally, exactly as the step commit does.
+//
+// The step is the one the mob is STANDING on: a spiral's legs share a
+// footprint one floor apart, so the nearest diagonal is not always the
+// mob's own (it straddles a corner, both are equally near). The takeoff
+// the mob's feet rest on decides it; the nearest one is the fallback.
+//
+// When a solid core stands in the corner (a newel post), the mob walks
+// the crossing point clear of it and drops onto the tread beyond.
+function planStair(nav, mob) {
+  const cells = nav.path;
+  if (!cells || cells.length < 2) return null;
+  // Ranked single pass: rank 0 is the takeoff the feet rest on (its own
+  // step, never the next leg's — a spiral's legs share a footprint one
+  // floor apart, so the nearest diagonal is not always the mob's own),
+  // rank 1 the nearest fallback.
+  let step = null;
+  for (let j = 0; j < cells.length - 1; j++) {
+    const from = cells[j], to = cells[j + 1];
+    const dx = to.x - from.x, dz = to.z - from.z;
+    if (!dx || !dz) continue;
+    // Only a DROP is a staircase: a flat diagonal is walked as a plain
+    // diagonal, its body never leaves the level.
+    if (to.y >= from.y) continue;
+    // Only the step the mob is at (or just before it).
+    const d = Math.hypot((from.x + 0.5) - mob.pos.x, (from.z + 0.5) - mob.pos.z);
+    if (d > 1.6) continue;
+    const rank = Math.abs(from.y - mob.pos.y) <= 0.5 ? 0 : 1;
+    const cand = { from, to, d, rank, land: { x: to.x + 0.5, z: to.z + 0.5 } };
+    if (!step || rank < step.rank || (rank === step.rank && d < step.d)) step = cand;
+  }
+  if (!step) return null;
+  const via = cornerCrossing(mob, step.from.x, step.from.z,
+    step.to.x - step.from.x, step.to.z - step.from.z, step.from.y, step.to.x, step.to.z);
+  return { from: step.from, to: step.to, via, land: step.land };
+}
+
 // Publish the plan as the mob's commit: the existing roam commit drives
 // the pursuit target, so the movement primitives (open roam, wall-follow,
 // 1-wide, 2-wide) do the walking — the planner only chooses where. An
 // entry commit owns the mob meanwhile (the mouth machinery drives it).
-export function navCommit(mob) {
-  const nav = mob.nav;
-  if (!nav || !nav.steer) return false;
-  if (mob.roam?.entry === true) return false;
-  const tx = nav.steer.x, tz = nav.steer.z;
+function publishNavCommit(mob, tx, tz, extra = {}) {
   const heading = Math.atan2(tx - mob.pos.x, tz - mob.pos.z);
   const target = { x: tx, z: tz };
   mob.target = target;
   mob.wanderT = NO_EXPIRY;
-  mob.roam = { mode: "commit", heading, target, tgt: target, t: 0, span: NO_EXPIRY, runT: 0, nav: true };
+  mob.roam = { mode: "commit", heading, target, tgt: target, t: 0, span: NO_EXPIRY, runT: 0, nav: true, ...extra };
   return true;
+}
+
+export function navCommit(mob) {
+  const nav = mob.nav;
+  if (!nav || !nav.steer) return false;
+  if (mob.roam?.entry === true) return false;
+  // The stair diagonal the plan takes at the mob's position: the next
+  // planned cell is a diagonal DROP. The body must cross that corner
+  // OBLIQUELY — an axis-separated move would put the core over the void
+  // corner and stall there — so the commit targets the landing tread and
+  // drives diagonally, exactly as the step commit does.
+  const stair = planStair(nav, mob);
+  // A core crossing in progress is kept until the mob lands on the tread
+  // beyond: the plan republishes its commit every tick, and the crossing
+  // point must survive those republications.
+  const cur = mob.roam;
+  const crossing = cur && cur.cross === true && cur.via && cur.land &&
+    mob.pos.y > cur.viaY - VIA_LEAVE_DROP
+    ? { via: cur.via, land: cur.land, level: cur.viaY }
+    : null;
+  const tx = nav.steer.x, tz = nav.steer.z;
+  if (crossing) {
+    // The crossing point first, the tread beyond after: the mob steps off
+    // the tread and drops onto it.
+    return publishNavCommit(mob, crossing.via.x, crossing.via.z,
+      { via: { x: crossing.via.x, z: crossing.via.z }, land: crossing.land, viaY: crossing.level, cross: true });
+  }
+  if (!stair) return publishNavCommit(mob, tx, tz);
+  // The mob must STAND on the takeoff tread before it crosses the
+  // corner: a mob still falling (or hovering over the void corner)
+  // would drift off the tread while it turns, and wedge in the gap. It
+  // holds its place until it is supported on the takeoff level.
+  const onTakeoff = Math.abs(mob.pos.y - stair.from.y) <= 0.5 &&
+    hasSupport(mob.pos.x, mob.pos.y, mob.pos.z, mob.hw);
+  if (!onTakeoff) {
+    return publishNavCommit(mob, mob.pos.x, mob.pos.z, { heading: mob.yaw, hold: true });
+  }
+  if (stair.via) {
+    // A core stands in the corner: the mob walks the crossing point
+    // clear of it and drops onto the tread beyond.
+    return publishNavCommit(mob, stair.via.x, stair.via.z,
+      { via: { x: stair.via.x, z: stair.via.z }, land: stair.land, viaY: stair.from.y, cross: true });
+  }
+  // A clear corner: the body crosses it on the diagonal, and the void
+  // it passes over is the way down (not a wall).
+  return publishNavCommit(mob, stair.land.x, stair.land.z,
+    { diag: true, land: stair.land, viaY: stair.from.y });
 }
 
 // One nav tick: project the mob onto the planned line, aim at the point
@@ -711,9 +851,12 @@ export function navTick(mob, dt, supported, floating, peers = null) {
   // moving one exactly like a parked one), so the route goes around them
   // instead of pushing through; with no route around, the plain plan
   // stands — a peer never makes the path vanish. A new route is adopted
-  // at once (the mob turns to it immediately); the same route means
-  // nothing can be improved, and the mob gives up rather than pressing
-  // on.
+  // at once (the mob turns to it immediately).
+  //
+  // A route that EXISTS is never abandoned: the mob keeps its target and
+  // keeps retrying, so a world that opens (a bridge built, a peer gone,
+  // a staircase finished) still delivers it. Only a target no route can
+  // reach at all ends the plan — there is nothing left to arrive at.
   if (nav.pressT >= NAV_BLOCKED_T) {
     nav.pressT = 0;
     nav.replans++;
@@ -723,18 +866,18 @@ export function navTick(mob, dt, supported, floating, peers = null) {
       : null;
     if (!plan) plan = planPath(mob, nav.target, { capabilities: nav.capabilities });
     if (!plan) {
+      // Unreachable: no route exists now and none can be built. The mob
+      // gives the target up — it cannot arrive at what nothing reaches.
       clearNav(mob);
       return false;
     }
     const route = routeOf(plan.cells);
     if (sameRoute(nav, route, plan.goal)) {
       // Nothing new to try. A mob that keeps sliding is still getting
-      // somewhere; a mob that stands still cannot walk this route at
-      // all — it gives up rather than pressing on.
-      if (nav.stillT >= NAV_STILL_T) {
-        clearNav(mob);
-        return false;
-      }
+      // somewhere; a mob that stands still cannot walk this route yet.
+      // The target stays: the route may open later, and the mob must
+      // still arrive.
+      nav.wedged = true;
     }
     nav.path = plan.cells;
     nav.points = route.points;

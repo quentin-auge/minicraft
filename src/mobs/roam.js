@@ -18,12 +18,13 @@ import {
   oppositeYaw, isTwoWideMouth, ENTRY_COOL_T, mobHeadsToCooledMouth, insideCooledMouth,
 } from "./corridor.js";
 import {
-  makeStepOk, makeCellFree, makeCellSolid, turnTo, moveClamped, driveToward, strideTarget,
+  makeStepOk, makeCellFree, makeCellSolid, turnTo, moveClamped, moveVector, driveToward, strideTarget,
   dropLane, TURN_RATE, VIRTUAL_W, NO_EXPIRY, SPIN, descendOk, slideDeflect,
   segmentWalkable, aabbIntersectsSolid,
 } from "./step.js";
 import { activeNarrowPeer } from "./narrow.js";
 import { WALL_ALLOW } from "./collide.js";
+import { maybeStepCommit, chainStepCommit, updateStepVia, isStepCommit, STEP_STALL_T, VIA_LEAVE_DROP } from "./stairs.js";
 
 // Wall face within this engages following.
 // Touch rides run on a roam-clock budget (wallSpan, sampled per latch),
@@ -49,7 +50,10 @@ export const WINDS8 = [
   Math.PI, (5 * Math.PI) / 4, (3 * Math.PI) / 2, (7 * Math.PI) / 4,
 ];
 
-// Body fits at (x, z) in the caller's grounded dry context.
+// Body fits at (x, z) in the caller's grounded dry context. The lookahead
+// rule applies (a tread of an armed step run is legal ground): the ray
+// that picks an open heading must see the staircase ahead as open room,
+// or the mob never commits to walking down it.
 function bodyFits(mob, supported, floating, yaw, x, z) {
   return makeStepOk(mob, supported, floating, 0, yaw, 0)(x, z);
 }
@@ -387,12 +391,11 @@ function twoStageExit(mob, exitAxis, dt, supported, floating, rand, pickTarget, 
 // decide) owns the only release, for liveness.
 function straightSmooth(mob, exitAxis, supported, floating, rand, done) {
   if (exitRoamCommit(mob, exitAxis, supported, floating, rand)) {
-    mob.roam.smooth = true;
+    if (!isStepCommit(mob)) mob.roam.smooth = true;
     return done(false);
   }
   const [dx, dz] = dirVec(exitAxis);
-  installExitRoam(mob, exitAxis, { x: mob.pos.x + dx, z: mob.pos.z + dz }, rand);
-  mob.roam.smooth = true;
+  if (!installExitRoam(mob, exitAxis, { x: mob.pos.x + dx, z: mob.pos.z + dz }, rand)) mob.roam.smooth = true;
   return done(false);
 }
 
@@ -504,6 +507,10 @@ function exitRoamCommit(mob, h, supported, floating, rand) {
 // exits): the mover and roamStep honor the marker (no stuck re-pick, no
 // contact latch, no plan override) until the span watchdog releases it.
 function installExitRoam(mob, heading, target, rand) {
+  // A visible drop/jump preempts the exit roam (mouth exits free the mob).
+  // Returns true when a step commit took over (no exit installed, and no
+  // smooth stamp on top of it).
+  if (maybeStepCommit(mob, rand)) return true;
   mob.target = target;
   mob.wanderT = NO_EXPIRY;
   mob.roam = {
@@ -512,6 +519,7 @@ function installExitRoam(mob, heading, target, rand) {
   };
   mob.stuckT = 0;
   mob.followCool = Math.max(mob.followCool ?? 0, EXIT_ROAM_GRACE);
+  return false;
 }
 
 // Free-roam table shared by every exit without a wall to hug: straight 50%
@@ -855,15 +863,33 @@ export function tryGuidedErect(mob, dt, supported, floating, rand = Math.random)
 export function roamStep(mob, dt, supported, floating, rand = Math.random, pickTarget, blocked = null, forceHeading = null, turnGate = null, latched = false) {
   if (mob.lane) return false;
   const r = mob.roam;
+  updateStepVia(mob);
   if (!latched) {
     const broken = r && r.mode && mob.target !== r.tgt;
-    const arrived = r && r.mode === "commit" && mob.target &&
-      Math.hypot(r.target.x - mob.pos.x, r.target.z - mob.pos.z) < ARRIVE_D;
+    // A step commit arrives by proximity AND level: reaching the landing
+    // cell's XZ while still standing on the takeoff lip is not an arrival
+    // (the mob would chain mid-air off a scan from the wrong level).
+    // A corner commit lands on its landing: it arrives when it stands on
+    // the landing cell at the landing level (the crossing point is behind
+    // it by then).
+    const near = r && (r.land
+      ? Math.hypot(r.land.x - mob.pos.x, r.land.z - mob.pos.z) < ARRIVE_D + 0.35
+      : Math.hypot(r.target.x - mob.pos.x, r.target.z - mob.pos.z) < ARRIVE_D);
+    const arrived = r && r.mode === "commit" && mob.target && near &&
+      (!isStepCommit(mob) || (supported && !floating && Math.abs(mob.pos.y - (r.stepY ?? mob.pos.y)) <= 0.5));
     const expired = r && r.mode && mob.wanderT <= 0;
     // Entry commits never time out into a decide (that U-turns a committed
     // mob): arrival or the ENTRY_TIMEOUT backstop in entryTick closes them.
     const timedOut = r && r.mode && !r.entry && (r.t ?? 0) > (r.span ?? SPAN_MAX);
-    if (!r || !r.mode || broken || arrived || expired || timedOut || !mob.target) {
+    let chained = false;
+    if (isStepCommit(mob) && arrived && supported && !floating) {
+      // Step landing: chain onto the next drop/jump when one waits within
+      // ±90° (the commit owns the mob until the stairs run out); else the
+      // commit drops here and regular movement resumes below via decide.
+      if (chainStepCommit(mob)) chained = true;
+      else { mob.roam = null; mob.target = null; }
+    }
+    if (!chained && (!r || !r.mode || broken || arrived || expired || timedOut || !mob.target)) {
       decide(mob, dt, supported, floating, rand, pickTarget, blocked);
       if (!mob.roam?.mode) return false;
     }
@@ -894,7 +920,15 @@ export function roamStep(mob, dt, supported, floating, rand = Math.random, pickT
   const shrink = (mob._passT ?? 0) > 0 || (mob._passSettle ?? 0) > 0 ||
     activeNarrowPeer(mob) || (mob._lineOff ?? 0) !== 0 || inGrazeBand ? WALL_ALLOW : 0;
   const makeCommit = () => {
-    const base = makeStepOk(mob, supported, floating, mob.nose.along, mob.yaw, 0, shrink);
+    // The step commit drives with the soft nose: a staircase is walked
+    // around a newel post, and a snout that grazes it must not stall the
+    // flight (stairs.js). A latched plan (the green path) drives the same
+    // way. Every other commit keeps the exact nose.
+    // A corner crossing additionally passes over the void it steps off
+    // into: that void is the way down, not a wall.
+    const edge = c.via != null && mob.pos.y >= c.viaY - VIA_LEAVE_DROP;
+    const base = makeStepOk(mob, supported, floating, mob.nose.along, mob.yaw, 0, shrink,
+      isStepCommit(mob) || latched === true, edge);
     return blocked ? (nx, nz) => base(nx, nz) && !blocked(nx, nz) : base;
   };
   // Detour arrival: reached the approach cell — drop the waypoint and push
@@ -909,11 +943,13 @@ export function roamStep(mob, dt, supported, floating, rand = Math.random, pickT
   if (c.detour) {
     const [fax, faz] = dirVec(c.axis);
     yawGoal = Math.atan2(c.target.x - fax - mob.pos.x, c.target.z - faz - mob.pos.z);
-  } else if (forceHeading != null && !c.smooth && !(mob._turnAway > 0)) {
+  } else if (forceHeading != null && !c.smooth && !isStepCommit(mob) && !(mob._turnAway > 0)) {
     // Group-plan override (forecast.js): the latched evasion heading wins
     // over the point re-aim for the tick. Slot-gated entry dodges steer
     // here (hole-ward by construction); smooth crossings ignore it
-    // (locked lines stay locked even in a crowd). An active turn-away
+    // (locked lines stay locked even in a crowd). A step commit ignores
+    // it too (the drop owns the axis — the mob walks the stairs, nobody
+    // yanks it off them). An active turn-away
     // maneuver ignores it instead: the validated away heading owns the
     // tick, or the planner would yank the mob straight back into the peer
     // the maneuver is leaving.
@@ -926,8 +962,11 @@ export function roamStep(mob, dt, supported, floating, rand = Math.random, pickT
   // open-field corner wedge, posed illegal by millimetres) they detour via
   // the approach cell; detours and post-latch walks deflect like any roam
   // instead of grinding in place. Progress re-arms the latch, so
-  // wall-following stays preferred wherever a wall exists.
-  if (!c.entry || c.latchTried || c.detour) yawGoal = slideDeflect(mob, dt, yawGoal, supported, floating);
+  // wall-following stays preferred wherever a wall exists. A step commit
+  // never deflects: the staircase owns the segment (stairs.js).
+  if (!c.entry || c.latchTried || c.detour) {
+    if (!isStepCommit(mob)) yawGoal = slideDeflect(mob, dt, yawGoal, supported, floating);
+  }
   // Startle turn: a turn-away maneuver snaps at quintuple rate — a
   // nose-to-nose about-face can never unwind while every partial yaw is
   // refused, so the escape would pirouette in place until the span runs
@@ -938,16 +977,38 @@ export function roamStep(mob, dt, supported, floating, rand = Math.random, pickT
   // Pigs startle-turn fast; a snap reads as startled, not as skating.
   const maneuver = mob._turnAway > 0;
   const yawBefore = mob.yaw;
-  const { err, dist } = driveToward(mob, dt, yawGoal, makeCommit, moveClamped,
+  // Diagonal steps drive straight oblique (vector, never stair-stepping
+  // around the corner); everything else keeps the axis-separated clamp.
+  // A plan's stair diagonal drives obliquely too: the body crosses the
+  // corner on the diagonal, and an axis-separated move would put its core
+  // over the void corner and stall there.
+  const diagonal = (isStepCommit(mob) || c.diag === true) &&
+    Math.abs(mob.target.x - mob.pos.x) > 0.3 && Math.abs(mob.target.z - mob.pos.z) > 0.3;
+  // A diagonal step drives straight oblique (never stair-stepping around a
+  // corner) — but a solid corner can block that vector while one axis
+  // still walks: the mob then slides along the free axis instead of
+  // grinding (the staircase corner it rounds is exactly that case).
+  const move = diagonal
+    ? (m, nx, nz, ok) => { if (moveVector(m, nx, nz, ok) === 0) moveClamped(m, nx, nz, ok); }
+    : moveClamped;
+  const { err, dist } = driveToward(mob, dt, yawGoal, makeCommit, move,
     { turnOk: turnGate, rate: maneuver ? TURN_RATE * 5 : undefined });
+  // Step stall release: faced but going nowhere means the drop is blocked
+  // (a peer parked on the tread) — drop the commit so decide re-aims
+  // (a fresh 50/50 may re-commit once the tread clears). Turning in place
+  // never counts (err excludes the spin).
+  if (isStepCommit(mob)) {
+    const stalled = dist <= (mob.speed ?? 0) * dt * 0.5 && err < SPIN;
+    c.stallT = stalled ? (c.stallT ?? 0) + dt : 0;
+    if ((c.stallT ?? 0) > STEP_STALL_T) { mob.roam = null; return true; }
+  }
   // Anti-orbit guard: a lane-less open commit that rotates past ~1.6 turns
   // without arriving is lost (sidewalk-dance with a peer, orbit around a
   // pushed-off line) — drop it so decide re-aims fresh instead of grinding
-  // out the pirouette. Entries exempt (their stall latch owns wedges);
-  // detours included (a lost sidestep re-decides too). Well under the
-  // headless pirouette bound, far above any frank turn (turnarounds,
-  // detour reversals).
-  if (!c.entry) {
+  // out the pirouette. Entries exempt (their stall latch owns wedges).
+  // Step commits exempt (a spiral turns continuously while chaining —
+  // the stall release above, not the orbit guard, owns wedges).
+  if (!c.entry && !isStepCommit(mob)) {
     c.rot = (c.rot ?? 0) + Math.abs(normYaw(mob.yaw - yawBefore));
     if (c.rot > 5.0) { mob.roam = null; return true; }
   }
@@ -1019,7 +1080,10 @@ export function wallQuitHeading(mob, supported, floating) {
 
 // Commit the budget exit to roam: drop lane + line, hold the next latch
 // off, and install an open commit on the heading (same shape as decide).
+// A visible drop/jump may preempt the open commit (the wall exit is a
+// free-to-choose moment).
 export function wallQuitCommit(mob, heading, rand = Math.random, pickTarget) {
+  if (maybeStepCommit(mob, rand)) return true;
   const target = strideTarget(mob, heading, rand) ?? (pickTarget ? pickTarget(mob, rand) : null);
   if (!target) return false;
   mob.lane = null; mob.followLine = null; mob.turnHold = 0;
@@ -1031,6 +1095,10 @@ export function wallQuitCommit(mob, heading, rand = Math.random, pickTarget) {
 function decide(mob, dt, supported, floating, rand = Math.random, pickTarget, blocked = null) {
   const prev = mob.roam;
   mob.roam = null;
+  // Free to choose: a visible drop/jump within 3 cells may preempt the
+  // open commit (50/50 — the mob can also walk on by). Entry commits are
+  // excluded (the entry machinery owns mouths, never the step).
+  if (!prev?.entry && maybeStepCommit(mob, rand)) return;
   const yaw = snapCardinal(mob.yaw);
   // Peer-aware winds (optional): veto headings whose ray runs into another
   // body, so the commit routes around the scrum instead of aiming through

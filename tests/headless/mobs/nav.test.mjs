@@ -10,6 +10,7 @@ import {
   planPath, assignNav, clearNav, pickStrategy, registerTraversalStrategy, NAV_MAX_GOALS,
 } from "../../../src/mobs/nav.js";
 import { createTarget } from "../../../src/mobs/targets.js";
+import { diagonalSweepFree } from "../../../src/mobs/step.js";
 
 const CAPS = { walk: true };
 const FEET = 1;
@@ -218,6 +219,39 @@ for (let x = -6; x <= 0; x++) for (let z = -6; z <= 6; z++) {
   assert.ok(minGoal < 40, `huge: the near goals are kept (${minGoal.toFixed(0)})`);
 }
 
+// --- diagonal sweep: a 2-square diagonal of the green path only with
+// no solid in the square of the diagonal --------------------------------
+// A 1-wide column rising through the swept band beside lower treads: the
+// old plan cut the corner (0,0,5)->(1,1,4) straight through the column
+// flank and the mob wedged on it. The sweep veto routes around it.
+resetWorld("over");
+setDimension("over");
+for (const [x, z, s] of [[0, 0, 5], [0, 1, 5], [1, 0, 5], [1, 1, 4], [2, 1, 4], [3, 1, 4]]) {
+  for (let y = s - 1; y >= 0; y--) setBlock(x, y, z, STONE);
+}
+{
+  const mob = makeMob(0.5, 5, 0.5);
+  // The corner-cutting diagonal is refused: the column flank stands in
+  // the swept band.
+  assert.equal(diagonalSweepFree(mob, 0, 0, 5, 1, 1, 4), false,
+    "sweep: the diagonal through the column flank is refused");
+  // Void corners never block: open ground stays diagonal.
+  assert.equal(diagonalSweepFree(mob, 10, 10, 1, 11, 11, 1), true,
+    "sweep: an open diagonal stays legal");
+  const target = createTarget("block", { x: 2, y: 3, z: 1 });
+  const p = plan(mob, target);
+  assert.ok(p, "sweep: a path exists around the column");
+  assert.deepEqual(cellNames(p.cells), ["0,5,0", "1,5,0", "1,4,1", "2,4,1"],
+    "sweep: the plan walks around the column, never through its flank");
+  for (let i = 1; i < p.cells.length; i++) {
+    const a = p.cells[i - 1], b = p.cells[i];
+    if (Math.abs(b.x - a.x) === 1 && Math.abs(b.z - a.z) === 1) {
+      assert.ok(diagonalSweepFree(mob, a.x, a.z, a.y, b.x, b.z, b.y),
+        `sweep: diagonal ${a.x},${a.z}->${b.x},${b.z} clears the corner squares`);
+    }
+  }
+}
+
 // --- determinism -------------------------------------------------------
 resetWorld("over");
 setDimension("over");
@@ -251,5 +285,32 @@ floor(-6, -6, 10, 10);
   // No walk capability: no strategy, no path.
   assert.equal(assignNav(mob, target, { capabilities: {} }), null, "assign: no strategy, no path");
 }
+
+// --- a staircase: the plan descends the treads, and a mob at a tread
+// lip still plans (its centre hangs over the next cell while the feet
+// stand on the tread behind — the plan starts from the cell that holds
+// it up, never from thin air).
+{
+  resetWorld("over");
+  setDimension("over");
+  // A flight: the platform at 4, then treads at 3, 2 and 1.
+  for (let x = -6; x <= 10; x++) for (let z = -6; z <= 10; z++) {
+    const h = x <= 0 ? 4 : x === 1 ? 3 : x === 2 ? 2 : 1;
+    for (let y = 0; y < h; y++) setBlock(x, y, z, STONE);
+  }
+  const mob = makeMob(0.5, 4, 0.5);
+  const target = createTarget("block", { x: 6, y: 0, z: 0 });
+  const p = plan(mob, target);
+  assert.ok(p, "stair: the plan descends the flight");
+  const levels = p.cells.map((c) => c.y);
+  assert.ok(Math.min(...levels) < 4, `stair: the plan goes down (${Math.min(...levels)})`);
+  // A mob straddling the lip of the first tread: the centre already
+  // hangs over the lower cell, the feet still stand on the tread.
+  const lip = makeMob(1.05, 4, 0.5);
+  const p2 = plan(lip, target);
+  assert.ok(p2, "stair: a mob at a tread lip still plans");
+  assert.equal(p2.cells[0].y, 4, "stair: the plan starts from the tread that supports the mob");
+}
+console.log("nav.test.mjs: PASS stair-plan");
 
 console.log("nav.test.mjs: ALL PASS");
