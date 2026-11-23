@@ -11,6 +11,7 @@ import * as ballistics from '../../../src/core/launch.js';
 import { computeMegaLaunch, megaFlyShove, stepAir, dragAir, steerAir, gravityAt, knockCutoff, GRAVITY, AIR_DRAG, AIR_SNAP, TERMINAL_VELOCITY, LAUNCH_VMAX, KNOCK_DECAY, KNOCK_SNAP, KNOCK_TAIL_FRAC } from '../../../src/core/launch.js';
 import { hasSupport, aabbIntersectsSolid, stepVertical, liquidSurface } from '../../../src/mobs/step.js';
 import { registerMoonDim, markMoonDirty, isMoonGone, MOON_MIN_Y } from '../../../src/world/moon.js';
+import { PLANET_MIN_Y } from '../../../src/world/planets.js';
 import { clearEntryClaims } from '../../../src/mobs/entry.js';
 
 const DT = 1 / 60;
@@ -265,8 +266,8 @@ function flyUntilLanded(m, maxTicks = 480) {
   console.log(`crater-exit: ${ticks} ticks, dist ${d.toFixed(2)}, y ${m.pos.y.toFixed(2)}`);
 }
 
-// World walls: a launch aimed past the east edge slides down the wall and
-// lands inside the level — never outside, never stuck.
+// World walls: a launch aimed past the east edge rebounds off the invisible
+// ground-band wall and lands inside the level — never outside, never stuck.
 {
   buildFloor(-110, 110, -110, 110);
   const m = makeCow(90.5, 0.5);
@@ -277,8 +278,9 @@ function flyUntilLanded(m, maxTicks = 480) {
   assert.ok(!m._blast, 'walled flight ends');
   assert.ok(Math.abs(m.pos.x) <= 96 && Math.abs(m.pos.z) <= 96,
     `stays inside the level (got ${m.pos.x.toFixed(2)}, ${m.pos.z.toFixed(2)})`);
+  assert.ok(m.pos.x < 96 - m.hw - 0.5, `rebounded inward off the east wall (got ${m.pos.x.toFixed(2)})`);
   assert.ok(hasSupport(m.pos.x, m.pos.y, m.pos.z, m.hw), 'walled landing is supported');
-  console.log(`wall-slide: ${ticks} ticks, x ${m.pos.x.toFixed(2)}, y ${m.pos.y.toFixed(2)}`);
+  console.log(`wall-bounce: ${ticks} ticks, x ${m.pos.x.toFixed(2)}, y ${m.pos.y.toFixed(2)}`);
 }
 
 // Bottomless sky: the bleed runs from release, so the void fall converges
@@ -429,7 +431,7 @@ function flyUntilLanded(m, maxTicks = 480) {
 {
   resetWorld('over'); setDimension('over'); clearEntryClaims();
   registerMoonDim('over');
-  setBlock(60, 1, 60, MOON); markMoonDirty();
+  setBlock(10, MOON_MIN_Y + 10, 10, MOON); markMoonDirty();
   assert.equal(isMoonGone(), false, 'seeded moon block: moon lives');
   const hi = makeCow(0.5, 0.5);
   hi.pos.y = MOON_MIN_Y + 50;
@@ -442,9 +444,9 @@ function flyUntilLanded(m, maxTicks = 480) {
   console.log('moon: plain falls share the low-g');
 }
 
-// Level walls: mobs wall at their dim's level edge — the overworld at any
-// altitude (the Moon band runs to +oo until planets arrive), the Nether
-// island and the End platform square at any altitude.
+// Level walls: mobs wall at their dim's level edge — the overworld below
+// the band mid-plane (deep space past it walks free), the Nether island and
+// the End platform square at any altitude.
 {
   resetWorld('over'); setDimension('over'); clearEntryClaims();
   buildFloor(92, 100, -4, 4);
@@ -452,14 +454,21 @@ function flyUntilLanded(m, maxTicks = 480) {
   edge.target = { x: 99.5, z: 0.5 };
   for (let t = 0; t < 180; t++) tickFarmMob(edge, DT, () => edge.target, edge.rand);
   assert.ok(edge.pos.x <= 96 - edge.hw + 1e-6, `ground mob stopped at invisible wall (x=${edge.pos.x})`);
-  // High platform: still walled, no ceiling yet.
+  // High platform inside the level, still below the band mid-plane: walled.
   for (let x = 60; x <= 110; x++) for (let z = -4; z <= 4; z++) setBlock(x, 900, z, STONE);
   const low = makeCow(80.5, 0.5);
   low.pos.y = 901; low.fallFrom = 901;
   low.target = { x: 105.5, z: 0.5 };
   for (let t = 0; t < 180; t++) tickFarmMob(low, DT, () => low.target, low.rand);
-  assert.ok(low.pos.x <= 96 - low.hw + 1e-6, `sky mob walled (x=${low.pos.x})`);
-  console.log('level walls: ground band and sky: ok');
+  assert.ok(low.pos.x <= 96 - low.hw + 1e-6, `sub-mid-plane sky mob walled (x=${low.pos.x})`);
+  // Deep-space platform above the band mid-plane: no walls at all.
+  for (let x = 192; x <= 204; x++) for (let z = -4; z <= 4; z++) setBlock(x, PLANET_MIN_Y + 40, z, STONE);
+  const sky = makeCow(195.5, 0.5);
+  sky.pos.y = PLANET_MIN_Y + 41; sky.fallFrom = sky.pos.y;
+  sky.target = { x: 202.5, z: 0.5 };
+  for (let t = 0; t < 180; t++) tickFarmMob(sky, DT, () => sky.target, sky.rand);
+  assert.ok(sky.pos.x > 197, `deep-space mob walks past ±96 freely (x=${sky.pos.x})`);
+  console.log('level walls: ground band, sub-mid-plane sky, deep space: ok');
 }
 
 // Nether parity: the island walls at ±96 with the same rebound, any

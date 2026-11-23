@@ -14,7 +14,8 @@ import { dropAllowed, floatTargetY } from "./livestock.js";
 import { mobCanFloat } from "./registry.js";
 import { normYaw } from "./corridor.js";
 import { GRAVITY, TERMINAL_VELOCITY, applyGravity, clampFall, gravityAt } from "../core/launch.js";
-import { MOON_MIN_Y, isMoonGone, moonDimHas } from "../world/moon.js";
+import { MOON_MIN_Y, moonDimHas } from "../world/moon.js";
+import { anyBodyAlive } from "../world/planets.js";
 import { mobXZLimit } from "../world/level.js";
 import { floatVelY } from "../core/floatability.js";
 import {
@@ -1202,7 +1203,7 @@ export function stepVertical(mob, dt, surface, floating, supported) {
   } else {
     // One sky, one gravity: plain falls read the same lunar rule as blast
     // flights and the player — no lunar blocks left, no low-g.
-    applyGravity(mob.vel, dt, gravityAt(moonDimHas(mob.dim ?? "over"), isMoonGone(), mob.pos.y, MOON_MIN_Y));
+    applyGravity(mob.vel, dt, gravityAt(moonDimHas(mob.dim ?? "over"), !anyBodyAlive(), mob.pos.y, MOON_MIN_Y));
     clampFall(mob.vel);
     const ny = mob.pos.y + mob.vel.y * dt;
     if (!aabbIntersectsSolid(mob.pos.x, ny, mob.pos.z, mob.hw, mob.h)) {

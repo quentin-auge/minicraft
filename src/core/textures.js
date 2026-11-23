@@ -5,7 +5,9 @@ import {
   TNT, MEGA_TNT, ULTRA_TNT, FLOWER, PORTAL, ENDSTONE, OBSIDIAN, CLOUD, MOON, MOON_WATER,
   GLOWSTONE, LAVA, NETHERRACK, SOULSAND,
   HULL, HULL_ACCENT, THRUSTER, PAD,
+  PLANET_ROCKS, PLANET_WATERS,
 } from "./blocks.js";
+import { PLANET_COLORS } from "../world/planets.js";
 import { GLOW_VARIANTS, GLOW_ICON_VARIANT, isPadGhostVariant, padGhostBaseVariant } from "../world/glowstone.js";
 
 export function canvasTex(draw, size = 16) {
@@ -17,7 +19,7 @@ export function canvasTex(draw, size = 16) {
   t.magFilter = THREE.NearestFilter;
   t.minFilter = THREE.LinearMipmapLinearFilter;
   t.generateMipmaps = true;
-  t.anisotropy = 4;
+  t.anisotropy = 16;
   t.colorSpace = THREE.SRGBColorSpace;
   return t;
 }
@@ -42,13 +44,15 @@ function hexToRgb(hex) {
   return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
 }
 
-// Moon painter (base grey 160): pale disc, voxel data never touched.
-function paintMoonLight(ctx, base) {
-  ctx.fillStyle = `rgb(${base},${base + 4},${base + 8})`; ctx.fillRect(0, 0, 16, 16);
+// Body painter (base [r,g,b]): pale cratered disc, voxel data never
+// touched. The Moon calls it with grey [160,164,168]; planets pass their
+// palette rock triple.
+function paintBodyRock(ctx, base) {
+  ctx.fillStyle = `rgb(${base[0]},${base[1]},${base[2]})`; ctx.fillRect(0, 0, 16, 16);
   for (let y = 0; y < 16; y++) for (let x = 0; x < 16; x++) {
     const n = (Math.random() * 2 - 1) * 16 + (Math.random() * 2 - 1) * 8;
-    const v = base + n;
-    ctx.fillStyle = `rgb(${v | 0},${(v + 1) | 0},${(v + 2) | 0})`;
+    const v0 = base[0] + n, v1 = base[1] + n, v2 = base[2] + n;
+    ctx.fillStyle = `rgb(${v0 | 0},${v1 | 0},${v2 | 0})`;
     if (Math.random() < 0.58) ctx.fillRect(x, y, 1, 1);
   }
   const crater = (x, y, r, shade) => {
@@ -61,9 +65,9 @@ function paintMoonLight(ctx, base) {
     ctx.fillStyle = g; ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fill();
     ctx.fillStyle = "rgba(0,0,0,0.08)"; ctx.beginPath(); ctx.arc(x + r * 0.20, y + r * 0.22, r * 0.48, 0, Math.PI * 2); ctx.fill();
     ctx.fillStyle = "rgba(255,255,255,0.06)"; ctx.beginPath(); ctx.arc(x - r * 0.26, y - r * 0.28, r * 0.16, 0, Math.PI * 2); ctx.fill();
-    ctx.strokeStyle = `rgba(${base - 20},${base - 18},${base - 16},0.30)`; ctx.lineWidth = 0.8; ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.stroke();
+    ctx.strokeStyle = `rgba(${base[0] - 20},${base[1] - 18},${base[2] - 16},0.30)`; ctx.lineWidth = 0.8; ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.stroke();
   };
-  const sh = (d) => [base + d, base + d + 2, base + d + 4];
+  const sh = (d) => [base[0] + d, base[1] + d + 2, base[2] + d + 4];
   const shades = [sh(-6), sh(-10), sh(-3), sh(-14)];
   crater(4.4, 4.7, 3.2, shades[0]);
   crater(12.0, 5.1, 2.7, shades[1]);
@@ -74,8 +78,8 @@ function paintMoonLight(ctx, base) {
   crater(9.2, 3.4, 1.2, shades[2]);
   for (let i = 0; i < 22; i++) {
     const x = Math.random() * 16, y = Math.random() * 16;
-    const v = (base - 36) + Math.random() * 32;
-    ctx.fillStyle = `rgba(${v | 0},${v | 0},${(v + 1) | 0},${0.14 + Math.random() * 0.16})`;
+    const v = -36 + Math.random() * 32;
+    ctx.fillStyle = `rgba(${(base[0] + v) | 0},${(base[1] + v) | 0},${(base[2] + v + 1) | 0},${0.14 + Math.random() * 0.16})`;
     ctx.fillRect(x | 0, y | 0, 1, 1);
   }
 }
@@ -248,7 +252,7 @@ export const TEX = {
     ctx.fillStyle = "rgba(150,150,160,0.28)";
     for (let i = 0; i < 5; i++) ctx.fillRect(Math.random() * 13, Math.random() * 13, 2 + Math.random() * 2, 1 + Math.random() * 2);
   }),
-  moon: canvasTex((ctx) => paintMoonLight(ctx, 160)),
+    moon: canvasTex((ctx) => paintBodyRock(ctx, [160, 164, 168])),
   obsidian: canvasTex((ctx) => {
     ctx.fillStyle = "#12070f"; ctx.fillRect(0, 0, 16, 16);
     pxNoise(ctx, [24, 12, 20], 18);
@@ -363,12 +367,23 @@ const LIQUID_DEFAULTS = {
   // instead of showing through them (hollow/hole read).
   inside: { color: "#6fa9e7", opacity: 0.8, grain: 16 },
 };
+const rgbHex = ([r, g, b]) =>
+  "#" + [r, g, b].map((v) => Math.max(0, Math.min(255, Math.round(v))).toString(16).padStart(2, "0")).join("");
+
 export const LIQUID_SURFACE = [
   {
     liquid: WATER, key: "water",
     // Baked pick: surface sheets read slightly under opaque.
     outside: { opacity: 0.95 },
   },
+  ...PLANET_COLORS.map((c, i) => ({
+    liquid: PLANET_WATERS[i], key: "planetwater" + i,
+    // Same read as moon water (opaque fog-free walls, see-through backs),
+    // tinted by the palette instead of grey.
+    outside: { color: rgbHex(c.water), opacity: 1, transparent: false, fog: false },
+    insideRole: { opacity: 0.93, transparent: true, fog: false },
+    inside: { color: rgbHex(c.waterIn), opacity: 0.8, transparent: true, fog: false },
+  })),
   {
     liquid: MOON_WATER, key: "moonwater",
     // Fog-free opaque walls (no black columns at distance); the open-air
@@ -514,6 +529,21 @@ export function moonMats() {
   return moonMatsCache;
 }
 
+// Planet rock: same lit Lambert + emissive 0.9 read as the moon, one set per
+// palette color (shared across every planet of that color).
+const planetRockMatsCache = new Map();
+export function planetRockMats(i) {
+  if (!planetRockMatsCache.has(i)) {
+    const tex = TEX["planetrock" + i];
+    const m = new THREE.MeshLambertMaterial({
+      map: tex, emissiveMap: tex,
+      emissive: new THREE.Color(0xffffff), emissiveIntensity: 0.9, fog: false,
+    });
+    planetRockMatsCache.set(i, [m, m, m, m, m, m]);
+  }
+  return planetRockMatsCache.get(i);
+}
+
 export function faceTex(map, opts = {}) {  return [material(map, opts), material(map, opts), material(map, opts), material(map, opts), material(map, opts), material(map, opts)];
 }
 
@@ -522,8 +552,20 @@ function basicFace(map, opts = {}) {
   return [m, m, m, m, m, m];
 }
 
+// One cratered rock texture per planet color, from the palette registry.
+PLANET_COLORS.forEach((c, i) => {
+  TEX["planetrock" + i] = canvasTex((ctx) => paintBodyRock(ctx, c.rock));
+});
+
+const planetRockById = new Map(PLANET_ROCKS.map((id, i) => [id, i]));
+const planetWaterById = new Map(PLANET_WATERS.map((id, i) => [id, i]));
+
 // BoxGeometry face order: +x, -x, +y, -y, +z, -z
 export function materialsFor(id) {
+  const pr = planetRockById.get(id);
+  if (pr !== undefined) return planetRockMats(pr);
+  const pw = planetWaterById.get(id);
+  if (pw !== undefined) return basicFace(TEX["planetwater" + pw + "_outside"], { fog: false });
   switch (id) {
     case GRASS: {
       const side = material(TEX.grass_side);

@@ -5,12 +5,16 @@
 // clamped. Runs before the dive murk each frame and rewrites its air
 // baseline, so murk keeps working against the current sky.
 import * as THREE from "three";
+import {
+  SKY_START, SKY_END,
+} from "../world/planets.js";
 
 const DAY_SKY = new THREE.Color(0x87ceeb);
 const SPACE_SKY = new THREE.Color(0x05070f);
-// Hand-picked dusk band: blue holds below, totally black above.
-const SKY_START = 475;
-const SKY_END = 495;
+// The dusk band rides the reveal chain in planets.js: the sky holds day
+// blue up to the cloud-vanish anchor, then fades to total black over the
+// sky width — a pure-black buffer follows, and the celestial reveal picks
+// up only after that.
 const STAR_COUNT = 520;
 
 let stars = null;
@@ -107,14 +111,19 @@ export function skyFactor(y) {
 
 export function initSky(scene) {
   if (stars) return;
+  // Star shell radius: past the farthest celestial body (100k range) but
+  // inside the camera far plane, so the depth test always ranks real
+  // geometry in front — at 820 the points drew OVER the Moon and planets
+  // (white specks flickering on every disc).
+  const STAR_R = 250000;
   const arr = new Float32Array(STAR_COUNT * 3);
   for (let i = 0; i < STAR_COUNT; i++) {
     const u = Math.random() * 2 - 1;
     const ph = Math.random() * Math.PI * 2;
     const r = Math.sqrt(1 - u * u);
-    arr[i * 3] = Math.cos(ph) * r * 820;
-    arr[i * 3 + 1] = u * 820;
-    arr[i * 3 + 2] = Math.sin(ph) * r * 820;
+    arr[i * 3] = Math.cos(ph) * r * STAR_R;
+    arr[i * 3 + 1] = u * STAR_R;
+    arr[i * 3 + 2] = Math.sin(ph) * r * STAR_R;
   }
   const g = new THREE.BufferGeometry();
   g.setAttribute("position", new THREE.BufferAttribute(arr, 3));

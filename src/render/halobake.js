@@ -47,9 +47,24 @@ export function haloRadius() {
   return r;
 }
 
+// Parsed source coords, shared across chunk builds: keyXYZ string parsing
+// per source per build was pure overhead (the sets change rarely, builds
+// run constantly). Entries are only added for live set members; removed
+// sources linger as garbage (bounded by distinct sources ever placed) and
+// are never read back since iteration stays on the live set.
+const coordCache = new Map();
+function coordsOf(k) {
+  let c = coordCache.get(k);
+  if (!c) {
+    const [sx, sy, sz] = keyXYZ(k);
+    c = [sx, sy, sz];
+    coordCache.set(k, c);
+  }
+  return c;
+}
+const rgbCache = new Map();
 // hex -> rgb, cached (chunk builds call colorOf per source block; the palette
 // is a handful of entries, never per-block garbage).
-const rgbCache = new Map();
 function rgbOf(hex) {
   let t = rgbCache.get(hex);
   if (!t) {
@@ -75,7 +90,7 @@ export function bakeHaloTint(name, x0, x1, z0, z1, yLo, yHi) {
     if (spec.max > clamp) clamp = spec.max;
     const R = spec.radius, R2 = R * R, R1 = R + 1;
     for (const k of set) {
-      const [sx, sy, sz] = keyXYZ(k);
+      const [sx, sy, sz] = coordsOf(k);
       if (sx < x0 - R || sx > x1 + R || sz < z0 - R || sz > z1 + R) continue;
       if (sy < yLo - R || sy > yHi + R) continue;
       const [cr, cg, cb] = rgbOf(spec.colorOf(name, k));

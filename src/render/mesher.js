@@ -2,8 +2,9 @@
 // only for exposed blocks. Rebuilds stay local via refreshBlocks().
 import * as THREE from "three";
 import { AIR, BLOCK_INFO, DIRT, FLOWER, GLASS, GLOWSTONE, isLiquid } from "../core/blocks.js";
-import { WORLD_RADIUS, CHUNK, renderDist, getBlock, topAt, colTopIdx, colOcc, dim, dimInfinite, chunkOf, ensureChunkArea, rimRefreshKeys, key, keyXYZ } from "../core/store.js";
+import { WORLD_RADIUS, CHUNK, renderDist, getBlock, topAt, colTopIdx, colOcc, dim, dimInfinite, chunkOf, ensureChunkArea, rimRefreshKeys, key, keyXYZ, frameBudgetScale } from "../core/store.js";
 import { createPocketCache, isPocketAir } from "../core/airpocket.js";
+import { queueCelestialKeys, takeCelestialBatch, dropQueued } from "./celestialQueue.js";
 import { materialsFor, liquidSurfaceMat, glowstoneMats, ghoststoneMats, setGhostOpacity } from "../core/textures.js";
 import { FLOWER_GEOS, FLOWER_MAT } from "./flowers.js";
 import { haloRadius, bakeHaloTint, isHaloSuspended } from "./halobake.js";
@@ -98,6 +99,16 @@ function bumpVersion(ck) {
 // top is the highest non-region cell of the chunk. Region meshes stay
 // scene-level under their own fade gate.
 const chunkRest = new Map();
+// Celestial pin set: chunk keys the streaming dispose must never evict
+// (Moon + planet discs stay meshed across visits, so returns never pop).
+// Seed-independent keys (chunk coords); cleared on every teardown.
+const pinnedChunks = new Set();
+export function pinChunks(keys) {
+  for (const k of keys) pinnedChunks.add(k);
+}
+export function unpinAllChunks() {
+  pinnedChunks.clear();
+}
 let cullVersion = 0; // bumped on every rebuild/dispose; the cull caches on it
 // Reveal regions: per-region mesh groups + their current fade factor, plus
 // material clones the region owns (it fades their opacity; an onFade hook can
@@ -177,17 +188,23 @@ function ctxFor(region) {
 // owned material's opacity toward o (so anything in the region — rock, placed
 // blocks, glowstone, liquids — reveals smoothly, no micro-pop), then let the
 // region's onFade override specifics (the Moon rock tints sky→texture).
+const lastSkyByRegion = new Map(); // key -> packed sky color of the last fade
 export function setRegionFade(key, o, skyColor) {
   o = Math.max(0, Math.min(1, o));
   const prev = regionFade.get(key);
   regionFade.set(key, o);
   const region = regionByKey(key);
   // Steady state (the common case on the Moon: o pinned at 0 or 1): skip the
-  // mesh loop and the generic material fade. The bespoke onFade still runs so
-  // sky-tinted materials track the background; late-created handles fade at
-  // creation (regionMaterials), so skipping never leaves one stale.
+  // mesh loop and the generic material fade. The bespoke onFade still runs on
+  // first settle so sky-tinted materials track the background; late-created
+  // handles fade at creation (regionMaterials), so skipping never leaves one
+  // stale. A repeat with identical factor AND sky color is a pure no-op.
   if (prev === o) {
-    if (region && region.onFade) region.onFade(o, skyColor, ctxFor(region));
+    const packed = (skyColor.r * 255) << 16 | (skyColor.g * 255) << 8 | (skyColor.b * 255);
+    if (region && region.onFade && lastSkyByRegion.get(key) !== packed) {
+      lastSkyByRegion.set(key, packed);
+      region.onFade(o, skyColor, ctxFor(region));
+    }
     return;
   }
   // Reaction shells breathe through the pulse tick, composed with this fade
@@ -202,7 +219,10 @@ export function setRegionFade(key, o, skyColor) {
       else if (!mats.userData.shellPulse) applyMatFade(mats, o);
     }
   }
-  if (region && region.onFade) region.onFade(o, skyColor, ctxFor(region));
+  if (region && region.onFade) {
+    region.onFade(o, skyColor, ctxFor(region));
+    lastSkyByRegion.set(key, ((skyColor.r * 255) << 16) | ((skyColor.g * 255) << 8) | (skyColor.b * 255));
+  }
 }
 
 // Eye-medium fog flip: set the fog flag on a region's liquid clones in
@@ -295,11 +315,13 @@ export function disposeAll() {
 // for existing callers; end state is identical either way.
 let disposeKeys = null;
 export function beginDispose() {
+  unpinAllChunks(); // teardown drops every world: pins never leak across dims
   disposeKeys = [...new Set([...chunkMeshes.keys(), ...chunkRest.keys()])];
   // Fast non-mesh state clears up front: nothing reads mid-teardown (sim
   // frozen, streaming gated), and every cache below repopulates on build.
   cullVersion++;
   chunkVersions.clear();
+  celestialPending.clear(); // queued body chunks belong to the old world
   suspendedBuilt.clear(); // geometry-only chunks are gone; nothing to re-tint
   topMaxCache.clear();
   regionMeshes.clear();
@@ -370,12 +392,35 @@ function disposeChunk(ck) {
   chunkMeshes.delete(ck);
 }
 
+// Queue purge without disposal: the LOD uses this for wiped bodies, whose
+// meshes the blast drain already left final (filtered in place or rebuilt
+// from carved voxels — only the band voxels are gone). Disposing here would
+// also tear out live voxels sharing the column-wide chunk key (e.g. clouds
+// under a wiped moon) with no requeue while standing still.
+export function purgeChunkQueues(ck) {
+  const qi = chunkQueue.indexOf(ck);
+  if (qi >= 0) chunkQueue.splice(qi, 1);
+  pendingRefresh.delete(ck);
+  celestialPending.delete(ck);
+}
+
+// LOD eviction: drop one chunk's meshes and purge it from every build queue
+// so the budgeted drains never rebuild it behind the LOD's back. Voxels are
+// untouched (the store owns them) — remeshing later rebuilds from the same
+// voxels. Explicit disposal only; the streaming prune never calls this.
+export function dropChunkMesh(ck) {
+  disposeChunk(ck);
+  purgeChunkQueues(ck);
+}
+
 // Frontier dispose for blast wipes: a fully-emptied chunk drops its meshes
 // at the carve frontier (cheap: nothing left to bake or upload) instead of
 // waiting for the budgeted rebuild, so the void reads instantly while the
-// rebuild drain keeps 60 fps. End state matches a rebuilt empty chunk
+// rebuild drain keeps 60 fps. Mirrors rebuildChunk's empty path exactly
 // (dispose + empty registration + version bumps); callers probe emptiness
 // first via store.chunkHasVoxels — never call on a chunk holding voxels.
+// Queues need no purge: wiped chunks are built, and every build/refresh
+// queue skips built keys.
 export function clearChunkMeshes(cx, cz) {
   const ck = cx + "_" + cz;
   topMaxCache.delete(ck);
@@ -904,10 +949,86 @@ export function tickPadGhostFade(px, eyeY, pz, fogFar) {
 
 const chunkQueue = [];
 
-// World clip per dimension: bounded dims clamp to the cube, infinite dims
-// roam free (dimInfinite reads the active dimension, never a fork).
+// Pending celestial chunk builds (Moon + planet discs, see
+// render/celestialQueue.js): far past the stream window, so the proximity
+// paths never cover them. Entries survive window crossings (prune
+// exemption) and drain nearest-first under a reserved per-frame cap ahead
+// of the window queue — a rocket ascent converges instead of restarting at
+// every crossing, while local streaming keeps the rest of the budget.
+const celestialPending = new Set();
+export function queueCelestialChunks(coords) {
+  // Celestial owns the build: steal matching keys from the window queue so
+  // the same chunk never builds twice and never gets pruned mid-convergence.
+  for (const [x, , z] of coords) {
+    const ck = chunkOf(x) + "_" + chunkOf(z);
+    const i = chunkQueue.indexOf(ck);
+    if (i >= 0) chunkQueue.splice(i, 1);
+  }
+  queueCelestialKeys(celestialPending, new Set(chunkQueue), (ck) => chunkMeshes.has(ck), coords);
+}
+
+// Split celestial refresh: already-built chunks (the visible neighborhood —
+// e.g. the Moon shell under the spawn) remesh synchronously so they read
+// whole immediately, while unbuilt chunks converge through the budgeted
+// celestial queue instead of the window queue (no behind-budget loan).
+export function refreshBuiltQueueCelestial(coords) {
+  const built = [], unbuilt = [];
+  for (const c of coords) {
+    const ck = chunkOf(c[0]) + "_" + chunkOf(c[2]);
+    (chunkMeshes.has(ck) ? built : unbuilt).push(c);
+  }
+  if (built.length) refreshBlocks(built);
+  if (unbuilt.length) queueCelestialChunks(unbuilt);
+}
+
+// Reserved celestial builds per frame: shell-only body chunks are cheap, but
+// the first seconds must hold 60 fps while the window queue converges too —
+// so a time budget (not a fixed count) bounds the drain: a 2 ms trickle at
+// rest, up to 6 ms while visibly behind (fast ascents converge ~5x faster
+// instead of popping late). The count cap only guards pathological tails.
+export function isChunkMeshed(ck) {
+  return chunkMeshes.has(ck);
+}
+
+const CELESTIAL_DRAIN_MS = 2;
+const CELESTIAL_DRAIN_BEHIND_MS = 6;
+const CELESTIAL_DRAIN_MAX = 12;
+// Pending celestial build count (loading-gate convergence + drain diagnostics).
+export function celestialPendingSize() {
+  return celestialPending.size;
+}
+export function drainCelestial(px, pz, budgetMs = CELESTIAL_DRAIN_MS, qx = px, qz = pz, fr = FADE_CHUNKS) {
+  if (!celestialPending.size || dim !== "over") return 0;
+  const t0 = performance.now();
+  const deadline = t0 + budgetMs * frameBudgetScale();
+  // One scored sort per drain, not per chunk: the pending set is stable
+  // across the loop (nothing re-queues mid-drain), so nearest-first order
+  // is identical for a fraction of the sort cost. Sorted from the lead
+  // point (prefetch along the velocity); the fade gate below stays on the
+  // real eye (visible pops are what it hides).
+  const batch = takeCelestialBatch(celestialPending, (ck) => chunkMeshes.has(ck), qx, qz, CELESTIAL_DRAIN_MAX);
+  let n = 0;
+  for (; n < batch.length; n++) {
+    if (performance.now() >= deadline) break;
+    const ck = batch[n];
+    if (chunkMeshes.has(ck)) continue;
+    const [wx, wz] = parseChunkKey(ck);
+    rebuildChunk(wx, wz, nearBuild(px, pz, wx, wz, fr));
+  }
+  // Unexpired leftovers rejoin the pending set (extraction removed them).
+  for (let i = n; i < batch.length; i++) celestialPending.add(batch[i]);
+  return performance.now() - t0;
+}
+
+// World clip per dimension: the Nether clamps its lazy chunk generator to the
+// ±96 volcano sea; everywhere else roams free (sparse colOcc skips empty
+// columns at zero cost).
+let skyFree = true;
+export function setSkyFree(b) {
+  skyFree = !!b;
+}
 function clipBound() {
-  return dimInfinite() ? Infinity : WORLD_RADIUS;
+  return dim === "nether" ? WORLD_RADIUS : Infinity;
 }
 
 // Highest surface per chunk bounds, cached: chunkDist3 queries it once per
@@ -981,7 +1102,7 @@ export function streamChunks(px, pz, eyeY = TERRAIN_REF_Y, fogFar = Infinity) {
   for (let dx = -RD - UNLOAD_MARGIN; dx <= RD + UNLOAD_MARGIN; dx++)
     for (let dz = -RD - UNLOAD_MARGIN; dz <= RD + UNLOAD_MARGIN; dz++) {
       const wx = cx + dx, wz = cz + dz;
-      if (!dimInfinite()) {
+      if (dim === "nether") {
         if (wx * CHUNK > WORLD_RADIUS || wx * CHUNK + CHUNK - 1 < -WORLD_RADIUS) continue;
         if (wz * CHUNK > WORLD_RADIUS || wz * CHUNK + CHUNK - 1 < -WORLD_RADIUS) continue;
       }
@@ -989,17 +1110,20 @@ export function streamChunks(px, pz, eyeY = TERRAIN_REF_Y, fogFar = Infinity) {
       keepLoose.add(ck);
       if (Math.abs(dx) <= RD && Math.abs(dz) <= RD) keep.add(ck);
     }
+  // Pinned celestial chunks (Moon + planets) are never evicted: leaving
+  // them rebuilds the whole body chunk by chunk on every return. Memory
+  // for ~1.5k shell-only chunks, cleared with everything else on teardown.
   // Dispose only outside the loose ring, and only once the slab also clears
   // the fogged range: border crossings never flicker a row while its
   // replacement streams in, and high flight never exposes an eviction.
   for (const ck of [...chunkMeshes.keys()]) {
-    if (keepLoose.has(ck)) continue;
+    if (keepLoose.has(ck) || pinnedChunks.has(ck)) continue;
     const [wx, wz] = parseChunkKey(ck);
     if (chunkDist3(px, eyeY, pz, wx, wz) <= fogFar + DISPOSE_MARGIN) continue;
     disposeChunk(ck);
   }
   for (let i = chunkQueue.length - 1; i >= 0; i--) {
-    if (!keep.has(chunkQueue[i]) || chunkMeshes.has(chunkQueue[i])) chunkQueue.splice(i, 1);
+    if (dropQueued(chunkQueue[i], keep, (ck) => pinnedChunks.has(ck), (ck) => chunkMeshes.has(ck))) chunkQueue.splice(i, 1);
   }
   const queued = new Set(chunkQueue);
   const missing = [];
@@ -1119,7 +1243,11 @@ export function updateChunkCulling(px, eyeY, pz, fogFar) {
   }
 }
 
-export function maybeStream(px, pz, eyeY = TERRAIN_REF_Y, fogNear = 0, fogFar = Infinity) {
+export function maybeStream(px, pz, eyeY = TERRAIN_REF_Y, fogNear = 0, fogFar = Infinity, lx = px, lz = pz, fr = FADE_CHUNKS) {
+  // Window center follows the real eye (the near field must stay solid
+  // around the player); the lead point only sorts the celestial drain
+  // below (prefetch along the velocity). Everything visibility-related
+  // (missing cap, bubble, culling, fade gate) stays on the real eye.
   const cx = chunkOf(px), cz = chunkOf(pz);
   if (lastStream.cx !== cx || lastStream.cz !== cz) {
     lastStream.cx = cx;
@@ -1135,7 +1263,14 @@ export function maybeStream(px, pz, eyeY = TERRAIN_REF_Y, fogNear = 0, fogFar = 
     nearestMissingDist(px, eyeY, pz) <= fogFar;
   // Single-point tuning: behind splits the 16 ms total, steady the 6 ms.
   if (pendingRefresh.size) drainPendingRefresh(px, eyeY, pz, behind ? CHUNK_BEHIND_BUDGET_MS / 2 : 2);
-  if (chunkQueue.length) drainChunkQueue(false, behind ? CHUNK_BEHIND_BUDGET_MS / 2 : CHUNK_BUDGET_MS - 2);
+  // Celestial first (slack-budgeted, cheap shell chunks), then the window
+  // queue with whatever budget remains — steady frames never pay more than
+  // the old total, fast ascents converge instead of popping late.
+  const spentCelestial = drainCelestial(px, pz, behind ? CELESTIAL_DRAIN_BEHIND_MS : CELESTIAL_DRAIN_MS, lx, lz, fr);
+  if (chunkQueue.length) {
+    const remain = Math.max(1, (behind ? CHUNK_BEHIND_BUDGET_MS / 2 : CHUNK_BUDGET_MS - 2) - spentCelestial);
+    drainChunkQueue(false, remain, px, pz, fr);
+  }
   // Clear-bubble guard: anything still queued inside the clear bubble would
   // pop in plain sight, so it builds synchronously no matter the budget.
   // Nearest first, so the closest hole always fills even if more remain.
@@ -1163,20 +1298,42 @@ export function maybeStream(px, pz, eyeY = TERRAIN_REF_Y, fogNear = 0, fogFar = 
 }
 
 const CHUNK_BUDGET_MS = 6;
+// Fade radius (chunks): streaming builds past it appear instantly. The
+// 0.35 s fade hides pops up close; past ~4 chunks a pop is sub-pixel (and
+// fog-covered), while fading costs a transparent see-through phase per
+// chunk — at high speed a permanent trailing shadow that spreads across
+// fresh surfaces even after stopping. Edit/band remeshes already build
+// instant (fade=false at their call sites). At speed the pops are masked by
+// motion but transparent holes are not, so the radius shrinks to 1 chunk
+// past ~60 b/s (threaded from the main loop velocity).
+export const FADE_CHUNKS = 4, FADE_CHUNKS_FAST = 1;
+function nearBuild(px, pz, wx, wz, fr = FADE_CHUNKS) {
+  if (px === undefined || pz === undefined) return true;
+  const cx = chunkOf(px), cz = chunkOf(pz);
+  return Math.max(Math.abs(wx - cx), Math.abs(wz - cz)) <= fr;
+}
 // Borrowed frame time while visibly behind: a 2x-gravity dive (80 b/s)
 // needs ~1,200 chunk builds/s to hold the mesh horizon, past what 6 ms
 // covers. The loan only triggers while missing geometry sits inside the
 // fog range — steady movement never pays it.
 export const CHUNK_BEHIND_BUDGET_MS = 16;
 
-export function drainChunkQueue(all, budgetMs = CHUNK_BUDGET_MS) {
+export function drainChunkQueue(all, budgetMs = CHUNK_BUDGET_MS, px, pz, fr = FADE_CHUNKS) {
+  if (all && celestialPending.size && dim === "over") {
+    for (const ck of [...celestialPending]) {
+      celestialPending.delete(ck);
+      if (chunkMeshes.has(ck)) continue;
+      const [wx, wz] = parseChunkKey(ck);
+      rebuildChunk(wx, wz, nearBuild(px, pz, wx, wz, fr));
+    }
+  }
   if (!chunkQueue.length) return;
-  const deadline = all ? Infinity : performance.now() + budgetMs;
+  const deadline = all ? Infinity : performance.now() + budgetMs * frameBudgetScale();
   while (chunkQueue.length && (all || performance.now() < deadline)) {
     const ck = chunkQueue.shift();
     if (chunkMeshes.has(ck)) continue;
     const [wx, wz] = parseChunkKey(ck);
-    rebuildChunk(wx, wz, true);
+    rebuildChunk(wx, wz, nearBuild(px, pz, wx, wz, fr));
   }
 }
 
@@ -1195,10 +1352,6 @@ export function nearestMissingDist(px, eyeY, pz) {
     if (d < best) best = d;
   }
   return best;
-}
-
-export function pendingCount() {
-  return chunkQueue.length;
 }
 
 // Chunk keys touched by editing column (x, z), for remesh scheduling
@@ -1335,7 +1488,7 @@ function haloKeys(x, z) {
 }
 function drainPendingRefresh(px, eyeY, pz, budgetMs) {
   if (!pendingRefresh.size) return;
-  const deadline = performance.now() + budgetMs;
+  const deadline = performance.now() + budgetMs * frameBudgetScale();
   const scored = [];
   for (const ck of pendingRefresh) {
     const [wx, wz] = parseChunkKey(ck);

@@ -2,7 +2,7 @@
 // registry well-formedness, arm/consume rules, settle + absorb, release on
 // base change, dimension scoping, and the refuses/onComplete extension hooks.
 import assert from "node:assert/strict";
-import { AIR, DIRT, STONE, WATER, LAVA, MOON_WATER } from "../../../src/core/blocks.js";
+import { AIR, DIRT, STONE, WATER, LAVA, MOON_WATER, PLANET_WATERS } from "../../../src/core/blocks.js";
 import { setDimension, resetWorld, setBlock, getBlock } from "../../../src/core/store.js";
 import {
   REACTION_TYPES, VARIANT_LOOKS, reactionFor, armReaction, tickReactions,
@@ -94,6 +94,17 @@ assert.equal(armReaction(0, 5, 0, MOON_WATER).mark, "wet_moon");
 tickReactions(0.5);
 assert.equal(variantAt(0, 5, 0), "wet_moon");
 console.log("PASS moon variant");
+
+// --- planet waters soak in their own color ---
+for (let i = 0; i < PLANET_WATERS.length; i++) {
+  fresh();
+  setBlock(0, 5, 0, DIRT);
+  assert.equal(armReaction(0, 5, 0, PLANET_WATERS[i]).mark, "wet_planet_" + i, `planet water ${i} arms`);
+  tickReactions(0.5);
+  assert.equal(variantAt(0, 5, 0), "wet_planet_" + i, `planet water ${i} settles`);
+  assert.ok(VARIANT_LOOKS["wet_planet_" + i], `planet look ${i} registered`);
+}
+console.log("PASS planet variants");
 
 // --- broken base mid-run releases the reaction, settled mark drops on break ---
 fresh();

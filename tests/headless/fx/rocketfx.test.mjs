@@ -15,6 +15,7 @@ import {
   FX_LAYER_KINDS, FX_PLACES,
   fxScale, speedFactor, resolveLayer, validateRocketFx, exposedFaces,
   landingRingPoints, coneSpreadK, coneBaseMul,
+  CAM_LAG_TAU, CAM_LAG_MAX, CAM_LAG_STEPS, camLagOffset, pullEyeFree,
 } from "../../../src/fx/rocketfx.js";
 
 const near = (a, b) => Math.abs(a - b) < 1e-9;
@@ -506,6 +507,55 @@ const near = (a, b) => Math.abs(a - b) < 1e-9;
   assert.ok(warm[0].indexOf("prewarmBursts()") < warm[0].indexOf("renderer.compile("), "bursts seed before compile");
   const rocket2 = readFileSync(fileURLToPath(new URL("../../../src/vehicles/rocket.js", import.meta.url)), "utf8");
   assert.ok(rocket2.includes("countdownEl.textContent !== t"), "the overlay writes on change only");
+}
+
+// --- the velocity camera lag -------------------------------------------------
+{
+  // Shipped trail: a fraction-of-a-frame lag, hard-capped below the eye
+  // height so the pull-back always has room above the hull floor.
+  assert.equal(CAM_LAG_TAU, 0.012, "the trail reads a speed slice");
+  assert.equal(CAM_LAG_MAX, 1.6, "the cap stays under the eye height");
+  assert.equal(CAM_LAG_STEPS, 8, "the pull-back walks a short ladder");
+  // Zero speed holds level; the trail points back along the motion.
+  assert.deepEqual(camLagOffset(0, 0, 0), { x: 0, y: 0, z: 0 }, "rest holds level");
+  const up = camLagOffset(0, 360, 0);
+  assert.ok(near(up.x, 0) && up.y < 0 && near(up.z, 0), `climb trails down (${up.y})`);
+  const dive = camLagOffset(0, -100, 30);
+  assert.ok(near(dive.x, 0) && dive.y > 0 && dive.z < 0, "a dive trails up and back");
+  // Length grows with speed, then saturates at the cap.
+  const len = (o) => Math.hypot(o.x, o.y, o.z);
+  const slow = camLagOffset(0, 30, 0);
+  assert.ok(near(len(slow), 30 * CAM_LAG_TAU), `planet cruise trails (${len(slow)})`);
+  const cruise = camLagOffset(0, 60, 0);
+  assert.ok(len(cruise) > len(slow) && len(cruise) < CAM_LAG_MAX, "boost trails further, uncapped");
+  const warp = camLagOffset(0, 360, 0);
+  assert.ok(near(len(warp), CAM_LAG_MAX), "deep-space boost saturates the cap");
+  const warp2 = camLagOffset(200, 200, 200);
+  assert.ok(len(warp2) <= CAM_LAG_MAX + 1e-12, "the cap holds diagonally");
+  assert.deepEqual(camLagOffset(NaN, 0, 0), { x: 0, y: 0, z: 0 }, "NaN velocity holds level");
+  // pullEyeFree: a free candidate passes through untouched.
+  const free = () => false;
+  assert.deepEqual(pullEyeFree(1, 2, 3, 0, 1.62, 0, free), { x: 1, y: 2, z: 3 }, "free eye untouched");
+  // A solid candidate is pulled back to the first free rung: the floor of a
+  // 1-block ship (solid below y = 1) keeps an eye at 1.62 from ever dipping in.
+  const floorSolid = (x, y, z) => y < 1;
+  const held = pullEyeFree(0, 1.62 - 1.2, 0, 0, 1.62, 0, floorSolid);
+  assert.ok(held.y >= 1, `the eye stops above the floor (${held.y})`);
+  assert.ok(held.y < 1.62, "the eye still trails down");
+  // An eye buried past every rung falls back to the pilot eye (boarding
+  // keeps it out of hull solids).
+  const allSolid = () => true;
+  assert.deepEqual(pullEyeFree(0, 0, 0, 0, 1.62, 0, allSolid), { x: 0, y: 1.62, z: 0 }, "no rung free falls back");
+  // Wiring: the runtime clamps the eye through the hull test; the loop
+  // applies it after the sim move (no stale frame under a fast hull).
+  const rocket3 = readFileSync(fileURLToPath(new URL("../../../src/vehicles/rocket.js", import.meta.url)), "utf8");
+  assert.ok(rocket3.includes("export function rocketClampEye(eye)"), "the eye clamp is exported");
+  assert.ok(rocket3.includes("camLagOffset(rvel.x, rvel.y, rvel.z)"), "the clamp trails the live velocity");
+  assert.ok(rocket3.includes("pullEyeFree("), "the clamp pulls back out of hull solids");
+  const mainSrc = readFileSync(fileURLToPath(new URL("../../../main.js", import.meta.url)), "utf8");
+  assert.ok(mainSrc.includes("updateCamera(simActive ? dt : 0);\n  updateBossBar();"), "the camera refreshes post-sim");
+  assert.ok(mainSrc.includes("rocketClampEye(camera.position)"), "the loop clamps the eye");
+  assert.ok(!mainSrc.includes("isLagPresetCode"), "no lag key binding survives");
 }
 
 console.log("rocketfx.test.mjs: ok");

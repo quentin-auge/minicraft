@@ -5,8 +5,11 @@
 // the only murk. Tints parallel LIQUID_SURFACE in textures.js without
 // importing it (render-side tuning lives here).
 import * as THREE from "three";
-import { WATER, LAVA, MOON_WATER, isLiquid } from "../core/blocks.js";
+import { WATER, LAVA, MOON_WATER, PLANET_WATERS, isLiquid } from "../core/blocks.js";
 import { getBlock } from "../core/store.js";
+import { PLANET_COLORS } from "../world/planets.js";
+
+const hexOf = ([r, g, b]) => (r << 16) | (g << 8) | b;
 
 // Per-liquid murk: the mix factor eases the background toward the tint.
 // Lava runs dense and dark: short far plane and strong mix so the
@@ -17,6 +20,11 @@ export const LIQUID_FOG = {
   // Long shaft view: the far plane stays open so the submerged eye reads
   // down the whole moon-water column.
   [MOON_WATER]: { tint: 0x7a7e82, near: 2, far: 45, mix: 0.55 },
+  // Planet waters read like moon water, tinted by the palette instead of
+  // grey (same long shaft view down the lake columns).
+  ...Object.fromEntries(PLANET_WATERS.map((id, i) => [id, {
+    tint: hexOf(PLANET_COLORS[i].water), near: 2, far: 45, mix: 0.55,
+  }])),
 };
 const TINT_MIX = 0.55;
 
@@ -25,10 +33,17 @@ let subSmooth = 0;
 
 // Eye medium: liquid (with id) or air. One interface type = one color, so
 // the fog only needs to know whether the eye itself sits in liquid.
+const mediumOut = { type: "air", liquid: 0 };
 export function eyeMediumId(ex, ey, ez) {
   const id = getBlock(Math.floor(ex), Math.floor(ey), Math.floor(ez));
-  if (isLiquid(id)) return { type: "liquid", liquid: id };
-  return { type: "air", liquid: 0 };
+  if (isLiquid(id)) {
+    mediumOut.type = "liquid";
+    mediumOut.liquid = id;
+    return mediumOut;
+  }
+  mediumOut.type = "air";
+  mediumOut.liquid = 0;
+  return mediumOut;
 }
 
 export function tickWaterFog(scene, camera, dt, envAir, medium) {

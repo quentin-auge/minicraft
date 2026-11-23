@@ -31,6 +31,7 @@ import { isUp, isDown, isLeft, isRight, isSprint, isConfirm } from "../player/ke
 import { FLY, flyOn } from "../player/fly.js";
 import { clearGlowstoneAt, noteGlowstonePlace, noteGlowstonePlaceShared, glowVariantAt } from "../world/glowstone.js";
 import { MOON_MIN_Y, markMoonDirty } from "../world/moon.js";
+import { spaceSpeedMul } from "../world/spacezone.js";
 import { clearFlowerAt, noteFlowerPlace, noteFlowerPlaceShared, flowerVariantAt, flowerAngleAt } from "../world/flowers.js";
 import { FLOWER_GEOS, flightFlowerMat } from "../render/flowers.js";
 import { clearReactionAt } from "../world/reactions.js";
@@ -40,7 +41,7 @@ import { rideSigFromKey } from "../world/portalfills.js";
 import { severHook } from "../player/hook.js";
 import { refreshBlocks, queueRefreshBlocks } from "../render/mesher.js";
 import { ORDERS } from "../render/orders.js";
-import { exposedFaces, speedFactor, countdownFactor, fxScale } from "../fx/rocketfx.js";
+import { exposedFaces, speedFactor, countdownFactor, fxScale, camLagOffset, pullEyeFree } from "../fx/rocketfx.js";
 import { playFx } from "../fx/rocketimpact.js";
 import { REACTOR_SETUP, mergeReactors } from "./reactors.js";
 import { dimTntTiersUnlocked, dimFloorY } from "../world/dimensions.js";
@@ -179,6 +180,10 @@ const COUNTDOWN_FADE = [
 ];
 let fadeSegs = [];
 let boostF = 0;
+// Live speed-zone readout for the debug HUD: the space multiplier and the
+// resulting vertical cap of the current flight tick.
+let liveSpaceF = 1;
+let liveCap = 0;
 // A new launch needs the chord released first: a pilot who never lets go of
 // SHIFT+ENTER must not relaunch the rocket the instant a landing animation
 // ends. A fresh press DURING the animation still counts: the freeze latches
@@ -203,6 +208,8 @@ let activeVesselId = null;
 // prompt. pickUnderFeet is the exact gate in both cases.
 let takeoffOffer = null;
 let pendingOffer = null;
+let takeoffCache = { key: null, offer: null, frame: -100 };
+let takeoffFrame = 0;
 
 const origin = new THREE.Vector3();
 const rvel = new THREE.Vector3();
@@ -265,6 +272,9 @@ export function resetRocket() {
   hullFade = 0;
   clearFade();
   rvel.set(0, 0, 0);
+  boostF = 0;
+  liveSpaceF = 1;
+  liveCap = 0;
   siteVersion = -1;
   landingTarget.set(0, 0, 0);
   defaultVesselBox();
@@ -419,6 +429,28 @@ export function rocketEditingBlocked() {
 
 export function rocketFlying() {
   return piloting && phase === "flight";
+}
+
+// Live speed-zone readout for the debug HUD: the deep-space multiplier and
+// the resulting vertical cap of the current flight tick, null otherwise.
+export function rocketBoostInfo() {
+  if (dim !== "over" || !rocketFlying()) return null;
+  return { spaceF: liveSpaceF, boostF, cap: liveCap };
+}
+
+// Eye clamp for the pilot's camera while flying: trails the eye against the
+// hull motion (the pre-space-boost feel, capped in length), then pulls it
+// back out of hull solids — so the eye never enters the hull, not even the
+// floor of a 1-block ship. Mutates the eye in place, no-op outside flight.
+export function rocketClampEye(eye) {
+  if (dim !== "over" || !rocketFlying()) return eye;
+  const off = camLagOffset(rvel.x, rvel.y, rvel.z);
+  if (off.x === 0 && off.y === 0 && off.z === 0) return eye;
+  const px = eye.x, py = eye.y, pz = eye.z;
+  const p = pullEyeFree(px + off.x, py + off.y, pz + off.z, px, py, pz,
+    (x, y, z) => rocketSolidAt(x, y, z));
+  eye.x = p.x; eye.y = p.y; eye.z = p.z;
+  return eye;
 }
 
 // Extra collider consulted by physics while the hull is out of the store.
@@ -732,8 +764,17 @@ export function tickRocket(dt) {
   if (!chordHeld()) takeoffArmed = true;
   if (phase === "parked") {
     // Resolve the exact liftoff gate for the prompt; the offer is
-    // re-resolved once on the launch chord (same gate, no drift).
-    pendingOffer = rocketCanTakeOff();
+    // re-resolved once on the launch chord (same gate, no drift). The
+    // per-frame resolve is cached per player cell (30-frame staleness at
+    // most): takeoffCtx rebuilds the vessel registry and floods underfoot
+    // every frame otherwise. The launch chord below always re-resolves, so
+    // an actual liftoff never uses a stale offer.
+    takeoffFrame++;
+    const ck = Math.floor(pos.x) + "," + Math.floor(pos.y) + "," + Math.floor(pos.z);
+    if (takeoffCache.key !== ck || takeoffFrame - takeoffCache.frame > 30) {
+      takeoffCache = { key: ck, offer: rocketCanTakeOff(), frame: takeoffFrame };
+    }
+    pendingOffer = takeoffCache.offer;
     if (pendingOffer) {
       // Fly mode stays on near a vessel: no prompt and no takeoff
       // while it is, takeoff only once it is off.
@@ -1255,7 +1296,12 @@ function tickFlight(dt) {
   const boostTarget = isSprint(keys) ? 1 : 0;
   boostF += (boostTarget - boostF) * Math.min(1, BOOST_RAMP * dt);
   if (Math.abs(boostF - boostTarget) < 0.001) boostF = boostTarget;
-  const cap = MAX_SPEED + (BOOST_SPEED - MAX_SPEED) * boostF;
+  // Deep space flies faster: the cap grows away from every body and eases
+  // back to the base caps inside the planet buffer (see spacezone.js).
+  const spaceF = spaceSpeedMul(origin.x, origin.y, origin.z);
+  const cap = (MAX_SPEED + (BOOST_SPEED - MAX_SPEED) * boostF) * spaceF;
+  liveSpaceF = spaceF;
+  liveCap = cap;
   if (piloting) {
     // Heading steers at a speed slaved to the climb: |vy|, weighted by
     // the look pitch (level gaze = full, straight up/down = zero). The
@@ -1322,7 +1368,6 @@ function tickFlight(dt) {
   const steps = Math.max(1, Math.ceil(dist / 0.6));
   const sx = rvel.x * dt / steps, sy = rvel.y * dt / steps, sz = rvel.z * dt / steps;
   let carvedAny = false;
-  const bw = vesselBox.x1 - vesselBox.x0, bd = vesselBox.z1 - vesselBox.z0;
   for (let i = 0; i < steps; i++) {
     origin.x += sx; origin.y += sy; origin.z += sz;
     // No clamp of any kind — XZ or Y — on the flight: the hull goes

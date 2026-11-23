@@ -1,14 +1,19 @@
 // Debug HUD, ported from master: `=` toggles a small `fps N | x X  y Y  z Z`
-// readout (integer block coords), plus an optional trailing `extra` string.
-// FPS is an exponential moving average
-// (alpha 0.05) of instantaneous FPS, refreshed at most every 0.25 s.
+// readout (integer block coords), plus an optional trailing `extra` string
+// (the live rocket boost: `| boost xK.K  cap N`, while a rocket is flying).
+// FPS is an exponential moving average (alpha 0.2, deliberately faster than
+// master's 0.05) of instantaneous FPS, refreshed at most every 0.25 s: a
+// post-entry hitch must read as recovered within ~0.3 s, not as a
+// multi-second climb — the loading gate already guarantees entry at 60,
+// so a slow readout would be the only thing still climbing.
 import { started } from "./menu.js";
 
 export let debugHud = false;
 let fpsEMA = 60;
 let hudT = 0;
 
-const el = () => document.getElementById("debug");
+let elCache = null;
+const el = () => elCache ?? (elCache = document.getElementById("debug"));
 
 export function toggleDebug() {
   debugHud = !debugHud;
@@ -16,7 +21,7 @@ export function toggleDebug() {
 }
 
 export function tickDebug(dt, x, y, z, extra) {
-  if (dt > 0) fpsEMA += (1 / dt - fpsEMA) * 0.05;
+  if (dt > 0) fpsEMA += (1 / dt - fpsEMA) * 0.2;
   if (!debugHud || !started) {
     if (el().style.display !== "none") el().style.display = "none";
     return;

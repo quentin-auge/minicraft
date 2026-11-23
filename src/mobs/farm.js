@@ -306,10 +306,14 @@ export function tickFarmMobs(dt, dimName) {
     // separation planning) so nothing can drift them mid-flight.
     if (mob.dim !== dimName || mob._riding) continue;
     if (isCarried(mob)) continue; // grab hook owns the frame: frozen, unplanned
-    // Out-of-level mob: a body beyond its dim's XZ level walls despawns
-    // silently. Repopulation waits for the next portal travel, like every
-    // other herd shrink. No Y floor check: inside the level the terrain fills
-    // to the unbreakable y = 0 floor, and the floorless TNT sky has no mobs.
+    // Out-of-level mob: a body beyond its dim's XZ level walls (walls
+    // make this unreachable for steps and blast flights; the check is the
+    // safety net for anything that ever ends up out there — a blast thrown
+    // from above the overworld clamp ceiling drifting back down outside,
+    // say) despawns silently. Repopulation waits for the next portal
+    // travel, like every other herd shrink. No Y floor check: inside the
+    // level the terrain fills to the unbreakable y = 0 floor, and the
+    // floorless TNT sky has no mobs.
     const wallLim = mobXZLimit(dimName, mob.pos.y);
     if (wallLim != null &&
         (Math.abs(mob.pos.x) > wallLim || Math.abs(mob.pos.z) > wallLim)) {

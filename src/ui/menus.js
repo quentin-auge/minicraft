@@ -11,6 +11,7 @@
 // like modals; releases route through routeMenuKeyUp.
 // Three-free (no DOM): specs and ctx are injected, so dispatch and the
 // resume policy stay headless-testable.
+
 const specs = [];
 
 export function registerMenu(spec) {

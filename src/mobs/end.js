@@ -12,6 +12,7 @@ import { bandOf, pickSpot, shouldDodge, boundedXZ, blastPredicates } from "./end
 import { listFarmMobs } from "./farm.js";
 import { spawnBurst } from "../fx/particles.js";
 import { END_PLATFORM_HALF, END_PLATFORM_TOP, END_RETURN_Z, setEndCleared } from "../world/end.js";
+import { MOON_MIN_Y } from "../world/moon.js";
 import { noteDragonKill } from "../world/tntunlock.js";
 import { hash2 } from "../core/noise.js";
 
@@ -480,7 +481,7 @@ function teleportEnderman(mob, camera, exclude = null) {
       z + hw > o.pos.z - (o.hw ?? 0.32) && z - hw < o.pos.z + (o.hw ?? 0.32) &&
       y + h > o.pos.y && y < o.pos.y + (o.h ?? 1)),
     exclude,
-    inBounds: (x, z) => spotInBounds(dimName, x, z),
+    inBounds: (x, z) => spotInBounds(dimName, x, z, from.y),
     inView: camera ? (x, y, z) => inViewSpot(camera, x, y, z, mob.h) : null,
     los: camera ? (x, y, z) => losClearSpot(camera, x, y, z, mob.h) : null,
     rand,
@@ -641,16 +642,16 @@ function spotGroundY(dimName, x, z, refY, yHi, hw) {
   return null;
 }
 
-function spotInBounds(dimName, x, z) {
+function spotInBounds(dimName, x, z, refY = 1) {
   if (dimName === "end") {
     if (Math.abs(x) > END_PLATFORM_HALF || Math.abs(z) > END_PLATFORM_HALF) return false;
     // The return-portal mouth stays clear, as on master.
     if (Math.abs(x) <= 3 && Math.abs(z - END_RETURN_Z) <= 3) return false;
     return true;
   }
-  // Bounds follow the dim: infinite dims roam the key range (pickSpot only
-  // ever samples near the mob), bounded dims keep the ±94 cube.
-  if (dimInfinite(dimName)) return !outOfWorld(x, 1, z, dimName);
+  // Bounds follow the dim: infinite dims and the celestial sky roam the key
+  // range (pickSpot only ever samples near the mob), bounded ground keeps ±94.
+  if (dimInfinite(dimName) || (dimName === "over" && refY >= MOON_MIN_Y)) return !outOfWorld(x, Math.max(1, refY), z, dimName);
   return boundedXZ(x, z);
 }
 

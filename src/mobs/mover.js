@@ -9,7 +9,8 @@ import { stepAir, gravityAt } from "../core/launch.js";
 import { dampFloatEntryVelY } from "../core/floatability.js";
 import { dimBound, dimInfinite } from "../core/store.js";
 import { mobXZLimit, mobLevelHalf } from "../world/level.js";
-import { MOON_MIN_Y, isMoonGone, moonDimHas } from "../world/moon.js";
+import { MOON_MIN_Y, moonDimHas } from "../world/moon.js";
+import { anyBodyAlive } from "../world/planets.js";
 import { narrowPoseOk, narrowSide, narrowSense, activeNarrowPeer } from "./narrow.js";
 import { FARM_WALK_DIVISOR } from "./livestock.js";
 import {
@@ -3225,8 +3226,9 @@ export function launchMobBlast(mob, vx, vy, vz) {
   mob._rebase = false;
   if (mob.vel) mob.vel.y = 0;
   const dimName = mob.dim ?? "over";
-  // Walls captured at launch (level edge under the mob): the whole flight
-  // rebounds off them — a ground-band blast never throws a mob out of its level.
+  // Walls captured at launch (level edge under the mob, overworld only
+  // below the band mid-plane): the whole flight rebounds off them —
+  // a ground-band blast never throws a mob out of its level.
   const launchLim = mobXZLimit(dimName, mob.pos.y);
   const wallLim = launchLim != null &&
     Math.abs(mob.pos.x) <= launchLim && Math.abs(mob.pos.z) <= launchLim
@@ -3260,7 +3262,7 @@ function tickBlastFlight(mob, dt, pickTarget, rand) {
   const floor = (dimInfinite(dimName) || half == null || outsideLevel) ? -Infinity : 1;
   // One sky, one gravity: the Moon low-g rule reads through the same shared
   // helper as the player.
-  const G = gravityAt(moonDimHas(dimName), isMoonGone(), mob.pos.y, MOON_MIN_Y);
+  const G = gravityAt(moonDimHas(dimName), !anyBodyAlive(), mob.pos.y, MOON_MIN_Y);
   const speed = Math.hypot(b.x, b.y, b.z);
   const n = Math.max(1, Math.min(32, Math.ceil((speed * dt) / BLAST_SUBSTEP)));
   const s = dt / n;

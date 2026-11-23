@@ -152,6 +152,7 @@ export function tickHomingTnt(dt, activeDimension) {
   if (targetLock && (!targetLock.alive || targetLock.dim !== activeDimension)) {
     targetLock = null; lockShots = 0;
   }
+  if (!projectiles.size) return;
   for (const p of [...projectiles]) {
     if (!p.target.alive || p.target.dim !== activeDimension) { removeProjectile(p); continue; }
     p.life -= dt;

@@ -4,26 +4,38 @@
 // detonates it immediately.
 import * as THREE from "three";
 import { AIR, BLOCK_INFO, FLOWER, GLOWSTONE, TNT, isLiquid, isTntLike } from "../core/blocks.js";
-import { dim, dimInfinite, getBlock, setBlock, outOfWorld, isCellProtected } from "../core/store.js";
+import { dim, dimInfinite, getBlock, setBlock, outOfWorld, isCellProtected, chunkOf, worldRevision } from "../core/store.js";
 import { pinTntCellAt } from "../world/tntstream.js";
-import { dimFloorY, dimTntTiersUnlocked } from "../world/dimensions.js";
+import { dimFloorY, dimTntTiersUnlocked, dimHasMoon } from "../world/dimensions.js";
 import { isTntTierUnlocked } from "../world/tntunlock.js";
 import { PLAYER_HW, PLAYER_H, pos } from "./physics.js";
-import { igniteTNT, isLitTNT, detonateNow, noteTntPlaced, kindOfBlock, trackMegaPlaced, trackRegularTntPlaced } from "../fx/tnt.js";
+import { igniteTNT, isLitTNT, detonateNow, noteTntPlaced, kindOfBlock, trackMegaPlaced, trackRegularTntPlaced, trackBodyTnt } from "../fx/tnt.js";
+import { planetBodyAtPlaced, activeBodySeed, rayBodyHit, bodyReady, bodySurfaceCell, noteBodyInteract } from "../world/planets.js";
+import { refreshBlocks, isChunkBuilt, queueCelestialChunks } from "../render/mesher.js";
 import { noteGlowstonePlace, noteGlowstonePlaceShared, glowVariantAt, clearGlowstoneAt } from "../world/glowstone.js";
 import { noteFlowerPlace, clearFlowerAt } from "../world/flowers.js";
 import { armReaction, clearReactionAt } from "../world/reactions.js";
 import { notePoolEdit } from "../render/poollights.js";
-import { MOON_MIN_Y, markMoonDirty } from "../world/moon.js";
+import { MOON_MIN_Y, MOON_R, markMoonDirty, generateBodySurfaceRows, generateBodyUnderRows, requestBodyFill, keepBodyCell } from "../world/moon.js";
 import { notePortalEdit, notePortalEdits, notePortalFramesOnly, toast } from "../world/portals.js";
 import { allMobs } from "../mobs/registry.js";
 import { cellBlockedByMob } from "../mobs/carry.js";
 import { headroomBlocked, listPads, listVessels } from "../world/rocketpad.js";
 
 export let currentBlock = null;
+const pickCache = {
+  valid: false, hit: null, skip: false, rev: -1,
+  ex: 0, ey: 0, ez: 0, dx: 0, dy: 0, dz: 0,
+};
+// Quantized static-aim comparison: resting contact lets the eye/dir sit
+// still up to float noise, so compare at sub-voxel quantum (1e-4 blocks,
+// 1e-7 direction). Anything coarser risks a stale cell; anything finer
+// misses on idle jitter.
+const q4 = (v) => Math.round(v * 1e4);
+const q7 = (v) => Math.round(v * 1e7);
 const _dir = new THREE.Vector3();
 
-export function pickBlock(origin, dir, skipLiquid, maxDist = Infinity, maxSteps = 1024) {
+export function pickBlock(origin, dir, skipLiquid, maxDist = Infinity, maxSteps = 1024, startT = 0) {
   let x = Math.floor(origin.x), y = Math.floor(origin.y), z = Math.floor(origin.z);
   const stepX = dir.x > 0 ? 1 : -1, stepY = dir.y > 0 ? 1 : -1, stepZ = dir.z > 0 ? 1 : -1;
   const tDeltaX = dir.x !== 0 ? Math.abs(1 / dir.x) : Infinity;
@@ -36,6 +48,31 @@ export function pickBlock(origin, dir, skipLiquid, maxDist = Infinity, maxSteps 
   // Ray distance of the hit cell (the face the ray entered through): the
   // mob picker uses it for occlusion.
   let t = 0;
+  if (startT > 0) {
+    // Seeded fast-forward: begin the walk at origin + dir * startT instead
+    // of the eye. tMax values become absolute (startT + distance from the
+    // advanced point to its next boundary) and t the advanced cell's exact
+    // entry, so the returned hit keeps absolute-ray semantics.
+    const sx = origin.x + dir.x * startT, sy = origin.y + dir.y * startT, sz = origin.z + dir.z * startT;
+    x = Math.floor(sx); y = Math.floor(sy); z = Math.floor(sz);
+    let back = Infinity;
+    if (dir.x !== 0) {
+      const d = (stepX > 0 ? sx - x : x + 1 - sx) / Math.abs(dir.x);
+      tMaxX = startT + (stepX > 0 ? (x + 1 - sx) : (sx - x)) / Math.abs(dir.x);
+      back = Math.min(back, d);
+    }
+    if (dir.y !== 0) {
+      const d = (stepY > 0 ? sy - y : y + 1 - sy) / Math.abs(dir.y);
+      tMaxY = startT + (stepY > 0 ? (y + 1 - sy) : (sy - y)) / Math.abs(dir.y);
+      back = Math.min(back, d);
+    }
+    if (dir.z !== 0) {
+      const d = (stepZ > 0 ? sz - z : z + 1 - sz) / Math.abs(dir.z);
+      tMaxZ = startT + (stepZ > 0 ? (z + 1 - sz) : (sz - z)) / Math.abs(dir.z);
+      back = Math.min(back, d);
+    }
+    t = startT - (back === Infinity ? 0 : back);
+  }
   for (let i = 0; i < maxSteps; i++) {
     // Infinite dimensions keep stepping past the old cube (and below zero);
     // bounded dims keep the exact old bounds.
@@ -65,13 +102,64 @@ export function updateTarget(camera, selectedId, eyeLiquid = eyeInLiquid(camera.
   // passes through; liquid selection passes through only while the eye
   // sits inside liquid, otherwise the ray stops at liquid.
   const skip = !isLiquid(selectedId) || eyeLiquid;
-  currentBlock = pickBlock(camera.position, _dir, skip);
+  // Static-aim cache: a standing player re-picks the identical ray every
+  // frame (local DDA + long-range geometric + seeded voxel re-pick). Reuse
+  // while eye, direction, skip, and world revision are all identical — any
+  // edit bumps the revision and forces a re-pick.
+  const p = camera.position;
+  if (pickCache.valid && pickCache.skip === skip && pickCache.rev === worldRevision &&
+      q4(p.x) === pickCache.ex && q4(p.y) === pickCache.ey && q4(p.z) === pickCache.ez &&
+      q7(_dir.x) === pickCache.dx && q7(_dir.y) === pickCache.dy && q7(_dir.z) === pickCache.dz) {
+    currentBlock = pickCache.hit;
+    return currentBlock;
+  }
+  currentBlock = pickBlock(camera.position, _dir, skip) ?? pickCelestialBody(camera.position, _dir);
+  pickCache.valid = true;
+  pickCache.hit = currentBlock;
+  pickCache.skip = skip;
+  pickCache.rev = worldRevision;
+  pickCache.ex = q4(p.x); pickCache.ey = q4(p.y); pickCache.ez = q4(p.z);
+  pickCache.dx = q7(_dir.x); pickCache.dy = q7(_dir.y); pickCache.dz = q7(_dir.z);
   return currentBlock;
 }
 
 export function breakTarget(camera) {
   camera.getWorldDirection(_dir);
-  return pickBlock(camera.position, _dir, true);
+  return pickBlock(camera.position, _dir, true) ?? pickCelestialBody(camera.position, _dir);
+}
+
+// Celestial pick fallback: past the DDA range (1024 voxels), aim at a body
+// geometrically (same gate as the celestial grapple). Never builds here —
+// the write path materializes the body on demand. Returns a DDA-shaped hit
+// (voxel + face), real voxels when built, the geometric surface cell plus a
+// dominant-axis face when not.
+export function pickCelestialBody(origin, dir) {
+  if (!dimHasMoon(dim)) return null;
+  const hit = rayBodyHit(origin, dir);
+  if (!hit) return null;
+  // Seeded re-pick (always): the geometric hit is the nearest body on the
+  // ray, so the void between eye and body holds no body voxels — start the
+  // voxel walk at the geometric entry (minus a margin covering the
+  // cylinder-corner air gap) instead of marching thousands of empty cells
+  // from the eye. Runs whether or not the body has finished its background
+  // fill: built and player-touched columns hold real voxels (the dome
+  // shell, placed blocks), and chain digs on a far body must resolve them —
+  // the old readiness gate reduced those picks to the geometric AIR cell,
+  // so remote digs broke nothing until the whole body streamed in. Voxels
+  // within the plain 1024-step DDA range above already resolved exactly;
+  // past that, remote picks snap to bodies — mid-void player structures
+  // past 1024 do not resolve through this path. A miss (unbuilt column)
+  // falls through to the geometric surface cell: aim/placement shape, and
+  // an honest no-op for breaks where nothing exists yet.
+  const R = hit.spec.r ?? MOON_R;
+  const MARGIN = R * 3 + 32;
+  const re = pickBlock(origin, dir, true, Infinity, Math.ceil((MARGIN + R * 2) * 2), Math.max(0, hit.t - MARGIN));
+  if (re) return { ...re, body: hit.spec };
+  const [bx, by, bz] = bodySurfaceCell(hit);
+  return {
+    x: hit.x, y: hit.y, z: hit.z, id: AIR,
+    face: [bx - hit.x, by - hit.y, bz - hit.z], t: hit.t, body: hit.spec,
+  };
 }
 
 function intersectsPlayer(bx, by, bz) {
@@ -156,6 +244,12 @@ export function breakBlockAt(x, y, z, opts) {
   clearReactionAt(x, y, z);
   setBlock(x, y, z, AIR);
   if (y >= MOON_MIN_Y) markMoonDirty();
+  // Breaking a body cell counts as interacting with it (same LOD keep rule
+  // as placements).
+  {
+    const b = planetBodyAtPlaced(x, y, z);
+    if (b && dimHasMoon(dim)) noteBodyInteract(activeBodySeed(), b.key);
+  }
   if (dimInfinite()) pinTntCellAt(x, y, z);
   notePoolEdit();
   if (batched) return [[x, y, z]];
@@ -173,6 +267,27 @@ export function tryPlace(id, px, py, pz, opts) {
   // Bounded dims keep the y = 0 floor unplaceable; the infinite sky builds
   // anywhere in the key range.
   if (py < 0 && !dimInfinite()) return null;
+  // Remote builds: a face-adjacent cell of an unbuilt body (picked past DDA
+  // range) materializes the body first, or the placement would land in void
+  // and the next fill would pave over it.
+  {
+    const b = planetBodyAtPlaced(px, py, pz);
+    if (b && dimHasMoon(dim) && !bodyReady(activeBodySeed(), b.key)) {
+      // First touch builds only the target column now (cap + shell + lake
+      // shafts for that column); the main-loop slicer completes the rest
+      // over frames — no single-frame whole-body hitch on first placing.
+      // Remesh the real column chunk when built (sync, so the placed block
+      // shows at once); unbuilt far chunks ride the celestial queue — the
+      // old call passed chunk coords as voxel coords and refreshed the
+      // wrong neighborhood while leaving the placed cell unmeshed.
+      const seed = activeBodySeed();
+      generateBodySurfaceRows(b, seed, setBlock, px, px + 1);
+      generateBodyUnderRows(b, seed, setBlock, px, px + 1, getBlock);
+      requestBodyFill(seed, b.key);
+      if (isChunkBuilt(chunkOf(px) + "_" + chunkOf(pz))) refreshBlocks([[px, 0, pz]]);
+      else queueCelestialChunks([[px, 0, pz]]);
+    }
+  }
   const target = getBlock(px, py, pz);
   if (!(target === AIR || isLiquid(target))) return null;
   if (BLOCK_INFO[id].solid && intersectsPlayer(px, py, pz)) return null;
@@ -186,6 +301,19 @@ export function tryPlace(id, px, py, pz, opts) {
   }
   setBlock(px, py, pz, id);
   if (py >= MOON_MIN_Y) markMoonDirty();
+  // Player-touched bodies stay meshed at any range (the LOD keeps their real
+  // voxels instead of the proxy): note every successful celestial place.
+  // Never let a completing body fill pave over this cell: first-touch (and
+  // stroke) placements on a still-unbuilt body are skipped by the slicer.
+  {
+    const b = planetBodyAtPlaced(px, py, pz);
+    if (b && dimHasMoon(dim)) {
+      noteBodyInteract(activeBodySeed(), b.key);
+      if (!bodyReady(activeBodySeed(), b.key)) {
+        keepBodyCell(activeBodySeed(), b.key, px, py, pz);
+      }
+    }
+  }
   // Block reactions (world/reactions.js): a liquid trigger placed on a
   // reacting base is drunk at once — before portal/purge/narrow-liquid
   // bookkeeping sees it as liquid, so the drunk cell returns to air with a
@@ -201,6 +329,13 @@ export function tryPlace(id, px, py, pz, opts) {
   if (batched && isLiquid(id) && !drunk) pendingLiquidCells.push([px, py, pz]);
   notePoolEdit();
   if (id === TNT) trackRegularTntPlaced(px, py, pz);
+  // Celestial placements feed the remote-detonation index (right-click a
+  // body from afar ignites/detonates its nearest TNT); lazy-validated, so
+  // no untracking needed on any removal path.
+  if (isTntLike(id)) {
+    const b = planetBodyAtPlaced(px, py, pz);
+    if (b) trackBodyTnt(activeBodySeed(), b.key, px, py, pz);
+  }
   // Player content pins its stream cell: edits (and portal frames built
   // from them) never evict within a visit.
   if (dimInfinite()) pinTntCellAt(px, py, pz);

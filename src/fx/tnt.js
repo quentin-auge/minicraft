@@ -20,8 +20,14 @@
 import { AIR, TNT, MEGA_TNT, ULTRA_TNT, FLOWER, GLOWSTONE, isLiquid, isTntLike } from "../core/blocks.js";
 import { WORLD_RADIUS, topAt, dimInfinite, dimBound, dim, getBlock, setBlock, isCellProtected, colOcc, colTopIdx, chunkHasVoxels, frameBudgetScale } from "../core/store.js";
 import { dimUltra } from "../world/dimensions.js";
-import { ULTRA_BAND1_HI, ULTRA_BAND2_HI, ULTRA_MARGIN, ULTRA_Y_LO, ultraVolumeFor, volumeContains, boundingR, footprintCols, bandDrainMode } from "../world/ultravol.js";
-import { rebuildChunk, isChunkBuilt, chunkKeysForColumn, refreshBlocks, clearChunkMeshes } from "../render/mesher.js";
+import { ULTRA_MARGIN, ULTRA_Y_LO, ultraVolumeFor, volumeContains, boundingR, bodyBall, footprintCols, bandDrainMode, ULTRA_BAND1_HI, ULTRA_BAND2_HI } from "../world/ultravol.js";
+import { rebuildChunk, isChunkBuilt, chunkKeysForColumn, refreshBlocks, refreshBuiltQueueCelestial, clearChunkMeshes, filterChunkBall } from "../render/mesher.js";
+import {
+  ultraBandOf,
+  moonSpec, bodyByKey, planetBodyAtPlaced, markBodyBuilt, bodyReady, activeBodySeed,
+  isCelestialBand, noteBodyInteract, noteBodyWiped,
+} from "../world/planets.js";
+import { generateBodyUnderRows, generateBodySurfaceRows, bodyChunkCenters } from "../world/moon.js";
 import { notePortalFramesOnly, clearPortalFills, scanWorldPortals } from "../world/portals.js";
 import { pos, vel, setOnGround, addPlayerKnockback } from "../player/physics.js";
 import { computeMegaLaunch, megaFlyShove } from "../core/launch.js";
@@ -326,9 +332,8 @@ function computeLightSpots() {
     if (tk.band) {
       // Countdown swell sized to the wipe volume, not the full map: the
       // light reaches the box corners (or ball surface) exactly.
-      const uu = dimUltra(dim);
-      const bb = uu.bands ? ultraBandOf(t.y) : 0;
-      spots.push({ x: t.x + 0.5, y: t.y + 0.5, z: t.z + 0.5, band: true, R: boundingR(ultraVolumeFor({ u: uu, band: bb, cx: t.x, cy: t.y, cz: t.z })), kind: t.kind, fminKey: k, total: t.total, key: "band:" + k });
+      const { vol } = wipeVolumeAt(t.x, t.y, t.z);
+      spots.push({ x: t.x + 0.5, y: t.y + 0.5, z: t.z + 0.5, band: true, R: vol ? boundingR(vol) : 64, kind: t.kind, fminKey: k, total: t.total, key: "band:" + k });
       seen.add(k);
       continue;
     }
@@ -485,6 +490,12 @@ function shell2(cx, cy, cz, R, c1, c2, t1, e1, t2, e2) {
 // volumes scale with R^3 via denseCount, hard-capped by the GPU pools.
 function phaseLayer(h, o, role, per, min, max, rest = {}) {
   const { delay = 0, life = 1.5, R = h.R, ...props } = rest;
+  // Ultra-scale trims (ultra only; mega never sets them): the full-level
+  // radius always saturates the authored caps (~160k particles, sizes up to
+  // 52px — fill-rate death for seconds). countScale lowers the caps,
+  // sizeScale shrinks the quads (overdraw scales with size squared).
+  const cap = Math.round(max * (h.countScale ?? 1));
+  if (h.sizeScale && props.size) props.size = props.size * h.sizeScale;
   // Per-phase life scale (ultra trims the Titan smoke tail without touching
   // the canonical recipes; mega never sets it, so its visuals stay exact).
   const scaledLife = life * (h.lifeScale ?? 1);
@@ -492,7 +503,7 @@ function phaseLayer(h, o, role, per, min, max, rest = {}) {
   h.maxEnd = Math.max(h.maxEnd ?? 0, start + scaledLife);
   return spawnDense({
     x: h.cx, y: h.cy, z: h.cz, R, role,
-    count: D(R, per, min, max),
+    count: D(R, per, min, cap),
     lobes: h.lobes, defer: true, ...props, life: blastSeconds(scaledLife), delay: blastSeconds(start),
   });
 }
@@ -576,7 +587,7 @@ function spawnMegaBlastFx(x, y, z, kind, mult = 1, fx = null) {
   fxBaseDelay = fx?.delay ?? 0;
   const boost = (1 + 0.15 * (m - 1)) * share;
   const lives = megaBaseLives(key);
-  const h = { cx, cy, cz, R, boost, lives, shells, lobes: fx?.lobes ?? null, shellMode: fx?.shellMode ?? null, baseDelay: fxBaseDelay, maxEnd: 0, m, lifeScale: fx?.lifeScale ?? 1 };
+  const h = { cx, cy, cz, R, boost, lives, shells, lobes: fx?.lobes ?? null, shellMode: fx?.shellMode ?? null, baseDelay: fxBaseDelay, maxEnd: 0, m, lifeScale: fx?.lifeScale ?? 1, countScale: fx?.countScale ?? 1, sizeScale: fx?.sizeScale ?? 1 };
   // A pooled blast keeps one batched fireball shell per member crater. The
   // instanced batch shares its geometry, material, and animation uniform.
   MEGA_PHASES[key]?.(h);
@@ -608,7 +619,7 @@ function poolLight(ax, ay, az, R, key, color = null, mult = 1) {
 // a name): the inferno mix — lens burst + strong overlay + close-range FOV
 // kick, density ×1.5, light ×1.5, particles only (no flash-sphere fireball:
 // the full-level phases already read as one blast without mesh overdraw).
-const ULTRA_FX = { camBurst: true, camR: 16, overlay: [1.0, 0.8], fovKick: 5, fovRange: 96, share: 1.5, lightMult: 1.5 };
+const ULTRA_FX = { camBurst: true, camR: 16, overlay: [1.0, 0.8], fovKick: 5, fovRange: 96, share: 1.5, lightMult: 1.5, countScale: 0.45, sizeScale: 0.75 };
 export function ultraFxSpec() {
   return ULTRA_FX;
 }
@@ -619,14 +630,39 @@ const ULTRA_PHASES = [
   { style: "smoke", delay: 0.5, lifeScale: 0.5 },
 ];
 const ULTRA_RING_R = 1.4, ULTRA_RING_DUR = 1.2;
+// Wipe volume for one ultra ignition: the TNT ignition cube, a fixed level
+// box (End/Nether), an overworld band box, or one celestial ball with a
+// proximity gate — an ignition in a sky gap (outside every ball plus margin)
+// wipes nothing. Returns { vol, band, body } with vol null in the gap case.
+function wipeVolumeAt(cx, cy, cz) {
+  const u = dimUltra(dim);
+  const band = u.bands ? ultraBandOf(cx, cy, cz) : 0;
+  const body = u.bands && isCelestialBand(band)
+    ? (band === "moon" ? moonSpec() : bodyByKey(band.slice(5)))
+    : null;
+  if (body) {
+    const ball = bodyBall(body);
+    // Sky-gap gate: the ball wipes only when the ignition sits on or just
+    // off the body (face-adjacent fuses included); a gap ignition — Moon
+    // band far below the ball included — reads as a miss, FX only.
+    const near = { ...ball, r: ball.r + ULTRA_MARGIN };
+    if (!volumeContains(near, cx, cy, cz)) return { vol: null, band, body };
+    return { vol: ball, band, body };
+  }
+  return { vol: ultraVolumeFor({ u, band, cx, cy, cz }), band, body: null };
+}
 function spawnUltraBlastFx(x, y, z, kind) {
   // lifeScale is applied when each job drains (see spawnMegaBlastFx): the
   // queued job only carries the authored phase options.
   const f = ultraFxSpec();
   // Phases burn at the wipe volume's own size (bounding radius), so a
-  // ground-box inferno and a TNT-cube inferno read at their true reach.
-  const u = dimUltra(dim);
-  const R = boundingR(ultraVolumeFor({ u, band: u.bands ? ultraBandOf(y) : 0, cx: x, cy: y, cz: z }));
+  // ground-box inferno and a planet-ball inferno read at their true reach.
+  // Counts scale with volume, sizes linearly — same look, fewer particles
+  // and less overdraw on small volumes.
+  const { vol } = wipeVolumeAt(x, y, z);
+  const R = vol ? boundingR(vol) : 64;
+  const rScale = Math.min(1, (R / ULTRA_FULL_R) ** 3);
+  const sScale = Math.min(1, R / ULTRA_FULL_R);
   for (const phase of ULTRA_PHASES) {
     const isRing = phase.style === "rings";
     fxJobs.push({
@@ -634,43 +670,41 @@ function spawnUltraBlastFx(x, y, z, kind) {
       key: phase.style, delay: 0,
       R: isRing ? R * ULTRA_RING_R : R,
       lifeScale: (phase.lifeScale ?? 1) * (isRing ? ULTRA_RING_DUR : 1),
+      countScale: f.countScale * rScale, sizeScale: f.sizeScale * sScale,
       due: simNow + blastSeconds(phase.delay ?? 0),
     });
   }
   poolLight(x, y, z, R, "ultra", 0xff7a1a, ULTRA_FX.lightMult);
 }
 
-// Ultra bands: the overworld is wiped one box per blast — ground, cloud,
-// moon column (see world/ultravol.js for the extents); other dims wipe
-// their registry box (End/Nether) or the ignition-centered cube (TNT sky).
-export { ULTRA_BAND1_HI, ULTRA_BAND2_HI };
+// Ultra wipe volumes: overworld band boxes, fixed level boxes (End/Nether),
+// the TNT ignition cube, and one ball per celestial body (see
+// world/ultravol.js for the extents, world/planets.js for the band lookup).
 export const ULTRA_FULL_R = WORLD_RADIUS * 2 * Math.SQRT2;
-export function ultraBandOf(y) {
-  if (y < ULTRA_BAND1_HI + 1) return 1;
-  if (y <= ULTRA_BAND2_HI) return 2;
-  return 3;
-}
-export function ultraBandRange(band) {
-  if (band === 1) return [ULTRA_Y_LO, ULTRA_BAND1_HI + ULTRA_MARGIN];
-  if (band === 2) return [ULTRA_BAND1_HI + 1 - ULTRA_MARGIN, ULTRA_BAND2_HI + ULTRA_MARGIN];
-  return [ULTRA_BAND2_HI + 1, null]; // to the column top
-}
+export { ULTRA_BAND1_HI, ULTRA_BAND2_HI, ultraBandOf };
 
 // Sliced band carve: columns sorted from the ignition so the wipe reads as
-// an expanding front; drained under the live drain mode (column floor + cap,
-// hard ms deadline, deterministic and pause-safe). Carving only mutates
-// voxels and records dirty chunk keys — remeshing happens separately in
-// drainBlastRemesh under its own millisecond budget, gated on the carve
-// frontier, so no chunk rebuilds twice and no tick pays an unbounded rebuild
-// avalanche.
+// an expanding front; drained under the live mode budget (column floor +
+// cap, occupied-cell budget, hard ms deadline — deterministic, pause-safe).
+// Carving only mutates voxels and records dirty chunk keys — remeshing
+// happens separately in drainBlastRemesh under its own millisecond budget,
+// gated on the carve frontier, so no chunk rebuilds twice and no tick pays
+// an unbounded rebuild avalanche.
 const REMESH_BUDGET_MS = 6;
 const REMESH_TURBO_MS = 16;
+// Band-only wipes (no pooled carve running) remesh under this smaller
+// budget: the 16 ms turbo sustains ~40 fps frames for the whole tail on a
+// thousand dirty chunks, while 3 ms holds 60 fps with a longer finish. Kept
+// below the old 5 ms: the wipe tail already shares the frame with the carve
+// drain and the particle overdraw, and 5 ms left no headroom for the base
+// frame on dense views (measured 53 fps instead of 60).
+const BAND_REMESH_MS = 3;
 const CARVE_TURBO_MS = 24;
 let blastRemeshTurbo = 0;
 export function boostBlastRemesh(frames = 45) {
   blastRemeshTurbo = Math.max(blastRemeshTurbo, frames);
 }
-const bandJobs = []; // { cx..cz, band, yLo, yHi, kind, cols, ci, front2, dirty, fxAcc, carveDone }
+const bandJobs = []; // { cx..cz, band, yLo, yHi, kind, body, ball, seed, cols, ci, front2, dirty, fxAcc, carveDone, poolTouch, portalAcc }
 // Batched blasts (normal TNT chains and non-band blasts detonating mid-wipe)
 // queue their chunks here instead of rebuilding synchronously, so every
 // mass detonation shares one budgeted remesh drain.
@@ -708,9 +742,13 @@ export function drainBlastRemesh(px, py, pz, visR) {
   if (turboActive) blastRemeshTurbo--;
   // Visible work keeps turbo budgets; far-only tails drop to base so frames
   // lighten once the fog-visible crater is done. Recomputed live: approaching
-  // far work re-arms turbo automatically.
+  // far work re-arms turbo automatically. Band-only wipes skip the turbo
+  // (pooled carves keep it): their thousand-chunk tail drains at 5 ms so
+  // frames hold 60 instead of sustaining turbo-rate ~40 fps to the end.
+  const poolActive = carveJobs.length > 0;
   const nearActive = blastRefreshPending.size > 0 || bandJobs.length > 0 || carveJobs.some((j) => j.hasNearWork);
-  const budget = turboActive && nearActive ? REMESH_TURBO_MS : REMESH_BUDGET_MS;
+  const budget = (bandJobs.length && !poolActive ? BAND_REMESH_MS
+    : turboActive && nearActive ? REMESH_TURBO_MS : REMESH_BUDGET_MS) * frameBudgetScale();
   const deadline = performance.now() + budget;
   const dist2 = (ck) => {
     const u = ck.indexOf("_");
@@ -728,7 +766,8 @@ export function drainBlastRemesh(px, py, pz, visR) {
       rebuildChunk(+cks[i].slice(0, u), +cks[i].slice(u + 1));
       rebuiltThisPass.add(cks[i]);
     }
-    return cks.slice(i); // leftovers stay dirty
+    const left = cks.slice(i); // leftovers stay dirty
+    return left;
   };
   const carveJob = carveJobs[0];
   if (carveJob?.ready.size) {
@@ -765,36 +804,83 @@ export function drainBlastRemesh(px, py, pz, visR) {
     const left = rebuildWithin(rest);
     for (const ck of left) blastRefreshPending.add(ck);
   }
+  // Concurrent band jobs: collect ready chunks across every active band job
+  // so multiple planets exploding successively or simultaneously all remesh
+  // nearest-first without waiting for bandJobs[0] to finish.
+  //
+  // Celestial (ball) chunks filter in place: removing exactly the wiped cells
+  // reproduces the rebuild bit-for-bit at a fraction of the cost, so the
+  // void reads the frame the carve frontier passes. Near-surface survivors
+  // fall back to the budgeted rebuild below — same deadline, leftovers
+  // requeued behind the carve cursor as before.
+  //
   // The background gone-scan pumps here (fixed 2 ms slice, outside the
   // remesh budget): finish waits for it, so the multi-million-entry rescan
   // overlaps the tail instead of hitching the finish frame.
   if (moonGoneScanActive()) pumpMoonGoneScan(2);
-  const bandJob = bandJobs[0];
-  if (bandJob) {
-    if (bandJob.dirty.size) {
-      const ready = [];
-      for (const [ck, m] of bandJob.dirty) {
-        if (!cellsDone(bandJob) || m >= bandJob.ci) continue; // frontier hasn't passed
-        bandJob.dirty.delete(ck);
-        if (!isChunkBuilt(ck)) continue;
+  if (bandJobs.length) {
+    const readyAll = [];
+    const filterAll = [];
+    const filterSeen = new Set();
+    const ownerOf = new Map();
+    // In-place filter pass, defined here so the closure sees ownerOf /
+    // readyAll (block-scoped below the band branch — defining it outside
+    // left it blind to them: ReferenceError every frame).
+    const filterWithin = (items) => {
+      items.sort((a, b) => dist2(a.ck) - dist2(b.ck));
+      let i = 0;
+      for (; i < items.length; i++) {
+        if (performance.now() >= deadline) break;
+        const f = items[i];
+        if (!filterChunkBall(f.qx, f.qz, f.ball)) {
+          if (!ownerOf.has(f.ck)) {
+            ownerOf.set(f.ck, f.bj);
+            readyAll.push(f.ck);
+          }
+          continue;
+        }
+      }
+      return items.slice(i);
+    };
+    for (const bj of bandJobs) {
+      if (!bj.dirty.size) continue;
+      for (const [ck, m] of bj.dirty) {
+        if (!isChunkBuilt(ck)) { bj.dirty.delete(ck); continue; }
+        if (m >= bj.ci) continue; // frontier hasn't passed
+        bj.dirty.delete(ck);
         const u = ck.indexOf("_");
         const qx = +ck.slice(0, u), qz = +ck.slice(u + 1);
         // Fully-emptied chunk: dispose at the frontier (instant void, no
         // GPU work left) instead of rebuilding identical emptiness under
         // budget. Partial chunks queue for the budgeted rebuild as before.
         if (!chunkHasVoxels(qx, qz)) { clearChunkMeshes(qx, qz); continue; }
-        ready.push(ck);
+        if (bj.ball && !filterSeen.has(ck)) {
+          filterSeen.add(ck);
+          filterAll.push({ ck, qx, qz, ball: bj.ball, bj });
+          continue;
+        }
+        if (!ownerOf.has(ck)) {
+          ownerOf.set(ck, bj);
+          readyAll.push(ck);
+        }
       }
-      // Unbuilt chunks never need a refresh: streaming builds them current.
-      for (const [ck] of bandJob.dirty) {
-        if (!isChunkBuilt(ck)) bandJob.dirty.delete(ck);
-      }
-      for (const ck of rebuildWithin(ready)) bandJob.dirty.set(ck, -1);
     }
-    // Finish only once carve, remesh AND the background gone-scan all
-    // settled: readers flip to the post-wipe state on voxels that are
-    // final, with no rescan spike on the finish frame.
-    if (bandJob.carveDone && bandJob.dirty.size === 0 && !moonGoneScanActive()) finishBandJob(bandJob);
+    if (filterAll.length) {
+      for (const f of filterWithin(filterAll)) f.bj.dirty.set(f.ck, -1);
+    }
+    if (readyAll.length) {
+      for (const ck of rebuildWithin(readyAll)) {
+        const bj = ownerOf.get(ck);
+        if (bj) bj.dirty.set(ck, -1);
+      }
+    }
+    for (let i = bandJobs.length - 1; i >= 0; i--) {
+      const bj = bandJobs[i];
+      // Finish only once carve, remesh AND the background gone-scan all
+      // settled: readers flip to the post-wipe state on voxels that are
+      // final, with no rescan spike on the finish frame.
+      if (bj.carveDone && bj.dirty.size === 0 && !moonGoneScanActive()) finishBandJob(bj, i);
+    }
   }
 
   if (carveJob && carveJob.carveDone && carveJob.dirty.size === 0 && carveJob.ready.size === 0) {
@@ -806,9 +892,13 @@ export function drainBlastRemesh(px, py, pz, visR) {
 // purge seeded from the band boundary (in-band liquids were cleared; only
 // neighbors above/below can strand), then the job leaves and the shell hides.
 // Per-slice purging would repeat the same floods ~50x for an identical result.
-function finishBandJob(job) {
-  bandJobs.shift();
-  hideBandShell();
+function finishBandJob(job, idx = 0) {
+  bandJobs.splice(idx, 1);
+  if (!bandJobs.length) hideBandShell();
+  // A wiped body drops its LOD meshes and proxy at once (they were remeshed
+  // empty by the drain, so the drop frees no GPU work): no 1.5 s fade-out on
+  // the void, and no stale proxy at far range.
+  if (job.body) noteBodyWiped(job.seed, job.body.key);
   const seeds = [];
   const seen = new Set();
   const pushSeed = (x, y, z) => {
@@ -823,11 +913,14 @@ function finishBandJob(job) {
     pushSeed(gx, job.yHi + 1, gz);
     pushSeed(gx, job.yLo - 1, gz);
   }
-  const purged = onPurge ? onPurge(seeds) ?? [] : [];
-  notePoolEdit();
+  const purged = onPurge && seeds.length ? onPurge(seeds) ?? [] : [];
+  if (job.portalAcc?.length) notePortalFramesOnly(job.portalAcc);
+  job.portalAcc = null;
   if (purged.length) {
     notePortalFramesOnly(purged);
-    refreshBlocks(purged);
+    // Budgeted remesh, never synchronous: a stranded-liquid storm (ground
+    // ultra near water) used to freeze the finish frame with full rebuilds.
+    queueBlastRefresh(purged);
   }
   // Full-world fill resync: the only healer that reaches past the player's
   // 12-block scanner range, so no destroyed window anywhere keeps its fill.
@@ -837,8 +930,14 @@ function finishBandJob(job) {
   if (onCraterFn) onCraterFn({ kind: "ultra", yLo: job.yLo, yHi: job.yHi });
 }
 const BAND_CHAIN_RADIUS = TNT_DEFAULTS.radius;
+// Zone test for one cell against a band job: balls test their own volume
+// (O(1) whatever the body count), legacy boxes fall back to the full lookup.
+function jobBandOf(job, x, y, z) {
+  if (job.ball) return volumeContains(job.ball, x, y, z) ? job.band : null;
+  return ultraBandOf(x, y, z);
+}
 function queueBandBoundaryChains(job, x, y, z) {
-  if (!job.bands || ultraBandOf(y) !== job.band) return;
+  if (!job.bands || jobBandOf(job, x, y, z) !== job.band) return;
   const r2 = BAND_CHAIN_RADIUS * BAND_CHAIN_RADIUS;
   const ranges = [];
   if (y - job.yLo < BAND_CHAIN_RADIUS) ranges.push([job.yLo - BAND_CHAIN_RADIUS, job.yLo - 1]);
@@ -863,12 +962,13 @@ function queueBandBoundaryChains(job, x, y, z) {
 function carveBandCell(job, kind, gx, gy, gz, touched) {
   const bid = getBlock(gx, gy, gz);
   if (bid === AIR) return;
+  if (bid === GLOWSTONE) job.poolTouch = true; // pool lamps re-slot at most once per tick below.
   if (gy === 0) return; // floor level spared in every dimension, TNT sky included
   const victimKind = isTntLike(bid) ? kindOfBlock(bid) : null;
   if (victimKind) {
     // Ultras in another band (or another fixed box) are preserved for their
     // own blast. Inside one volume everything goes.
-    if (victimKind.band && job.bands && ultraBandOf(gy) !== job.band) return;
+    if (victimKind.band && job.bands && jobBandOf(job, gx, gy, gz) !== job.band) return;
     // The band wipe consumes in-band TNT, but TNT just across an altitude
     // boundary still chains as if struck by a normal radius-3 blast.
     queueBandBoundaryChains(job, gx, gy, gz);
@@ -887,75 +987,139 @@ function carveBandCell(job, kind, gx, gy, gz, touched) {
   clearCell(gx, gy, gz, touched);
 }
 function carveBandColumn(job, kind, gx, gz, touched) {
-  // Column-occupancy walk (non-air cells only): sparse cloud bands cost
-  // lookups instead of hundreds of getBlocks per column. Verdicts are
-  // identical since carving no-ops on air anyway. Returns the carved cell
-  // count so the drain can skip the remesh queue for untouched columns.
+  // Bulk path for every band: walk the column-occupancy set (non-air cells
+  // only) instead of the full row span — sparse bands (clouds: dozens of
+  // cells over a ~370-row span) cost lookups instead of hundreds of getBlocks
+  // per column, and empty sky columns cost one Map lookup. The verdict per
+  // cell is identical: carveBandCell no-ops on air, and the set holds exactly
+  // the non-air cells, so the visited set matches the span loop exactly
+  // (the old top clamp is redundant: no set member sits above the top).
+  // Celestial balls filter in 3D: the column span is the ball's Y bounds,
+  // only cells inside the sphere carve. Returns the carved cell count for
+  // the drain's cell budget.
   const set = colOcc[dim].get(colTopIdx(gx, gz));
   if (!set) return 0;
+  const yHi = job.yHi, ball = job.ball;
   let n = 0;
   for (const gy of set) {
-    if (gy < job.yLo || gy > job.yHi) continue;
+    if (gy < job.yLo || (yHi !== null && yHi !== undefined && gy > yHi)) continue;
+    if (ball && !volumeContains(ball, gx, gy, gz)) continue;
     carveBandCell(job, kind, gx, gy, gz, touched);
     n++;
   }
   return n;
 }
-// Per-tick carve budget under the single max drain path (ultravol.js
-// BAND_DRAIN_MODES): a column floor keeps sparse bands flying whatever the
-// ms budget, hard ms deadline — frames are spent to finish the wipe fast.
+// Sliced first-touch body build for a band wipe: sniping an unbuilt planet
+// converges over frames (same voxels and order as generateBodyNoJoin, same
+// 16-row slices as the background slicer) instead of paying a full
+// synchronous build plus a whole-disc sync remesh in one tick. Returns true
+// once the body is ready and the carve may start.
+const BODY_BUILD_STEP = 16;
+function buildBodySlice(job) {
+  const spec = job.body, seed = job.seed;
+  const R = spec.r, x0 = spec.cx - R, x1 = spec.cx + R + 1;
+  if (job.buildX === undefined) { job.buildX = x0; job.buildPhase = 0; }
+  if (job.buildPhase === 0) {
+    generateBodyUnderRows(spec, seed, setBlock, job.buildX, job.buildX + BODY_BUILD_STEP, getBlock);
+    job.buildX += BODY_BUILD_STEP;
+    if (job.buildX >= x1) { job.buildPhase = 1; job.buildX = x0; }
+    return false;
+  }
+  generateBodySurfaceRows(spec, seed, setBlock, job.buildX, job.buildX + BODY_BUILD_STEP);
+  job.buildX += BODY_BUILD_STEP;
+  if (job.buildX < x1) return false;
+  markBodyBuilt(seed, spec.key);
+  // Mostly unbuilt chunks ride the celestial queue; built ones remesh
+  // synchronously so the wipe reads at once.
+  refreshBuiltQueueCelestial(bodyChunkCenters(spec));
+  job.buildX = undefined; job.buildPhase = undefined;
+  return true;
+}
+// Per-tick carve budget shared across all active band jobs: concurrent planet
+// blasts progress in parallel each frame without freezing or waiting for the
+// previous planet to finish. Single max pacing (ultravol.js BAND_DRAIN_MODES):
+// a column floor keeps sparse bands flying whatever the ms budget, no cell
+// cap, hard ms deadline — frames are spent to finish the wipe fast.
 function drainBandJobs(dt) {
   if (!bandJobs.length) return;
   const mode = bandDrainMode();
   const deadline = performance.now() + mode.ms * frameBudgetScale();
-  const job = bandJobs[0];
-  const kind = kindOf(job.kind);
-  const cleared = [];
-  let n = 0;
-  while (job.ci < job.cols.length && n < mode.colCap && (n < mode.colFloor || performance.now() < deadline)) {
-    const idx = job.ci;
-    const [d2, gx, gz] = job.cols[idx];
-    job.ci = idx + 1;
-    const carved = carveBandColumn(job, kind, gx, gz, cleared);
-    // Only columns that actually cleared cells dirty their chunks: fringe
-    // and already-empty columns visit for free, and their chunks skip the
-    // remesh drain entirely instead of rebuilding identical meshes.
-    if (carved > 0) markBandDirty(job, gx, gz, idx);
-    if (d2 > job.front2) job.front2 = d2;
-    n++;
+  const perJobCols = Math.max(mode.colFloor, Math.floor(mode.colCap / bandJobs.length));
+  let shellJob = null;
+  for (let ji = 0; ji < bandJobs.length; ji++) {
+    const job = bandJobs[ji];
+    if (job.carveDone) continue;
+    const kind = kindOf(job.kind);
+    if (job.body && !job.cols) {
+      if (!bodyReady(job.seed, job.body.key) && !buildBodySlice(job)) continue;
+      job.cols = footprintCols(job.ball, job.cx, job.cz, (x, z) => colOcc[dim].has(colTopIdx(x, z)));
+    }
+    const cleared = job.body ? null : [];
+    let n = 0, cells = 0;
+    while (job.ci < job.cols.length && n < perJobCols && cells < mode.cellBudget && (n < mode.colFloor || performance.now() < deadline)) {
+      const idx = job.ci;
+      const [d2, gx, gz] = job.cols[idx];
+      job.ci = idx + 1;
+      const carved = carveBandColumn(job, kind, gx, gz, cleared);
+      cells += carved;
+      // Only columns that actually cleared cells dirty their chunks: fringe
+      // and already-empty columns visit for free, and their chunks skip the
+      // remesh drain entirely instead of rebuilding identical meshes.
+      if (carved > 0) markBandDirty(job, gx, gz, idx);
+      if (d2 > job.front2) job.front2 = d2;
+      n++;
+    }
+    if (cleared && cleared.length) {
+      // Portal frames track the cleared cells once at finish (cheap Set ops
+      // then, and fills heal from the finish rescan anyway — never a
+      // per-tick getBlock + trackFrame storm).
+      if (!job.portalAcc) job.portalAcc = [];
+      for (const c of cleared) job.portalAcc.push(c);
+    }
+    if (job.ci >= job.cols.length) {
+      job.carveDone = true;
+      // Carve settled: start the background gone-scan (no-op when the wipe
+      // noted nothing moon-band). Readers stay cached until it completes.
+      beginMoonGoneScan();
+    }
+    if (job.poolTouch) { notePoolEdit(); job.poolTouch = false; }
+    shellJob = job;
   }
-  // Portal frames track the cleared cells only (cheap Set ops); fills heal
-  // from the dirty flag in the periodic scanner — never a per-cell refresh.
-  if (cleared.length) notePortalFramesOnly(cleared);
-  notePoolEdit();
-  // Throttled shell advance on sim-time: the wall glides with the front
-  // instead of paying a full 8k-particle rewrite every frame.
-  job.fxAcc = (job.fxAcc || 0) + dt;
-  if (job.fxAcc > 0.12) {
-    job.fxAcc = 0;
-    updateBandShell(job.cx + 0.5, job.cy + 0.5, job.cz + 0.5, Math.sqrt(job.front2), job.yLo, job.yHi);
-  }
-  if (job.ci >= job.cols.length) {
-    job.carveDone = true;
-    // Carve settled: start the background gone-scan (no-op when the wipe
-    // noted nothing moon-band). Readers stay cached until it completes.
-    beginMoonGoneScan();
+  // No unconditional pool resync here: the per-job flag above re-slots lamps
+  // at most once per tick and only when a glowstone actually fell (wipes
+  // touch none most ticks, so the forced full-cluster resync is gone).
+  if (shellJob) {
+    shellJob.fxAcc = (shellJob.fxAcc || 0) + dt;
+    if (shellJob.fxAcc > 0.12) {
+      shellJob.fxAcc = 0;
+      updateBandShell(shellJob.cx + 0.5, shellJob.cy + 0.5, shellJob.cz + 0.5, Math.sqrt(shellJob.front2), shellJob.yLo, shellJob.yHi);
+    }
   }
 }
 
 // Detonation-frame jump-start (mega-pool style, smaller): carve the nearest
 // columns and remesh their chunks synchronously so the crater reads at once,
 // the budgeted drain finishing the tail behind. Bounded by the drain mode
-// (column count + ms) so the boom frame never hangs.
+// (column count + ms) so the boom frame never hangs. Unbuilt bodies converge
+// first within half the budget; whatever is left rides the slicer (the
+// existing path converges identically).
 function jumpstartBandJob(job, kind) {
   const mode = bandDrainMode();
+  if (job.body && !job.cols) {
+    const deadline = performance.now() + mode.jumpMs / 2;
+    while (!bodyReady(job.seed, job.body.key) && performance.now() < deadline) {
+      if (buildBodySlice(job)) break;
+    }
+    if (!bodyReady(job.seed, job.body.key)) return;
+    job.cols = footprintCols(job.ball, job.cx, job.cz, (x, z) => colOcc[dim].has(colTopIdx(x, z)));
+  }
   if (!job.cols || !job.cols.length) {
     job.carveDone = true;
     beginMoonGoneScan();
     return;
   }
   const deadline = performance.now() + mode.jumpMs;
-  const cleared = [];
+  const cleared = job.body ? null : [];
   const maxCols = Math.max(64, mode.jumpChunks * 256);
   let n = 0;
   while (job.ci < job.cols.length && n < maxCols && (n < 64 || performance.now() < deadline)) {
@@ -968,11 +1132,15 @@ function jumpstartBandJob(job, kind) {
     if (d2 > job.front2) job.front2 = d2;
     n++;
   }
-  if (cleared.length) notePortalFramesOnly(cleared);
+  if (cleared && cleared.length) {
+    if (!job.portalAcc) job.portalAcc = [];
+    for (const c of cleared) job.portalAcc.push(c);
+  }
   if (job.ci >= job.cols.length) {
     job.carveDone = true;
     beginMoonGoneScan();
   }
+  if (job.poolTouch) { notePoolEdit(); job.poolTouch = false; }
   // Remesh what the jump-start carved, nearest-first (dirty insertion order),
   // within budget — unbuilt chunks drop out for streaming (voxels are
   // already final underneath them).
@@ -984,31 +1152,29 @@ function jumpstartBandJob(job, kind) {
     if (!isChunkBuilt(ck)) { job.dirty.delete(ck); continue; }
     const u = ck.indexOf("_");
     const qx = +ck.slice(0, u), qz = +ck.slice(u + 1);
-    // Emptied chunks clear instantly; the rest remeshes synchronously so
-    // the crater reads complete on the boom frame.
+    // Emptied chunks clear instantly; celestial chunks filter in place
+    // (exact bit-for-bit); the rest remeshes synchronously so the crater
+    // reads complete on the boom frame.
     if (!chunkHasVoxels(qx, qz)) clearChunkMeshes(qx, qz);
-    else rebuildChunk(qx, qz);
+    else if (!(job.ball && filterChunkBall(qx, qz, job.ball))) rebuildChunk(qx, qz);
     job.dirty.delete(ck);
   }
 }
 
 // One wipe volume per blast: same-volume lit fuses and queued blasts die
-// with it; cross-band ultras survive unless an edge TNT chains into them
-// (fixed boxes and the TNT cube have no bands, so everything inside dies).
-// Columns carve across frames; shake fires once (one impulse plus decay,
-// like mega).
+// with it; cross-band ultras survive unless an edge TNT chains them.
+// Fixed boxes and the TNT cube kill everything inside; each planet (and the
+// Moon) is its own ball so planets explode successively or in parallel
+// without lag. A sky-gap ignition wipes nothing — spectacle only.
 function explodeBand(cx, cy, cz, kind, refresh) {
   removeSprite(cx + "," + cy + "," + cz, kind);
-  const u = dimUltra(dim);
-  const band = u.bands ? ultraBandOf(cy) : 0;
-  // Wipe volume per zone (see world/ultravol.js): overworld band boxes, a
-  // fixed box per level (End/Nether), an ignition-centered cube (TNT sky).
-  const vol = ultraVolumeFor({ u, band, cx, cy, cz });
-  const R = boundingR(vol);
-  const yLo = vol.y0, yHi = vol.y1;
-  // Fuse/chain kill set: volume membership everywhere now (bands and fixed
-  // boxes alike) — cross-band fuses survive unless an edge TNT chains them.
-  const inBlast = (x, y, z) => volumeContains(vol, x, y, z);
+  const { vol, band, body } = wipeVolumeAt(cx, cy, cz);
+  const R = vol ? boundingR(vol) : 64; // gap ignitions still flash
+  const yLo = vol ? (vol.shape === "box" ? vol.y0 : Math.floor(vol.cy - vol.r)) : cy;
+  const yHi = vol ? (vol.shape === "box" ? vol.y1 : Math.ceil(vol.cy + vol.r)) : cy;
+  // Fuse/chain kill set: volume membership (or nothing in a sky gap) —
+  // cross-band ultras survive unless an edge TNT chains them.
+  const inBlast = vol ? (x, y, z) => volumeContains(vol, x, y, z) : () => false;
   for (const [k, t] of lit) {
     if (!inBlast(t.x, t.y, t.z)) continue;
     lit.delete(k);
@@ -1018,21 +1184,50 @@ function explodeBand(cx, cy, cz, kind, refresh) {
     if (!inBlast(c.x, c.y, c.z)) continue;
     pendingChain.delete(k);
   }
+  if (!vol) {
+    // Sky gap: spectacle only, and the spent block itself is consumed.
+    const touched = [];
+    clearCell(cx, cy, cz, touched);
+    queueBlastRefresh(touched);
+    displaced.delete(cx + "," + cy + "," + cz);
+    spawnBlastFx(cx, cy, cz, kind);
+    if (onBlast) onBlast(cx, cy, cz, R, kind.key);
+    return [];
+  }
+  const u = dimUltra(dim);
   // Gone-flag invalidation is deferred across the whole wipe (flushed once
-  // in finishBandJob): per-cell bumps would rescan the full map on every
-  // frame of the carve.
+  // in finishBandJob): per-cell bumps would rescan the full map plus every
+  // body cylinder on every frame of the carve.
   deferMoonDirty();
-  // Column footprint of the box, minus empty columns, sorted from the
-  // ignition so the wipe reads as an expanding front.
-  const cols = footprintCols(vol, cx, cz, (x, z) => colOcc[dim].has(colTopIdx(x, z)));
-  const job = {
-    cx, cy, cz, band, bands: u.bands, yLo, yHi, kind: kind.key,
-    cols, ci: 0,
-    front2: 0, dirty: new Map(), fxAcc: 1, carveDone: false,
-  };
-  bandJobs.push(job);
-  jumpstartBandJob(job, kind);
-  boostBlastRemesh(60);
+  if (body) {
+    const seed = activeBodySeed();
+    // A detonated body keeps its meshes at any range (LOD keep rule): the
+    // wipe must read on real voxels, never on a stale proxy.
+    noteBodyInteract(seed, body.key);
+    const job = {
+      cx, cy, cz, band, bands: true,
+      yLo, yHi, kind: kind.key,
+      body, ball: vol, seed,
+      cols: null, ci: 0,
+      front2: 0, dirty: new Map(), fxAcc: 1, carveDone: false, poolTouch: false, portalAcc: null,
+    };
+    bandJobs.push(job);
+    jumpstartBandJob(job, kind);
+    boostBlastRemesh(60);
+  } else {
+    // Column footprint of the box, minus empty columns, sorted from the
+    // ignition so the wipe reads as an expanding front.
+    const cols = footprintCols(vol, cx, cz, (x, z) => colOcc[dim].has(colTopIdx(x, z)));
+    const job = {
+      cx, cy, cz, band, bands: u.bands, yLo, yHi, kind: kind.key,
+      body: null, ball: null,
+      cols, ci: 0,
+      front2: 0, dirty: new Map(), fxAcc: 1, carveDone: false, poolTouch: false, portalAcc: null,
+    };
+    bandJobs.push(job);
+    jumpstartBandJob(job, kind);
+    boostBlastRemesh(60);
+  }
   // A clearing kind leaves air behind instead of restoring the displaced
   // liquid at its own cell (carve clears it like every other cell).
   displaced.delete(cx + "," + cy + "," + cz);
@@ -1132,6 +1327,47 @@ export function trackRegularTntPlaced(x, y, z) {
   if (!cells) regularTntIndex.set(dim, cells = new Set());
   cells.add(x + "," + y + "," + z);
 }
+// Player-placed TNT on celestial bodies: "seed:bodyKey" -> Set("x,y,z").
+// Powers remote detonation (right-click a body from afar ignites its
+// nearest fuse, or detonates the nearest lit one). Lazy-validated against
+// live voxels (hand mining, wipes and detonations stale entries
+// self-clean); cleared with the rest of TNT memory on New World.
+const bodyTntCells = new Map();
+export function trackBodyTnt(seed, bodyKey, x, y, z) {
+  const k = seed + ":" + bodyKey;
+  let s = bodyTntCells.get(k);
+  if (!s) bodyTntCells.set(k, s = new Set());
+  s.add(x + "," + y + "," + z);
+}
+// Nearest live TNT-like cell on the body to the aim point: lit fuses
+// detonate at once, placed ones ignite. Null when the body holds none.
+export function useBodyTnt(spec, seed, x, y, z) {
+  let best = null, bestD = Infinity;
+  const consider = (cx, cy, cz, wasLit) => {
+    const dx = cx - x, dy = cy - y, dz = cz - z;
+    const d = dx * dx + dy * dy + dz * dz;
+    if (d < bestD) { bestD = d; best = { x: cx, y: cy, z: cz, wasLit }; }
+  };
+  for (const t of lit.values()) {
+    const b = planetBodyAtPlaced(t.x, t.y, t.z);
+    if (b && b.key === spec.key) consider(t.x, t.y, t.z, true);
+  }
+  const s = bodyTntCells.get(seed + ":" + spec.key);
+  if (s) {
+    for (const k of [...s]) {
+      const [cx, cy, cz] = k.split(",").map(Number);
+      if (!isTntLike(getBlock(cx, cy, cz))) { s.delete(k); continue; }
+      consider(cx, cy, cz, false);
+    }
+  }
+  if (!best) return null;
+  if (best.wasLit) {
+    const touched = detonateNow(best.x, best.y, best.z);
+    return { action: "detonated", touched };
+  }
+  igniteTNT(best.x, best.y, best.z);
+  return { action: "ignited", touched: [] };
+}
 function untrackRegularTnt(x, y, z) {
   regularTntIndex.get(dim)?.delete(x + "," + y + "," + z);
 }
@@ -1210,6 +1446,7 @@ export function clearRegularTntDim(name = dim) {
 // travel snuffs them with their sprites instead of ticking foreign voxels.
 export function resetTNTMemory() {
   simNow = 0;
+  bodyTntCells.clear();
   if (dim === "tnt") clearRegularTntDim(dim); // TNT dimension regenerates on entry
   for (const [k, t] of lit) removeSprite(k, kindOf(t.kind));
   lit.clear();
@@ -1234,9 +1471,9 @@ export function resetTNTMemory() {
   markPoolChanged();
   wakeMegas = null;
   bandJobs.length = 0;
+  resetMoonDirty(); // drop any wipe-deferred invalidation; the fresh world rescans once
   blastRefreshPending.clear();
   hideBandShell();
-  resetMoonDirty(); // drop any wipe-deferred invalidation; the fresh world rescans once
   resetDenseFx();
   fxJobs.length = 0;
   carveJobs.length = 0;
@@ -1273,7 +1510,7 @@ function drainFxJobs() {
     fxJobs.splice(i, 1);
     budget -= cost;
     flushed = true;
-    spawnMegaBlastFx(j.x, j.y, j.z, j.kind, j.k, { share: j.share, shells: j.shells, shellMode: j.shellMode, key: j.key, delay: j.delay, R: j.R, lobes: j.lobes, lifeScale: j.lifeScale });
+    spawnMegaBlastFx(j.x, j.y, j.z, j.kind, j.k, { share: j.share, shells: j.shells, shellMode: j.shellMode, key: j.key, delay: j.delay, R: j.R, lobes: j.lobes, lifeScale: j.lifeScale, countScale: j.countScale, sizeScale: j.sizeScale });
   }
   if (flushed) {
     flushDense();
@@ -1418,7 +1655,7 @@ function drainCarveJobs(px, py, pz, visR) {
     }
   }
   first.hasNearWork = hasNear;
-  const deadline = callT0 + ((blastRemeshTurbo > 0 && hasNear) ? CARVE_TURBO_MS : CARVE_BUDGET_MS);
+  const deadline = callT0 + ((blastRemeshTurbo > 0 && hasNear) ? CARVE_TURBO_MS : CARVE_BUDGET_MS) * frameBudgetScale();
   let planned = 0, carved = 0;
   while (carveJobs.length) {
     const job = carveJobs[0];
@@ -1884,7 +2121,7 @@ function clearCell(x, y, z, touched) {
   clearReactionAt(x, y, z);
   setBlock(x, y, z, AIR);
   if (y >= MOON_MIN_Y) noteMoonDirty(); // deferred across band wipes (see explodeBand)
-  touched.push([x, y, z]);
+  if (touched) touched.push([x, y, z]);
   return true;
 }
 

@@ -26,6 +26,16 @@ export const SOULSAND = 18;
 export const MOON = 19;
 export const GLOWSTONE = 20;
 export const MOON_WATER = 21;
+// Planets: one rock + one water per glowstone color, shared across every
+// planet of that color (per-planet identity is positional — the cylinder a
+// voxel sits in — never id-based, so 7 couples cover any planet count).
+export const PLANET_ROCKS = [29, 31, 33, 35, 37, 39, 41];
+export const PLANET_WATERS = [30, 32, 34, 36, 38, 40, 42];
+// Celestial body ids (Moon + planet rocks/waters).
+const BODY_IDS = new Set([MOON, MOON_WATER, ...PLANET_ROCKS, ...PLANET_WATERS]);
+export function isBodyId(id) {
+  return BODY_IDS.has(id);
+}
 // Rocket family (worldgen only): white/orange hull, dark thruster nozzles,
 // and the hazard-plate launch pad. Windows reuse the stock GLASS block.
 export const HULL = 24;
@@ -60,6 +70,13 @@ export const BLOCK_INFO = {
   [MOON]: { name: "Moon", solid: true, opaque: true, placeable: false },
   [MOON_WATER]: { name: "Moon Water", solid: false, opaque: false, placeable: true },
   [GLOWSTONE]: { name: "Glowstone", solid: true, opaque: true, placeable: true },
+  ...Object.fromEntries(PLANET_ROCKS.flatMap((id, i) => {
+    const c = ["Green", "Red", "Blue", "Yellow", "Orange", "Purple", "Turquoise"][i];
+    return [
+      [id, { name: c + " Planet", solid: true, opaque: true, placeable: false }],
+      [PLANET_WATERS[i], { name: c + " Planet Water", solid: false, opaque: false, placeable: true }],
+    ];
+  })),
   [HULL]: { name: "Hull", solid: true, opaque: true, placeable: false },
   [HULL_ACCENT]: { name: "Hull Accent", solid: true, opaque: true, placeable: false },
   [THRUSTER]: { name: "Thruster", solid: true, opaque: true, placeable: false },
@@ -72,9 +89,17 @@ export function isSolidId(id) {
 }
 
 export function isLiquid(id) {
-  return id === WATER || id === LAVA || id === MOON_WATER;
+  return id === WATER || id === LAVA || id === MOON_WATER || PLANET_WATERS.includes(id);
 }
 
 export function isTntLike(id) {
   return id === TNT || id === MEGA_TNT || id === ULTRA_TNT;
+}
+
+// Highlight gate: the aim box reflects voxels only, never geometry. A
+// geometric celestial pick (id AIR on a body cylinder, possibly outside the
+// voxel volume entirely) stays fully actionable — remote place, grapple,
+// body TNT — but draws no box.
+export function shouldShowHighlight(hit) {
+  return !!hit && hit.id !== AIR;
 }

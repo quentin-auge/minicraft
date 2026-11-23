@@ -17,6 +17,7 @@ import { noteFlowerPlace, resetFlowerMemory, setFlowerSeed } from "./flowers.js"
 import { setGlowSeed } from "./glowstone.js";
 import { generateClouds } from "./clouds.js";
 import { generateMoonSurface, resetMoon } from "./moon.js";
+import { setPlanetSeed } from "./planets.js";
 
 // Worldgen tunables as one spec object: terrain shape, river system, and the
 // flower scatter density (overworld's own knob; per-variant properties live
@@ -136,6 +137,7 @@ function isVillage(x, z) {
 
 function setupOverworld(newSeed) {
   seed = newSeed;
+  setPlanetSeed(seed);
   setFlowerSeed(seed);
   setGlowSeed(seed);
   setDimension("over");

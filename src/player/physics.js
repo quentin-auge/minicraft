@@ -8,7 +8,8 @@ import { dragAir, steerAir, clampFall, gravityAt, KNOCK_DECAY, knockCutoff } fro
 import { floatTargetY, floatVelY, dampFloatEntryVelY } from "../core/floatability.js";
 import { getBlock, isSolid, colLiqTop, colTopIdx, dim } from "../core/store.js";
 import { dimSpec, dimHasMoon } from "../world/dimensions.js";
-import { MOON_MIN_Y, isMoonGone } from "../world/moon.js";
+import { MOON_MIN_Y } from "../world/moon.js";
+import { anyBodyAlive } from "../world/planets.js";
 
 export const PLAYER_HW = 0.3;
 export const PLAYER_H = 1.8;
@@ -432,9 +433,9 @@ export function updateFreeSwim(dt) {
 
 export function updatePlayer(dt) {
   // One sky, one gravity: the low-g rule near the Moon and above is shared
-  // with mobs (core/launch.js gravityAt). Dies with the moon: no lunar
-  // blocks left, no low-g.
-  const G = gravityAt(dimHasMoon(dim), isMoonGone(), pos.y, MOON_MIN_Y);
+  // with mobs (core/launch.js gravityAt). Dies with the last body: no
+  // celestial blocks left anywhere, no low-g.
+  const G = gravityAt(dimHasMoon(dim), !anyBodyAlive(), pos.y, MOON_MIN_Y);
   readKeysMove(false);
   const sprintKey = isSprint(keys);
 

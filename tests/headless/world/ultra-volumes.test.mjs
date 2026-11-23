@@ -1,9 +1,10 @@
-// Ultra wipe volumes: one box per zone, shared margin, membership.
-// Three-free (ultravol + store + clouds + moon only), runs headless.
+// Ultra wipe volumes: one box per zone plus one ball per celestial body,
+// shared margin, membership. Three-free (ultravol + store + clouds only),
+// runs headless.
 import assert from "node:assert/strict";
 import {
   ULTRA_MARGIN, ULTRA_Y_LO, ULTRA_BAND1_HI, ULTRA_BAND2_HI,
-  groundBox, cloudBox, moonBox, tntCube, fixedBox, footprintCols,
+  groundBox, cloudBox, tntCube, fixedBox, bodyBall, footprintCols,
   BAND_DRAIN_MODES, bandDrainMode, selectBallInstances,
   ultraVolumeFor, volumeContains, boundingR,
 } from "../../../src/world/ultravol.js";
@@ -39,14 +40,26 @@ assert.equal(ULTRA_Y_LO, -20);
   assert.ok(!volumeContains(v, 0, 482, 0));
 }
 
-// 4. Moon column box: disc plus margin, up past the surface.
+// 4. Celestial balls: disc radius + dome half-height, padded by the margin.
+// Moon: r=96, half-height 48 → ceil(hypot) 108 + 20 = 128, center y=898.
 {
-  const v = moonBox();
-  assert.deepEqual([v.x0, v.x1, v.z0, v.z1], [-116, 116, -116, 116]);
-  assert.deepEqual([v.y0, v.y1], [ULTRA_BAND2_HI + 1, 850 + 96 + 20]);
-  assert.ok(volumeContains(v, 0, 900, 0));
-  assert.ok(!volumeContains(v, 117, 900, 0));
-  assert.ok(!volumeContains(v, 0, ULTRA_BAND2_HI, 0));
+  const moon = { cx: 0, cz: 0, top: 946, bottom: 850, r: 96 };
+  const v = bodyBall(moon);
+  assert.equal(v.shape, "ball");
+  assert.deepEqual([v.cx, v.cy, v.cz, v.r], [0, 898, 0, 128]);
+  assert.ok(volumeContains(v, 0, 898, 0));
+  assert.ok(volumeContains(v, 128, 898, 0));
+  assert.ok(volumeContains(v, 0, 898 - 128, 0));
+  assert.ok(!volumeContains(v, 129, 898, 0));
+  assert.ok(!volumeContains(v, 0, 898 + 129, 0));
+  assert.equal(boundingR(v), 128);
+  // Footprint columns: disc of the ball radius, sorted from the ignition.
+  const cols = footprintCols(v, 10, 0, null);
+  assert.ok(cols.length > 50000 && cols.length < 60000);
+  let prev = -1;
+  for (const [d2] of cols) { assert.ok(d2 >= prev); prev = d2; }
+  const [, fx, fz] = cols[0];
+  assert.ok(Math.hypot(fx - 10, fz) <= Math.hypot(10, 0) + 1);
 }
 
 // 5. TNT cube: centered on the ignition, anywhere in the streaming sky.
@@ -72,7 +85,8 @@ assert.equal(ULTRA_Y_LO, -20);
 
 // 7. Dispatch: overworld band boxes win over the fallback cube (dimension
 // defaults carry a cubeR that must never shadow an explicit band box),
-// fixed specs win for levels, cube for the TNT sky, moon column by default.
+// fixed specs win for levels, cube for the TNT sky; celestial bands resolve
+// through the caller (bodies) or to null (sky gaps).
 {
   const box = { half: 40, y0: -20, y1: 30 };
   assert.deepEqual(ultraVolumeFor({ u: { box }, band: 0, cx: 0, cy: 0, cz: 0 }).x1, 40);
@@ -91,8 +105,11 @@ assert.equal(ULTRA_Y_LO, -20);
   const cb = ultraVolumeFor({ u: over, band: 2, cx: 30, cy: 200, cz: -40 });
   assert.equal(cb.shape, "box");
   assert.deepEqual([cb.x1, cb.y0, cb.y1], [116, 71, 481]);
-  const m = ultraVolumeFor({ u: { bands: true }, band: 3, cx: 0, cy: 900, cz: 0 });
-  assert.equal(m.y1, 850 + 96 + 20);
+  // Unknown bands (sky gaps) resolve to no volume — no wipe.
+  assert.equal(ultraVolumeFor({ u: { bands: true }, band: "moon", cx: 0, cy: 500, cz: 0 }), null);
+  // Celestial bodies resolve to their ball through the caller.
+  const b = ultraVolumeFor({ u: { bands: true }, band: "body:p0", body: { cx: 8000, cz: 0, top: 1000, bottom: 904, r: 96 } });
+  assert.equal(b.shape, "ball");
 }
 
 // 8. Footprints: same set as the unpruned enumeration, radially sorted
@@ -109,6 +126,11 @@ assert.equal(ULTRA_Y_LO, -20);
   // Without a predicate nothing is pruned.
   const full = footprintCols(box, 0, 0, null);
   assert.ok(full.length > cols.length, "pruning drops empties");
+  // Balls enumerate the disc only.
+  const ball = { shape: "ball", cx: 0, cy: 898, cz: 0, r: 10 };
+  const bc = footprintCols(ball, 0, 0, null);
+  assert.ok(bc.length > 0 && bc.length < 21 * 21, "ball footprint is disc-bounded");
+  for (const [, x, z] of bc) assert.ok(x * x + z * z <= 100, "no out-of-disc columns");
 }
 
 // 9. Drain pacing: a single max path (no live switch).

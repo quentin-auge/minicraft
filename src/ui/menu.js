@@ -1,10 +1,11 @@
-// Start menu: Play is clickable from the first frame but entry waits for
-// the first rendered world frame (see pendingPlay in main.js); Resume
+// Start menu: Play is always clickable — the click arms entry and the menu
+// hides on entry; entry itself waits for the first rendered
+// world frame after the visible neighborhood converges (see pendingPlay in main.js); Resume re-locks pointer; New
 // re-locks pointer; New World generates a fresh seed. No backdrop veil:
 // the world shows through behind the menu; the panel is solid (#1c2030,
 // same as help). The game is fully static, no saves. Only New World waits
 // on a running build (double-regen protection); everything else stays
-// clickable, with no spinner.
+// clickable.
 import { registerMenu, resumePointer } from "./menus.js";
 import { isResumeCode, isEscapeCode } from "../player/keys.js";
 export let started = false;
@@ -28,6 +29,9 @@ export function isLocked() {
 }
 
 export function requestLock(renderer) {
+  // Skip no-op re-requests: a second request while locked never helps and
+  // used to hide rejections behind the catch below.
+  if (document.pointerLockElement) return;
   const p = renderer.domElement.requestPointerLock();
   if (p && p.catch) p.catch(() => {});
 }
@@ -76,6 +80,11 @@ export function initMenu(renderer, onPlay, onNewWorld, anyPanelOpen, isBuilding)
     crosshair().style.display = locked ? "block" : "none";
     hotbar().style.display = locked ? "flex" : "none";
     refreshButtons();
+  });
+  // Lock requests fail silently by default (the catch above); log them so
+  // a refused re-lock — Esc-cooldown, non-gesture call — is visible.
+  document.addEventListener("pointerlockerror", () => {
+    console.warn("[input] pointer lock request failed");
   });
 }
 

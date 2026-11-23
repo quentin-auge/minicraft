@@ -441,6 +441,40 @@ export function speedFactor(speed, refSpeed) {
   return Math.max(0, Math.min(1, speed / refSpeed));
 }
 
+// Velocity lag for the pilot's eye: the eye trails the hull against the
+// motion — the pre-space-boost feel — but the length is capped and the eye
+// is then pulled back out of hull solids (see pullEyeFree), so it never
+// reaches the hull floor, not even on a 1-block ship. Pure, so the
+// headless suite can pin it.
+// Fixed eye trail (three-free): the eye trails the hull against the motion,
+// capped in length and pulled back out of hull solids (see pullEyeFree), so
+// it never reaches the hull floor, not even on a 1-block ship. Pure, so the
+// headless suite can pin it.
+export const CAM_LAG_TAU = 0.012;
+export const CAM_LAG_MAX = 1.6;
+export const CAM_LAG_STEPS = 8;
+// Desired lag offset for a velocity: back along the motion, growing with
+// speed, saturated at the cap. Zero vector at rest.
+export function camLagOffset(vx, vy, vz) {
+  const s = Math.hypot(vx, vy, vz);
+  if (!(s > 0) || !Number.isFinite(s)) return { x: 0, y: 0, z: 0 };
+  const len = Math.min(s * CAM_LAG_TAU, CAM_LAG_MAX);
+  const k = -len / s;
+  return { x: vx * k, y: vy * k, z: vz * k };
+}
+// First free point walking from the lagged eye back to the pilot eye:
+// the candidate first (usually free, one lookup), then evenly spaced steps.
+// Falls back to the pilot eye, which boarding keeps out of hull solids.
+export function pullEyeFree(ex, ey, ez, px, py, pz, isSolid, steps = CAM_LAG_STEPS) {
+  const n = Math.max(1, Math.floor(steps));
+  for (let i = 0; i <= n; i++) {
+    const t = i / n;
+    const x = ex + (px - ex) * t, y = ey + (py - ey) * t, z = ez + (pz - ez) * t;
+    if (!isSolid(x, y, z)) return { x, y, z };
+  }
+  return { x: px, y: py, z: pz };
+}
+
 // The effective props of a layer: the ramp added, the live smoke Y
 // applied (height to the span/drift, density to the count — never to the
 // lifetime), the amount term added, the scale factors multiplied in, the

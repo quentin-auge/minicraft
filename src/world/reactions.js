@@ -15,8 +15,9 @@
 //
 // Three-free (plain maps + data) so the headless suite drives it directly:
 // the render layer reads the variants, the FX layer reads the runs.
-import { DIRT, WATER, LAVA, MOON_WATER, isLiquid } from "../core/blocks.js";
+import { DIRT, WATER, LAVA, MOON_WATER, PLANET_WATERS, isLiquid } from "../core/blocks.js";
 import { DIMENSION_KEYS, dim, getBlock, setBlock, key } from "../core/store.js";
+import { PLANET_COLORS, planetWaterColorIdx } from "./planets.js";
 
 // Shared defaults: entries spread this first and override only what
 // differs, so a new entry never restates the whole shape.
@@ -48,10 +49,16 @@ export const REACTION_TYPES = [
     ...REACTION_DEFAULTS,
     key: "soak_dirt",
     base: DIRT,
-    accepts: [WATER, LAVA, MOON_WATER],
+    accepts: [WATER, LAVA, MOON_WATER, ...PLANET_WATERS],
     absorbsAbove: true,
-    // Moon water soaks pale, plain water and lava soak blue.
-    variant: (ctx) => (ctx.trigger === MOON_WATER ? "wet_moon" : "wet_water"),
+    // Moon water soaks pale, plain water and lava soak blue, planet waters
+    // soak in their own palette color.
+    variant: (ctx) => {
+      if (ctx.trigger === MOON_WATER) return "wet_moon";
+      const pi = planetWaterColorIdx(ctx.trigger);
+      if (pi >= 0) return "wet_planet_" + pi;
+      return "wet_water";
+    },
   },
 ];
 
@@ -90,6 +97,30 @@ export const VARIANT_LOOKS = {
   },
 };
 
+// Planet waters soak in their own palette color (one look per color, same
+// shape as the moon look, tinted by the palette water).
+for (let i = 0; i < PLANET_COLORS.length; i++) {
+  const c = PLANET_COLORS[i].water;
+  const hex = (c[0] << 16) | (c[1] << 8) | c[2];
+  const f = [c[0] / 255, c[1] / 255, c[2] / 255];
+  const j = (v) => Math.max(0, Math.min(1, v));
+  VARIANT_LOOKS["wet_planet_" + i] = {
+    key: "wet_planet_" + i,
+    blocks: [DIRT],
+    texture: "dirtWet",
+    shell: { color: hex, base: 0.16, amp: 0.24, period: 1.885 },
+    indicator: { color: hex, opacity: 0.75 },
+    drip: {
+      palette: [
+        [j(f[0] - 0.04), j(f[1] - 0.04), j(f[2] - 0.04)],
+        [f[0], f[1], f[2]],
+        [j(f[0] + 0.04), j(f[1] + 0.04), j(f[2] + 0.04)],
+      ],
+      count: 14, life: 0.5, size: 0.22,
+    },
+  };
+}
+
 // Block ids that may carry a variant — the mesher only asks about these
 // cells, so the per-cell lookup stays off the hot path for everything else.
 export const VARIANT_BLOCKS = new Set(
@@ -100,6 +131,9 @@ export const VARIANT_BLOCKS = new Set(
 // the base cell.
 const fromKeys = (make) => Object.fromEntries(DIMENSION_KEYS.map((k) => [k, make()]));
 const runs = fromKeys(() => new Map());      // cell key -> run
+export function hasActiveRuns() {
+  return runs[dim].size > 0;
+}
 const variants = fromKeys(() => new Map());  // cell key -> variant key
 
 // Event listeners: the world layer stays three-free, the render/FX layer
@@ -161,11 +195,14 @@ export function armReaction(x, y, z, triggerId) {
 // settled cells (with the variant they carry, whether a liquid sits on top
 // to be pulled in, and any cells the spec touched) and the cells whose
 // reaction died because the base block changed.
+const EMPTY_RESULT = Object.freeze({ settled: Object.freeze([]), released: Object.freeze([]) });
 export function tickReactions(dt) {
+  const map = runs[dim];
+  // Idle fast path: no per-frame allocation when nothing runs. Callers only
+  // read .settled/.released, never mutate.
+  if (!map.size) return EMPTY_RESULT;
   const settled = [];
   const released = [];
-  const map = runs[dim];
-  if (!map.size) return { settled, released };
   for (const [k, run] of map) {
     const spec = REACTION_TYPES.find((r) => r.key === run.key);
     // The base block must still be there and still the reaction's base:

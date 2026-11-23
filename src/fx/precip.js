@@ -30,6 +30,10 @@ const PRECIP_DEFAULTS = {
   // Material fades from invisible to full over this camera-altitude span,
   // so the field never pops at its activation gate.
   fadeIn: null,
+  // ...and back to invisible over this span, so deep space stays clear
+  // (snow is surface weather: at planet altitudes the flakes would read
+  // as flicker on the distant bodies).
+  fadeOut: null,
 };
 
 export const PRECIP_TYPES = [
@@ -51,6 +55,9 @@ export const PRECIP_TYPES = [
     landed: (x, y, z, landY) => y <= landY + 2 &&
       (y <= MOON_SURFACE_Y || getBlock(Math.floor(x), Math.floor(y), Math.floor(z)) !== AIR),
     fadeIn: [MOON_SURFACE_Y - 8, MOON_SURFACE_Y],
+    // Surface weather only: fully gone a few hundred blocks up, so the
+    // moon-to-planet corridor and the planets themselves see a clean sky.
+    fadeOut: [MOON_SURFACE_Y + 120, MOON_SURFACE_Y + 320],
   },
 ];
 
@@ -122,10 +129,19 @@ export function tickPrecip(key, dt, time, camera) {
   if (!spec) return;
   if (!spec.active(camera.position)) { removeState(spec); return; }
   const st = ensureState(spec);
-  if (spec.fadeIn) {
-    const t = (camera.position.y - spec.fadeIn[0]) / (spec.fadeIn[1] - spec.fadeIn[0]);
-    const f = Math.max(0, Math.min(1, t));
-    st.pts.material.opacity = spec.opacity * f * f * (3 - 2 * f);
+  if (spec.fadeIn || spec.fadeOut) {
+    let f = 1;
+    if (spec.fadeIn) {
+      const t = (camera.position.y - spec.fadeIn[0]) / (spec.fadeIn[1] - spec.fadeIn[0]);
+      const c = Math.max(0, Math.min(1, t));
+      f *= c * c * (3 - 2 * c);
+    }
+    if (spec.fadeOut) {
+      const t = (spec.fadeOut[1] - camera.position.y) / (spec.fadeOut[1] - spec.fadeOut[0]);
+      const c = Math.max(0, Math.min(1, t));
+      f *= c * c * (3 - 2 * c);
+    }
+    st.pts.material.opacity = spec.opacity * f;
     // Fully faded out: skip the draw call entirely (no visual change).
     st.pts.visible = f > 0;
   }

@@ -91,15 +91,15 @@ export function rimRefreshKeys(freshKeys, selfCk, hasBuilt) {
   return [...out];
 }
 
-// Coordinate packing covers ±65535 on every axis (2^16 offset into 17-bit
-// fields, exact under 2^53: X stride 2^34 keeps the whole key below 2^52).
-// Bounded dimensions use a ±96 slice of it; infinite dimensions roam the
-// full 128k-cubed range — no reachable wall (hours of travel from spawn).
-const KEY_OFF = 65536; // 2^16
-const KEY_MZ = 131072; // 2^17
-const KEY_YSTRIDE = 131072; // 2^17
-const KEY_XSTRIDE = 17179869184; // 2^34
-const KEY_YMOD = KEY_XSTRIDE / KEY_YSTRIDE; // 2^17
+// Coordinate packing: symmetric ±100000 on every axis X, Y, Z (base 200001,
+// 200001^3 = 8.00012e15 < 2^53 - 1 = 9.007199e15, so every in-range key is
+// an exact integer with identical latitude on X, Y, and Z).
+const KEY_OFF = 100000;
+const KEY_BASE = 200001; // 2 * KEY_OFF + 1
+const KEY_MZ = KEY_BASE;
+const KEY_YSTRIDE = KEY_BASE;
+const KEY_XSTRIDE = KEY_BASE * KEY_BASE; // 40000400001
+const KEY_YMOD = KEY_BASE;
 
 export function key(x, y, z) {
   return (x + KEY_OFF) * KEY_XSTRIDE + (y + KEY_OFF) * KEY_YSTRIDE + (z + KEY_OFF);
@@ -127,11 +127,66 @@ function makeColTops() {
 export function topAt(name, x, z) {
   return colTops[name].get(colTopIdx(x, z)) ?? 0;
 }
+// Voxel store sharding: one V8 Map caps at 2^24 entries, and a 50-planet
+// sky holds ~20M solid voxels — a single Map throws "maximum size exceeded"
+// around the 35th body. Sharding by low key bits keeps every accessor API
+// identical (get/set/has/delete/clear/size/values) while lifting the cap to
+// shards × 2^24. Keys are non-negative integers well below 2^53, so the low
+// bits shard uniformly.
+const WORLD_SHARDS = 64;
+class ShardMap {
+  constructor() {
+    this.shards = [];
+    for (let i = 0; i < WORLD_SHARDS; i++) this.shards.push(new Map());
+    this._size = 0;
+  }
+  _shard(k) {
+    return this.shards[k & (WORLD_SHARDS - 1)];
+  }
+  get(k) {
+    return this._shard(k).get(k);
+  }
+  set(k, v) {
+    const m = this._shard(k);
+    if (!m.has(k)) this._size++;
+    m.set(k, v);
+    return this;
+  }
+  has(k) {
+    return this._shard(k).has(k);
+  }
+  delete(k) {
+    if (this._shard(k).delete(k)) {
+      this._size--;
+      return true;
+    }
+    return false;
+  }
+  clear() {
+    for (const m of this.shards) m.clear();
+    this._size = 0;
+  }
+  get size() {
+    return this._size;
+  }
+  *keys() {
+    for (const m of this.shards) yield* m.keys();
+  }
+  *values() {
+    for (const m of this.shards) yield* m.values();
+  }
+  *entries() {
+    for (const m of this.shards) yield* m.entries();
+  }
+  [Symbol.iterator]() {
+    return this.entries();
+  }
+}
 // First-class dimensions: every dimension key owns one entry in each map.
 // New dimensions add a key here and a spec in world/dimensions.js, never a fork.
 export const DIMENSION_KEYS = ["over", "tnt", "nether", "end"];
 const fromKeys = (make) => Object.fromEntries(DIMENSION_KEYS.map((k) => [k, make()]));
-export const worlds = fromKeys(() => new Map());
+export const worlds = fromKeys(() => new ShardMap());
 export const colTops = fromKeys(() => makeColTops());
 // Sparse column occupancy: colTopIdx -> Set of occupied y. Meshing iterates
 // blocks instead of scanning 0..top, so tall builds cost by blocks, not
@@ -189,15 +244,30 @@ export function registerInfiniteDim(name) {
 export function dimInfinite(name = dim) {
   return infiniteDims.has(name);
 }
-// Half-extent of the walkable/voxel range for a dimension.
+// Half-extent of the walkable/voxel range for a dimension (all dims roam the
+// full ±100000 key range in XZ; terrain generation and mob ground confinement
+// read WORLD_RADIUS directly where appropriate).
 export function dimBound(name = dim) {
-  return dimInfinite(name) ? KEY_OFF : WORLD_RADIUS;
+  return KEY_OFF;
 }
-// Out-of-world test for raycasts and floods: bounded dims keep the old
-// cube (and y < 0), infinite dims only run out at the key range edge.
+// Free-sky altitude: registered by world/planets.js for compat; the whole
+// key range is open at every altitude.
+let _skyFreeY = 0;
+export function registerSkyFreeY(y) {
+  _skyFreeY = y;
+}
+export function skyFreeY() {
+  return _skyFreeY;
+}
+export function dimBoundAt(y, name = dim) {
+  return KEY_OFF;
+}
+// Out-of-world test for raycasts and floods: XZ roams the full ±100000 key
+// range everywhere; floorless infinite dims allow y >= -100000, floored dims
+// keep y >= 0.
 export function outOfWorld(x, y, z, name = dim) {
-  const B = dimBound(name);
-  return x < -B || x > B || z < -B || z > B || (dimInfinite(name) ? y < -B : y < 0);
+  const B = dimBoundAt(y, name);
+  return x < -B || x > B || z < -B || z > B || (dimInfinite(name) ? y < -KEY_OFF : y < 0) || y > KEY_OFF;
 }
 
 export function getBlock(x, y, z) {

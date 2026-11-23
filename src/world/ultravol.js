@@ -1,16 +1,17 @@
-// Ultra wipe volumes: every ultra blast carves one zone-shaped box — an
-// overworld band box (ground, clouds, moon column), a fixed level box (End,
-// Nether) or the ignition-centered TNT cube (streaming TNT sky). One shared
-// margin pads every natural extent so worldgen spill (tree canopies, cloud
-// puffs, volcano bridges and islets) is caught, and every fixed box reaches
-// down to ULTRA_Y_LO so nothing hides under a platform. y = 0 itself always
-// stays spared — that is the carve rule in tnt.js, in every dimension.
+// Ultra wipe volumes: every ultra blast carves one zone-shaped volume — an
+// overworld band box (ground, clouds), one ball per celestial body, a fixed
+// level box (End, Nether) or the ignition-centered TNT cube (streaming TNT
+// sky). One shared margin pads every natural extent so worldgen spill (tree
+// canopies, cloud puffs, volcano bridges and islets) is caught, and every
+// fixed box reaches down to ULTRA_Y_LO so nothing hides under a platform.
+// y = 0 itself always stays spared — that is the carve rule in tnt.js, in
+// every dimension.
 // Three-free: the headless suite imports this without three.
 import { WORLD_RADIUS } from "../core/store.js";
 import { CLOUD_MAX_Y } from "./clouds.js";
-import { MOON_R, MOON_SURFACE_Y } from "./moon.js";
 
-// Overworld band ids: 1 ground, 2 clouds, 3 moon column.
+// Overworld band ids: 1 ground, 2 clouds (celestial bands resolve to balls
+// via the caller, sky gaps to null).
 export const ULTRA_BAND1_HI = 90;
 export const ULTRA_BAND2_HI = CLOUD_MAX_Y + 1;
 
@@ -19,7 +20,8 @@ export const ULTRA_MARGIN = 20;
 // Fixed boxes reach this far down so under-platform blocks are cleaned.
 export const ULTRA_Y_LO = -20;
 
-// Volume shape: level boxes and the ignition-centered TNT cube.
+// Volume shapes: level boxes, the ignition-centered TNT cube, and celestial
+// balls ({ shape: "ball", cx, cy, cz, r }).
 // { shape: "box", x0, x1, y0, y1, z0, z1 }
 
 // Ground band: terrain (clamped to 70 by the generator, trees to ~107)
@@ -37,17 +39,6 @@ export function cloudBox() {
     shape: "box",
     x0: -H, x1: H,
     y0: ULTRA_BAND1_HI + 1 - ULTRA_MARGIN, y1: ULTRA_BAND2_HI + ULTRA_MARGIN,
-    z0: -H, z1: H,
-  };
-}
-
-// Moon column: the disc plus margin, up past the surface.
-export function moonBox() {
-  const H = MOON_R + ULTRA_MARGIN;
-  return {
-    shape: "box",
-    x0: -H, x1: H,
-    y0: ULTRA_BAND2_HI + 1, y1: MOON_SURFACE_Y + ULTRA_MARGIN,
     z0: -H, z1: H,
   };
 }
@@ -73,18 +64,40 @@ export function fixedBox(spec) {
   };
 }
 
-// Column footprint of a box, sorted from (ox, oz) so the wipe reads as an
-// expanding front. Empty columns are pruned through `has` (a placed block
+// Celestial ball for one body spec ({ cx, cz, top, bottom, r }): the disc
+// plus the dome half-height, padded by the shared margin — face-adjacent
+// placements (up to 2 blocks off the voxels) read as inside with room.
+export function bodyBall(b) {
+  const cy = (b.top + b.bottom) / 2;
+  const r = Math.ceil(Math.hypot(b.r, (b.top - b.bottom) / 2)) + ULTRA_MARGIN;
+  return { shape: "ball", cx: b.cx, cy, cz: b.cz, r };
+}
+
+// Column footprint of a volume, sorted from (ox, oz) so the wipe reads as
+// an expanding front. Empty columns are pruned through `has` (a placed block
 // landing in a pruned column mid-wipe survives — negligible): it drops the
-// world-border fringe that would otherwise eat drain quota, dirty tracking
-// and remeshes for nothing.
+// world-border fringe and ball rims that would otherwise eat drain quota,
+// dirty tracking and remeshes for nothing.
 export function footprintCols(vol, ox, oz, has) {
   const cols = [];
-  for (let x = vol.x0; x <= vol.x1; x++) {
-    for (let z = vol.z0; z <= vol.z1; z++) {
-      if (has && !has(x, z)) continue;
-      const dx = x - ox, dz = z - oz;
-      cols.push([dx * dx + dz * dz, x, z]);
+  if (vol.shape === "ball") {
+    const rr = Math.ceil(vol.r);
+    const R2 = vol.r * vol.r;
+    for (let x = Math.floor(vol.cx - rr); x <= Math.ceil(vol.cx + rr); x++) {
+      for (let z = Math.floor(vol.cz - rr); z <= Math.ceil(vol.cz + rr); z++) {
+        const dx = x - vol.cx, dz = z - vol.cz;
+        if (dx * dx + dz * dz > R2) continue;
+        if (has && !has(x, z)) continue;
+        cols.push([(x - ox) * (x - ox) + (z - oz) * (z - oz), x, z]);
+      }
+    }
+  } else {
+    for (let x = vol.x0; x <= vol.x1; x++) {
+      for (let z = vol.z0; z <= vol.z1; z++) {
+        if (has && !has(x, z)) continue;
+        const dx = x - ox, dz = z - oz;
+        cols.push([dx * dx + dz * dz, x, z]);
+      }
     }
   }
   cols.sort((a, b) => a[0] - b[0]);
@@ -126,22 +139,32 @@ export function selectBallInstances(cells, ball) {
   return { keep, exact };
 }
 
-// Central dispatch: overworld band boxes, fixed level boxes (spec), or the
-// TNT ignition cube. Bands win over the fallback cube: dimension defaults
-// carry a cubeR that must never shadow an explicit band box.
-export function ultraVolumeFor({ u, band, cx, cy, cz }) {
+// Central dispatch: celestial balls (resolved by the caller, which owns the
+// body lookup), overworld band boxes, fixed level boxes (spec), or the TNT
+// ignition cube. Bands win over the fallback cube: dimension defaults carry
+// a cubeR that must never shadow an explicit band box. Unknown celestial
+// bands (sky gaps) resolve to null — no wipe.
+export function ultraVolumeFor({ u, band, body, cx, cy, cz }) {
+  if (body) return bodyBall(body);
   if (u.bands && (band === 1 || band === 2)) return band === 2 ? cloudBox() : groundBox();
+  if (typeof band === "string") return null;
   if (u.box) return fixedBox(u.box);
   if (u.cubeR != null) return tntCube(cx, cy, cz, u.cubeR);
-  return moonBox();
+  return null;
 }
 
 export function volumeContains(vol, x, y, z) {
+  if (vol.shape === "ball") {
+    const dx = x - vol.cx, dy = y - vol.cy, dz = z - vol.cz;
+    return dx * dx + dy * dy + dz * dz <= vol.r * vol.r;
+  }
   return x >= vol.x0 && x <= vol.x1 && y >= vol.y0 && y <= vol.y1 && z >= vol.z0 && z <= vol.z1;
 }
 
-// Bounding radius for lights, shells and shake: half the box diagonal.
+// Bounding radius for lights, shells and shake: half the box diagonal,
+// the ball radius.
 export function boundingR(vol) {
+  if (vol.shape === "ball") return vol.r;
   return Math.sqrt(
     (vol.x1 - vol.x0) * (vol.x1 - vol.x0) +
     (vol.y1 - vol.y0) * (vol.y1 - vol.y0) +

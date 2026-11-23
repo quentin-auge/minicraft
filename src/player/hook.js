@@ -24,6 +24,15 @@ import { dimSpec } from "../world/dimensions.js";
 import { skyGrappleTarget } from "../world/tntstream.js";
 import { pickPortalFill, portalWindowLive, portalGhostCell, toast } from "../world/portals.js";
 import { isSolidId } from "../core/blocks.js";
+import { setBlock, getBlock } from "../core/store.js";
+import { dimHasMoon } from "../world/dimensions.js";
+import { getSeed } from "../world/overworld.js";
+import {
+  rayBodyHit, bodyReady, markBodyBuilt, bodyRepickBudget,
+  bodySurfaceCell,
+} from "../world/planets.js";
+import { generateBodySurfaceRows, generateBodyUnderRows, joinBodyLakeWaterStart, joinBodyLakeWaterSlice, bodyChunkCenters, purgeUnsupportedKeeps } from "../world/moon.js";
+import { refreshBuiltQueueCelestial } from "../render/mesher.js";
 import { showRope, showPinnedRope, showTip, hideRope, hideLine, hideTip, applyRopeStyle } from "./rope.js";
 import { pickBlock } from "./edit.js";
 import { flyOn } from "./fly.js";
@@ -107,6 +116,14 @@ export function hookActive() {
   return !!hook;
 }
 
+// True while a celestial grapple target is still filling in the background
+// (sliced surface/shell/join/meshing during the head flight and the pull).
+// The main-loop stream pauses its own fills meanwhile: one body at a time,
+// no double frame cost and no voxel races between the two slicers.
+export function hookFillActive() {
+  return !!hook?.fill;
+}
+
 // Block picker for the grapple: unbounded DDA hit → descriptor (edit and
 // highlight picks are unlimited too). Mob pickers return
 // { kind: "mob", ref } and plug into fireHookTarget the same way.
@@ -118,14 +135,53 @@ export function grappleBlockPick(origin, dir) {
 // Combined grapple picker: block DDA plus the live portal-fill slabs (which
 // are meshes, not blocks, so the DDA flies through them). Nearer hit wins —
 // aiming at a fill beats the frame/wall behind it, aiming at a frame block
-// still latches the block.
+// still latches the block. Past the DDA range, a geometric body hit takes
+// over: the unbuilt body fills in slices during the head flight (and the
+// main-loop aim pre-warm usually finished it already), then the real voxel DDA
+// re-picks for the latch — the flight, anchor tracking and landing all run the
+// normal block path. Every body is grappleable from everywhere in moon
+// dimensions (geometric pick past the DDA range).
+function pickBodyTarget(origin, dir, bestT) {
+  if (!dimHasMoon(dim)) return null;
+  const hit = rayBodyHit(origin, dir, bestT);
+  if (!hit) return null;
+  const isMoon = hit.spec.key === "moon";
+  const seed = getSeed();
+  if (!isMoon && !bodyReady(seed, hit.spec.key)) {
+    // Hitch-free fire: latch geometrically now (the anchor cell is
+    // deterministic, so it matches the built body exactly) and fill in
+    // slices during the head flight; arrival completes any remainder
+    // (plus the streaming safety net as the final backstop).
+    const [bx, by, bz] = bodySurfaceCell(hit);
+    return {
+      kind: "block", x: hit.x, y: hit.y, z: hit.z, id: hit.spec.rock,
+      face: [bx - hit.x, by - hit.y, bz - hit.z],
+      fill: {
+        spec: hit.spec, seed, phase: 0, x: hit.spec.cx - hit.spec.r, t: hit.t,
+        ox: origin.x, oy: origin.y, oz: origin.z,
+        dx: dir.x, dy: dir.y, dz: dir.z,
+      },
+    };
+  }
+  const re = pickBlock(origin, dir, true, Infinity, bodyRepickBudget(hit.t));
+  if (!re) return null;
+  return { kind: "block", x: re.x, y: re.y, z: re.z, id: re.id, face: re.face };
+}
+
 export function grapplePick(origin, dir) {
   const block = grappleBlockPick(origin, dir);
   const portal = pickPortalFill(origin, dir);
-  if (!portal) return block;
-  if (!block) return portal;
-  const bd = Math.hypot(block.x + 0.5 - origin.x, block.y + 0.5 - origin.y, block.z + 0.5 - origin.z);
-  return portal.dist <= bd ? portal : block;
+  let best;
+  if (!portal) best = block;
+  else if (!block) best = portal;
+  else {
+    const bd = Math.hypot(block.x + 0.5 - origin.x, block.y + 0.5 - origin.y, block.z + 0.5 - origin.z);
+    best = portal.dist <= bd ? portal : block;
+  }
+  const bestT = !best ? Infinity
+    : best.kind === "portal" ? best.dist
+    : Math.hypot(best.x + 0.5 - origin.x, best.y + 0.5 - origin.y, best.z + 0.5 - origin.z);
+  return pickBodyTarget(origin, dir, bestT) ?? best;
 }
 
 // Mob-grab picker: nearest live mob along the ray with solid occlusion
@@ -216,7 +272,7 @@ export function fireHookTarget(pick, origin, dir, kindKey = "grapple") {
 function fireBlock(t, spec) {
   if (!isSolidId(t.id)) return false;
   const face = t.face ?? [0, 1, 0];
-  const a = { kind: "block", spec, bx: t.x, by: t.y, bz: t.z, fx: face[0], fy: face[1], fz: face[2], alive: blockAlive };
+  const a = { kind: "block", spec, bx: t.x, by: t.y, bz: t.z, fx: face[0], fy: face[1], fz: face[2], alive: blockAlive, fill: t.fill ?? null, anchored: !t.fill };
   hookRetarget(a);
   const sx = pos.x, sy = pos.y + spec.eyeDy, sz = pos.z;
   if (Math.hypot(a.tx - sx, a.ty - sy, a.tz - sz) < 0.3) return false;
@@ -265,7 +321,69 @@ function retargetPortal(h) {
 // Liveness: the ride only survives while its anchor exists. A mined,
 // blasted, or evicted anchor severs the hook (retract, no fling) instead of
 // pulling the player to empty air.
-function blockAlive(h) { return isSolid(h.bx, h.by, h.bz); }
+function blockAlive(h) {
+  // A not-yet-upgraded celestial anchor is assumed alive: its voxels land
+  // deterministically mid-flight (upgraded below), and arrival completes
+  // any remainder. Afterwards the live solidity check resumes, so mining
+  // the anchor still retracts like any other block.
+  if (!h.anchored) return true;
+  return isSolid(h.bx, h.by, h.bz);
+}
+
+// Promote a geometric celestial anchor to the real voxel once built:
+// same ray, diagonal-proof budget — the anchor then answers the normal
+// liveness checks for the rest of the flight.
+function upgradeBodyAnchor(h) {
+  const f = h.fill;
+  const re = pickBlock(
+    { x: f.ox, y: f.oy, z: f.oz }, { x: f.dx, y: f.dy, z: f.dz },
+    true, Infinity, bodyRepickBudget(f.t),
+  );
+  h.anchored = true;
+  if (!re) return;
+  h.bx = re.x; h.by = re.y; h.bz = re.z;
+  h.fx = re.face[0]; h.fy = re.face[1]; h.fz = re.face[2];
+}
+
+// One background fill slice for a celestial grapple target (mirrors the
+// main-loop slicer, but owned by the flying hook so firing never blocks).
+// Lake join and mesher refresh are sliced too (one lake / a few chunks per
+// call): no single frame ever pays a whole body. Idempotent deterministic
+// writes; aborts cleanly on dim/seed change.
+const FILL_STEP = 16;
+const FILL_CHUNKS = 2;
+function advanceBodyFill(h) {
+  const f = h.fill, spec = f.spec;
+  if (!dimHasMoon(dim) || getSeed() !== f.seed) { h.fill = null; return; }
+  const R = spec.r, x0 = spec.cx - R, x1 = spec.cx + R + 1;
+  if (f.phase === 0) {
+    if (f.x >= x1) { f.phase = 1; f.x = x0; return; }
+    generateBodySurfaceRows(spec, f.seed, setBlock, f.x, f.x + FILL_STEP);
+    f.x += FILL_STEP;
+    return;
+  }
+  if (f.phase === 1) {
+    if (f.x >= x1) { f.phase = 2; f.join = joinBodyLakeWaterStart(); return; }
+    generateBodyUnderRows(spec, f.seed, setBlock, f.x, f.x + FILL_STEP, getBlock);
+    f.x += FILL_STEP;
+    return;
+  }
+  if (f.phase === 2) {
+    if (joinBodyLakeWaterSlice(spec, f.seed, setBlock, getBlock, f.join)) {
+      markBodyBuilt(f.seed, spec.key);
+      purgeUnsupportedKeeps(spec, f.seed, setBlock, getBlock);
+      f.chunks = bodyChunkCenters(spec);
+      f.phase = 3;
+    }
+    return;
+  }
+  // Phase 3: built chunks remesh synchronously (the latched neighborhood
+  // reads whole at once), unbuilt ones ride the budgeted celestial queue —
+  // never the window queue (which would trigger the behind-budget loan).
+  const batch = f.chunks.splice(0, FILL_CHUNKS);
+  if (batch.length) refreshBuiltQueueCelestial(batch);
+  else h.fill = null;
+}
 
 // Target-level dispatch, no kind switches: a target may override its kind
 // spec's re-resolution/ghosting/liveness (portal fills do — static anchor,
@@ -669,9 +787,23 @@ export function cancelHook(fling = true) {
 export function updateHook(dt) {
   if (!hook) return false;
   if (hook.arrived) return settledFrame();
+  // Background fill also progresses while pulling (one slice a frame — the
+  // head flight already covered most of the body, so the pull converges
+  // without doubling the per-frame fill cost): arrival only fast-forwards
+  // a small bounded backlog now, and any leftover completes over pull
+  // frames — never one hitch frame.
+  if (hook.fill && !hook.flying) {
+    if (!bodyReady(hook.fill.seed, hook.fill.spec.key)) advanceBodyFill(hook);
+    else if (!hook.anchored) upgradeBodyAnchor(hook);
+  }
   const spec = hook.spec;
   if (hook.flying) {
     hookRetarget(hook); // track column edits (mob kinds: mob.pos) mid-flight
+    // Background fill: one body slice per flight frame (pre-warm usually
+    // finished it already; arrival completes leftovers below). Once built,
+    // the geometric anchor upgrades to the re-picked voxel.
+    if (hook.fill && !bodyReady(hook.fill.seed, hook.fill.spec.key)) advanceBodyFill(hook);
+    else if (hook.fill && !hook.anchored) upgradeBodyAnchor(hook);
     if (!hookAlive(hook)) { cancelHook(false); return false; } // anchor gone: retract
     const step = spec.throwSpeed * spec.boost * dt;
     hook.fly += step / hook.dist;
@@ -680,6 +812,13 @@ export function updateHook(dt) {
       hook.hx = hook.ax; hook.hy = hook.ay; hook.hz = hook.az;
       hook.flying = false;
       hook.pulling = false;
+      if (hook.fill) {
+        // Slower-than-flight fill (dying framerate): fast-forward a small
+        // bounded backlog only; the rest completes over pull frames above,
+        // and the streaming safety net covers hook release before that.
+        let guard = 6;
+        while (hook.fill && guard-- > 0) advanceBodyFill(hook);
+      }
       if (hook.latch) hook.latch(hook); // grab latch: freeze the live body
       line = { spec, hx: hook.ax, hy: hook.ay, hz: hook.az, retracting: false };
       return false;
@@ -720,7 +859,8 @@ function pullSelfToAnchor(dt) {
   }
   const px = pos.x, py = pos.y, pz = pos.z;
   const n = Math.max(1, Math.ceil(step / spec.substep));
-  vel.set(dx / dist * spec.pullSpeed, dy / dist * spec.pullSpeed, dz / dist * spec.pullSpeed);
+  const pull = step / dt;
+  vel.set(dx / dist * pull, dy / dist * pull, dz / dist * pull);
   // A pending blast impulse rides the pull and bends it — never lost.
   vel.add(knockVel);
   for (let i = 0; i < n; i++) {

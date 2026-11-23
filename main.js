@@ -21,24 +21,30 @@ import {
 } from "./src/player/physics.js";
 import * as player from "./src/player/physics.js";
 import { flyOn, setFly, setFlyMul, updateFly } from "./src/player/fly.js";
-import { updateTarget, breakTarget, placeAtSelection, breakBlockAt, pickBlock, tryPlace, currentBlock, flushChainBatch, purgeFloatingLiquidsAround, takeLiquidCells, endChainStroke, clearChainStroke } from "./src/player/edit.js";
-import { fireHookTarget, fireSkyHook, grapplePick, mobGrabTarget, mobReleaseTarget, cancelHook, severHook, updateHook, hookActive, hookHeldSwim, hookAnchor, tickHookFx, setMobAlpha, HELD_ALPHA } from "./src/player/hook.js";
+import { updateTarget, breakTarget, placeAtSelection, breakBlockAt, pickBlock, pickCelestialBody, tryPlace, currentBlock, flushChainBatch, purgeFloatingLiquidsAround, takeLiquidCells, endChainStroke, clearChainStroke } from "./src/player/edit.js";
+import { fireHookTarget, fireSkyHook, grapplePick, mobGrabTarget, mobReleaseTarget, cancelHook, severHook, updateHook, hookActive, hookFillActive, hookHeldSwim, hookAnchor, tickHookFx, setMobAlpha, HELD_ALPHA } from "./src/player/hook.js";
 import { initRope } from "./src/player/rope.js";
-import { tickTNT, initTNTFx, resetTNTMemory, clearRegularTntDim, onExplode, onMegaPool, onCrater, onLiquidPurge, shakeSpecFor, bandActive, drainBlastRemesh, queueBlastRefresh, megaImminent, megaCarveActive, megaFxActive, MEGA_BLAST_T, MEGA_BLAST_TIME_SCALE, ultraFxSpec } from "./src/fx/tnt.js";
+import { tickTNT, initTNTFx, resetTNTMemory, clearRegularTntDim, onExplode, onMegaPool, onCrater, onLiquidPurge, shakeSpecFor, bandActive, drainBlastRemesh, queueBlastRefresh, megaImminent, megaCarveActive, megaFxActive, MEGA_BLAST_T, MEGA_BLAST_TIME_SCALE, ultraFxSpec, useBodyTnt } from "./src/fx/tnt.js";
 import { initFx, tickFx, tickDenseFx, denseFxActive, prewarmDenseFx, prewarmBursts, spawnDense, flushDense, noteDenseSpawn } from "./src/fx/particles.js";
 import { initPrecip, tickSnow } from "./src/fx/precip.js";
-import { MOON_MIN_Y, MOON_R, generateMoon, generateMoonUnderRows, joinMoonLakeWater, markMoonBuilt, moonReady, moonChunkCenters, findMoonSpawn, isMoonGone } from "./src/world/moon.js";
+import { MOON_MIN_Y, MOON_SURFACE_Y, MOON_R, generateMoon, generateMoonUnderRows, restoreBodyLakeWells, joinMoonLakeWater, markMoonBuilt, moonReady, moonChunkCenters, generateBody, generateBodySurface, generateBodySurfaceRows, generateBodyUnderRows, joinBodyLakeWaterStart, joinBodyLakeWaterSlice, bodyChunkCenters, bodyChunkKeys, findMoonSpawn, takeBodyFill, purgeUnsupportedKeeps, skyConverged } from "./src/world/moon.js";
+import {
+  bodySpecs, bodyReady, markBodyBuilt, moonSpec, nextBodyToStream,
+  voronoiBodyAt, CELESTIAL_WATERS, CELESTIAL_STREAM_Y,
+  rayBodyHit, bodyMeshWant, celestialRevealFactor, FOG_FAR,
+} from "./src/world/planets.js";
+import { tickLod, resetLod, prewarmProxies } from "./src/render/lod.js";
 import { findPenOverwatch } from "./src/world/spawn.js";
-import { AIR, WATER, FLOWER, GLOWSTONE, MOON_WATER, LAVA, TNT, BLOCK_INFO } from "./src/core/blocks.js";
+import { AIR, WATER, FLOWER, GLOWSTONE, MOON_WATER, PLANET_WATERS, LAVA, TNT, BLOCK_INFO, shouldShowHighlight } from "./src/core/blocks.js";
 import { resetGlowstoneMemory, clearGlowstoneDim, setGlowSeed } from "./src/world/glowstone.js";
 import { resetFlowerMemory, clearFlowerDim, setFlowerSeed } from "./src/world/flowers.js";
 import { tickReactions, resetReactionMemory, clearReactionsDim } from "./src/world/reactions.js";
 import { initReactionFx, tickReactionFx, clearReactionFx } from "./src/render/reactions.js";
 import { initPoolLights, tickPoolLights, resetPoolLightMemory, notePoolEdit } from "./src/render/poollights.js";
-import { initRenderer, rebuildAll, maybeStream, streamChunks, drainChunkQueue, beginDispose, disposeSome, refreshBlocks, queueRefreshBlocks, queueRefreshKeys, takeSuspendedBuilt, setRegionFade, setRegionLiquidFog, nearestMissingDist, tickChunkFades, UNLOAD_MARGIN } from "./src/render/mesher.js";
+import { initRenderer, rebuildAll, maybeStream, streamChunks, drainChunkQueue, drainCelestial, isChunkMeshed, beginDispose, disposeSome, refreshBlocks, queueRefreshBlocks, queueRefreshKeys, queueCelestialChunks, refreshBuiltQueueCelestial, takeSuspendedBuilt, setRegionFade, setRegionLiquidFog, setSkyFree, nearestMissingDist, tickChunkFades, pinChunks, isChunkBuilt, chunkVersion, UNLOAD_MARGIN, FADE_CHUNKS, FADE_CHUNKS_FAST, celestialPendingSize } from "./src/render/mesher.js";
 import { setHaloSuspended } from "./src/render/halobake.js";
 import { initChainProxy, proxyNote, proxyCull, proxyClear } from "./src/render/chainproxy.js";
-import { applyRegions, regionByKey } from "./src/render/regions.js";
+import { applyRegions } from "./src/render/regions.js";
 import { resetItems, select, selected, selectedId, initHotbarInput, setItem, getItems } from "./src/ui/hotbar.js";
 import { initMenu, enterGame, started, isLocked } from "./src/ui/menu.js";
 import { initHelp, openHelp } from "./src/ui/help.js";
@@ -72,7 +78,7 @@ const GLOW_SUSPENDED = new Set(["glowstone"]);
 let wasBridgeHeld = false;
 let wasChainHeld = false;
 const bridgeTouchedUnion = [];
-import { CHUNK, renderDist, dim, setDimension, setBlock, getBlock, isSolid, outOfWorld, worlds, noteFrameBudget } from "./src/core/store.js";
+import { CHUNK, renderDist, dim, setDimension, setBlock, getBlock, isSolid, outOfWorld, skyFreeY, worlds, chunkOf, noteFrameBudget } from "./src/core/store.js";
 import { dimEnv, dimSpec, dimHasMoon, dimHotbar } from "./src/world/dimensions.js";
 import { EYE, setFlyStepAllow, updateFreeSwim } from "./src/player/physics.js";
 import { setExtraSolid } from "./src/player/physics.js";
@@ -84,7 +90,7 @@ import {
 import { setMobExtraSolid } from "./src/mobs/step.js";
 import {
   initRocket, resetRocket, tickRocket, rocketTakesOver,
-  rocketEditingBlocked, rocketSolidAt, rocketFlying, carryRiders,
+  rocketEditingBlocked, rocketSolidAt, rocketFlying, rocketBoostInfo, rocketClampEye, carryRiders,
 } from "./src/vehicles/rocket.js";
 import { initHomingTnt, fireHomingTnt, tickHomingTnt, clearHomingTnt } from "./src/mobs/homing.js";
 import { enterEndMobs, clearEndMobs, clearEndermenDim, tickEndMobs, notifyEndermanVoxelChange, teleportBlastEndermen, dragonHealth, setDragonVictoryHook, setMobSeed } from "./src/mobs/end.js";
@@ -105,7 +111,9 @@ import { isCheat } from "./src/core/cheat.js";
 
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x87ceeb);
-scene.fog = new THREE.Fog(0x87ceeb, 60, 160);
+// Fog far = FOG_FAR (planets.js): the single source the reveal chain is
+// anchored on (clouds vanish behind the fog at cloud top + this).
+scene.fog = new THREE.Fog(0x87ceeb, 60, FOG_FAR);
 // Steady-state visibility, whatever the tuned range is: saved here so the
 // closed-in load fog below always relaxes back to it.
 const readyFog = { near: scene.fog.near, far: scene.fog.far };
@@ -125,7 +133,9 @@ const FOG_MARGIN = 10;
 // Typical surface height: the controller measures altitude above this.
 const FOG_GROUND_REF = 20;
 
-const camera = new THREE.PerspectiveCamera(75, innerWidth / innerHeight, 0.1, 1500);
+// Far plane past the farthest planets (100k range): nearby depth precision
+// is set by near=0.1 and barely moves, while the whole space stays unclipped.
+const camera = new THREE.PerspectiveCamera(75, innerWidth / innerHeight, 0.1, 300000);
 camera.rotation.order = "YXZ";
 
 const renderer = new THREE.WebGLRenderer({ antialias: true });
@@ -367,6 +377,9 @@ function updateCamera(dt = 0) {
     camera.position.y += Math.sin(st * 71.9) * 0.6 * sh;
     camera.position.z += Math.sin(st * 59.7 + 2.1) * 0.6 * sh;
   }
+  // Rocket speed lag (flight only): the eye trails the hull with speed,
+  // clamped so it never enters the hull — the pre-space-boost feel, capped.
+  rocketClampEye(camera.position);
 }
 
 let worldReady = false;
@@ -376,14 +389,29 @@ let building = false;
 // pointer lock while the gesture is fresh), and the loop enters the game
 // once voxels exist — never an empty skybox.
 let pendingPlay = false;
+// Play loading gate: the click is always accepted, but entry waits until the
+// visible neighborhood is meshed and the shaders compiled — the first-seconds
+// shader/compile/upload costs pay behind the menu instead of after entry.
+let playReady = false;
+let gateT0 = 0;
+let shadersCompiled = false;
+// Entry needs only the visible neighborhood meshed: the closed-in fog and
+// the reveal hide everything past a few chunks, and the fog controller keeps
+// unbuilt distance fogged afterwards. 3 chunks covers the spawn ring (radius
+// 2) with margin, whatever the spawn altitude (3D distance, Moon included).
+const GATE_NEAR_R = 3 * CHUNK;
+const GATE_FALLBACK_MS = 20000; // enable anyway past this: weak machines never soft-lock
 // Fog reveal progress 0..1 (1 = done): advances per frame once the spawn
 // neighborhood exists, never gating movement. Loader-exempt wall clock.
 let revealT = 1;
 let buildToken = 0;
 // DPR-dip state for band wipes (false = full resolution).
 let bandDpr = false;
-// Moon hotbar state: true while the reveal shows the disc.
-let moonRevealed = false;
+// Celestial hotbar state: true while the reveal shows the sky (Moon or
+// planets band, camera-driven only — voxel liveness ignored); the water slot
+// tracks the Voronoi zone instead (planet water, Moon water, or plain water).
+let skyRevealed = false;
+let lastSkyWater = WATER;
 // Moon-water eye medium (fog override off = air, on = submerged).
 let lastMoonEyeFog = null;
 // Lava eye medium (fog override off = air, on = submerged).
@@ -437,6 +465,8 @@ async function buildWorld() {
   const aborted = () => token !== buildToken;
   building = true;
   worldReady = false;
+  shadersCompiled = false;
+  resetLod();
   revealT = 0;
     severHook();
     dropHeldMob();
@@ -512,6 +542,72 @@ async function buildWorld() {
     // No glowstone rescan: worldgen places none and the live index starts
     // empty (player edits track themselves).
     rebuildAll(pos.x, pos.z, 2);
+    if (isMoonBoot && !aborted()) {
+      // ?startdim=moon starts at MOON_SURFACE_Y where planets are at full
+      // visibility. Voxels and meshes for in-range bodies only: far bodies
+      // stream in the background after entry (nearest-first) and read as
+      // proxy meshes until then — the boot no longer pays the whole sky
+      // up front. No refreshBlocks avalanche, no synchronous
+      // drainChunkQueue(true): entry shows finished near planets.
+      pinCelestialBodies();
+      const _eye0 = { x: 0, y: MOON_SURFACE_Y, z: 0 };
+      // Single layout evaluation per boot: bodySpecs is seed-cached, but the
+      // mesh-want filters below must share one array instead of re-listing
+      // the 200-planet shell twice.
+      const _specs = bodySpecs(seed);
+      // Voxels AND meshes for in-range bodies only: far bodies stream in the
+      // background after entry (nearest-first, budgeted slices) and read as
+      // proxies until then — the boot no longer pays the whole sky up front.
+      const pSpecs = _specs.slice(1)
+        .filter((s) => bodyMeshWant(seed, s.key, _eye0.x, _eye0.y, _eye0.z));
+      for (const spec of pSpecs) {
+        if (aborted()) return;
+        generateBodyUnderRows(spec, seed, setBlock, spec.cx - spec.r, spec.cx + spec.r + 1, getBlock);
+        if (aborted()) return;
+        await new Promise((r) => requestAnimationFrame(r));
+        generateBodySurface(spec, seed, setBlock);
+        if (aborted()) return;
+        await new Promise((r) => requestAnimationFrame(r));
+        const joinSt = joinBodyLakeWaterStart();
+        let joinGuard = 4096;
+        while (!joinBodyLakeWaterSlice(spec, seed, setBlock, getBlock, joinSt)) {
+          if (aborted()) return;
+          if (--joinGuard <= 0) break;
+          await new Promise((r) => requestAnimationFrame(r));
+        }
+        markBodyBuilt(seed, spec.key);
+        purgeUnsupportedKeeps(spec, seed, setBlock, getBlock);
+        queueCelestialChunks(bodyChunkCenters(spec));
+        await new Promise((r) => requestAnimationFrame(r));
+      }
+      // Sky gate: drain the celestial queue in large slices (the menu/loader
+      // stays alive on rAF yields) until every in-range body chunk — Moon
+      // shell plus near planets — is meshed. Far bodies read as proxies
+      // at entry and converge in the background after it. Nearest-first
+      // from the spawn, so the ground under the player completes first. The
+      // frame guard only abandons the wait (background convergence resumes
+      // via maybeStream); it never hangs the boot.
+      if (!aborted()) {
+        const skySpecs = _specs
+          .filter((s) => bodyMeshWant(seed, s.key, _eye0.x, _eye0.y, _eye0.z));
+        let skyGuard = 3600;
+        while (skyGuard-- > 0 && !aborted() && !skyConverged(skySpecs, isChunkMeshed)) {
+          const t0 = performance.now();
+          let drained = 1;
+          while (drained > 0 && performance.now() - t0 < 24) {
+            drained = drainCelestial(pos.x, pos.z, 24);
+          }
+          await new Promise((r) => requestAnimationFrame(r));
+        }
+      }
+      // Every body displayed before entry: proxies prewarm (fade complete)
+      // behind the menu, so the reveal never shows a sky mid-pop-in. Far
+      // bodies stay proxies at entry; in-range meshed ones crossfade out
+      // over their voxels from the first LOD tick.
+      if (!aborted()) {
+        await prewarmProxies(scene, getSeed(), () => new Promise((r) => requestAnimationFrame(r)));
+      }
+    }
     if (aborted()) return;
     clearPortalFills();
     if (BOOT_DIM === "end") {
@@ -528,7 +624,8 @@ async function buildWorld() {
     }
     if (dim === "end") enterEndMobs(scene);
     if (dim === "over") enterFarmMobs(scene, "over");
-    moonRevealed = false;
+    skyRevealed = false;
+    lastSkyWater = WATER;
     resetItems(dimHotbar(dim));
     select(0);
     updateCamera();
@@ -543,8 +640,25 @@ async function buildWorld() {
     if (token === buildToken) building = false;
   }
   if (aborted() || !worldReady) return;
-  if (dimHasMoon(dim)) fillMoonUnder(getSeed());
+  if (dimHasMoon(dim)) {
+    // Background sky work waits for altitude (see tickPlanetStream): ground
+    // boots pay zero celestial voxels, Moon boots converge after entry.
+    if (camera.position.y >= CELESTIAL_STREAM_Y) fillMoonUnder(getSeed());
+    pinCelestialBodies();
+  }
   warmupFx(token);
+}
+// Pin the Moon + planet chunk meshes against the streaming dispose: leaving
+// them rebuilds every body chunk by chunk on return. Pinned keys never
+// evict (cleared on teardown), unmeshed ones still build through the normal
+// paths — the pin only ever skips disposal.
+function pinCelestialBodies() {
+  if (!dimHasMoon(dim)) return;
+  const keys = [];
+  for (const spec of bodySpecs(getSeed())) {
+    for (const k of bodyChunkKeys(spec)) keys.push(k);
+  }
+  pinChunks(keys);
 }
 
 // Cross-dimension travel behind the spiral: the destination loads in two
@@ -613,6 +727,7 @@ async function runTravel(dest, msg) {
   // the overlay covers the frozen frame. Nothing reads the scene until phase
   // 2 re-queues it (renders skipped, sim frozen, queue cleared last).
   beginDispose();
+  resetLod(); // proxy meshes die with the chunk meshes; the new dim re-syncs them
   proxyClear(); // versions reset with the mesher; drop the overlay with them
   clearReactionFx(); // run cubes die with the chunks; the new dim re-syncs them
   // Travel ends any chain stroke: drop its pending tint pass and its
@@ -711,7 +826,7 @@ async function runTravel(dest, msg) {
       if (!alive()) return;
       if (nearestMissingDist(pos.x, camera.position.y, pos.z) === Infinity) break;
       const tD = performance.now();
-      drainChunkQueue(false, TRAVEL_DRAIN_MS);
+      drainChunkQueue(false, TRAVEL_DRAIN_MS, pos.x, pos.z);
       await raf();
       // A heavy slice (first-visit volcano chunks) breathes an extra frame
       // instead of stacking another long block right behind it.
@@ -720,7 +835,8 @@ async function runTravel(dest, msg) {
     if (!alive()) return;
     // Every fill relights behind the spiral, so its cost never shows.
     scanWorldPortals();
-    moonRevealed = false;
+    skyRevealed = false;
+    lastSkyWater = WATER;
     // Per-dimension bar: the TNT cube holds TNT tiers only. Selection follows
     // by id, so a held TNT survives the trip; anything else clamps.
     resetItems(dimHotbar(dim));
@@ -773,13 +889,17 @@ async function runTravel(dest, msg) {
   // Resume an interrupted moon fill when coming home: travelling out mid-fill
   // aborts the slices above, leaving the overworld moon half-built. The size
   // guard skips worlds whose overworld was never generated (temporary boot).
-  if (travelToken === token && dest === "over" && worlds.over.size > 0 && !moonReady(getSeed())) fillMoonUnder(getSeed());
+  // Same altitude gate as boot: no sky work while standing on the ground.
+  if (travelToken === token && dest === "over" && worlds.over.size > 0) {
+    if (!moonReady(getSeed()) && camera.position.y >= CELESTIAL_STREAM_Y) fillMoonUnder(getSeed());
+    pinCelestialBodies();
+  }
 }
 
-// Post-unlock shader warmup: pools enter the scene and compile while the
-// player already moves under closed-in fog, so blast #1 never pays
-// scene-add + compile + first upload mid-blast, the first countdown never
-// pays the burst programs mid-tick, and entry never pays it.
+// Shader warmup behind the menu: pools enter the scene and compile before
+// Play enables, so blast #1 never pays scene-add + compile + first upload
+// mid-blast, the first countdown never pays the burst programs mid-tick,
+// and entry never pays it.
 async function warmupFx(token) {
   await new Promise((r) => requestAnimationFrame(r));
   await new Promise((r) => requestAnimationFrame(r));
@@ -788,6 +908,7 @@ async function warmupFx(token) {
   prewarmBursts();
   renderer.compile(scene, camera);
   compiledDims.add(dim);
+  shadersCompiled = true;
   resetTNTMemory();
 }
 
@@ -805,35 +926,152 @@ function revealEase() {
   return Math.pow(revealT, 2.5);
 }
 
-// Lazy moon underside (startup perf): spawn stands on the eagerly-built
-// surface, so the hollow shell below it fills after the reveal, sliced
-// across idle frames, then built disc chunks remesh (streaming covers the
-// rest: the fill completes before the refresh pass, so later builds include
-// it). Aborts if a New World starts mid-fill; seed-tokened, and the
-// overwrites are deterministic, so racing the safety net is harmless.
-let moonFilling = false;
-async function fillMoonUnder(seed) {
-  if (moonFilling || moonReady(seed)) return;
-  moonFilling = true;
+// Lazy body fill (startup perf): the Moon's surface is eager (spawn stands
+// on it) so only its hollow shell fills here; planet surfaces stream in
+// through the same slicer on approach. The shell + lake join run across
+// idle frames, then built disc chunks remesh (streaming covers the rest:
+// the fill completes before the refresh pass, so later builds include it).
+// Aborts if a New World starts mid-fill; seed-tokened, and the overwrites
+// are deterministic, so racing the safety net is harmless. One body at a
+// time: planets queue behind the Moon.
+let bodyFilling = null;
+async function fillBodyUnder(seed, spec) {
+  const isMoon = spec.key === "moon";
+  const ready = () => isMoon ? moonReady(seed) : bodyReady(seed, spec.key);
+  const markDone = () => isMoon ? markMoonBuilt(seed) : markBodyBuilt(seed, spec.key);
+  if (bodyFilling || ready()) return;
+  bodyFilling = spec.key;
   try {
-    const R = MOON_R, STEP = 16;
-    for (let x0 = -R; x0 <= R; x0 += STEP) {
-      if (!dimHasMoon(dim) || getSeed() !== seed || building || !worldReady || moonReady(seed)) return;
-      generateMoonUnderRows(seed, setBlock, x0, x0 + STEP, getBlock);
+    const R = spec.r ?? MOON_R, STEP = 16;
+    const x0 = spec.cx - R, x1 = spec.cx + R + 1;
+    // The Moon's surface is eager; planet surfaces stream in here instead,
+    // one 16-row slice per frame (sub-ms) so the whole sky converges inside
+    // a rocket ascent at a steady 60 fps — never a 32-row burst.
+    if (!isMoon) {
+      for (let x = x0; x < x1; x += STEP) {
+        if (!dimHasMoon(dim) || getSeed() !== seed || building || !worldReady || ready()) return;
+        generateBodySurfaceRows(spec, seed, setBlock, x, x + STEP);
+        await new Promise((r) => requestAnimationFrame(r));
+      }
+    }
+    for (let x = x0; x < x1; x += STEP) {
+      if (!dimHasMoon(dim) || getSeed() !== seed || building || !worldReady || ready()) return;
+      generateBodyUnderRows(spec, seed, setBlock, x, x + STEP, getBlock);
       await new Promise((r) => requestAnimationFrame(r));
     }
-    if (!dimHasMoon(dim) || getSeed() !== seed || building || !worldReady || moonReady(seed)) return;
-    joinMoonLakeWater(seed, setBlock, getBlock);
-    markMoonBuilt(seed);
-    const centers = moonChunkCenters();
-    for (let i = 0; i < centers.length; i += 2) {
-      if (!dimHasMoon(dim) || getSeed() !== seed || building || !worldReady) return;
-      refreshBlocks(centers.slice(i, i + 2));
+    if (!dimHasMoon(dim) || getSeed() !== seed || building || !worldReady || ready()) return;
+    // Well restore: converge sealed-era rock back to open wells before the
+    // join. The moon path never replays surface rows (player mining must
+    // survive), so without this a sealed well would persist forever; stale
+    // fill versions land here exactly once via the readiness gate above.
+    restoreBodyLakeWells(spec, seed, setBlock, getBlock);
+    // Sliced lake join (one lake per frame): the sync fixpoint would hitch a
+    // frame per body, and the background now completes all ten planets one
+    // by one at 60 fps.
+    const joinSt = joinBodyLakeWaterStart();
+    let joinGuard = 4096;
+    for (;;) {
+      if (!dimHasMoon(dim) || getSeed() !== seed || building || !worldReady || ready()) return;
+      if (joinBodyLakeWaterSlice(spec, seed, setBlock, getBlock, joinSt)) break;
+      if (--joinGuard <= 0) return;
       await new Promise((r) => requestAnimationFrame(r));
+    }
+    markDone();
+    // In-fill placements that ended up floating are removed now that real
+    // support decides; the centers refresh below covers the cleared cells.
+    purgeUnsupportedKeeps(spec, seed, setBlock, getBlock);
+    // Nearest-first so the pop residue reads as a focus pull, not random
+    // tiles (insertion order is the drain order). Built chunks (the visible
+    // neighborhood, e.g. the Moon shell under the spawn) remesh synchronously
+    // so they read whole immediately — three per frame, never eight (at
+    // 120 Hz+ an 8-chunk sync slice alone eats the frame); unbuilt ones
+    // converge through the budgeted celestial queue — never the window
+    // queue (which would trigger the behind-budget loan in maybeStream).
+    const centers = bodyChunkCenters(spec);
+    const cx0 = camera.position.x, cz0 = camera.position.z;
+    centers.sort((a, b) =>
+      (a[0] - cx0) * (a[0] - cx0) + (a[2] - cz0) * (a[2] - cz0) -
+      ((b[0] - cx0) * (b[0] - cx0) + (b[2] - cz0) * (b[2] - cz0)));
+    // Meshes for wanted bodies only: out-of-range bodies keep their proxy
+    // until the player approaches (the LOD tick queues them then). Voxels
+    // above are complete either way.
+    const wantMesh = bodyMeshWant(seed, spec.key, camera.position.x, camera.position.y, camera.position.z);
+    if (wantMesh) {
+      for (let i = 0; i < centers.length; i += 3) {
+        if (!dimHasMoon(dim) || getSeed() !== seed || building || !worldReady) return;
+        refreshBuiltQueueCelestial(centers.slice(i, i + 3));
+        await new Promise((r) => requestAnimationFrame(r));
+      }
     }
   } finally {
-    moonFilling = false;
+    bodyFilling = null;
   }
+}
+
+function fillMoonUnder(seed) {
+  return fillBodyUnder(seed, moonSpec());
+}
+
+// Planet streaming: the next unbuilt body starts its sliced fill (one at a
+// time via bodyFilling), nearest first and range-free — standing on the
+// Moon completes the planets one by one so they fade in progressively.
+// Loading, not sim: runs behind the pause gate with the moon fill above.
+// Background work waits below CELESTIAL_STREAM_Y (ground starts pay zero
+// sky voxels); explicit first-touch fills (aim/click/grapple) always run.
+// Near an unbuilt body the fill finishes synchronously instead, so
+// descending never meets an unbuilt shell.
+function tickPlanetStream() {
+  if (!worldReady || building || !dimHasMoon(dim) || bodyFilling) return;
+  const seed = getSeed();
+  const lead = streamLead();
+  // First-touch placements register their body here: the single-flight
+  // slicer completes it over frames (queued behind any running fill).
+  for (const spec of bodySpecs(seed)) {
+    if (!bodyReady(seed, spec.key) && takeBodyFill(seed, spec.key)) {
+      fillBodyUnder(seed, spec);
+      return;
+    }
+  }
+  // Altitude gate: no background voxels or meshing while the sky is
+  // invisible — the overworld boot streams ground only at 60 fps.
+  if (camera.position.y < CELESTIAL_STREAM_Y) return;
+  // A celestial grapple fill owns the single flight: the background stream
+  // pauses until it completes — no double frame cost, no voxel races
+  // between the two slicers. Explicit first-touch requests above stay
+  // pending and resume right after.
+  if (hookFillActive()) return;
+  const pick = nextBodyToStream(bodySpecs(seed), lead.x, lead.y, lead.z, (k) => bodyReady(seed, k));
+  if (!pick) return;
+  // Background fill shares the LOD mesh rule: out-of-range bodies
+  // materialize on demand (first touch, grapple fill, safety net, ultra
+  // slicer) instead of costing frame budget and voxel memory. The sync
+  // safety net below always runs — it is in range by construction.
+  if (!pick.sync && !bodyMeshWant(seed, pick.spec.key, lead.x, lead.y, lead.z)) return;
+  if (pick.sync) {
+    // Synchronous safety net: complete the fill before the player can
+    // touch the shell. Built neighborhood chunks remesh synchronously (the
+    // shell underfoot reads whole at once); the rest ride the celestial
+    // queue — never a refreshBlocks avalanche over the whole disc.
+    const spec = pick.spec;
+    generateBody(spec, seed, setBlock, getBlock);
+    markBodyBuilt(seed, spec.key);
+    purgeUnsupportedKeeps(spec, seed, setBlock, getBlock);
+    refreshBuiltQueueCelestial(bodyChunkCenters(spec));
+    return;
+  }
+  fillBodyUnder(seed, pick.spec);
+}
+
+// Stream/LOD lead: prefetch along the velocity so fast flight and grapple
+// arrivals converge before arrival instead of blinking in over 1-2 s.
+// Zero at rest (identical behavior on foot); capped to bound prefetch waste
+// on escape-velocity rides (the grapple slicer owns its own path anyway).
+const LEAD_T = 2, LEAD_MAX = 1200;
+function streamLead() {
+  const vx = vel.x * LEAD_T, vy = vel.y * LEAD_T, vz = vel.z * LEAD_T;
+  const len = Math.hypot(vx, vy, vz);
+  const k = len > LEAD_MAX ? LEAD_MAX / len : 1;
+  return { x: pos.x + vx * k, y: pos.y + vy * k, z: pos.z + vz * k };
 }
 
 // Runtime fog: a tightening-only guard so chunk loading and unloading stay
@@ -879,8 +1117,9 @@ function updateStreamingFog() {
 }
 
 initMenu(renderer, () => {
-  // Entry itself waits for the first rendered world frame (see loop); the
-  // lock is attempted now, while the click gesture is still fresh.
+  // Entry itself waits for the loading gate plus the first rendered world
+  // frame (see loop); the lock is attempted now, while the click gesture
+  // is still fresh.
   pendingPlay = true;
   requestLockNow();
 }, () => {
@@ -904,6 +1143,7 @@ initMobMenu(() => {
 });
 
 function requestLockNow() {
+  if (document.pointerLockElement) return;
   const p = renderer.domElement.requestPointerLock();
   if (p && p.catch) p.catch(() => {});
 }
@@ -911,7 +1151,10 @@ function requestLockNow() {
 initHotbarInput(() => false);
 
 document.addEventListener("mousemove", (e) => {
-  if (!isLocked() || anyPanelOpen()) return;
+  // The Play click locks the pointer while it is still a fresh gesture, but
+  // entry (and the overlay hiding) waits for the first rendered world frame
+  // — frozen camera until then, so no look-around behind the start menu.
+  if (!started || !isLocked() || anyPanelOpen()) return;
   setYaw(player.yaw - e.movementX * 0.0022);
   const p = player.pitch - e.movementY * 0.0022;
   setPitch(Math.max(-Math.PI / 2 + 0.01, Math.min(Math.PI / 2 - 0.01, p)));
@@ -942,11 +1185,26 @@ document.addEventListener("mousedown", (e) => {
     chainPressRight(chain);
     chainSaveDigRay(chain, camera);
     const bt = breakTarget(camera);
-    if (bt) {
+    if (bt && !bt.body) {
       const changed = breakBlockAt(bt.x, bt.y, bt.z, { eyeY: camera.position.y });
       if (changed.length) {
         refreshBlocks(changed);
         notifyEndermanVoxelChange(changed, camera, dim);
+      }
+      chainAnchorPush(chain, bt.x, bt.y, bt.z);
+    } else if (bt && bt.body) {
+      // Remote body hit: the body's nearest TNT wins (ignite, else
+      // detonate); with none on board, mine the aimed cell like local.
+      const r = useBodyTnt(bt.body, getSeed(), bt.x, bt.y, bt.z);
+      if (r && r.action === "detonated") {
+        if (r.touched.length) refreshBlocks(r.touched);
+        notePortalEdits(r.touched);
+      } else if (!r) {
+        const changed = breakBlockAt(bt.x, bt.y, bt.z, { eyeY: camera.position.y });
+        if (changed.length) {
+          refreshBlocks(changed);
+          notifyEndermanVoxelChange(changed, camera, dim);
+        } else toast("No TNT on this body");
       }
       chainAnchorPush(chain, bt.x, bt.y, bt.z);
     }
@@ -1087,8 +1345,12 @@ document.addEventListener("keydown", (e) => {
   }
   keys[e.code] = true;
   keys[e.key] = true;
-  if (isHotbarPrevCode(e.code)) select(selected - 1);
-  if (isHotbarNextCode(e.code)) select(selected + 1);
+  if (started) {
+    // The hotbar is hidden behind the start menu: the selection freezes
+    // with every other input until the menu hides.
+    if (isHotbarPrevCode(e.code)) select(selected - 1);
+    if (isHotbarNextCode(e.code)) select(selected + 1);
+  }
   if (["Space", "Slash", "Tab", "ArrowUp", "ArrowDown"].includes(e.code) || e.key === " ") e.preventDefault();
 });
 
@@ -1180,18 +1442,61 @@ function loop(now) {
   // freezes; only the loader, the debug readout, and the final render run.
   // The fog reveal is loader, not sim: it advances whenever voxels exist.
   tickReveal(dt);
-  // Deferred Play entry: the click only armed pendingPlay, and this frame
-  // renders voxels — so the world is entered on its first rendered frame.
-  if (pendingPlay && worldReady) {
+  // Deferred Play entry: the click only armed pendingPlay — the world is
+  // entered on its first rendered frame once the loading gate passes
+  // (neighborhood meshed), never into a still-loading world.
+  if (pendingPlay && playReady) {
     pendingPlay = false;
     enterGame(renderer);
   }
   const simActive = worldReady && started && !building && isLocked() && !anyMenuOpen();
-  updateCamera(simActive ? dt : 0);
+  updateCamera(0);
   if (!worldReady || !started) {
     highlight.visible = false;
     if (worldReady) updateStreamingFog();
-    maybeStream(pos.x, pos.z, camera.position.y, scene.fog.near, scene.fog.far);
+    // Loading sky: the menu shows the world at the spawn altitude, so the
+    // background (and the loading fog tinted by it) must read the sky the
+    // game is about to open under — black behind the lunar spawn, not the
+    // day-blue default. dt 0 freezes the dome like every paused visual:
+    // this is loader work, not sim.
+    tickSky(scene, camera, sun, hemi, envAir, dimEnv(dim), 0);
+    applyRegions(camera.position, scene.background, setRegionFade);
+    // Play loading gate: a rebuild (or a fresh boot) resets readiness;
+    // otherwise, once the build is done and the shaders compiled, drain the
+    // streams behind the menu with big slices, then enter as soon as the
+    // visible neighborhood is meshed — far chunks keep converging behind
+    // the fog after entry instead of holding Play.
+    if (playReady && !worldReady) {
+      playReady = false;
+      gateT0 = 0;
+    } else if (!playReady && worldReady && !building && shadersCompiled) {
+      if (gateT0 === 0) gateT0 = now;
+      drainCelestial(pos.x, pos.z, 24);
+      drainChunkQueue(false, 24, pos.x, pos.z);
+      // Converged = the visible neighborhood meshed + no celestial builds
+      // pending. Far window chunks are excluded on purpose: the closed-in
+      // fog and the reveal hide everything past a few chunks at entry, and
+      // the fog controller keeps unbuilt distance fogged afterwards — they
+      // keep converging in the background instead of holding Play. The Moon
+      // underside fill is excluded for the same reason (invisible from the
+      // surface spawn; the sync safety net below covers descents).
+      const converged = nearestMissingDist(pos.x, camera.position.y, pos.z) > GATE_NEAR_R &&
+        celestialPendingSize() === 0;
+      if (converged || now - gateT0 > GATE_FALLBACK_MS) {
+        playReady = true;
+      }
+    }
+    const leadB = streamLead();
+    const fadeB = vel.length() > 60 ? FADE_CHUNKS_FAST : FADE_CHUNKS;
+    maybeStream(pos.x, pos.z, camera.position.y, scene.fog.near, scene.fog.far, leadB.x, leadB.z, fadeB);
+    // Celestial LOD runs at every altitude in moon dims: below the reveal
+    // band the region ramps read 0, so proxies stay hidden exactly like the
+    // voxel meshes — the legacy ascent look is unchanged, and descending
+    // can never freeze a visible proxy behind (opacity is always driven).
+    if (worldReady && dimHasMoon(dim)) {
+      const leadQ = streamLead();
+      tickLod(scene, pos.x, pos.y, pos.z, getSeed(), dt, leadQ.x, leadQ.y, leadQ.z);
+    }
     // Voxel streaming joins the mesher here: behind the menu, before play,
     // and every frame after. Gated on worldReady so it never races the
     // boot slice (same reason as the fog line above).
@@ -1202,7 +1507,11 @@ function loop(now) {
     renderer.render(scene, camera);
     return;
   }
-  tickDebug(dt, pos.x, pos.y, pos.z);
+  // Live rocket boost for the debug HUD: the deep-space multiplier and the
+  // resulting cap while flying.
+  const _boost = rocketBoostInfo();
+  tickDebug(dt, pos.x, pos.y, pos.z,
+    _boost ? ` | boost x${_boost.spaceF.toFixed(1)}  cap ${Math.round(_boost.cap)}` : "");
   if (simActive) {
     simTime += sdt;
     tickFx(sdt);
@@ -1225,17 +1534,26 @@ function loop(now) {
     updateStreamingFog();
     tickSky(scene, camera, sun, hemi, envAir, dimEnv(dim), simActive ? sdt : 0);
     tickAmbient(simActive ? sdt : 0, simTime, camera, dimSpec(dim)?.ambient);
+    setSkyFree(dimHasMoon(dim) && camera.position.y >= skyFreeY());
     applyRegions(camera.position, scene.background, setRegionFade);
     const medium = eyeMediumId(camera.position.x, camera.position.y, camera.position.z);
     tickWaterFog(scene, camera, dt, envAir, medium);
-    // Moon-water eye fog: sheets read fog-free in air (fixed exterior, no
-    // black at distance) and fogged while the eye is submerged (classic
-    // interior). Transition-only flips; the murk itself is untouched.
-    const inMoonWater = medium.type === "liquid" && medium.liquid === MOON_WATER;
-    if (inMoonWater !== lastMoonEyeFog) {
-      lastMoonEyeFog = inMoonWater;
-      setLiquidFogOverride(MOON_WATER, inMoonWater);
-      setRegionLiquidFog("moon", MOON_WATER, inMoonWater);
+    // Celestial-water eye fog: sheets read fog-free in air (fixed exterior,
+    // no black at distance) and fogged while the eye is submerged (classic
+    // interior). Transition-only flips; the murk itself is untouched. The
+    // Moon reads the moon region, planet waters the planets region.
+    const eyeLiquid = medium.type === "liquid" ? medium.liquid : 0;
+    const eyeCelestial = (eyeLiquid === MOON_WATER || PLANET_WATERS.includes(eyeLiquid)) ? eyeLiquid : 0;
+    if (eyeCelestial !== lastMoonEyeFog) {
+      if (lastMoonEyeFog) {
+        setLiquidFogOverride(lastMoonEyeFog, false);
+        setRegionLiquidFog(lastMoonEyeFog === MOON_WATER ? "moon" : "planets", lastMoonEyeFog, false);
+      }
+      lastMoonEyeFog = eyeCelestial;
+      if (eyeCelestial) {
+        setLiquidFogOverride(eyeCelestial, true);
+        setRegionLiquidFog(eyeCelestial === MOON_WATER ? "moon" : "planets", eyeCelestial, true);
+      }
     }
     // Lava eye fog: sheets read fog-free in air (vivid sea vista at distance)
     // and fogged while the eye is submerged, so the murk — not the cull —
@@ -1249,24 +1567,19 @@ function loop(now) {
     }
     // Static pocket colors (airpocket.js, decided at mesh build): trapped air
     // reads the inside color, open air the outside — no per-frame work here.
-    // Moon hotbar: while the reveal shows the disc the water slot becomes
-    // moon water and the flower slot becomes glowstone; both restore when
-    // the moon hides again — or when no lunar block survives (the bar dies
-    // with the moon, like the snow and the low gravity). Follows the region
-    // factor (not a duplicated threshold), so the bar and the disc always
-    // agree. Moon dimensions only.
-    const moonNow = dimHasMoon(dim) && !isMoonGone() && regionByKey("moon").factor(camera.position) > 0;
-    if (moonNow !== moonRevealed) {
-      moonRevealed = moonNow;
-      if (moonNow) {
-        const wi = getItems().indexOf(WATER);
-        if (wi >= 0) setItem(wi, MOON_WATER);
-        const fi = getItems().indexOf(FLOWER);
+    // Celestial hotbar: the flower slot becomes glowstone while the reveal
+    // shows the sky (Moon or planets band — camera altitude only, wiped or
+    // living bodies alike), restoring on hide. The water slot is handled
+    // with the aim below: it needs the crosshair hit. Moon dimensions only.
+    const skyNow = dimHasMoon(dim) && celestialRevealFactor(camera.position.y) > 0;
+    if (skyNow !== skyRevealed) {
+      skyRevealed = skyNow;
+      const items = getItems();
+      if (skyNow) {
+        const fi = items.indexOf(FLOWER);
         if (fi >= 0) setItem(fi, GLOWSTONE);
       } else {
-        const mi = getItems().indexOf(MOON_WATER);
-        if (mi >= 0) setItem(mi, WATER);
-        const gi = getItems().indexOf(GLOWSTONE);
+        const gi = items.indexOf(GLOWSTONE);
         if (gi >= 0) setItem(gi, FLOWER);
       }
     }
@@ -1279,6 +1592,15 @@ function loop(now) {
     if (dimHasMoon(dim) && !moonReady(getSeed()) && camera.position.y < MOON_MIN_Y - 8) {
       generateMoon(getSeed(), setBlock, getBlock);
       refreshBlocks(moonChunkCenters());
+    }
+    // Planets stream in the background (sliced), with a synchronous safety
+    // net when the player closes in; the lunar fill above is untouched.
+    // Moon dimensions only: elsewhere this would stamp sky voxels into
+    // the wrong map. In-range bodies render as real voxels, far ones as
+    // proxies until the LOD swaps them — so streaming stays the voxel read
+    // path at every distance.
+    if (dimHasMoon(dim)) {
+      tickPlanetStream();
     }
     // Knockback impulse decays every sim frame, whatever mode moves next;
     // the hook pull owns its frame and simply leaves it for afterwards.
@@ -1399,24 +1721,76 @@ function loop(now) {
     const hit = rocketFlying()
       ? null
       : (rocketEditingBlocked() ? null : updateTarget(camera, selectedId()));
-    let showHit = !!hit;
+    // Aim box: real voxels only (shouldShowHighlight) — a geometric body
+    // pick is empty space, actionable (remote place, grapple, body TNT)
+    // but never drawn. A single white box: mineable/buildable at once.
+    let showHit = shouldShowHighlight(hit);
     if (showHit) {
       highlight.visible = true;
       highlight.position.set(hit.x + 0.5, hit.y + 0.5, hit.z + 0.5);
+      highlight.material.color.setHex(0xffffff);
     } else {
       highlight.visible = false;
+    }
+    // Celestial water: below the reveal plain water owns the slot; inside
+    // the reveal the default is Moon water, and a real aimed voxel takes
+    // the water of its Voronoi cell (wiped or living bodies alike — the
+    // cells are positional). Geometric-only picks (id AIR) keep the Moon
+    // default. Moon dimensions only.
+    const revealed = dimHasMoon(dim) && celestialRevealFactor(camera.position.y) > 0;
+    const waterTarget = !revealed ? WATER
+      : (hit && hit.id !== AIR ? voronoiBodyAt(hit.x, hit.y, hit.z).water : MOON_WATER);
+    if (waterTarget !== lastSkyWater) {
+      const items = getItems();
+      if (waterTarget === WATER) {
+        for (const id of CELESTIAL_WATERS) {
+          const i = items.indexOf(id);
+          if (i >= 0) { setItem(i, WATER); break; }
+        }
+      } else if (lastSkyWater === WATER) {
+        const i = items.indexOf(WATER);
+        if (i >= 0) setItem(i, waterTarget);
+      } else {
+        for (const id of CELESTIAL_WATERS) {
+          const i = items.indexOf(id);
+          if (i >= 0) { setItem(i, waterTarget); break; }
+        }
+      }
+      lastSkyWater = waterTarget;
     }
     // Hold-chain editing (paint / dig-sweep / still-hold bridge): one tick
     // behind simActive, sim-time only, single batched refresh per frame.
     // Held edits queue (budgeted drain) instead of rebuilding inline, so a
     // max-rate bridge never pays a synchronous rebuildChunk per frame;
     // discrete taps keep the sync path in the mousedown handlers above.
-    // Skipped in flight (no editing or aiming there at all).
-    const touched = rocketFlying() ? [] : tickChain(chain, dt, {
+    // Skipped on the same gate as the stroke logic below — idle ticks pay
+    // no ctx, no closures, no dedupe set (same gate as chainHoldActive).
+    // Celestial pre-warm: aiming at an unbuilt body starts its sliced fill
+    // now, so the first grapple (or remote edit) usually finds it built
+    // instead of paying the sync fill on click. One body at a time,
+    // idempotent, aborts safely — same slicer as the lazy fill. Gated by
+    // altitude like the background stream: merely looking at the sky from
+    // the ground must never stream every body behind a cloud ultra —
+    // explicit grapples and edits still materialize on demand below.
+    // The gate is "no real voxel aimed": a far body's pick is truthy
+    // (the geometric surface cell) without holding voxels, so the fill
+    // must fire on it too — the old `!hit` gate starved it (a not-ready
+    // body could never build from aim alone, and remote digs read raw
+    // store air).
+    if ((!hit || hit.body) && dimHasMoon(dim) && worldReady && !building &&
+        camera.position.y >= CELESTIAL_STREAM_Y) {
+      camera.getWorldDirection(_hookDir);
+      const bh = rayBodyHit(camera.position, _hookDir);
+      if (bh && !bodyReady(getSeed(), bh.spec.key)) {
+        fillBodyUnder(getSeed(), bh.spec);
+      }
+    }
+    const chaining = !rocketFlying() && chainHoldActive(chain);
+    const touched = chaining ? tickChain(chain, dt, {
       camera,
       currentBlock: hit,
       selectedId: selectedId(),
-      pick: (eye, dir, skip) => pickBlock(eye, dir, skip),
+      pick: (eye, dir, skip) => pickBlock(eye, dir, skip) ?? pickCelestialBody(eye, dir),
       // Batched chain writes: per-cell portal/light work is deferred
       // to flushChainBatch below, once per tick over the union of cells;
       // the liquid purge waits for the stroke release (endChainStroke).
@@ -1426,7 +1800,7 @@ function loop(now) {
       isOob: (x, y, z) => outOfWorld(x, y, z),
       pos,
       yaw: player.yaw,
-    });
+    }) : [];
     // Bridge-only suspension: still-hold placements (and streamed chunks
     // alike) build geometry-only; moving strokes keep the full bake.
     const bridge = chainBridgeActive(chain);
@@ -1442,6 +1816,10 @@ function loop(now) {
         // Remember the bridge union for the release tint pass.
         if (bridge) for (const c of touched) bridgeTouchedUnion.push(c);
         queueRefreshBlocks(touched, liquidCells);
+        // Remote celestial strokes (planets far past the window): the
+        // budgeted drain drops unknown keys, so the same cells ride the
+        // prune-exempt celestial queue to a guaranteed mesh.
+        if (dimHasMoon(dim)) queueCelestialChunks(touched);
       } else refreshBlocks(touched, liquidCells);
       // Optimistic overlay: drawn this frame in the blocks' own materials,
       // culled as each chunk's real mesh rebuilds (see chainproxy.js).
@@ -1466,6 +1844,7 @@ function loop(now) {
     if (wasBridgeHeld && !bridge) {
       if (bridgeTouchedUnion.length) {
         queueRefreshBlocks(bridgeTouchedUnion);
+        if (dimHasMoon(dim)) queueCelestialChunks(bridgeTouchedUnion);
         bridgeTouchedUnion.length = 0;
       }
       queueRefreshKeys(takeSuspendedBuilt());
@@ -1475,6 +1854,10 @@ function loop(now) {
   } else {
     highlight.visible = false;
   }
+  // Late camera refresh: the sim above moved the player (rocket pin, hook
+  // pull, walk), so the eye re-syncs here — a fast hull no longer outruns
+  // the camera for a frame. FOV kick and trauma still run once per frame.
+  updateCamera(simActive ? dt : 0);
   updateBossBar();
   if (!isLocked()) chainResetOnUnlock(chain);
   // Suspended while a travel transition owns the loader: streaming around
@@ -1482,7 +1865,12 @@ function loop(now) {
   // queue chunks nobody arrives at, and the canvas stays frozen behind the
   // opaque overlay. runTravel drives the mesher itself until the arrival is
   // meshed.
-  if (!travelActive) maybeStream(pos.x, pos.z, camera.position.y, scene.fog.near, scene.fog.far);
+  const leadM = streamLead();
+  const fadeM = vel.length() > 60 ? FADE_CHUNKS_FAST : FADE_CHUNKS;
+  if (!travelActive) maybeStream(pos.x, pos.z, camera.position.y, scene.fog.near, scene.fog.far, leadM.x, leadM.z, fadeM);
+  if (worldReady && !travelActive && dimHasMoon(dim)) {
+    tickLod(scene, pos.x, pos.y, pos.z, getSeed(), dt, leadM.x, leadM.y, leadM.z);
+  }
   if (worldReady && !travelActive) tickTntStream(pos.x, pos.y, pos.z, dt, vel.length(), vel.y, queueRefreshBlocks, hookPin());
   tickChunkFades(dt, pos.x, camera.position.y, pos.z, scene.fog.far);
   tickPortalFillFades(dt, pos.x, camera.position.y, pos.z, scene.fog.far);
@@ -1492,12 +1880,3 @@ function loop(now) {
 
 updateCamera();
 requestAnimationFrame(loop);
-
-// ?test=1 instrumentation hooks (tests/browser/mobs/hook.js + fx/hook.js):
-// 1-wide path rigs + deterministic mob traces, reactor-cone probe.
-// Dynamic imports, inert unless the param is set — no game behavior changes.
-if (new URLSearchParams(location.search).get("test") === "1") {
-  import("./tests/browser/mobs/hook.js").then((m) =>
-    m.initTest({ scene, worldReady: () => worldReady }));
-  import("./tests/browser/fx/hook.js").then((m) => m.initFxProbe());
-}

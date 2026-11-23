@@ -11,7 +11,7 @@
 import * as THREE from "three";
 import { TEX, faceTex } from "../core/textures.js";
 import { spawnBurst } from "../fx/particles.js";
-import { VARIANT_LOOKS, activeRuns, onReaction } from "../world/reactions.js";
+import { VARIANT_LOOKS, activeRuns, hasActiveRuns, onReaction } from "../world/reactions.js";
 
 const matsCache = new Map();
 const shellCache = new Map();
@@ -166,6 +166,9 @@ export function initReactionFx(scene) {
 // Sync the sinking cubes with the live reaction list and breathe the shells.
 export function tickReactionFx(simTime) {
   if (!sceneRef) return;
+  // Idle fast path: no per-frame Set allocation when nothing runs and no
+  // cubes remain (the loop below owns stale-cube cleanup).
+  if (cubes.size === 0 && !hasActiveRuns()) return;
   const live = new Set();
   for (const run of activeRuns()) {
     const k = `${run.x},${run.y},${run.z}`;
