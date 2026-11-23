@@ -384,6 +384,11 @@ function updateCamera(dt = 0) {
 
 let worldReady = false;
 let building = false;
+// Snow may start as soon as the moon surface voxels exist and the camera is
+// placed on them (moon boot, right after the spawn override below) — long
+// before the planet meshes converge and worldReady flips. Reset per build
+// like worldReady, so an aborted run never leaks a stale flag.
+let snowEarly = false;
 // Play is clickable from the first frame, but entry waits for the first
 // rendered world frame: the click only arms this flag (plus a best-effort
 // pointer lock while the gesture is fresh), and the loop enters the game
@@ -488,6 +493,7 @@ async function buildWorld() {
   building = true;
   bootProbe("boot");
   worldReady = false;
+  snowEarly = false;
   shadersCompiled = false;
   resetLod();
   revealT = 0;
@@ -550,6 +556,12 @@ async function buildWorld() {
       vel.set(0, 0, 0);
       setYaw(m.yaw);
       setPitch(0);
+      // Surface voxels exist and the camera stands on them: snow can start
+      // right now, ahead of the whole planet branch below (pin, sky gate,
+      // proxy prewarm). No earlier point would render anything — before the
+      // surface gen there is no ground, and before this override the camera
+      // sits too low for the snow gate anyway.
+      snowEarly = true;
     }
     // Pen alias: override the ground spawn with the pen overwatch pick
     // before meshing the neighborhood, so the first built chunks are the pen.
@@ -1497,6 +1509,16 @@ function loop(now) {
     // this is loader work, not sim.
     tickSky(scene, camera, sun, hemi, envAir, dimEnv(dim), 0);
     applyRegions(camera.position, scene.background, setRegionFade);
+    // Snowfall behind the start menu (moon boots open under falling snow):
+    // one frozen frame — dt 0 means no integration and no sway advance, so
+    // the field reads exactly as the reveal will open on it. The sim branch
+    // takes over the same field state on entry, no pop. Starts as soon as
+    // the moon surface exists and the camera stands on it (snowEarly), long
+    // before worldReady and the planet branch — everywhere else active()
+    // self-filters (wrong dim, dead moon, below the gate).
+    if (worldReady || snowEarly) {
+      tickSnow(0, 0, camera);
+    }
     // Play loading gate: a rebuild (or a fresh boot) resets readiness;
     // otherwise, once the build is done and the shaders compiled, drain the
     // streams behind the menu with big slices, then enter as soon as the

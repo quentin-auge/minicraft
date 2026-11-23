@@ -1,10 +1,15 @@
 // Falling-precipitation backend: camera-following Points fields integrated
-// at 30 Hz (invisible at fall speeds). Drops fill the column above the
-// camera, wrap around it in XZ so flight never leaves them behind, and
-// vanish on landing before respawning at the top. Sway reads a precomputed
-// sine table and landing heights are cached per drop (one typed-array read,
-// refreshed staggered plus on wrap) with a single getBlock confirm only near
-// the ground, instead of trig plus a Map lookup per drop per frame.
+// every step (60 Hz snow — motion stays smooth under a moving camera).
+// Drops fill the column above the camera, wrap around it in XZ so flight
+// never leaves them behind, and vanish on landing before respawning
+// at the top. Sway reads a precomputed sine table and landing heights are
+// cached per drop (one typed-array read, refreshed staggered plus on wrap)
+// with a single getBlock confirm only near the ground, instead of trig plus
+// a Map lookup per drop per frame. Visibility is 100% flake world-position
+// in the shader (radial + height fades, zero CPU cost) times a temporal
+// field level (fast uniform fade-out on leave, progressive fade-in on
+// return); past the off bounds the engine skips integration and the draw
+// call entirely.
 //
 // Extension shape: PRECIP_TYPES is the registry; the engine below never
 // branches on kind names. Snow registers first with master's numbers;
@@ -14,6 +19,14 @@ import { AIR } from "../core/blocks.js";
 import { getBlock, topAt, dim } from "../core/store.js";
 import { dimHasMoon } from "../world/dimensions.js";
 import { MOON_SURFACE_Y, isMoonGone } from "../world/moon.js";
+import { MOON_SPEC } from "../world/planets.js";
+import {
+  SNOW_COUNT, SNOW_RANGE, SNOW_SIZE, SNOW_OPACITY, SNOW_FADE_R0, SNOW_FADE_RW,
+  SNOW_SLAB_BELOW, SNOW_TOP_LO, SNOW_TOP_HI, SNOW_FULL_HI, SNOW_FADE_TOP,
+  SNOW_OFF_Y, SNOW_OFF_R, SNOW_FLOOR_BELOW,
+  snowAltitudeFade, snowFieldTarget, smoothShown,
+  moonGroundY, spawnSnowDrop, stepSnowDrops,
+} from "./snowfade.js";
 
 const PRECIP_DEFAULTS = {
   count: 700,
@@ -26,62 +39,91 @@ const PRECIP_DEFAULTS = {
   fallMax: 5.5,
   drift: 0.5,
   sway: 0.5,
-  topMargin: 24,
-  // Material fades from invisible to full over this camera-altitude span,
-  // so the field never pops at its activation gate.
-  fadeIn: null,
-  // ...and back to invisible over this span, so deep space stays clear
-  // (snow is surface weather: at planet altitudes the flakes would read
-  // as flicker on the distant bodies).
-  fadeOut: null,
 };
 
 export const PRECIP_TYPES = [
   {
     key: "snow",
     ...PRECIP_DEFAULTS,
+    count: SNOW_COUNT,
+    range: SNOW_RANGE,
+    size: SNOW_SIZE,
+    opacity: SNOW_OPACITY,
+    step: 1 / 60,
+    slabBelow: SNOW_SLAB_BELOW,
+    topMin: SNOW_TOP_LO,
+    topMax: SNOW_TOP_HI,
     // Snow falls anywhere above moon-surface altitude, in moon dimensions
     // holding a surviving moon: once no MOON/MOON_WATER block remains the
     // field retires instead of snowing over an empty sky.
     active: (e) => dimHasMoon(dim) && !isMoonGone() && e.y >= MOON_SURFACE_Y - 8,
-    // Drops land on the highest surface or the moon band, whichever is up.
-    groundY: (bx, bz) => {
-      const ct = topAt(dim, bx, bz);
-      return ct > MOON_SURFACE_Y ? ct : MOON_SURFACE_Y;
-    },
-    // Initial fill spans the moon band up to the spawn top.
-    seedY: (top) => Math.min(top, MOON_SURFACE_Y + 1 + Math.random() * Math.max(1, top - MOON_SURFACE_Y - 1)),
+    // Drops land on the highest surface or the moon band, whichever is up —
+    // and sink through open shafts down to 50 below the surface, never
+    // into rock (moonGroundY resolves rock tops first).
+    groundY: (bx, bz) => moonGroundY(topAt(dim, bx, bz)),
+    // Initial fill spans the moon band down through the open floor up to
+    // the spawn top, so the first frame already shows the full column.
+    seedY: (top) => Math.min(top, (MOON_SURFACE_Y - SNOW_FLOOR_BELOW) + Math.random() * Math.max(1, top - (MOON_SURFACE_Y - SNOW_FLOOR_BELOW))),
     // Below the moon band a drop only lands on a real block.
     landed: (x, y, z, landY) => y <= landY + 2 &&
       (y <= MOON_SURFACE_Y || getBlock(Math.floor(x), Math.floor(y), Math.floor(z)) !== AIR),
-    fadeIn: [MOON_SURFACE_Y - 8, MOON_SURFACE_Y],
-    // Surface weather only: fully gone a few hundred blocks up, so the
-    // moon-to-planet corridor and the planets themselves see a clean sky.
-    fadeOut: [MOON_SURFACE_Y + 120, MOON_SURFACE_Y + 320],
+    // Surface weather, dense low and thinning with height: the shader
+    // fades every drop by its own world position (full below +50 and
+    // inside rim + 25, gone past +100 / rim + 50), so the whole field
+    // thins as the camera leaves the layer — moon-to-planet corridor and
+    // planets keep a clean sky with zero CPU fade work.
   },
 ];
 
 const specByKey = new Map(PRECIP_TYPES.map((s) => [s.key, s]));
 const states = new Map();
 let sceneRef = null;
+let rendererRef = null;
 
-const SIN = new Float32Array(256);
-for (let i = 0; i < 256; i++) SIN[i] = Math.sin((i / 256) * Math.PI * 2);
+// Snow shader: one draw call, visibility 100% flake world-position (radial
+// fade + height fade), perspective size in world units with a pixel floor,
+// square flakes.
+const SNOW_VERT = `
+uniform float uOpacity;
+uniform float uSize;
+uniform float uHeightPx;
+uniform float uMinPx;
+uniform vec2 uCenter;
+uniform float uRadius;
+uniform float uFadeWidth;
+uniform float uFullHi;
+uniform float uFadeTop;
+varying float vAlpha;
+void main() {
+  vec4 mv = modelViewMatrix * vec4(position, 1.0);
+  gl_Position = projectionMatrix * mv;
+  float r = distance(position.xz, uCenter);
+  float h = 1.0 - smoothstep(uFullHi, uFadeTop, position.y);
+  vAlpha = uOpacity * (1.0 - smoothstep(uRadius, uRadius + uFadeWidth, r)) * h;
+  float proj = projectionMatrix[1][1];
+  // World-size flakes with a pixel floor: distant drops stay a readable
+  // grain instead of winking out sub-pixel over the whole disc.
+  gl_PointSize = max(uSize * (uHeightPx * 0.5 * proj) / max(0.1, -mv.z), uMinPx);
+}
+`;
+const SNOW_FRAG = `
+uniform vec3 uColor;
+varying float vAlpha;
+void main() {
+  // Square flakes (Minecraft): no round sprite mask, uniform alpha.
+  if (vAlpha <= 0.003) discard;
+  gl_FragColor = vec4(uColor, vAlpha);
+}
+`;
 
-export function initPrecip(scene) {
+export function initPrecip(scene, renderer = null) {
   sceneRef = scene;
+  rendererRef = renderer;
 }
 
 function spawnDrop(spec, st, i, e, initial = false) {
-  const attr = st.pts.geometry.attributes.position;
-  const top = e.y + 8 + Math.random() * 14;
-  attr.array[i * 3] = e.x + (Math.random() * 2 - 1) * spec.range;
-  attr.array[i * 3 + 1] = initial ? spec.seedY(top) : top;
-  attr.array[i * 3 + 2] = e.z + (Math.random() * 2 - 1) * spec.range;
-  st.vel[i * 3] = (Math.random() * 2 - 1) * spec.drift;
-  st.vel[i * 3 + 1] = spec.fallMin + Math.random() * (spec.fallMax - spec.fallMin);
-  st.vel[i * 3 + 2] = (Math.random() * 2 - 1) * spec.drift;
-  st.ground[i] = spec.groundY(Math.floor(attr.array[i * 3]), Math.floor(attr.array[i * 3 + 2]));
+  spawnSnowDrop(spec, st.pts.geometry.attributes.position.array, st.vel, st.ground,
+    i, e.x, e.y, e.z, initial);
 }
 
 function ensureState(spec) {
@@ -96,9 +138,25 @@ function ensureState(spec) {
   posAttr.setUsage(THREE.DynamicDrawUsage);
   geo.setAttribute("position", posAttr);
   geo.setDrawRange(0, spec.count);
-  const mat = new THREE.PointsMaterial({
-    color: spec.color, size: spec.size, transparent: true, opacity: spec.opacity,
-    depthWrite: false, fog: false,
+  const mat = new THREE.ShaderMaterial({
+    uniforms: {
+      uColor: { value: new THREE.Color(spec.color) },
+      uOpacity: { value: spec.opacity },
+      uSize: { value: spec.size },
+      uHeightPx: { value: 800 },
+      // Fixed pixel floor: distant drops stay a readable grain instead of
+      // winking out sub-pixel over the whole disc.
+      uMinPx: { value: 1.2 },
+      uCenter: { value: new THREE.Vector2(MOON_SPEC.cx, MOON_SPEC.cz) },
+      uRadius: { value: SNOW_FADE_R0 },
+      uFadeWidth: { value: SNOW_FADE_RW },
+      uFullHi: { value: SNOW_FULL_HI },
+      uFadeTop: { value: SNOW_FADE_TOP },
+    },
+    vertexShader: SNOW_VERT,
+    fragmentShader: SNOW_FRAG,
+    transparent: true,
+    depthWrite: false,
   });
   const pts = new THREE.Points(geo, mat);
   pts.frustumCulled = false;
@@ -110,6 +168,7 @@ function ensureState(spec) {
     acc: 0,
     tick: 0,
     fresh: true,
+    shown: 1,
   };
   states.set(spec.key, st);
   return st;
@@ -129,56 +188,40 @@ export function tickPrecip(key, dt, time, camera) {
   if (!spec) return;
   if (!spec.active(camera.position)) { removeState(spec); return; }
   const st = ensureState(spec);
-  if (spec.fadeIn || spec.fadeOut) {
-    let f = 1;
-    if (spec.fadeIn) {
-      const t = (camera.position.y - spec.fadeIn[0]) / (spec.fadeIn[1] - spec.fadeIn[0]);
-      const c = Math.max(0, Math.min(1, t));
-      f *= c * c * (3 - 2 * c);
-    }
-    if (spec.fadeOut) {
-      const t = (spec.fadeOut[1] - camera.position.y) / (spec.fadeOut[1] - spec.fadeOut[0]);
-      const c = Math.max(0, Math.min(1, t));
-      f *= c * c * (3 - 2 * c);
-    }
-    st.pts.material.opacity = spec.opacity * f;
-    // Fully faded out: skip the draw call entirely (no visual change).
-    st.pts.visible = f > 0;
+  const e = camera.position;
+  const camR = Math.hypot(e.x - MOON_SPEC.cx, e.z - MOON_SPEC.cz);
+  // Entry ramp off the gate (no pop-in), then the temporal field level
+  // follows the camera inside the fade volume: fast out when leaving (one
+  // uniform fade), progressive in when returning (no pop). Per-flake
+  // spatial fades in the shader handle the rest. Past the off bounds no
+  // flake in the camera slab can stay visible: skip the draw call AND the
+  // integration entirely (distant planet visits cost nothing).
+  const entry = snowAltitudeFade(e.y);
+  const target = snowFieldTarget(e.y, camR);
+  st.shown = smoothShown(st.shown, target, dt);
+  const off = e.y > SNOW_OFF_Y || camR > SNOW_OFF_R;
+  const uniforms = st.pts.material.uniforms;
+  uniforms.uOpacity.value = spec.opacity * entry * st.shown;
+  if (rendererRef) uniforms.uHeightPx.value = rendererRef.domElement.height || 800;
+  st.pts.visible = entry > 0 && st.shown > 0 && !off;
+  if (!st.pts.visible) return;
+  if (st.fresh) {
+    st.fresh = false;
+    for (let i = 0; i < spec.count; i++) spawnDrop(spec, st, i, camera.position, true);
+    // The accumulator below may never reach a step (frozen menu frame):
+    // the fresh spawn still has to reach the GPU once.
+    st.pts.geometry.attributes.position.needsUpdate = true;
   }
-  if (st.fresh) { st.fresh = false; for (let i = 0; i < spec.count; i++) spawnDrop(spec, st, i, camera.position, true); }
   st.acc += dt;
   if (st.acc < spec.step) return;
-  const step = st.acc;
+  const dtStep = st.acc;
   st.acc = 0;
   const tick = ++st.tick;
-  const phase = (time * 19) | 0;
-  const e = camera.position;
   const attr = st.pts.geometry.attributes.position;
-  for (let i = 0; i < spec.count; i++) {
-    const swayX = SIN[(phase + i * 7) & 255] * spec.sway;
-    const swayZ = SIN[(phase + i * 13 + 64) & 255] * spec.sway;
-    let x = attr.array[i * 3] + (st.vel[i * 3] + swayX) * step;
-    let y = attr.array[i * 3 + 1] - st.vel[i * 3 + 1] * step;
-    let z = attr.array[i * 3 + 2] + (st.vel[i * 3 + 2] + swayZ) * step;
-    let wrapped = false;
-    if (x - e.x > spec.range) { x -= 2 * spec.range; wrapped = true; }
-    else if (x - e.x < -spec.range) { x += 2 * spec.range; wrapped = true; }
-    if (z - e.z > spec.range) { z -= 2 * spec.range; wrapped = true; }
-    else if (z - e.z < -spec.range) { z += 2 * spec.range; wrapped = true; }
-    if (y > e.y + spec.topMargin) { spawnDrop(spec, st, i, e); continue; }
-    let landY = st.ground[i];
-    // Staggered landing-height refresh: each drop re-reads every 8th step, so
-    // movement-time wrap storms cost a quarter of the column lookups. Drops
-    // keep last known heights in between; landings lag at most ~0.27 s.
-    if (wrapped || (i & 7) === (tick & 7)) {
-      landY = spec.groundY(Math.floor(x), Math.floor(z));
-      st.ground[i] = landY;
-    }
-    if (spec.landed(x, y, z, landY)) { spawnDrop(spec, st, i, e); continue; }
-    attr.array[i * 3] = x;
-    attr.array[i * 3 + 1] = y;
-    attr.array[i * 3 + 2] = z;
-  }
+  // Full-field 60 Hz integration: every drop moves every flushed step, so
+  // motion stays smooth under a moving camera (no 15 Hz strobing).
+  stepSnowDrops(spec, attr.array, st.vel, st.ground, spec.count, tick,
+    e.x, e.y, e.z, time, dtStep);
   attr.needsUpdate = true;
 }
 
