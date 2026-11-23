@@ -17,6 +17,10 @@ import { GRAVITY, TERMINAL_VELOCITY, applyGravity, clampFall, gravityAt } from "
 import { MOON_MIN_Y, isMoonGone, moonDimHas } from "../world/moon.js";
 import { mobXZLimit } from "../world/level.js";
 import { floatVelY } from "../core/floatability.js";
+import {
+  liquidDriftLevelAt, liquidLandingBelow, liquidLiddedRideAt,
+  liquidSurfaceTopAt, floatRideTargetY, liquidOverlapAt, bodyClearOfLiquid, liquidExitClear,
+} from "./liquidcolumn.js";
 
 // Base stride speed straight from master's pig/cow walk; the divisor slows
 // it to a farm amble (FARM_WALK lives in mover.js beside its tuning).
@@ -48,6 +52,10 @@ export { GRAVITY, TERMINAL_VELOCITY } from "../core/launch.js";
 // layer touching the feet, and the first solid below decides the break — at
 // bounded cost instead of walking the whole key range in a void.
 export const SUPPORT_SCAN = 8;
+// Straddle pop gate (m/s): only a fast rise crossing the surface line
+// carries ballistically out of the water; spring noise around the ride
+// level holds instead (see stepVertical).
+export const STRADDLE_POP_VY = 1.0;
 // Base sim step: the mob tick integrates in exact SERVO_STEP slices, so
 // behaviour never depends on the frame's dt (V speed scales dt, never the
 // step count) — probes, corner arcs and tick-counted holds read the same
@@ -696,15 +704,63 @@ export function makeStepOk(mob, supported, floating, noseAlong, yaw, footNose = 
     }
     // Floating movers keep every physical check: bodies and noses never
     // enter rock. Only the support rule changes from dry ground to a
-    // reachable float level.
+    // reachable float level — or, for any floater, to a plain air exit
+    // over a real landing (pools drain like columns, no drop limit).
     let y = mob.pos.y;
-    if (floatDrive) {
+    let floatStep = false;
+    if (floatDrive && mob.liquid == null) {
       const fl = floatLevelAt(mob, nx, nz, mob.pos.y);
-      if (!fl) return false;
-      y = fl.y;
+      if (fl) {
+        y = fl.y;
+      } else if (liquidLandingBelow(mob, nx, nz, mob.pos.y) != null) {
+        // Lateral air exit over a real landing: the pose-at-level gate
+        // below owns it (the hull must fit at the current level), then
+        // gravity takes over once dry — the same boundary fall as the
+        // column regime instead of a refusal at the pool rim.
+        floatStep = true;
+      } else {
+        return false;
+      }
+    } else if (floatDrive) {
+      // Column regime: drift level under a lid, cruise tolerance at the
+      // current ride (buoyancy owns the depth), or a free lateral air exit
+      // over any real landing — the column always drains, no drop limit.
+      const fl = liquidDriftLevelAt(mob, nx, nz, mob.pos.y);
+      const destWet = liquidOverlapAt(nx, mob.pos.y, nz, 0.05, mob.h);
+      if (fl) {
+        y = fl.y;
+        floatStep = true;
+      } else if (destWet) {
+        floatStep = true;
+      } else if (liquidLandingBelow(mob, nx, nz, mob.pos.y) != null) {
+        floatStep = true;
+      } else {
+        return false;
+      }
+    }
+    // The body rides at pos.y mid-stride, so the whole-body fit at the
+    // CURRENT level is the physical gate — a lid ahead (destination ride
+    // below the current level) holds the stride until the vertical plane
+    // dips the body, and a lid boundary (destination ride above while the
+    // hull straddles the lid column) steps at the current level and rises
+    // once clear. Without it the stride would clip the lid mid-move.
+    // Pose-at-ride only under the regime; legacy reads the ride directly.
+    const gx = nx + Math.sin(yaw) * noseAlong, gz = nz + Math.cos(yaw) * noseAlong;
+    if (floatStep) {
+      const fitAt = (yy) => !aabbIntersectsSolid(nx, yy, nz, hw, mob.h)
+        && !aabbIntersectsSolid(gx, yy, gz, nr, mob.h);
+      if (!fitAt(mob.pos.y)) return false;
+      if (!fitAt(y)) y = mob.pos.y;
+      if (centerHeadroom(nx, y, nz, mob.h)) return true;
+      // Contact slide: an already-touching floating hull may hold its line
+      // or ease off the contact, never deepen it.
+      const cur = bodyOverlapDepth(mob.pos.x, y, mob.pos.z, hw, mob.h);
+      if (cur <= 1e-9) return false;
+      const cand = bodyOverlapDepth(nx, y, nz, hw, mob.h);
+      if (cand > cur + 1e-9) return false;
+      return centerHeadroom(nx, y, nz, mob.h);
     }
     if (aabbIntersectsSolid(nx, y, nz, hw, mob.h)) return false;
-    const gx = nx + Math.sin(yaw) * noseAlong, gz = nz + Math.cos(yaw) * noseAlong;
     // Soft nose (the step commit): a snout hanging over a drop never vetoes
     // and a wall BESIDE it is a graze, not a block — the mob rounds a newel
     // post instead of stalling on its snout. A wall straight ahead still
@@ -730,8 +786,11 @@ export function makeStepOk(mob, supported, floating, noseAlong, yaw, footNose = 
     // water reads as swimmable instead of a floor-depth air wall. The hull
     // itself stays checked at the current dry level above, so walking onto
     // the edge never clips: the descent below the bank top happens through
-    // the vertical plane once the body overlaps water.
-    if (!floating && mobCanFloat(mob) && (mob._transNoDiveT ?? 0) <= 0 && floatEntryOkAt(mob, nx, nz, mob.pos.y, yaw, foot)) return true;
+    // the vertical plane once the body overlaps water. A liquid-regime
+    // enter (tall wall ahead) is never lottery-vetoed: the regime walks
+    // straight in by rule.
+    if (!floating && mobCanFloat(mob) && ((mob._transNoDiveT ?? 0) <= 0 || mob.liquid != null)
+      && floatEntryOkAt(mob, nx, nz, mob.pos.y, yaw, foot)) return true;
     // Vetoed dive (lottery ignore): the mob never steps onto liquid — a
     // shallow pool reads as a wall, not a staircase, until stuck re-picks
     // it away. Covers the core and nose columns alike.
@@ -766,20 +825,35 @@ export function turnTo(mob, dt, rate = TURN_RATE) {
 // first (the descent direction), then diagonals, sides, back. Supported
 // spots win; a merely-free spot still beats hovering (the fall resumes
 // next tick). Rare path — only runs when the straight snap below would
-// bury the body.
-export function landUnwedged(mob, g) {
+// bury the body. The horizontal shift glides (at most one stride per tick,
+// vertical landing settle stays exact), never snaps: a far spot walks the
+// body over instead of teleporting it.
+export function landUnwedged(mob, g, dt = null) {
   const fx = Math.sin(mob.yaw), fz = Math.cos(mob.yaw);
   const dirs = [
     [fx, fz],
     [fx * 0.7 + fz * 0.7, fz * 0.7 - fx * 0.7], [fx * 0.7 - fz * 0.7, fz * 0.7 + fx * 0.7],
     [fz, -fx], [-fz, fx], [-fx, -fz],
   ];
+  const stride = dt != null ? Math.max(1e-4, (mob.speed ?? 1) * dt) : Infinity;
   for (let pass = 0; pass < 2; pass++) {
     for (const [dx, dz] of dirs) {
       for (const d of [0.15, 0.3, 0.45]) {
         const cx = mob.pos.x + dx * d, cz = mob.pos.z + dz * d;
         if (aabbIntersectsSolid(cx, g, cz, mob.hw, mob.h)) continue;
         if (pass === 1 || (hasSupport(cx, g, cz, mob.hw) && footingOk(mob, cx, cz, g))) {
+          const dist = Math.hypot(cx - mob.pos.x, cz - mob.pos.z);
+          if (dist > stride) {
+            // Glide a stride toward the spot when it holds at the current
+            // height too; else hold — the next tick continues the walk.
+            const ix = mob.pos.x + (dx * d * stride) / dist;
+            const iz = mob.pos.z + (dz * d * stride) / dist;
+            if (!aabbIntersectsSolid(ix, mob.pos.y, iz, mob.hw, mob.h)) {
+              mob.pos.x = ix;
+              mob.pos.z = iz;
+            }
+            return;
+          }
           mob.pos.x = cx;
           mob.pos.z = cz;
           if (pass === 0) mob.pos.y = g;
@@ -826,8 +900,10 @@ export function moveVector(mob, nx, nz, stepOk) {
 // step-up) is a trap — refuse steps down into a local minimum (pit) while
 // letting ramps (walkable continuation at the lower level) and liquid
 // entries (swim/float takes over) through. Flat ground short-circuits
-// untouched.
+// untouched. A liquid-regime floater stepping out over a real landing
+// (ground or water at any depth) is never a pit: the column always drains.
 export function descendOk(mob, nx, nz) {
+  if (mob.liquid != null && liquidLandingBelow(mob, nx, nz, mob.pos.y) != null) return true;
   const g = groundBelow(nx, mob.pos.y + 1, nz);
   if (g == null || g >= mob.pos.y - 1e-3) return true;
   for (let by = Math.floor(g); by <= Math.floor(mob.pos.y); by++) {
@@ -855,15 +931,18 @@ export function descendOk(mob, nx, nz) {
 // house walls, and troughs bound targets emergently — no pen fork.
 //
 // Float-capable movers additionally validate mixed dry/water segments:
-// water samples must hold a continuous reachable float level, dry-to-water
-// entries must stay within the buoyant transition, and water-to-dry steps
-// must land on a shore at most at the water surface level.
+// water samples must hold a continuous reachable float level (drift level
+// under a lid), dry-to-water entries must stay within the buoyant
+// transition, water-to-dry steps must land on a shore at most at the water
+// surface level, and wet-to-air samples may be plain lateral air exits
+// (the same rule the stepper allows) whose landing carries the rest of
+// the segment at its own level.
 export function segmentWalkable(mob, x0, z0, x1, z1) {
   const floatCapable = mobCanFloat(mob);
   const dist = Math.hypot(x1 - x0, z1 - z0);
   const steps = Math.max(1, Math.ceil(dist / 0.5));
   let prevG = groundBelow(x0, mob.pos.y + 1, z0);
-  const startFloat = floatCapable ? floatLevelAt(mob, x0, z0, mob.pos.y) : null;
+  const startFloat = floatCapable ? liquidDriftLevelAt(mob, x0, z0, mob.pos.y) : null;
   if (prevG == null && !startFloat) return false;
   let prevWet = startFloat != null;
   let prevSurface = startFloat?.surface ?? null;
@@ -871,7 +950,7 @@ export function segmentWalkable(mob, x0, z0, x1, z1) {
   for (let i = 1; i <= steps; i++) {
     const t = i / steps;
     const x = x0 + (x1 - x0) * t, z = z0 + (z1 - z0) * t;
-    const fl = floatCapable ? floatLevelAt(mob, x, z, prevY) : null;
+    const fl = floatCapable ? liquidDriftLevelAt(mob, x, z, prevY) : null;
     if (fl && prevWet && Math.abs(fl.surface - prevSurface) > 1e-3) return false;
     if (fl) {
       // Water en route only needs a continuous level surface with headroom:
@@ -883,8 +962,28 @@ export function segmentWalkable(mob, x0, z0, x1, z1) {
       prevY = fl.y;
       continue;
     }
-    if (aabbIntersectsSolid(x, mob.pos.y, z, mob.hw, mob.h)) return false;
-    const g = groundBelow(x, mob.pos.y + 1, z);
+    if (prevWet && floatCapable) {
+      // Wet-to-air sample: a plain lateral air exit when the body fits the
+      // sample column at the ride level and a real landing sits below —
+      // but only past the step-down bound (or onto water): small drops
+      // stay on the legacy shore-hop path. Shore samples whose column
+      // refuses the ride-level fit fall through to the dry sample rule
+      // (the shore clause below reads them).
+      const landing = liquidLandingBelow(mob, x, z, prevY);
+      const deep = landing != null
+        && (landing.wet || landing.y < prevY - (mob.maxDrop ?? 1) - 1e-3);
+      if (deep
+        && !aabbIntersectsSolid(x, prevY, z, mob.hw, mob.h)
+        && centerHeadroom(x, prevY, z, mob.h)) {
+        prevWet = landing.wet;
+        prevSurface = landing.wet ? landing.surface : null;
+        prevY = landing.y;
+        if (!landing.wet) prevG = landing.y;
+        continue;
+      }
+    }
+    if (aabbIntersectsSolid(x, prevY, z, mob.hw, mob.h)) return false;
+    const g = groundBelow(x, prevY + 1, z);
     if (g == null) return false;
     if (prevWet) {
       // Water-to-dry exit: only a shore at most at the water surface level
@@ -948,6 +1047,17 @@ export function strideTarget(mob, heading = null, rand = Math.random, minD = WAN
 // Takes the pre-move support state (surface/floating/supported computed
 // before the horizontal drives): a mob walking into water this tick floats
 // next tick, exactly like the inline block did.
+// Shared liquid->air handoff: restamp the fall datum exactly once at the
+// boundary (like a hop touchdown), and drop the floating flag only once
+// fully dry (tail included) — clearing on a mere tail graze would re-arm
+// entry damping every tick and pin the fall into a slow damped hover
+// instead of a step-speed drop. The tick-top assignment clears the flag
+// naturally once fully dry, so a later re-entry still damps exactly once.
+export function restampAirExit(mob) {
+  mob.fallFrom = mob.pos.y;
+  if (bodyClearOfLiquid(mob)) mob._wasFloating = false;
+}
+
 // Landing contact: refused moves hover, so settle onto the support top —
 // landing only, never lifting (embedded spawns are the debug spawner's own
 // guard, not the mover's). Snap only onto a free spot: snapping into the
@@ -955,28 +1065,139 @@ export function strideTarget(mob, heading = null, rand = Math.random, minD = WAN
 // from.
 export function stepVertical(mob, dt, surface, floating, supported) {
   if (floating) {
-    // Same law as the player swim: rise toward the TRUE surface (tall
-    // columns included), keep the velocity so a fast rise overshoots the
-    // float level — the pop — before gravity takes over once dry.
-    // Per-body depth only (mobs ride h/3 under the surface).
-    const ts = trueLiquidSurfaceTopAt(mob.pos.x, mob.pos.z, mob.hw, mob.pos.y) ?? surface;
-    const target = floatTargetY(ts, mob.h);
-    mob.vel.y = floatVelY(mob.vel.y ?? 0, target - mob.pos.y, dt);
-    const ny = mob.pos.y + mob.vel.y * dt;
-    if (!aabbIntersectsSolid(mob.pos.x, ny, mob.pos.z, mob.hw, mob.h)) {
-      mob.pos.y = ny;
-    } else {
-      mob.vel.y = 0;
-      const g = groundBelow(mob.pos.x, mob.pos.y, mob.pos.z);
-      if (g != null && g <= mob.pos.y + 1e-3) {
-        if (!aabbIntersectsSolid(mob.pos.x, g, mob.pos.z, mob.hw, mob.h)) {
-          mob.pos.y = g;
+    // One buoyancy law for every floater — pool swimmers, column climbers,
+    // lidded drifts, and peer-capped bodies alike: rise toward the shared
+    // ride target (true surface, lid dip, peer cap), keep the velocity so
+    // a fast rise overshoots into a pop, hold level on a straddle while the
+    // horizontal walks the body out, and hand over to gravity once dry.
+    // Flotation reads its support like the dry step-down reads ground: the
+    // whole-body footprint holds (any touching column), the core column
+    // splits the straddle from the clean exit.
+    const coreWet = liquidOverlapAt(mob.pos.x, mob.pos.y, mob.pos.z, 0.05, mob.h);
+    let chase = coreWet;
+    if (!coreWet) {
+      if (!liquidOverlapAt(mob.pos.x, mob.pos.y, mob.pos.z, mob.hw, mob.h)) {
+        // Unified rear exit, every regime: the center box dries before the
+        // trailing tail on a 1-deep edge — hold the ride until the rear
+        // clears (within the small exit overlap) instead of falling with the
+        // rear still in. The horizontal keeps dragging the body out; the fall
+        // starts once liquidExitClear reads true, in place. Fully dry
+        // bodies (pop apex included) fall as before.
+        if (!liquidExitClear(mob)) {
+          mob.vel.y = 0;
+          return;
+        }
+        // Whole body out: the shared airborne step takes over below.
+        restampAirExit(mob);
+      } else {
+        // Straddle: the core column left the liquid but the body still
+        // touches it. The liquid's side relative to the heading decides:
+        // ahead of the core = an entry straddle (the rise into the liquid
+        // the body is walking into proceeds); behind it = an exit straddle
+        // (hold level and let the horizontal carry the body out — the
+        // step-down feel, no lift at the lip). Fast vertical crossings ride
+        // the momentum both ways: a genuine pop carries ballistically, and
+        // a genuine fall keeps falling like the dry step branch — while
+        // spring noise around the ride level holds, since handing noise to
+        // gravity would restamp the fall datum and damp the re-entry every
+        // tick, sagging the ride until it loses the surface.
+        const pxh = Math.sin(mob.yaw), pzh = Math.cos(mob.yaw);
+        const aheadWet = liquidOverlapAt(mob.pos.x + pxh * 0.3, mob.pos.y,
+          mob.pos.z + pzh * 0.3, 0.05, mob.h);
+        if (aheadWet) {
+          chase = true;
+        } else if ((mob.vel.y ?? 0) > STRADDLE_POP_VY) {
+          // Ballistic pop out: hand over to gravity below. The floating
+          // flag clears only once fully dry (see restampAirExit): a grazing
+          // tail must not re-arm damping mid-pop.
+          restampAirExit(mob);
+        } else if ((mob.vel.y ?? 0) < -STRADDLE_POP_VY) {
+          // Ballistic fall out: same handoff, but WITHOUT clearing the
+          // floating flag — the body is still touching water, so clearing
+          // would re-arm entry damping every tick and pin the fall into a
+          // slow damped hover instead of a step-speed drop. The tick-top
+          // assignment clears it naturally once fully dry.
+          mob.fallFrom = mob.pos.y;
         } else {
-          landUnwedged(mob, g);
+          mob.vel.y = 0;
+          return;
         }
       }
     }
-  } else if (supported) {
+    if (chase) {
+      // Same law as the player swim: rise toward the TRUE surface (tall
+      // columns included), keep the velocity so a fast rise overshoots the
+      // float level — the pop — before gravity takes over once dry.
+      // Per-body depth only (mobs ride h/3 under the surface).
+      const ts = liquidSurfaceTopAt(mob.pos.x, mob.pos.z, mob.hw, mob.pos.y) ?? surface;
+      // One ride target: the shared float level for the true surface,
+      // lowered under a lid (live yaw AND intent heading) and under a peer
+      // cap — so a pool floater dips under a lintel and slides under a peer
+      // exactly like a column climber.
+      const intentYaw = mob.target != null
+        ? Math.atan2(mob.target.x - mob.pos.x, mob.target.z - mob.pos.z) : mob.yaw;
+      const target = ts == null ? null : floatRideTargetY(mob, ts, intentYaw);
+      if (target == null) { mob.vel.y = 0; return; }
+      mob.vel.y = floatVelY(mob.vel.y ?? 0, target - mob.pos.y, dt);
+      let ny = mob.pos.y + mob.vel.y * dt;
+      // Peer cap (pass-under rule): a live body above caps the rise — the
+      // climber slides underneath instead of intersecting. The target
+      // clamp steers the spring, the position clamp stops the momentum.
+      const cap = mob._liquidCapY;
+      if (cap != null && ny > cap) {
+        ny = cap;
+        if (mob.vel.y > 0) mob.vel.y = 0;
+      }
+      // Anti-ram under a detected lid: never overshoot past the body's own
+      // lidded ride — the shared spring would otherwise carry deep-rise
+      // momentum straight into the ceiling. Open water keeps the full pop:
+      // the clamp only engages below a lid the footprint itself reports.
+      const bodyLid = liquidLiddedRideAt(mob, mob.pos.x, mob.pos.z, mob.hw, mob.pos.y);
+      const lidded = ts != null && bodyLid != null && bodyLid.y < floatTargetY(ts, mob.h) - 1e-3;
+      if (lidded && mob.vel.y > 0 && ny > bodyLid.y) {
+        ny = bodyLid.y;
+        mob.vel.y = 0;
+      }
+      if (!aabbIntersectsSolid(mob.pos.x, ny, mob.pos.z, mob.hw, mob.h)) {
+        mob.pos.y = ny;
+      } else {
+        mob.vel.y = 0;
+        if (aabbIntersectsSolid(mob.pos.x, mob.pos.y, mob.pos.z, mob.hw, mob.h)) {
+          // Wedged in place (embedded pose): the floor snap only unwedges
+          // near the ground — a graze high above the floor is a lid bonk,
+          // and snapping down would teleport the mob to the bottom and loop
+          // the rise forever. Hold glued instead; the drift walks it out
+          // sideways. The legacy floor snap never fires here: it would yank
+          // a lid-pressed body straight to the bottom.
+          const g = groundBelow(mob.pos.x, mob.pos.y, mob.pos.z);
+          if (g != null && g <= mob.pos.y + 1e-3 && mob.pos.y - g <= (mob.maxDrop ?? 1) + 1) {
+            if (!aabbIntersectsSolid(mob.pos.x, g, mob.pos.z, mob.hw, mob.h)) {
+              mob.pos.y = g;
+            } else {
+              landUnwedged(mob, g, dt);
+            }
+          }
+        }
+        // else: lid bonk — the pose is free, so the body holds glued under
+        // the lid (the horizontal drift walks it out sideways).
+      }
+      // Buoyancy owns the whole tick: the dry handoff and gravity below only
+      // run for dry movers and straddle exits, never on top of the float.
+      return;
+    }
+  }
+  // A dry handoff (floating pre-move, dry post-move) forces the airborne
+  // branch: `supported` was computed pre-move (buoyancy holds a floating
+  // body), and the body just left the liquid. The floating flag is cleared
+  // only once fully dry (tail included): a grazing tail is still touching
+  // water, and clearing it would re-arm entry damping every tick — pinning
+  // the fall into a slow damped hover. The tick-top assignment clears it
+  // naturally once fully dry.
+  if (supported && floating) {
+    mob.fallFrom = mob.pos.y;
+    if (bodyClearOfLiquid(mob)) mob._wasFloating = false;
+  }
+  if (supported && !floating) {
     mob.vel.y = 0;
   } else {
     // One sky, one gravity: plain falls read the same lunar rule as blast
@@ -993,7 +1214,7 @@ export function stepVertical(mob, dt, surface, floating, supported) {
         if (!aabbIntersectsSolid(mob.pos.x, g, mob.pos.z, mob.hw, mob.h)) {
           mob.pos.y = g;
         } else {
-          landUnwedged(mob, g);
+          landUnwedged(mob, g, dt);
         }
       }
     }

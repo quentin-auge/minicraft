@@ -389,7 +389,10 @@ console.log("PASS float-hop-ballistics");
   }
   assert.ok(done, `rise: crossed the raised water (x=${mob.pos.x.toFixed(2)})`);
   assert.ok(sawWet, "rise: entered the water");
-  assert.equal(hops, 1, `rise: exactly one hop (the exit, got ${hops})`);
+  // Unified liquid->air exit: the rim steps out laterally over the real
+  // landing below and drops with gravity — no hop needed when the bank is
+  // already underfoot.
+  assert.equal(hops, 0, `rise: walks out and drops, no hop (got ${hops})`);
   assert.ok(Math.abs(mob.pos.y - 3.01) < 0.08, `rise: stands on the far bank (y=${mob.pos.y.toFixed(3)})`);
 }
 console.log("PASS float-rise-entry");

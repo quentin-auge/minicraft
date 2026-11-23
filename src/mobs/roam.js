@@ -22,9 +22,24 @@ import {
   dropLane, TURN_RATE, VIRTUAL_W, NO_EXPIRY, SPIN, descendOk, slideDeflect,
   segmentWalkable, aabbIntersectsSolid, mobFloatDrive,
 } from "./step.js";
+import { isLiquid } from "../core/blocks.js";
+import { getBlock } from "../core/store.js";
 import { activeNarrowPeer } from "./narrow.js";
 import { WALL_ALLOW } from "./collide.js";
 import { maybeStepCommit, chainStepCommit, updateStepVia, isStepCommit, STEP_STALL_T, VIA_LEAVE_DROP } from "./stairs.js";
+
+// Whether the followed face is liquid: touch rides latched on a water
+// edge break at the first corner instead of rounding it, so the corner
+// re-decides (and can face the mob into the water) instead of parading
+// around it. Solid faces keep every corner take. Any liquid in the face
+// cell column over the body height counts.
+export function faceIsLiquid(mob, cell) {
+  if (!cell) return false;
+  for (let by = Math.floor(mob.pos.y); by <= Math.floor(mob.pos.y + mob.h - 1e-4); by++) {
+    if (isLiquid(getBlock(cell.x, by, cell.z))) return true;
+  }
+  return false;
+}
 
 // Wall face within this engages following.
 // Touch rides run on a roam-clock budget (wallSpan, sampled per latch),
@@ -154,7 +169,7 @@ function latchVirtual(mob, axis, sideDir, range = FOLLOW_RANGE + 0.05) {
   const rel = yawDiff(sideDir, normYaw(axis - Math.PI / 2)) < 1e-9 ? 1 : -1;
   mob.followLine = {
     axis, line: m.face - m.dirSign * (VIRTUAL_W / 2), side: -m.dirSign,
-    rel, virtual: true, face: m.face,
+    rel, virtual: true, face: m.face, liquidFace: faceIsLiquid(mob, m.cell),
   };
   return true;
 }
@@ -237,14 +252,16 @@ export function latchTouchWall(mob, dt, axisProbe, targetHeading = null, rand = 
 // hit, on the current axis — no direction choice, the mob simply keeps
 // going, now glued. Same 50/50 entry gate as frontal contact (refusals
 // hold the next latch off; pinned rigs keep 100% with no draw).
-// Returns the lane axis or null (no wall rubbing either flank, or a
-// refused contact). Deterministic: the nearer flank wins, ties keep the
-// current sense.
+// o.range widens the face search (floaters hover at nose distance
+// instead of touching). Returns the lane axis or null (no wall rubbing
+// either flank, or a refused contact). Deterministic: the nearer flank
+// wins, ties keep the current sense.
 export const FLANK_TOUCH_D = 0.55;
 export function latchFlankTouch(mob, dt, axis, rand = Math.random, o = {}) {
+  const range = o.range ?? (FLANK_TOUCH_D + 0.05);
   const latA = normYaw(axis + Math.PI / 2), latB = normYaw(axis - Math.PI / 2);
-  const ma = measureWallTake(mob, axis, latA, null, FLANK_TOUCH_D + 0.05);
-  const mb = measureWallTake(mob, axis, latB, null, FLANK_TOUCH_D + 0.05);
+  const ma = measureWallTake(mob, axis, latA, null, range);
+  const mb = measureWallTake(mob, axis, latB, null, range);
   if (!ma && !mb) return null;
   // 2-wide mouths thread straight: a flank graze inside one is passage,
   // never contact — declining here instead of yanking the mob onto an edge
@@ -266,7 +283,7 @@ export function latchFlankTouch(mob, dt, axis, rand = Math.random, o = {}) {
       sideDir = leanA < leanB ? latA : latB;
     } else sideDir = ga < gb ? latA : latB;
   } else sideDir = ma ? latA : latB;
-  if (!latchVirtual(mob, axis, sideDir, FLANK_TOUCH_D + 0.05)) return null;
+  if (!latchVirtual(mob, axis, sideDir, range)) return null;
   mob.followLine.t = 0;
   if (mob.pinWallRide !== true && !o.skipDraw) {
     if (rand() >= WALL_ENTRY_P) { mob.followLine = null; mob.followCool = FOLLOW_COOL; return null; }

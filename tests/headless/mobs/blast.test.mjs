@@ -9,7 +9,7 @@ import { LIVESTOCK_SPECS, specCircles } from '../../../src/mobs/livestock.js';
 import { FARM_WALK, tickFarmMob, launchMobBlast } from '../../../src/mobs/mover.js';
 import * as ballistics from '../../../src/core/launch.js';
 import { computeMegaLaunch, megaFlyShove, stepAir, dragAir, steerAir, gravityAt, knockCutoff, GRAVITY, AIR_DRAG, AIR_SNAP, TERMINAL_VELOCITY, LAUNCH_VMAX, KNOCK_DECAY, KNOCK_SNAP, KNOCK_TAIL_FRAC } from '../../../src/core/launch.js';
-import { hasSupport, aabbIntersectsSolid, stepVertical } from '../../../src/mobs/step.js';
+import { hasSupport, aabbIntersectsSolid, stepVertical, liquidSurface } from '../../../src/mobs/step.js';
 import { registerMoonDim, markMoonDirty, isMoonGone, MOON_MIN_Y } from '../../../src/world/moon.js';
 import { clearEntryClaims } from '../../../src/mobs/entry.js';
 
@@ -402,13 +402,25 @@ function flyUntilLanded(m, maxTicks = 480) {
     `finished over the lake (got ${m.pos.x.toFixed(2)}, ${m.pos.z.toFixed(2)})`);
   assert.ok(m.pos.y > FLOOR + 0.5, `liquid ended it above the floor (got ${m.pos.y.toFixed(2)})`);
   // Pin the mob (finish retargets + re-arms roam by design, and a target
-  // equal to the position reads as heading 0 and walks): null target holds
-  // still, so the float plane alone must hold it off the floor from here.
+  // equal to the position reads as heading 0 and walks): null target keeps
+  // the heading, so the cruise walks the rim — with the unified liquid->air
+  // exit the floater steps out over the real landing below and drops with
+  // gravity (no hop needed when the bank is underfoot) instead of grinding
+  // the rim. It must never sink through the lake, clip rock, or drop
+  // through the floor on the way out.
   m.target = null;
   m.roam = null; m.wanderT = 1e9;
-  for (let i = 0; i < 240; i++) tickFarmMob(m, DT, () => m.target, m.rand);
-  assert.ok(!m._blast && m.pos.y > FLOOR + 0.5,
-    `floating afterwards, never sank (got ${m.pos.y.toFixed(2)})`);
+  let minWetY = Infinity;
+  for (let i = 0; i < 240; i++) {
+    tickFarmMob(m, DT, () => m.target, m.rand);
+    const wet = liquidSurface(m.pos.x, m.pos.y, m.pos.z, m.hw, m.h) != null;
+    if (wet) minWetY = Math.min(minWetY, m.pos.y);
+    assert.ok(!aabbIntersectsSolid(m.pos.x, m.pos.y, m.pos.z, m.hw, m.h),
+      `finish: body never enters solid @tick${i}`);
+    assert.ok(m.pos.y >= FLOOR - 1e-3, `finish: never below the floor (got ${m.pos.y.toFixed(2)})`);
+  }
+  assert.ok(!m._blast, 'flight never resumes');
+  assert.ok(minWetY > FLOOR + 1.0, `never sank through the lake (minWetY ${minWetY.toFixed(2)})`);
   console.log(`water-finish: y ${m.pos.y.toFixed(2)}`);
 }
 

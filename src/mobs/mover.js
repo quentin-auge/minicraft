@@ -35,9 +35,16 @@ import {
   upkeepFollowLine, roamStep, roamSpan, ARRIVE_D, FOLLOW_COOL,
   latchTouchWall, latchFlankTouch, measureWallTake, cornerTurn,
   sameWallFace, connectedTake, tipOuterCorner, wallQuitHeading, wallQuitCommit,
-  exitMouth, tryGuidedErect, guidedDock, entryStallLatch,
+  exitMouth, tryGuidedErect, guidedDock, entryStallLatch, faceIsLiquid,
   GENTLE_RATE, GENTLE_FRESH_TICKS, HEADON_TOL,
 } from "./roam.js";
+import {
+  liquidEntryProbe, liquidAimCell, liquidRideTargetY, liquidSolidAhead,
+  liquidPeerCapY, liquidDriftLevelAt, liquidShouldRelease, liquidCapsAnyone,
+  bodyClearOfLiquid, liquidExitClear,
+  liquidOverlapAt, LIQUID_REARM_T, LIQUID_YIELD_T,
+  LIQUID_TIMEOUT,
+} from "./liquidcolumn.js";
 // Re-exports: the headless rigs read shared physics through this module.
 export { aabbIntersectsSolid, segmentWalkable } from "./step.js";
 
@@ -260,19 +267,33 @@ const ACUTE_PACE_COS = 0.5;
 function followsPace(mob, o) {
   if (o === mob || !o.alive) return false;
   if (Math.abs(o.pos.y - mob.pos.y) > SEP_Y) return false;
+  // A peer directly overhead or underfoot (pass-under stack) is never a
+  // file leader: its XZ overlap is vertical geometry, not tailgating. Same
+  // 3D read as the stepper gate and the separation backstop — without it a
+  // climber paces the body above it to a standstill (gap term reads the 2D
+  // overlap as contact) and the stalled drive trips the pocket escape.
+  if (o.pos.y >= mob.pos.y + (mob.h ?? 1) - 0.05
+    || (o.pos.y + (o.h ?? 1)) <= mob.pos.y + 0.05) return false;
   const fx = Math.sin(mob.yaw), fz = Math.cos(mob.yaw);
   const rx = -Math.cos(mob.yaw), rz = Math.sin(mob.yaw);
   const ox = o.pos.x - mob.pos.x, oz = o.pos.z - mob.pos.z;
   const d2 = ox * ox + oz * oz;
-  if (d2 > 3.0 * 3.0 || d2 < 1e-8) return false;
+  if (d2 > 3.0 * 3.0) return false;
+  const sameDir = Math.sin(mob.yaw) * Math.sin(o.yaw) + Math.cos(mob.yaw) * Math.cos(o.yaw);
+  // Pace catch-ups up to ~60° off the leader's heading; settled files
+  // (≈0°) pace exactly as before.
+  if (sameDir < ACUTE_PACE_COS) return false;
+  if (d2 < 1e-8) {
+    // Coincident same-direction pileup (no measurable ahead): the follower
+    // yields instead of marching lockstep — the gap term stops it on the
+    // overlap while the leader walks clear, and the wedged tangential
+    // unpeel separates a mutually stalled pair. Without this the drives
+    // reconverge every tick faster than the capped backstop separates.
+    return true;
+  }
   const d = Math.sqrt(d2);
   if ((ox * fx + oz * fz) / d < 0.9) return false;
   if (Math.abs(ox * rx + oz * rz) > mob.hw + o.hw + SEP_GAP + 0.3) return false;
-  const sameDir = Math.sin(mob.yaw) * Math.sin(o.yaw) + Math.cos(mob.yaw) * Math.cos(o.yaw);
-  // Pace catch-ups up to ~60° off the leader's heading (acute files meet at
-  // a slight angle, never dead astern); settled files (≈0°) pace exactly as
-  // before, so existing replays keep their spacing.
-  if (sameDir < ACUTE_PACE_COS) return false;
   if (mob.speed <= 1e-9) return false;
   return true;
 }
@@ -1408,6 +1429,26 @@ export function servoTick(mob, dt, supported, floating, rand = Math.random, pick
   // Pinned rigs (tests) ride forever: always latch, never expire. The game
   // budget below only runs unpinned.
   const rideExits = touchRide && mob.pinWallRide !== true;
+  // Floating blocked-exit hold: a touch ride latched because the exit
+  // bearing is solid-blocked keeps riding while the bearing stays blocked
+  // (quitting on the roam clock mid-rounding hands the re-latch roulette
+  // a wander instead of the way around) — the budget below resumes once
+  // the bearing walks free or a hop validates. Capped, so a fully boxed
+  // float still hands back through the normal release.
+  if (rideExits && floating && mob.target != null && !mob.hop
+    && (mob.followLine.holdT ?? 0) < 15) {
+    const hbx = mob.target.x - mob.pos.x, hbz = mob.target.z - mob.pos.z;
+    if (hbx * hbx + hbz * hbz > 1e-8) {
+      const hb = Math.atan2(hbx, hbz);
+      const hs = Math.max(1e-4, (mob.speed ?? 1) * dt);
+      const hBlocked = !makeStepOk(mob, supported, floating, mob.nose.along, mob.yaw)(
+        mob.pos.x + Math.sin(hb) * hs, mob.pos.z + Math.cos(hb) * hs);
+      if (hBlocked && shoreExitTarget(mob, Math.sin(hb), Math.cos(hb)) == null) {
+        mob.followLine.t = 0;
+        mob.followLine.holdT = (mob.followLine.holdT ?? 0) + dt;
+      }
+    }
+  }
   // Ride budget expiry (game only; pinned rigs ride forever): the
   // roam-clock span ran out — leave 45° away from the wall, or keep
   // riding with a short extension when boxed in (never quit into a wall).
@@ -1508,7 +1549,9 @@ export function servoTick(mob, dt, supported, floating, rand = Math.random, pick
     // the same wall — the phantom-masked side mouth reads shut, so the
     // classifier reports a dead end. Turn into the arm (same wall, same
     // relative side, blue stays on) instead of flipping; true dead ends
-    // and pocket backs have no walkable arm and keep the seek below.
+    // and pocket backs have no walkable arm and keep the seek below. A
+    // liquid-faced ride never turns: drop and re-decide instead.
+    if (touchRide && mob.followLine?.liquidFace === true) return releaseLiquidRide(mob);
     const inner = touchRide ? innerTurn(mob, prevAxis, supported, floating) : null;
     if (inner == null) return seekDeadEnd(mob, dt, supported, floating, peers);
     mob.lane = { axis: inner.axis, entry: oppositeYaw(inner.axis), lockX: cx, lockZ: cz };
@@ -1539,10 +1582,16 @@ export function servoTick(mob, dt, supported, floating, rand = Math.random, pick
     // following — dropping to a blind roam commit here arcs away from the
     // face and wedges the nose on the tip instead of hugging it. Blocked
     // nose means a corridor situation (jog, notch), so a tunneled lane
-    // keeps driving; anything else releases to roam now.
+    // keeps driving; anything else releases to roam now. A liquid-faced
+    // ride that turned (the followExit take left the entry axis) drops
+    // here instead of adopting the corner: same re-decide as every other
+    // liquid corner.
     const keep = followExit(mob, prevAxis, supported, floating);
+    if (keep && keep.axis !== prevAxis && mob.followLine?.liquidFace === true) {
+      return releaseLiquidRide(mob);
+    }
   if (!keep) {
-    let corner = sense.fwdOpen ? cornerTurn(mob, prevAxis) : null;
+    let corner = sense.fwdOpen && mob.followLine?.liquidFace !== true ? cornerTurn(mob, prevAxis) : null;
     // Same wall only: corner rounding onto a disconnected wall (past
     // the tip, across open field) is a switch — refuse it and let the
     // in-place U-turn below keep the ride on its own wall instead.
@@ -1566,6 +1615,9 @@ export function servoTick(mob, dt, supported, floating, rand = Math.random, pick
       }
       adoptCornerTurn(mob, corner, cx, cz, res);
     } else if (sense.fwdOpen) {
+        // A liquid-faced ride never U-turns or holds straight here: drop
+        // and re-decide, so the corner can face the mob into the water.
+        if (mob.followLine?.liquidFace === true) return releaseLiquidRide(mob);
         // A guided (violet) ride that lost its wall never U-turns in
         // place. Rides can never turn into a hole (no wall to hug past the
         // jamb), so a hole within stride reach on a walkable segment docks:
@@ -1626,7 +1678,10 @@ export function servoTick(mob, dt, supported, floating, rand = Math.random, pick
       // gates) plus a walkability probe; anything else keeps the legacy
       // straight.
       let corner = null;
-      if (keep.axis === prevAxis && wallEndsAhead(mob, prevAxis) && sense.fwdOpen) {
+      // Liquid-faced rides never take the early tip: the straight keep
+      // below parades to the wall end and the wall-ended branch releases.
+      if (keep.axis === prevAxis && wallEndsAhead(mob, prevAxis) && sense.fwdOpen
+        && keep.followLine?.liquidFace !== true) {
         const early = tipOuterCorner(mob, prevAxis);
         if (early != null && takeWalkable(mob, early.axis, supported, floating)) corner = early;
       }
@@ -1731,6 +1786,299 @@ function installShoreHop(mob, dx, dz) {
   return true;
 }
 
+// Release helper: drops the regime and holds the next draw off briefly,
+// so an exit fall or a hop landing doesn't instantly re-arm on the water
+// just left (which would brake the fall back into a hover instead of
+// letting it land like the dry step branch).
+function clearLiquid(mob) {
+  mob.liquid = null;
+  mob._liquidRearmT = LIQUID_REARM_T;
+}
+
+// Liquid-escape primitives, one stride-capped glide (no snap): a stalled
+// body records a 1 m bail point behind the nose and the glide handler below
+// walks there instead of teleporting. Two policies share the state: a
+// pocket stall backs out but KEEPS the regime (the climb holds its queue
+// place), a longer stall or a starving ceiling RELEASES (clear + stuck
+// reset, hand back to the legacy regime). A refused step holds and counts:
+// 30 refused ticks hand back anyway (rock-boxed wedge — the old immediate
+// hand-back, half a second later and without the snap). State lives on the
+// regime and dies with it (a fresh arm starts clean).
+function liquidEscape(mob, release) {
+  const liq = mob.liquid;
+  if (liq == null) return;
+  if (liq.glide == null) {
+    liq.glide = {
+      x: mob.pos.x - Math.sin(mob.yaw), z: mob.pos.z - Math.cos(mob.yaw),
+      release, peer: !release,
+    };
+  } else if (release) {
+    liq.glide.release = true;
+  }
+}
+
+// One stride-capped step toward a bail point: "arrived", "moved", or
+// "blocked". Shared by pocket back-outs and release escapes.
+function liquidGlideStep(mob, tx, tz, stepOk, stride) {
+  const dx = tx - mob.pos.x, dz = tz - mob.pos.z;
+  const dist = Math.hypot(dx, dz);
+  if (dist <= stride) {
+    if (stepOk(tx, tz)) { mob.pos.x = tx; mob.pos.z = tz; return "arrived"; }
+    return "blocked";
+  }
+  const s = Math.min(2 * stride, dist);
+  const bx = mob.pos.x, bz = mob.pos.z;
+  moveVector(mob, mob.pos.x + (dx / dist) * s, mob.pos.z + (dz / dist) * s, stepOk);
+  return Math.hypot(mob.pos.x - bx, mob.pos.z - bz) > 1e-9 ? "moved" : "blocked";
+}
+
+function liquidTickDrive(mob, dt, supported, floating, peers, grid, turnGate) {
+  const liq = mob.liquid;
+  liq.t = (liq.t ?? 0) + dt;
+  if (liq.t > LIQUID_TIMEOUT) { clearLiquid(mob); return; }
+  // Embedded body (spawn overlap, corner crush against a jamb): no stepper
+  // can walk out of rock with exact probes — every reachable destination
+  // still overlaps the wall. Depenetrate first, facing-first out to a full
+  // cell, else hold still for the pocket escape below. Only ever runs while
+  // the body intersects solid, so free bodies never see it.
+  if (aabbIntersectsSolid(mob.pos.x, mob.pos.y, mob.pos.z, mob.hw, mob.h)
+    && !unwedgeLiquidBody(mob)) {
+    return;
+  }
+  // Pass-under step gate (shared by the pocket glide and the float drive
+  // below): a peer vertically disjoint from the body (fully above the head
+  // or below the feet, like the peer cap the climber slides under) never
+  // blocks the slide — the XZ-only circle gate over-reports stacked
+  // meetings, so the 3D read owns them. Level peers keep the exact gate
+  // plus the separating walk-out below.
+  const makeLiquidStep = () => {
+    const base = makeStepOk(mob, true, true, mob.nose.along, mob.yaw);
+    if (!peers || mob.lane) return base;
+    const disjoint = (o) => o.pos.y >= mob.pos.y + mob.h - 0.05
+      || (o.pos.y + (o.h ?? mob.h)) <= mob.pos.y + 0.05;
+    return (nx, nz) => {
+      if (!base(nx, nz)) return false;
+      const sx = Math.sin(mob.yaw), sz = Math.cos(mob.yaw);
+      if (peerPenAt(mob, nx, nz, sx, sz, mob.pos.y, peers, grid, 0, disjoint) <= CROSS_BUDGET) return true;
+      const cur = peerPenAt(mob, mob.pos.x, mob.pos.z, sx, sz, mob.pos.y, peers, grid, 0, disjoint);
+      return peerPenAt(mob, nx, nz, sx, sz, mob.pos.y, peers, grid, 0, disjoint) <= cur + 1e-9;
+    };
+  };
+  // True pocket: no XYZ progress for a full second — no advance, no rise,
+  // no peer-cap wait (the outer stillness clock freezes on holds, rises,
+  // and queued waits, so this only ever reads a genuine stall). Never
+  // grind: back out through the shared glide, keeping the regime.
+  if ((mob.stuckT ?? 0) > 1.0) liquidEscape(mob, false);
+  // Single progress ledger: one anchor, role-dependent window. A capped
+  // wait (the peer cap holds the ride) and goalless bobbing (no ceiling, no
+  // target) are legit holds — the ledger resets. A driven stall releases;
+  // an uncapped ceiling that caps someone yields so the chain below drains
+  // instead of capping everyone until the timeout. LIQUID_TIMEOUT stays
+  // the ultimate backstop.
+  const capped = mob._liquidCapY != null;
+  const ceiling = !capped && liquidCapsAnyone(mob, peers);
+  if (capped || (mob.target == null && !ceiling)) {
+    liq.prog = null;
+  } else {
+    liq.prog ??= { x: mob.pos.x, y: mob.pos.y, z: mob.pos.z, t: 0 };
+    liq.prog.t += dt;
+    // Progress bar: the driven window matches the outer stillness rate
+    // (0.2 m over 2 s); a yielding ceiling walks meters while a bobbing one
+    // barely breathes (0.5 m over 5 s).
+    const bar = ceiling ? 0.5 : 0.2;
+    if (liq.prog.t >= (ceiling ? LIQUID_YIELD_T : 2.0)) {
+      const moved = Math.hypot(mob.pos.x - liq.prog.x,
+        mob.pos.y - liq.prog.y, mob.pos.z - liq.prog.z);
+      liq.prog = null;
+      if (moved < bar) liquidEscape(mob, true);
+    }
+  }
+  // Sustained glide (see liquidEscape): arrival releases or holds per the
+  // recorded policy; a refused step holds and counts. Runs before the
+  // setters below so a recorded glide always progresses instead of
+  // re-arming every tick.
+  if (liq.glide != null) {
+    const stepOk = liq.glide.peer ? makeLiquidStep()
+      : makeStepOk(mob, supported, floating, 0, mob.yaw);
+    const stride = Math.max(1e-4, (mob.speed ?? 1) * dt);
+    const res = liquidGlideStep(mob, liq.glide.x, liq.glide.z, stepOk, stride);
+    if (res === "arrived") {
+      const release = liq.glide.release;
+      liq.glide = null;
+      mob.stuckT = 0;
+      if (release) clearLiquid(mob);
+    } else if (res === "moved") {
+      mob.stuckT = 0;
+      liq.glide.blocked = 0;
+    } else {
+      liq.glide.blocked = (liq.glide.blocked ?? 0) + 1;
+    }
+    if (liq.glide != null && (liq.glide.blocked ?? 0) >= 30) {
+      liq.glide = null;
+      clearLiquid(mob);
+      mob.stuckT = 0;
+    }
+    return;
+  }
+  if (liq.phase === "enter") {
+    // Face the water cell center, walk in, let buoyancy lift the body. The
+    // ride is reached once floating near the (possibly lidded or
+    // peer-capped) target level.
+    const aim = liquidAimCell(mob, mob.yaw)
+      ?? (liq.qx != null ? { x: liq.qx, z: liq.qz } : null);
+    const tx = aim?.x
+      ?? (mob.target ? mob.target.x : mob.pos.x + Math.sin(mob.yaw));
+    const tz = aim?.z
+      ?? (mob.target ? mob.target.z : mob.pos.z + Math.cos(mob.yaw));
+    const yawGoal = Math.atan2(tx - mob.pos.x, tz - mob.pos.z);
+    const ride = liquidRideTargetY(mob, yawGoal, mob._liquidCapY);
+    driveToward(mob, dt, yawGoal,
+      () => makeStepOk(mob, supported, floating, mob.nose.along, mob.yaw),
+      moveVector, { turnOk: turnGate });
+    if (floating && ride != null && mob.pos.y >= ride - 0.15) {
+      liq.phase = "float";
+      // The exit bearing only ever comes from a live goal: targetless
+      // floaters bob in place (the float branch below holds without one),
+      // exactly like legacy targetless floaters never march.
+      if (mob.target) {
+        liq.exitYaw = Math.atan2(mob.target.x - mob.pos.x, mob.target.z - mob.pos.z);
+      }
+    }
+    return;
+  }
+  // Float/cruise: hold the exit bearing, hop onto a validated shore at the
+  // liquid level when the nose is refused, otherwise walk out over air
+  // with a real landing below (the stepper admits those steps; gravity
+  // takes over once dry). The peer cap and the lid dip live in the
+  // vertical plane — the horizontal only ever steps where the body fits at
+  // its current level. Without a goal the body just bobs: legacy
+  // targetless floaters never march. Fully dry bodies hold still: a pop
+  // apex (or an exit fall) is vertical business — driving mid-air would
+  // carry the mob beside the column so it can never fall back in. The
+  // release below owns fully-dry bodies (on landing); straddles (rear
+  // still wet) keep driving out.
+  if (mob.target) {
+    liq.exitYaw = Math.atan2(mob.target.x - mob.pos.x, mob.target.z - mob.pos.z);
+  }
+  if (liq.exitYaw == null) return;
+  // Fully dry bodies hold still: a pop apex or an exit fall is vertical
+  // business — driving mid-air would carry the mob beside the column so it
+  // can never fall back in. The release below owns fully-dry bodies (on
+  // landing); straddles (rear still wet past the overlap) keep driving out.
+  // A rim-only touch (discs dry, hw rim still grazing) keeps driving too:
+  // the vertical straddle holds the level while the horizontal walks the
+  // body clear, then the fall starts — cutting here stranded bodies
+  // sideways on the column rim with no drive and no fall.
+  if (liquidExitClear(mob) && !liquidOverlapAt(mob.pos.x, mob.pos.y, mob.pos.z, mob.hw, mob.h)) return;
+  const yawGoal = liq.exitYaw;
+  const hx = Math.sin(mob.yaw), hz = Math.cos(mob.yaw);
+  const noseBlocked = !makeStepOk(mob, true, true, mob.nose.along, mob.yaw)(
+    mob.pos.x + hx * (mob.hw + 0.15), mob.pos.z + hz * (mob.hw + 0.15));
+  if (noseBlocked && Math.abs(normYaw(mob.yawTarget - mob.yaw)) <= HEADON_TOL
+    && installShoreHop(mob, hx, hz)) {
+    mob._transPrev = null;
+    mob._transDecision = null;
+    return;
+  }
+  // Rise first: below the (possibly lidded or peer-capped) ride level the
+  // body holds the column instead of advancing — the climb completes
+  // before the crossing starts. The gate reads the lowest of the forward
+  // ride and the drift level at the current cell: at a lidded edge the
+  // forward surface reads unlidded while the body is capped by the lintel,
+  // and waiting on the forward level would hover forever.
+  const hereRide = floating ? liquidDriftLevelAt(mob, mob.pos.x, mob.pos.z, mob.pos.y) : null;
+  const rideNow = liquidRideTargetY(mob, yawGoal, mob._liquidCapY);
+  const gate = Math.min(rideNow ?? Infinity, hereRide?.y ?? Infinity);
+  if (gate !== Infinity && mob.pos.y < gate - 0.3) {
+    const ccx = Math.floor(mob.pos.x) + 0.5, ccz = Math.floor(mob.pos.z) + 0.5;
+    driveToward(mob, dt, Math.atan2(ccx - mob.pos.x, ccz - mob.pos.z),
+      makeLiquidStep, moveVector, { turnOk: turnGate });
+    return;
+  }
+  // Pressed against a solid bank at ride level with a wall at hand: follow
+  // it instead of grinding — the exiting drive re-faces along the free
+  // lateral (an incoming corner rounds into its open side, never into the
+  // wall). Peer blocks keep their bearing below (separating strafe), which
+  // never turns into the meeting.
+  const driveYaw = liquidSolidAhead(mob)
+    ? slideDeflect(mob, dt, yawGoal, supported, floating) : yawGoal;
+  // Blocked by another mob (never by a wall here — walls refuse through
+  // the lid gate instead): strafe laterally without turning — the nose
+  // stays on the exit bearing while the body slides sideways
+  // under/around the blocker. A turn-then-step would cancel itself every
+  // tick (each sidestep unturns the previous one), so the strafe translates
+  // instead. The pass-under cap in the vertical plane keeps the slide below
+  // the peer.
+  let res = driveToward(mob, dt, driveYaw, makeLiquidStep, moveVector, { turnOk: turnGate });
+  if (res.dist <= 1e-9) {
+    const bx0 = mob.pos.x, bz0 = mob.pos.z;
+    const stride = mob.speed * dt;
+    for (const s of [1, -1]) {
+      const tx = mob.pos.x - Math.cos(driveYaw) * s * stride;
+      const tz = mob.pos.z + Math.sin(driveYaw) * s * stride;
+      const bx = mob.pos.x, bz = mob.pos.z;
+      moveVector(mob, tx, tz, makeLiquidStep());
+      if (Math.hypot(mob.pos.x - bx, mob.pos.z - bz) > 1e-9) break;
+    }
+    // True pocket (forward and both laterals refused at ride level): never
+    // grind — back the nose out and hand back to the legacy regime instead
+    // of wedging until the timeout. The stuck clock below owns the fuse.
+    // Snap-free: at most two strides per tick toward the 1 m bail point
+    // instead of teleporting — a paced-to-zero stride holds in place (the
+    // file discipline owns the wait), a full stride glides out while the
+    // pocket persists. No regime clear: the climb keeps its queue place.
+    if (Math.hypot(mob.pos.x - bx0, mob.pos.z - bz0) <= 1e-9) {
+      const back = Math.min(1.0, 2 * Math.max(0, (mob.speed ?? 1) * dt));
+      const bxx = mob.pos.x, bzz = mob.pos.z;
+      moveVector(mob, mob.pos.x - Math.sin(mob.yaw) * back, mob.pos.z - Math.cos(mob.yaw) * back, makeLiquidStep());
+      if (Math.hypot(mob.pos.x - bxx, mob.pos.z - bzz) > 1e-9) { mob.stuckT = 0; }
+    }
+  }
+}
+
+// Embedded column body: facing-first depenetration out to a full cell.
+// The ground is read per candidate: from inside the wall the scan would
+// read the wall itself as ground. Dry spots need a free body with support
+// and legal footing; wet spots ride the buoyancy and only need headroom
+// at the current level. Returns true when the body no longer overlaps
+// solid (moved or already free).
+function unwedgeLiquidBody(mob) {
+  const fx = Math.sin(mob.yaw), fz = Math.cos(mob.yaw);
+  const dirs = [
+    [fx, fz],
+    [fx * 0.7 + fz * 0.7, fz * 0.7 - fx * 0.7], [fx * 0.7 - fz * 0.7, fz * 0.7 + fx * 0.7],
+    [fz, -fx], [-fz, fx], [-fx, -fz],
+  ];
+  const wet = liquidSurface(mob.pos.x, mob.pos.y, mob.pos.z, mob.hw, mob.h) != null;
+  // Exact depenetration (no glide): this only ever runs while the body
+  // intersects solid, and no stride-capped walk can cross rock — the free
+  // spot lands at once, facing-first out to a full cell. Free bodies never
+  // see it, so the no-snap rule for free-body writes (drives, separation,
+  // landing corrections) is unaffected.
+  for (const [dx, dz] of dirs) {
+    for (const d of [0.15, 0.3, 0.45, 0.6, 0.8, 1.0]) {
+      const cx = mob.pos.x + dx * d, cz = mob.pos.z + dz * d;
+      if (wet) {
+        if (aabbIntersectsSolid(cx, mob.pos.y, cz, mob.hw, mob.h)) continue;
+        if (!centerHeadroom(cx, mob.pos.y, cz, mob.h)) continue;
+        mob.pos.x = cx; mob.pos.z = cz;
+        return true;
+      }
+      const g = groundBelow(cx, mob.pos.y + 1, cz) ?? mob.pos.y;
+      if (aabbIntersectsSolid(cx, g, cz, mob.hw, mob.h)) continue;
+      // Core-only footing here: the drive's own nose probe owns walls
+      // ahead every tick, so a nose overhang must not veto the escape —
+      // in a 1-wide slot the nose always clears a jamb the body fits
+      // between, and requiring its own legal ground would refuse every
+      // way out.
+      if (!hasSupport(cx, g, cz, mob.hw) || !footingOkAt(mob, cx, cz, g, mob.yaw, 0)) continue;
+      mob.pos.x = cx; mob.pos.z = cz; mob.pos.y = g;
+      return true;
+    }
+  }
+  return false;
+}
+
 // Pre-lane flow: a 50/50 touch latch on a plain wall when the way ahead is
 // blocked (contact may stick or keep roaming — straight-on draws lots 50/50,
 // oblique keeps its direction; refusals hold the next latch off), else a
@@ -1741,11 +2089,44 @@ function installShoreHop(mob, dx, dz) {
 // latch in roamStep instead, reusing this same machinery hole-ward. Smooth
 // crossing commits likewise walk undisturbed (locked straight lines never
 // convert, whatever the nose meets).
+// Blocked exit bearing for floating movers: the goal bearing itself when
+// a nose step along it refuses, else null. The deflected yaw points away
+// from the wall to follow, so latch decisions keyed on the yaw miss the
+// contact — this reads the exit the mob still needs. Pure probe, no state.
+function floatingBlockedBearing(mob, supported, floating) {
+  if (!floating || mob.target == null || mob.hop != null) return null;
+  const bx = mob.target.x - mob.pos.x, bz = mob.target.z - mob.pos.z;
+  if (bx * bx + bz * bz < 1e-8) return null;
+  const bearing = Math.atan2(bx, bz);
+  const blocked = !makeStepOk(mob, supported, floating, mob.nose.along, mob.yaw)(
+    mob.pos.x + Math.sin(bearing) * (mob.hw + 0.15),
+    mob.pos.z + Math.cos(bearing) * (mob.hw + 0.15));
+  return blocked ? bearing : null;
+}
+// Shared touch-ride erection behind floating contacts: latch a wall the
+// nose touches and follow it instead of grinding — the ride rounds the
+// solid toward the goal side and the hop validator still owns every
+// exit. Clears the contact so the post-ride redraw is fresh
+// (cooldown-gated). Returns "touch" when erected, null otherwise.
+function erectTouchRide(mob, axis) {
+  mob._transPrev = null;
+  mob._transDecision = null;
+  mob.lane = { axis, entry: oppositeYaw(axis), lockX: -1, lockZ: -1 };
+  mob.stuckT = 0;
+  return "touch";
+}
+// Blocked exit bearing for floating movers (see floatingBlockedBearing):
+// latch along the goal when it is nose-blocked, else the legacy yaw-based
+// axis. Dry movers keep the exact legacy axis.
+function floatingLatchAxis(mob, supported, floating, fallback) {
+  const bb = floatingBlockedBearing(mob, supported, floating);
+  return bb == null ? fallback : snapCardinal(bb);
+}
 // Returns true/false when it handles the tick, "touch" when a contact latch
 // erected the lane (sense again along it), undefined when a lane update
 // is due.
 function tryPreLane(mob, dt, supported, floating, sense, rand = Math.random) {
-  if (mob.roam?.entry || mob.roam?.smooth) return undefined;
+  if (mob.roam?.entry || mob.roam?.smooth || mob.liquid) return undefined;
   if (!mob.lane && (mob.followCool ?? 0) <= 0) {
     const headon = mob.yawTarget == null || Math.abs(normYaw(mob.yawTarget - mob.yaw)) <= HEADON_TOL;
     // A latched plan or maneuver outranks the lottery: the planner already
@@ -1756,7 +2137,10 @@ function tryPreLane(mob, dt, supported, floating, sense, rand = Math.random) {
     // one draw per approach — dive walks straight in, ride latches the
     // edge without a fresh draw, ignore vetoes both until stuck re-picks
     // the mob away. Oblique approaches keep the legacy line (no draw).
+    // Tall walls/columns standing above the shared window skip the draw:
+    // the column regime walks straight in instead (probe above).
     if (!floating && mobCanFloat(mob) && headon && !planned) {
+      if (liquidEntryProbe(mob, false)) return undefined;
       const qx = mob.pos.x + Math.sin(mob.yaw) * (mob.hw + 0.15);
       const qz = mob.pos.z + Math.cos(mob.yaw) * (mob.hw + 0.15);
       if (waterSurfaceTopAt(qx, qz, 0, mob.pos.y + mob.h + 1) != null
@@ -1794,8 +2178,8 @@ function tryPreLane(mob, dt, supported, floating, sense, rand = Math.random) {
     if (!sense.fwdOpen) {
       // Floating exit lottery: a float-capable mob facing straight into a
       // blocked shore draws exit/ride/ignore (frontal only — flank grazes
-      // keep the legacy latch below). The hop validator still owns the
-      // exact height rule, so a drawn exit past validation just rides.
+      // keep the legacy latch below). The hop validator owns the exact
+      // height rule, so a drawn exit past validation just rides.
       // A broken contact re-arms the rising edge. Planned contacts skip
       // the draw and hop out on the legacy line.
       let contact = null, chx = 0, chz = 0;
@@ -1831,18 +2215,27 @@ function tryPreLane(mob, dt, supported, floating, sense, rand = Math.random) {
           armTransitionVeto(mob, intent);
           const th = mob.target ? Math.atan2(mob.target.x - mob.pos.x, mob.target.z - mob.pos.z) : null;
           const axis = latchTouchWall(mob, dt, sense.axisProbe, th, rand, { skipDraw: true });
-          if (axis != null) {
-            // Latched: clear the contact so the post-ride contact redraws
-            // fresh (cooldown-gated) instead of replaying this ride.
-            mob._transPrev = null;
-            mob._transDecision = null;
-            mob.lane = { axis, entry: oppositeYaw(axis), lockX: -1, lockZ: -1 };
+          if (axis != null) return erectTouchRide(mob, axis);
+          // Unlatchable wall: a validated hop still owns the exit — don't
+          // grind past a shore the hop jumps onto.
+          if (installShoreHop(mob, chx, chz)) {
+            mob.lane = null;
             mob.stuckT = 0;
-            return "touch";
+            return true;
           }
           return undefined;
         } else if (intent === "ignore") {
           armTransitionVeto(mob, intent);
+          // Floating blocked exits latch anyway: grinding nose-first
+          // instead of rounding serves nothing afloat (the hop validator
+          // above already refused the exit). Latch along the blocked
+          // bearing itself — the deflected yaw points away from the wall
+          // to follow. Dry movers keep the exact legacy hold.
+          if (floating) {
+            const th = mob.target ? Math.atan2(mob.target.x - mob.pos.x, mob.target.z - mob.pos.z) : null;
+            const axis = latchTouchWall(mob, dt, floatingLatchAxis(mob, supported, floating, sense.axisProbe), th, rand, { skipDraw: true });
+            if (axis != null) return erectTouchRide(mob, axis);
+          }
           mob.followCool = FOLLOW_COOL;
           return undefined;
         }
@@ -1853,7 +2246,12 @@ function tryPreLane(mob, dt, supported, floating, sense, rand = Math.random) {
         }
       }
       const th = mob.target ? Math.atan2(mob.target.x - mob.pos.x, mob.target.z - mob.pos.z) : null;
-      const axis = latchTouchWall(mob, dt, sense.axisProbe, th, rand);
+      const latchAxis = floatingLatchAxis(mob, supported, floating, sense.axisProbe);
+      // Floating blocked exits latch deterministically: a coin-flip
+      // refusal here grinds nose-first instead of rounding, and the dry
+      // wall-follow variety the draw protects does not apply afloat.
+      // Dry movers keep the exact legacy draw.
+      const axis = latchTouchWall(mob, dt, latchAxis, th, rand, floating ? { skipDraw: true } : undefined);
       if (axis != null) {
         mob.lane = { axis, entry: oppositeYaw(axis), lockX: -1, lockZ: -1 };
         mob.stuckT = 0;
@@ -1863,9 +2261,15 @@ function tryPreLane(mob, dt, supported, floating, sense, rand = Math.random) {
       // Flank graze keeps the legacy 50/50 latch (no lottery draw) — and
       // re-arms the lottery edge only when no decision is held (a stored
       // exit/ride/ignore belongs to the nose probe below, which replays
-      // or clears it on its own range).
+      // or clears it on its own range). Floaters with a blocked exit
+      // bearing latch deterministically at nose distance instead of
+      // grinding past: same rounding as the frontal contact, one step
+      // laterally.
       if (!mob._transDecision) transitionTick(mob, null);
-      const axis = latchFlankTouch(mob, dt, sense.axisProbe, rand);
+      const bb = floatingBlockedBearing(mob, supported, floating);
+      const axis = bb != null
+        ? latchFlankTouch(mob, dt, sense.axisProbe, rand, { skipDraw: true, range: 0.8 })
+        : latchFlankTouch(mob, dt, sense.axisProbe, rand);
       if (axis != null) {
         mob.lane = { axis, entry: oppositeYaw(axis), lockX: -1, lockZ: -1 };
         mob.stuckT = 0;
@@ -2070,6 +2474,7 @@ function followExit(mob, prevAxis, supported, floating) {
         touch: mob.followLine.touch === true,
         fresh: gentle ? GENTLE_FRESH_TICKS : TURN_HOLD_TICKS,
         face: win.m.face,
+        liquidFace: faceIsLiquid(mob, win.m.cell),
         ...carriedRide(mob),
         gentle,
       },
@@ -2096,6 +2501,20 @@ function carriedRide(mob) {
 function dropFollowLine(mob) {
   mob.followLine = null;
   mob.turnHold = 0;
+}
+
+// Liquid-faced touch rides never round corners: at the first inner or
+// outer corner the ride drops and the mob re-decides from scratch, so a
+// corner can face it into the water instead of parading around it. Solid
+// faces keep every corner take. The latch hold-off keeps the very next
+// tick from re-grabbing the same edge.
+function releaseLiquidRide(mob) {
+  dropFollowLine(mob);
+  dropLane(mob);
+  mob.followCool = FOLLOW_COOL;
+  mob.stuckT = 0;
+  mob.servoStall = 0;
+  return false;
 }
 
 // The plan vetoes a rail that runs against it: the plan chooses the
@@ -2208,7 +2627,7 @@ function seekDeadEnd(mob, dt, supported, floating, peers = null) {
         !sweepDiscOk(mob, nx, nz, peers, null))) return false;
       const noseBlocked = noseGate && noseBlockedAt(mob, nx, nz, forward);
       if (noseBlocked) noseStopped = true;
-      // Open lip reads as a dead end through the same nose column: past the
+      // Open lip reads as a dead end through the same nose liquid: past the
       // floor edge the head would hang over the void, so the step refuses
       // AND trips the turn — descendOk alone would stop the core at the lip
       // with the head dangling and no turn to leave on (a bare footNose
@@ -2916,15 +3335,21 @@ export function tickFarmMob(mob, dt, pickTarget, rand = mob.rand ?? Math.random,
   // Blast flight owns the whole tick (no ground machinery, no plan): the
   // fixed-step split above already sliced dt, so each slice flies its share.
   if (mob._blast) {
+    clearLiquid(mob);
     tickBlastFlight(mob, dt, pickTarget, rand);
     if (_top) mob._plan = null;
     return;
   }
   // Support state first: entry attraction only walks on dry ground.
   // Floating locomotion is gated by the float capability; vertical
-  // buoyancy itself stays universal for any submerged body.
+  // buoyancy itself stays universal for any submerged body. Under the
+  // liquid-column regime the floating flag reads tail-inclusive (any of
+  // the core/hw/tail discs wet): the core-box read would go dry while the
+  // rear still drags the surface, dropping the mob mid-exit — the regime
+  // only releases once the whole rear is free, so buoyancy must hold that
+  // long. Pools keep the exact core-box read.
   const surface = liquidSurface(mob.pos.x, mob.pos.y, mob.pos.z, mob.hw, mob.h);
-  const floating = surface != null;
+  const floating = surface != null || (mob.liquid != null && !bodyClearOfLiquid(mob));
   const floatDrive = floating && mobCanFloat(mob);
   const supported = floating || hasSupport(mob.pos.x, mob.pos.y, mob.pos.z, mob.hw);
   // Water-entry damping, mirrored from the player controller: a falling
@@ -2935,11 +3360,45 @@ export function tickFarmMob(mob, dt, pickTarget, rand = mob.rand ?? Math.random,
   }
   mob._wasFloating = floating;
   mob.hopCd = Math.max(0, (mob.hopCd ?? 0) - dt);
+  mob._liquidRearmT = Math.max(0, (mob._liquidRearmT ?? 0) - dt);
   if (supported && !floating) mob.fallFrom = mob.pos.y;
+  // Liquid-column regime (liquidcolumn.js): armed only when a float-capable
+  // mob intersects liquid on its path — body overlap, or the nose probe
+  // ahead facing it. Dry commits never arm it and never see it; while
+  // armed it preempts entry/nav/lottery/touch/grind until the whole body
+  // (rear included) leaves the liquid. No drop limit on the way out: the
+  // column always drains.
+  mob._liquidCapY = floating ? liquidPeerCapY(mob, peers) : null;
+  // One release predicate (liquidcolumn.js): the regime holds exactly
+  // while the body is committed and clears the tick it is free — the
+  // support read stays lazy so unarmed mobs pay no scan.
+  if (liquidShouldRelease(mob, floating,
+    () => hasSupport(mob.pos.x, mob.pos.y, mob.pos.z, mob.hw))) {
+    clearLiquid(mob);
+  }
+  if (!mob.liquid && !mob.hop && !mob._blast && !(mob._liquidRearmT > 0)) {
+    // Entry metering: the probe counts the live shaft load around each ray
+    // (peers in scope) — a full neighborhood refuses, and the mob waits
+    // outside on full ground behavior instead of piling in. The peers-free
+    // probe runs first: it tells a committable approach (tall liquid on
+    // the way in) from dry land without paying the shaft load scan twice.
+    const openProbe = liquidEntryProbe(mob, floating, null);
+    const probe = openProbe != null && peers != null
+      ? liquidEntryProbe(mob, floating, peers) : openProbe;
+    if (probe) mob.liquid = { phase: "enter", t: 0, qx: probe.qx, qz: probe.qz };
+    // Queue hold: the approach is committable but the shaft is full — keep
+    // the goal and keep pressing instead of re-picking away on the stillness
+    // clock (the trip below reads this hold). The shaft drains through the
+    // regime releases (or the 20 s timeout), so the hold always ends.
+    mob._liquidQueued = openProbe != null && probe == null;
+  } else {
+    mob._liquidQueued = false;
+  }
   // An active shore hop owns the whole slice: steering, buoyancy, and
   // navigation all yield until touchdown.
   if (mob.hop) {
-    stepShoreHop(mob, dt);
+    const landed = stepShoreHop(mob, dt);
+    if (landed) clearLiquid(mob);
     mob.lastX = mob.pos.x;
     mob.lastZ = mob.pos.z;
     mob.legPhase += dt * mob.speed * 4;
@@ -2950,7 +3409,9 @@ export function tickFarmMob(mob, dt, pickTarget, rand = mob.rand ?? Math.random,
   // Navigation (a latched target): the planner owns the goal, so the
   // tick below runs with the entry draw, the passage state, and the
   // random re-picks paused — the planned commit drives the mob instead.
-  const navHold = mob.nav ? navTick(mob, dt, supported, floating, peers) : false;
+  // The column regime preempts it (the plan survives underneath and
+  // resumes at release).
+  const navHold = mob.liquid ? false : (mob.nav ? navTick(mob, dt, supported, floating, peers) : false);
   // Tunnel-entry attraction primes over everything (open roam, wall rides,
   // wander picks): draws repeat every scan until one accepts, steered as a
   // plain roam commit. While one runs, the picks below pause (stuck/refresh
@@ -2999,7 +3460,7 @@ export function tickFarmMob(mob, dt, pickTarget, rand = mob.rand ?? Math.random,
   // hold the next draw off. The veto timers make ignore/ride decisions
   // survive until the stuck detector re-picks the mob away.
   tickTransitionTimers(mob, dt);
-  const entryHold = supported && !floating ? entryTick(mob, dt, rand, { supported, floating, pickTarget }) : false;
+  const entryHold = supported && !floating && !mob.liquid ? entryTick(mob, dt, rand, { supported, floating, pickTarget }) : false;
   // 2-wide crossing state: maintained while the mouth holds, draws the exit
   // at the first hold tick and closes with cooldown at the leave
   // (passageTick owns it; lane owners and entry commits are exempt).
@@ -3022,53 +3483,87 @@ export function tickFarmMob(mob, dt, pickTarget, rand = mob.rand ?? Math.random,
       const stepped = Math.hypot(mob.pos.x - mob.lastX, mob.pos.z - mob.lastZ);
       // Real advance this slice (drives only — the separation backstop runs
       // after the tick): the file discipline paces it, not the speed field.
+      // Committed column bodies hold unless a solid bank owns the level
+      // ahead (the hold law: no re-pick over water, a rise, or a lip). The
+      // stillness clock also reads the vertical: a body rising (or
+      // settling) inside water is advancing — the climb counts as progress
+      // exactly like a step — and a floater waiting under a live ceiling
+      // is queued, not stuck, so the clock stays frozen while the peer cap
+      // holds the ride.
+      const liquidHold = mob.liquid != null && !liquidSolidAhead(mob);
+      const liquidRose = mob.liquid != null
+        && Math.abs(mob.pos.y - (mob._liqLastY ?? mob.pos.y)) > (mob.speed ?? 1) * dt * 0.2;
+      const liquidQueued = mob.liquid != null && mob._liquidCapY != null;
       mob._adv = stepped;
-      if (stepped < mob.speed * dt * 0.2) mob.stuckT += dt;
+      if (liquidHold || liquidRose || liquidQueued) mob.stuckT = 0;
+      else if (stepped < mob.speed * dt * 0.2) mob.stuckT += dt;
       else { mob.stuckT = 0; }
+      mob._liqLastY = mob.pos.y;
+      // Progress sampling (both paths run it, peer path reads it): target
+      // distance twice a second; four samples without meaningful closing
+      // reads as stuck even when sub-stride jitter keeps the stillness
+      // clock reset — shuffling that still advances is not stuck, but a
+      // body going nowhere trips. The peer maneuvers below escalate on it;
+      // the solo re-pick stays stillness-only (see below).
+      const distT = Math.hypot(dx, dz);
+      mob._progAge = (mob._progAge ?? 0) + dt;
+      if (mob.target !== mob._progTgt || mob._detour) {
+        mob._progTgt = mob.target; mob._progD = distT; mob._progAge = 0; mob._progBad = 0;
+      } else if (!liquidHold && mob._progAge >= PROG_T) {
+        if (mob._progD - distT < PROG_MIN) mob._progBad = (mob._progBad ?? 0) + 1;
+        else mob._progBad = 0;
+        mob._progD = distT; mob._progAge = 0;
+      }
+      const progStuck = (mob._progBad ?? 0) >= (mob._liquidQueued ? PROG_STRIKES * 4 : PROG_STRIKES);
+      const stuckNeed = mob._liquidQueued ? STUCK_T * 10 : STUCK_T;
       // Solo legacy path (peers == null: headless rigs, registry ticks):
       // stillness-only re-pick, bit-identical draw stream to before the
       // cooperation port. The watchdog + maneuvers below own the peer
-      // path only, so existing pinned seeds never shift.
+      // path only, so existing pinned seeds never shift. A queued-out mob
+      // (shaft full, goal beyond tall liquid) holds its goal instead of
+      // re-picking away every half second: the shaft drains through regime
+      // releases, so the hold always ends (solo never meters, hence never
+      // holds — draw-identical).
       if (peers == null) {
         // Smooth crossings hold in place instead of re-picking: the span
         // watchdog (roamStep timedOut → decide) owns the only release.
         // Step commits hold too: mounting a tread slows the walk past the
         // stillness gate, and the flight never abandons while treads
         // remain — re-picking would yank the mob off the stairs mid-flight.
-        if (mob.stuckT >= STUCK_T && mob.roam?.smooth !== true && !isStepCommit(mob)) {
+        // Committed liquid bodies never re-pick here either: the regime's
+        // own pocket escape owns wedges instead of stealing its exit
+        // bearing. Stillness-only on purpose: the shared progress sampler
+        // above runs for code unity, but tripping on it here would consume
+        // rand draws (roamSpan) in slow-but-steady solo walkers and shift
+        // pinned seeds — the peer path owns progress escalation, where
+        // herds move fast enough to tell dawdling from wedging.
+        if (mob.stuckT >= stuckNeed && mob.roam?.smooth !== true && !isStepCommit(mob)
+          && mob.liquid == null && !liquidHold) {
           mob.target = pickTarget(mob, rand);
           mob.wanderT = roamSpan(rand);
           mob.stuckT = 0;
         }
       } else {
-      // Progress watchdog: sample the target distance twice a second; four
-      // samples without meaningful closing escalate like stillness (slow
-      // herds need patience — shuffling that still advances is not stuck).
-      // A fresh target re-stamps the reference; a flying maneuver
-      // suppresses the sampling outright (sidesteps legitimately open
-      // distance).
-      const distT = Math.hypot(dx, dz);
-      mob._progAge = (mob._progAge ?? 0) + dt;
-      if (mob.target !== mob._progTgt || mob._detour) {
-        mob._progTgt = mob.target; mob._progD = distT; mob._progAge = 0; mob._progBad = 0;
-      } else if (mob._progAge >= PROG_T) {
-        if (mob._progD - distT < PROG_MIN) mob._progBad = (mob._progBad ?? 0) + 1;
-        else mob._progBad = 0;
-        mob._progD = distT; mob._progAge = 0;
-      }
-      const progStuck = (mob._progBad ?? 0) >= PROG_STRIKES;
+      // Peer path: the shared progress sampling above feeds the maneuver
+      // escalation below (slow herds need patience — shuffling that still
+      // advances is not stuck).
       // Smooth crossings never maneuver (same single release as solo).
       // Holders never maneuver either (rank >= 3: exiting or threading —
       // walls forbid sidesteps, so a frank detour would shove the hold —
       // keep the slowed line and let the backstop clear residue instead).
       // Step commits never maneuver either (same first-tick reason as
-      // below: the mode owns its axis until the stairs run out).
-      if ((mob.stuckT >= STUCK_T || progStuck) && mob.roam?.smooth !== true && !isStepCommit(mob) && mobRank(mob) < 3) {
+      // below: the mode owns its axis until the stairs run out), and
+      // committed liquid bodies never maneuver here either: the regime's
+      // own pocket escape owns wedges instead of stealing its exit bearing.
+      if ((mob.stuckT >= stuckNeed || progStuck) && mob.roam?.smooth !== true
+        && !isStepCommit(mob) && mobRank(mob) < 3 && mob.liquid == null && !liquidHold) {
         // Shuffle within snout-sweep range of walls: no forced maneuver —
         // its turn would sweep the snout along the rock — hand decide a
         // fresh wall-aware commit instead (open headings read clearance),
         // like an early arrival. Open-field shuffles commit frank pushes.
-        if (progStuck && mob.stuckT < STUCK_T && wallNear(mob, supported, floating)) {
+        // Queued-out mobs never give up here: the shaft drains, so holding
+        // the goal beats re-picking away from it.
+        if (progStuck && mob.stuckT < stuckNeed && wallNear(mob, supported, floating) && !mob._liquidQueued) {
           mob.target = null;
           mob.stuckT = 0; mob._progBad = 0;
         } else {
@@ -3289,18 +3784,26 @@ export function tickFarmMob(mob, dt, pickTarget, rand = mob.rand ?? Math.random,
   // Never steals a healthy wall-follow touch ride (that ride is the mob's
   // own business) — but a ride that is not making progress (the mob stuck
   // at a stair head) is fair game, or the rail would keep it there.
-  // Never a latched plan, an entry commit or a 2-wide crossing.
-  if (supported && !floating && !mob.nav &&
+  // Never a latched plan, an entry commit or a 2-wide crossing. A
+  // floating body never takes it (the column regime owns its own slice).
+  if (supported && !floating && !mob.nav && !mob.liquid &&
       (mob.followLine?.touch !== true || (mob.stuckT ?? 0) >= STUCK_T) &&
       mob.roam?.entry !== true && !mob.passage && !isStepCommit(mob) &&
       (mob._turnAway ?? 0) <= 0) {
     maybeStepCommit(mob, rand, true);
   }
-  const servoed = servoTick(mob, dt, supported, floating, rand, pickTarget, lanePeerGate, peersEff, turnGate);
+  // The column regime drives itself (enter + cruise + exit, see
+  // liquidTickDrive): the servo, roam, and wander planes below stay off
+  // while it holds, exactly like a latched hop owns its slice.
+  let servoed = false;
+  let roamed = false;
+  if (mob.liquid) {
+    liquidTickDrive(mob, dt, supported, floating, peersEff, grid, turnGate);
+  } else {
+    servoed = servoTick(mob, dt, supported, floating, rand, pickTarget, lanePeerGate, peersEff, turnGate);
   // A lane release hands the mob an exit commit of its own; the plan
   // wins, so the nav commit is re-published before the step below.
   if (navHold) navCommit(mob);
-  let roamed = false;
   if (!servoed && supported && (!floating || floatDrive)) {
     // Latched while navigating: the plan owns the commit, so the decide
     // branch stays off and the peer dodge never re-aims the mob away
@@ -3308,26 +3811,29 @@ export function tickFarmMob(mob, dt, pickTarget, rand = mob.rand ?? Math.random,
     roamed = roamStep(mob, dt, supported, floating, rand, pickTarget, blockedByMob,
       navHold ? null : (plan ? plan.heading : cruise), turnGiveGate, navHold);
   }
+  }
   // Lane-less peer-grind watch (same discipline as the laned cruise,
   // see grindWatchTick): sustained body contact with no escape breaks into
   // the mutual turn-away instead of churning release/re-pick forever.
-  // Stationary mobs, holders, smooth crossings, and entry commits never
-  // maneuver — their peers' episodes yield instead.
+  // Stationary mobs, holders, smooth crossings, entry commits, and column
+  // bodies never maneuver — their peers' episodes yield instead (the
+  // column passes under peers by rule).
   if (!mob.lane && peersEff && supported && (!floating || floatDrive) && (mob.speed ?? 0) > 0 &&
-    mobRank(mob) < 3 && mob.roam?.smooth !== true && mob.roam?.entry !== true && !isStepCommit(mob) &&
-    !(mob._turnAway > 0)) {
+    mobRank(mob) < 3 && mob.roam?.smooth !== true && mob.roam?.entry !== true
+    && !isStepCommit(mob) && mob.liquid == null && !(mob._turnAway > 0)) {
     grindWatchTick(mob, dt, supported, floating, peersEff, grid);
   } else if (!mob.lane) mob._peerStall = 0;
   // While airborne roamStep is skipped and this fallback is the only
   // drive — and it aims at mob.target, which a step commit keeps on the
   // landing cell (down the drop, never away from it). Grounded, roamStep
-  // drives (roamed) so this never runs.
-  if (mob.target && !servoed && !roamed && (!floating || floatDrive)) {
+  // drives (roamed) so this never runs. A committed liquid body never
+  // takes it: the regime owns its own slice.
+  if (mob.liquid == null && mob.target && !servoed && !roamed && (!floating || floatDrive)) {
     // Legal-step gate (non-jumping walkers): never up, down at most
     // maxDrop. A deeper drop is a vertical air wall — rejected exactly
     // like solid, so the stuck detector re-picks instead of cliff walking.
     // The destination test is passage-at-current-height plus headroom on
-    // the center column: a full body box posed at the lower level would
+    // the center liquid: a full body box posed at the lower level would
     // overlap the very step being descended and reject every descent.
     // Plus a nose-circle probe ahead along the facing: the visual head
     // sticks out past hw, so the body test alone would let it grind
@@ -3377,8 +3883,9 @@ export function tickFarmMob(mob, dt, pickTarget, rand = mob.rand ?? Math.random,
   // shares the contact lottery (a held ride/ignore vetoes the hop until
   // the veto runs out); a same-tick lane-flow draw replays instead of
   // re-rolling, so this path draws only when the lane flow never saw it.
-  // Planned contacts skip the draw and hop on the legacy line.
-  if (floatDrive && !mob.hop && (mob.hopCd ?? 0) <= 0 && !exitVetoed(mob)
+  // Planned contacts skip the draw and hop on the legacy line. Column
+  // bodies own their exit (liquidTickDrive above) and never draw here.
+  if (mob.liquid == null && floatDrive && !mob.hop && (mob.hopCd ?? 0) <= 0 && !exitVetoed(mob)
     && Math.abs(normYaw(mob.yawTarget - mob.yaw)) <= HEADON_TOL) {
     const hx = Math.sin(mob.yaw), hz = Math.cos(mob.yaw);
     const blocked = !makeStepOk(mob, true, true, mob.nose.along, mob.yaw)(
@@ -3506,7 +4013,12 @@ export function separateFarmMobs(list, grid = null) {
   // Corrections past the budget wait for the next tick — a deep overlap
   // resolves as a short glide, never a teleport.
   const spent = new Map();
-  for (let iter = 0; iter < 8; iter++) {
+  // Iteration budget scales down at pileup density: a 30-pile moves every
+  // iteration, so 8 full rebuilds cost 9 grids + ~3.5k pen tests per tick.
+  // Convergence stays geometric (deep residue waits for the next ticks);
+  // all existing rigs run ≤ 12 mobs and keep the full 8.
+  const maxIter = list.length > 12 ? 5 : 8;
+  for (let iter = 0; iter < maxIter; iter++) {
     let moved = false;
     const g = grid ? buildMobGrid(list, grid.cell) : null;
     for (let i = 0; i < list.length; i++) {
@@ -3540,6 +4052,45 @@ export function separateFarmMobs(list, grid = null) {
             (narrowPoseOk(a,a.pos.x,a.pos.z,a.yaw,false,true) && narrowPoseOk(b,b.pos.x,b.pos.z,b.yaw,false,true)))) continue;
         const w = worstPairPen(a, b, i, inner ? (idx.get(b) ?? 0) : i + 1 + k);
         if (!w || w.pen <= PUSH_T) continue;
+        // Vertically disjoint bodies never intersect in 3D (a climber
+        // passing under a floater): the XZ-only circles over-report the
+        // meeting, so the backstop holds off — same 3D read as the grind
+        // scan below.
+        if (a.pos.y >= b.pos.y + (b.h ?? 1) - 0.05 || b.pos.y >= a.pos.y + a.h - 0.05) continue;
+        // Floating-pile unpeel: two stalled swimmers slide sideways past
+        // each other (validated, capped, gliding) instead of shoving along
+        // the center axis — the drives own the meeting, the backstop only
+        // slides. Both float here by construction, hence the halved share
+        // (same glide as below). Dry wedged pairs keep the axial push.
+        if (wedged && (a._wasFloating ?? false) && (b._wasFloating ?? false)) {
+          let fx = w.nx, fz = w.nz;
+          const fox = a.pos.x - b.pos.x, foz = a.pos.z - b.pos.z;
+          const fod2 = fox * fox + foz * foz;
+          if (fod2 >= 1e-8) { const fod = Math.sqrt(fod2); fx = fox / fod; fz = foz / fod; }
+          let fa = Math.min(w.pen / 8, PUSH_CAP - (spent.get(a) ?? 0));
+          let fb = Math.min(w.pen / 8, PUSH_CAP - (spent.get(b) ?? 0));
+          if (fa < 0) fa = 0;
+          if (fb < 0) fb = 0;
+          const tx = -fx, tz = fz;
+          let applied = false;
+          if (fa > 0 && sepSpotFree(a, a.pos.x + tx * fa, a.pos.z + tz * fa) &&
+            sepSpotFree(b, b.pos.x - tx * fb, b.pos.z - tz * fb)) {
+            a.pos.x += tx * fa; a.pos.z += tz * fa;
+            b.pos.x -= tx * fb; b.pos.z -= tz * fb;
+            applied = true;
+          } else if (fa > 0 && sepSpotFree(a, a.pos.x - tx * fa, a.pos.z - tz * fa) &&
+            sepSpotFree(b, b.pos.x + tx * fb, b.pos.z + tz * fb)) {
+            a.pos.x -= tx * fa; a.pos.z -= tz * fa;
+            b.pos.x += tx * fb; b.pos.z += tz * fb;
+            applied = true;
+          }
+          if (applied) {
+            if (fa > 0) { spent.set(a, (spent.get(a) ?? 0) + fa); a._pushed = true; }
+            if (fb > 0) { spent.set(b, (spent.get(b) ?? 0) + fb); b._pushed = true; }
+            moved = true;
+          }
+          continue;
+        }
         // Center-to-center axis (see header): strictly grows body distance.
         let nx = w.nx, nz = w.nz;
         const ox = a.pos.x - b.pos.x, oz = a.pos.z - b.pos.z;
@@ -3547,33 +4098,51 @@ export function separateFarmMobs(list, grid = null) {
         if (od2 >= 1e-8) { const od = Math.sqrt(od2); nx = ox / od; nz = oz / od; }
         // Damped and capped: each side takes a quarter of the penetration
         // per iteration, never more than PUSH_CAP per tick total — deep
-        // overlaps converge geometrically instead of teleporting, and a
+        // converge geometrically instead of teleporting, and a
         // vetoed side never dumps its full share onto the other side
         // (that full transfer is the visible directional shove: one mob
-        // shoved in the other's direction).
-        let da = Math.min(w.pen / 4, PUSH_CAP - (spent.get(a) ?? 0));
-        let db = Math.min(w.pen / 4, PUSH_CAP - (spent.get(b) ?? 0));
+        // shoved in the other's direction). Two floating bodies correct
+        // half as fast again when stacked (a climber passing under a
+        // floater) or crossing on different bearings (open-pool meets):
+        // buoyancy meetings yield through the drives (pace, strafe,
+        // pass-under), the backstop only depenetrates — it never shoves
+        // swimmers. Side-by-side cruisers on the same bearing separate at
+        // full rate instead: the drives converge them faster than the
+        // halved backstop separates, so they ride pressed flank-to-flank.
+        // Dry-land convergence stays bit-identical.
+        const stacked = Math.abs(a.pos.y - b.pos.y) > 0.25 * Math.min(a.h, b.h ?? a.h);
+        const sameBearing = Math.sin(a.yaw) * Math.sin(b.yaw)
+          + Math.cos(a.yaw) * Math.cos(b.yaw) > 0.5;
+        const coCourse = sameBearing && (a._adv ?? 0) > 1e-9 && (b._adv ?? 0) > 1e-9;
+        const glide = (a._wasFloating && b._wasFloating && (stacked || !coCourse)) ? 0.5 : 1;
+        // Co-course cruisers share a doubled correction: the drives pull
+        // them together every tick, so the standard quarter-share settles
+        // below touch distance — the doubled share holds them apart at the
+        // generous hitbox instead. Same per-pair ceiling, no new shove.
+        const share = (a._wasFloating && b._wasFloating && !stacked && coCourse) ? w.pen / 2 : w.pen / 4;
+        let da = Math.min(share * glide, PUSH_CAP - (spent.get(a) ?? 0));
+        let db = Math.min(share * glide, PUSH_CAP - (spent.get(b) ?? 0));
         // A mob on a plan is never shoved: the whole correction goes to
         // the other side, so the planned line stays exact (the plan owns
         // the priority, the other mob gives way).
         if (a.nav != null && b.nav == null) {
           da = 0;
-          db = Math.min(w.pen / 2, PUSH_CAP - (spent.get(b) ?? 0));
+          db = Math.min((w.pen / 2) * glide, PUSH_CAP - (spent.get(b) ?? 0));
         } else if (b.nav != null && a.nav == null) {
           db = 0;
-          da = Math.min(w.pen / 2, PUSH_CAP - (spent.get(a) ?? 0));
+          da = Math.min((w.pen / 2) * glide, PUSH_CAP - (spent.get(a) ?? 0));
         }
         if (da < 0) da = 0;
         if (db < 0) db = 0;
-        if (!sepSpotFree(a, a.pos.x + nx * da, a.pos.z + nz * da)) { da = 0; db = Math.min(w.pen / 4, PUSH_CAP - (spent.get(b) ?? 0)); if (db < 0) db = 0; }
+        if (!sepSpotFree(a, a.pos.x + nx * da, a.pos.z + nz * da)) { da = 0; db = Math.min((w.pen / 4) * glide, PUSH_CAP - (spent.get(b) ?? 0)); if (db < 0) db = 0; }
         if (!sepSpotFree(b, b.pos.x - nx * db, b.pos.z - nz * db)) {
           db = 0;
           if (da === 0) {
             // Double veto (wall sandwich): slide tangentially instead of
             // keeping the overlap — walls veto the axis, the tangent stays
             // inside the corridor. Deterministic side order, capped share.
-            let ta = Math.min(w.pen / 4, PUSH_CAP - (spent.get(a) ?? 0));
-            let tb = Math.min(w.pen / 4, PUSH_CAP - (spent.get(b) ?? 0));
+            let ta = Math.min((w.pen / 4) * glide, PUSH_CAP - (spent.get(a) ?? 0));
+            let tb = Math.min((w.pen / 4) * glide, PUSH_CAP - (spent.get(b) ?? 0));
             if (ta < 0) ta = 0;
             if (tb < 0) tb = 0;
             const tx = -nz, tz = nx;

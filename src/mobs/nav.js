@@ -20,6 +20,7 @@ import {
   SHORE_EXIT_EPS, liquidSurface, NO_EXPIRY,
   diagonalSweepFree, treadWide,
 } from "./step.js";
+import { liquidDriftLevelAt, liquidLandingBelow } from "./liquidcolumn.js";
 import { dropAllowed } from "./livestock.js";
 import { dirVec, normYaw } from "./corridor.js";
 import { cornerCrossing, stairDiagonal, VIA_LEAVE_DROP } from "./stairs.js";
@@ -58,13 +59,13 @@ const DIRS8 = [
 // prefers the cardinal way whenever one exists.
 const STAIR_DETOUR_COST = 0.6;
 
-// One floating step from a plan node: water, dry, or a legal shore exit.
-// Water nodes carry their surface so the search keeps levels continuous;
-// dry nodes behave exactly like ground-walk nodes.
+// One floating step from a plan node: water, dry, or a plain lateral air
+// exit. Water nodes carry their surface so the search keeps levels
+// continuous; dry nodes behave exactly like ground-walk nodes.
 function floatStep(ctx, from, x, z) {
   const mob = ctx.mob;
   const cx = x + 0.5, cz = z + 0.5;
-  const fl = floatLevelAt(mob, cx, cz, from.y);
+  const fl = liquidDriftLevelAt(mob, cx, cz, from.y) ?? floatLevelAt(mob, cx, cz, from.y);
   if (fl) {
     if (from.wet && Math.abs(fl.surface - (from.surface ?? fl.surface)) > 1e-3) return null;
     // Water neighbours only need a continuous level surface with headroom:
@@ -74,6 +75,27 @@ function floatStep(ctx, from, x, z) {
     return { y: fl.y, wet: true, surface: fl.surface };
   }
   if (from.wet) {
+    // Plain lateral air exit: free air at the ride level with a real
+    // landing below (ground or water) — the same rule the stepper allows.
+    // Only past the step-down bound (or onto water): small drops stay on
+    // the legacy shore path, so pool rims keep their hop. The fall itself
+    // is executed by the shared gravity, so the edge costs one step like
+    // any other. Columns that refuse the ride-level fit (a shore at or
+    // above it) fall through to the shore rule below.
+    if (liquidSurface(cx, from.y, cz, 0.05, mob.h) == null
+      && !aabbIntersectsSolid(cx, from.y, cz, mob.hw, mob.h)
+      && centerHeadroom(cx, from.y, cz, mob.h)) {
+      const landing = liquidLandingBelow(mob, cx, cz, from.y);
+      const deep = landing != null
+        && (landing.wet || landing.y < from.y - (ctx.maxDrop ?? mob.maxDrop ?? 1) - 1e-3);
+      if (deep) {
+        if (landing.wet) return { y: landing.y, wet: true, surface: landing.surface };
+        if (!ctx.walkable(x, landing.y, z)) return null;
+        return { y: landing.y, wet: false, surface: null };
+      }
+    }
+    // Shore exit: a dry landing at most at the water surface level, within
+    // the step-down bound; the executor performs the physical hop onto it.
     const g = groundBelow(cx, from.y + 1, cz);
     if (g == null || from.surface == null || g > from.surface + SHORE_EXIT_EPS) return null;
     if (g < from.y - (mob.maxDrop ?? 1) - 1e-3) return null;
@@ -105,11 +127,13 @@ function floatWalkNeighbors(ctx, node) {
 }
 
 // Floating start cell: a submerged float-capable mob plans from its
-// expected float level instead of requiring dry support below it.
+// expected ride level (drift level under a lid) instead of requiring dry
+// support below it.
 function floatStartCell(mob) {
   const wet = liquidSurface(mob.pos.x, mob.pos.y, mob.pos.z, mob.hw, mob.h) != null;
   if (wet && mobCanFloat(mob)) {
-    const fl = floatLevelAt(mob, mob.pos.x, mob.pos.z, mob.pos.y);
+    const fl = liquidDriftLevelAt(mob, mob.pos.x, mob.pos.z, mob.pos.y)
+      ?? floatLevelAt(mob, mob.pos.x, mob.pos.z, mob.pos.y);
     if (fl) {
       return { x: Math.floor(mob.pos.x), y: fl.y, z: Math.floor(mob.pos.z), wet: true, surface: fl.surface };
     }
