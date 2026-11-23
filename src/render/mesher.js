@@ -992,12 +992,12 @@ export function isChunkMeshed(ck) {
 
 const CELESTIAL_DRAIN_MS = 2;
 const CELESTIAL_DRAIN_BEHIND_MS = 6;
-const CELESTIAL_DRAIN_MAX = 12;
+export const CELESTIAL_DRAIN_MAX = 12;
 // Pending celestial build count (loading-gate convergence + drain diagnostics).
 export function celestialPendingSize() {
   return celestialPending.size;
 }
-export function drainCelestial(px, pz, budgetMs = CELESTIAL_DRAIN_MS, qx = px, qz = pz, fr = FADE_CHUNKS) {
+export function drainCelestial(px, pz, budgetMs = CELESTIAL_DRAIN_MS, qx = px, qz = pz, fr = FADE_CHUNKS, max = CELESTIAL_DRAIN_MAX) {
   if (!celestialPending.size || dim !== "over") return 0;
   const t0 = performance.now();
   const deadline = t0 + budgetMs * frameBudgetScale();
@@ -1006,7 +1006,7 @@ export function drainCelestial(px, pz, budgetMs = CELESTIAL_DRAIN_MS, qx = px, q
   // is identical for a fraction of the sort cost. Sorted from the lead
   // point (prefetch along the velocity); the fade gate below stays on the
   // real eye (visible pops are what it hides).
-  const batch = takeCelestialBatch(celestialPending, (ck) => chunkMeshes.has(ck), qx, qz, CELESTIAL_DRAIN_MAX);
+  const batch = takeCelestialBatch(celestialPending, (ck) => chunkMeshes.has(ck), qx, qz, max);
   let n = 0;
   for (; n < batch.length; n++) {
     if (performance.now() >= deadline) break;

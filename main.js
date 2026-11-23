@@ -41,7 +41,7 @@ import { resetFlowerMemory, clearFlowerDim, setFlowerSeed } from "./src/world/fl
 import { tickReactions, resetReactionMemory, clearReactionsDim } from "./src/world/reactions.js";
 import { initReactionFx, tickReactionFx, clearReactionFx } from "./src/render/reactions.js";
 import { initPoolLights, tickPoolLights, resetPoolLightMemory, notePoolEdit } from "./src/render/poollights.js";
-import { initRenderer, rebuildAll, maybeStream, streamChunks, drainChunkQueue, drainCelestial, isChunkMeshed, beginDispose, disposeSome, refreshBlocks, queueRefreshBlocks, queueRefreshKeys, queueCelestialChunks, refreshBuiltQueueCelestial, takeSuspendedBuilt, setRegionFade, setRegionLiquidFog, setSkyFree, nearestMissingDist, tickChunkFades, pinChunks, isChunkBuilt, chunkVersion, UNLOAD_MARGIN, FADE_CHUNKS, FADE_CHUNKS_FAST, celestialPendingSize } from "./src/render/mesher.js";
+import { initRenderer, rebuildAll, maybeStream, streamChunks, drainChunkQueue, drainCelestial, isChunkMeshed, beginDispose, disposeSome, refreshBlocks, queueRefreshBlocks, queueRefreshKeys, queueCelestialChunks, refreshBuiltQueueCelestial, takeSuspendedBuilt, setRegionFade, setRegionLiquidFog, setSkyFree, nearestMissingDist, tickChunkFades, pinChunks, isChunkBuilt, chunkVersion, UNLOAD_MARGIN, FADE_CHUNKS, FADE_CHUNKS_FAST, celestialPendingSize, hasPendingChunks, CELESTIAL_DRAIN_MAX } from "./src/render/mesher.js";
 import { setHaloSuspended } from "./src/render/halobake.js";
 import { initChainProxy, proxyNote, proxyCull, proxyClear } from "./src/render/chainproxy.js";
 import { applyRegions } from "./src/render/regions.js";
@@ -444,6 +444,20 @@ function rollSeed() {
 // bare FLY, so deep-space speed is never affected. Invalid values ignored.
 setFlyMul(Number(new URLSearchParams(location.search).get("flymul")));
 
+// Boot slice budget (ms) behind the menu: wide slices (fewer rAF rounds,
+// same total work — the menu stays alive on yields either way).
+const BOOT_SLICE_MS = 120;
+// Celestial drain batch cap behind the menu: the ms budget alone never
+// bounds the gate (each drain call meshes at most CELESTIAL_DRAIN_MAX
+// chunks), so the cap scales with the slice.
+const BOOT_DRAIN_MAX = CELESTIAL_DRAIN_MAX * 5;
+let tuneYieldN = 0;
+function bootYield() {
+  tuneYieldN++;
+  if (tuneYieldN % 4 === 0) return new Promise((r) => requestAnimationFrame(r));
+  return Promise.resolve();
+}
+
 // Held-mob teardown (travel, New World, respawn): opaque again first, then
 // the pure state sever — the mob stays where the pose left it, movers resume.
 function dropHeldMob() {
@@ -459,11 +473,20 @@ function dropHeldMob() {
 // rendered world frame, while far chunks stream in under the frame budget
 // and the fog expands underneath. Shader warmup compiles after unlock so
 // it never stacks onto the entry freeze.
+// Boot-phase probe: records milestone timestamps for the browser driver so
+// boot slices can be timed per phase (?startdim=moon). Inert unless the
+// driver arms window.__bootProbe — zero prod impact (precedent: __fxProbe).
+function bootProbe(phase, n = null) {
+  if (typeof window !== "undefined" && window.__bootProbe) {
+    window.__bootProbe.push({ phase, t: Math.round(performance.now()), n });
+  }
+}
 async function buildWorld() {
   if (building) return;
   const token = ++buildToken;
   const aborted = () => token !== buildToken;
   building = true;
+  bootProbe("boot");
   worldReady = false;
   shadersCompiled = false;
   resetLod();
@@ -517,6 +540,7 @@ async function buildWorld() {
     const gen = dimSpec(BOOT_DIM).generateAsync;
     const ok = await gen(seed, aborted);
     if (!ok || aborted()) return;
+    bootProbe("generated");
     spawnPlayer();
     // Moon alias: override the ground spawn with the lunar surface pick
     // before meshing the neighborhood, so the first built chunks are lunar.
@@ -542,6 +566,7 @@ async function buildWorld() {
     // No glowstone rescan: worldgen places none and the live index starts
     // empty (player edits track themselves).
     rebuildAll(pos.x, pos.z, 2);
+    bootProbe("remeshed");
     if (isMoonBoot && !aborted()) {
       // ?startdim=moon starts at MOON_SURFACE_Y where planets are at full
       // visibility. Voxels and meshes for in-range bodies only: far bodies
@@ -564,21 +589,23 @@ async function buildWorld() {
         if (aborted()) return;
         generateBodyUnderRows(spec, seed, setBlock, spec.cx - spec.r, spec.cx + spec.r + 1, getBlock);
         if (aborted()) return;
-        await new Promise((r) => requestAnimationFrame(r));
+        await bootYield();
         generateBodySurface(spec, seed, setBlock);
         if (aborted()) return;
-        await new Promise((r) => requestAnimationFrame(r));
+        await bootYield();
         const joinSt = joinBodyLakeWaterStart();
         let joinGuard = 4096;
+        let joinSlices = 0;
         while (!joinBodyLakeWaterSlice(spec, seed, setBlock, getBlock, joinSt)) {
           if (aborted()) return;
           if (--joinGuard <= 0) break;
-          await new Promise((r) => requestAnimationFrame(r));
+          if (++joinSlices % 4 === 0) await new Promise((r) => requestAnimationFrame(r));
         }
         markBodyBuilt(seed, spec.key);
+        bootProbe("body", spec.key);
         purgeUnsupportedKeeps(spec, seed, setBlock, getBlock);
         queueCelestialChunks(bodyChunkCenters(spec));
-        await new Promise((r) => requestAnimationFrame(r));
+        await bootYield();
       }
       // Sky gate: drain the celestial queue in large slices (the menu/loader
       // stays alive on rAF yields) until every in-range body chunk — Moon
@@ -591,21 +618,30 @@ async function buildWorld() {
         const skySpecs = _specs
           .filter((s) => bodyMeshWant(seed, s.key, _eye0.x, _eye0.y, _eye0.z));
         let skyGuard = 3600;
+        bootProbe("sky-gate");
+        let skyIters = 0;
         while (skyGuard-- > 0 && !aborted() && !skyConverged(skySpecs, isChunkMeshed)) {
           const t0 = performance.now();
           let drained = 1;
-          while (drained > 0 && performance.now() - t0 < 24) {
-            drained = drainCelestial(pos.x, pos.z, 24);
+          while (drained > 0 && performance.now() - t0 < BOOT_SLICE_MS) {
+            drained = drainCelestial(pos.x, pos.z, BOOT_SLICE_MS, undefined, undefined, undefined, BOOT_DRAIN_MAX);
           }
+          // The in-range body chunks ride the WINDOW queue (only centers
+          // went celestial upfront): without draining it here the gate
+          // only waits on the background stream.
+          drainChunkQueue(false, BOOT_SLICE_MS, pos.x, pos.z);
           await new Promise((r) => requestAnimationFrame(r));
+          if (++skyIters % 10 === 0) bootProbe("sky-tick", celestialPendingSize() * 100000 + (hasPendingChunks() ? 1 : 0));
         }
+        bootProbe("sky-gated", 3600 - skyGuard);
       }
       // Every body displayed before entry: proxies prewarm (fade complete)
       // behind the menu, so the reveal never shows a sky mid-pop-in. Far
       // bodies stay proxies at entry; in-range meshed ones crossfade out
       // over their voxels from the first LOD tick.
       if (!aborted()) {
-        await prewarmProxies(scene, getSeed(), () => new Promise((r) => requestAnimationFrame(r)));
+        await prewarmProxies(scene, getSeed());
+        bootProbe("prewarmed");
       }
     }
     if (aborted()) return;
@@ -1471,8 +1507,8 @@ function loop(now) {
       gateT0 = 0;
     } else if (!playReady && worldReady && !building && shadersCompiled) {
       if (gateT0 === 0) gateT0 = now;
-      drainCelestial(pos.x, pos.z, 24);
-      drainChunkQueue(false, 24, pos.x, pos.z);
+      drainCelestial(pos.x, pos.z, BOOT_SLICE_MS, undefined, undefined, undefined, BOOT_DRAIN_MAX);
+      drainChunkQueue(false, BOOT_SLICE_MS, pos.x, pos.z);
       // Converged = the visible neighborhood meshed + no celestial builds
       // pending. Far window chunks are excluded on purpose: the closed-in
       // fog and the reveal hide everything past a few chunks at entry, and
@@ -1484,6 +1520,7 @@ function loop(now) {
         celestialPendingSize() === 0;
       if (converged || now - gateT0 > GATE_FALLBACK_MS) {
         playReady = true;
+        bootProbe("play-ready");
       }
     }
     const leadB = streamLead();

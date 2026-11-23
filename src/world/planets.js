@@ -96,6 +96,24 @@ export const MESH_OUT = 1.2;
 // stay progressive at grapple speed: both are co-located 3D, so the zoom
 // during the fade stays registered.
 export const REVEAL_TIME = 1.5;
+// Proxy tiers: FULL is the exact proxy (cap, lakes, dome) for near bodies —
+// crossfade duty and close inspection. LITE is 3 shared instanced meshes
+// (rock disc + rim, dome blob, lake quads) for everything farther: same
+// silhouette, same palette, sub-pixel deltas at the swap distance, O(1)
+// draws and kilobytes no matter how many planets the sky holds. The Moon is
+// always FULL (pinned entry, never a lite slot); touched bodies stay FULL
+// at any range (voxels own the view, the proxy covers convergence).
+export const PROXY_FULL_DIST = 3600;
+export const PROXY_LITE_DIST = 4320; // ×1.2 hysteresis, mirrors MESH_OUT
+// Pure proxy-tier decision (headless-tested; lod.js applies the effects):
+// hard swap, no crossfade — every delta is sub-pixel at FULL_DIST, so the
+// swap is invisible and flapping is impossible by construction.
+export function proxyTierFor(dist, current, { touched = false, isMoon = false } = {}) {
+  if (isMoon || touched) return "full";
+  if (dist <= PROXY_FULL_DIST) return "full";
+  if (dist >= PROXY_LITE_DIST) return "lite";
+  return current;
+}
 // Player-touched bodies stay meshed at any range: painting, mining, or
 // detonating a far body must keep showing the real voxels, not the stale
 // proxy. Permanent per world (bounded by the body count); cleared with

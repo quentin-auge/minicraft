@@ -11,7 +11,10 @@
 // calls at any distance.
 import * as THREE from "three";
 import { TEX } from "../core/textures.js";
-import { buildProxyData } from "../world/proxydata.js";
+import {
+  buildProxyData, buildLiteRock, buildLiteDome, buildLiteQuad,
+  liteLakeQuads, liteBodyPlacement, liteGroups, LITE_LAKE_LIFT,
+} from "../world/proxydata.js";
 
 const entries = new Map(); // body key -> { group, rockMat, domeMat, waterMat, scene }
 const texClones = new Map(); // src texture + collapse flag -> repeat-wrapped clone
@@ -152,6 +155,21 @@ export function setProxyOpacity(key, opacity) {
   }
 }
 
+export function hasProxy(key) {
+  return entries.has(key);
+}
+
+export function dropFullProxy(key) {
+  const e = entries.get(key);
+  if (!e) return;
+  e.scene.remove(e.group);
+  for (const m of [...e.group.children]) m.geometry.dispose();
+  e.rockMat.dispose();
+  e.domeMat.dispose();
+  e.waterMat.dispose();
+  entries.delete(key);
+}
+
 export function resetProxies() {
   for (const { group, rockMat, domeMat, waterMat, scene } of entries.values()) {
     scene.remove(group);
@@ -163,4 +181,192 @@ export function resetProxies() {
   entries.clear();
   for (const t of texClones.values()) t.dispose();
   texClones.clear();
+  dropLiteProxies();
+}
+
+// Lite tier: 3 shared InstancedMeshes per palette (rock disc + rim, dome
+// blob, lake quads) — every far body is a few instances, so the whole far
+// sky is 21 draw calls no matter the body count. Mean-sampled palette
+// textures (collapsed `tiled`, same maps + emissive as the full proxy)
+// read identically to the mip-averaged full proxy past the swap distance;
+// polygonOffset mirrors the full contract in depth units (distance-safe
+// where geometric lifts shimmer out). The Moon never takes a lite slot
+// (always FULL tier).
+const WHITE = new THREE.Color(0xffffff);
+const liteMeshes = []; // { mesh, mat } — one entry per (palette, kind)
+const liteSlots = new Map(); // body key -> [{ mesh, slot, p:[x,y,z], s:[x,y,z] }]
+const liteShown = new Map(); // body key -> bool (skip redundant rewrites)
+let liteScene = null;
+let liteBuiltSeed = null; // seed the shared lite meshes were built for (null = unbuilt)
+const _liteM = new THREE.Matrix4();
+const _liteP = new THREE.Vector3();
+const _liteQ = new THREE.Quaternion();
+const _liteS = new THREE.Vector3();
+const _liteZero = new THREE.Matrix4().makeScale(0, 0, 0);
+
+function liteMeshFrom(out, mat) {
+  const g = new THREE.BufferGeometry();
+  g.setAttribute("position", new THREE.BufferAttribute(new Float32Array(out.positions), 3));
+  g.setAttribute("normal", new THREE.BufferAttribute(new Float32Array(out.normals), 3));
+  g.setAttribute("color", new THREE.BufferAttribute(new Float32Array(out.colors), 3));
+  g.setAttribute("uv", new THREE.BufferAttribute(new Float32Array(out.uvs), 2));
+  g.computeBoundingSphere();
+  return g;
+}
+
+function liteMats(color) {
+  // spec.color is a palette index (same convention as TEX["planetrock" + i]).
+  // Collapsed palette sampling: a sub-texel window whose derivatives bottom
+  // mip selection out at the texture mean — the exact albedo the full proxy
+  // mip-averages to at range, so lite and full read identically. Flat
+  // THREE.Color albedos are banned here: canvas textures are sRGB-decoded
+  // on sample while Color(r/255) stays linear, a ~3-6× brightness mismatch.
+  const rTex = tiled(TEX["planetrock" + color], true);
+  const wTex = tiled(TEX["planetwater" + color + "_outside"], true);
+  const rockMat = new THREE.MeshLambertMaterial({
+    map: rTex, emissiveMap: rTex,
+    emissive: WHITE.clone(), emissiveIntensity: 0.9,
+    fog: false, transparent: true,
+    polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2,
+  });
+  const domeMat = new THREE.MeshLambertMaterial({
+    map: rTex, emissiveMap: rTex,
+    emissive: WHITE.clone(), emissiveIntensity: 0.9,
+    vertexColors: true, fog: false, transparent: true,
+    polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2,
+  });
+  const waterMat = new THREE.MeshBasicMaterial({
+    map: wTex, fog: false, transparent: true,
+    polygonOffset: true, polygonOffsetFactor: -5, polygonOffsetUnits: -5,
+  });
+  return { rockMat, domeMat, waterMat };
+}
+
+function liteMesh(geo, mat, count) {
+  const m = new THREE.InstancedMesh(geo, mat, Math.max(count, 1));
+  m.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+  m.frustumCulled = false;
+  m.visible = false;
+  m.matrixAutoUpdate = false;
+  // Park every slot at zero scale until decide() assigns visibility: an
+  // untouched instance must never rasterize.
+  for (let i = 0; i < Math.max(count, 1); i++) m.setMatrixAt(i, _liteZero);
+  m.instanceMatrix.needsUpdate = true;
+  return m;
+}
+
+export function buildLiteProxies(scene, specs, seed) {
+  dropLiteProxies();
+  liteScene = scene;
+  // Geometries are world-scale (R baked): radius varies per spec in
+  // principle, so they are cached per radius — one set today (R = 96).
+  const geoCache = new Map();
+  const geoFor = (R, thick) => {
+    const k = R + ":" + (thick ?? 5);
+    let g = geoCache.get(k);
+    if (!g) {
+      g = {
+        rock: liteMeshFrom(buildLiteRock(R, thick ?? 5)),
+        dome: liteMeshFrom(buildLiteDome(R, thick ?? 5)),
+        quad: liteMeshFrom(buildLiteQuad()),
+      };
+      geoCache.set(k, g);
+    }
+    return g;
+  };
+  // Group first so each (palette, kind) mesh allocates exactly its slots.
+  const specByKey = new Map(specs.map((s) => [s.key, s]));
+  for (const { color, r: R, thick, keys } of liteGroups(specs)) {
+    const { rockMat, domeMat, waterMat } = liteMats(color);
+    let lakes = 0;
+    const quads = new Map();
+    for (const key of keys) {
+      const q = liteLakeQuads(specByKey.get(key), seed);
+      quads.set(key, q);
+      lakes += q.length;
+    }
+    const g = geoFor(R, thick);
+    const rockM = liteMesh(g.rock, rockMat, keys.length);
+    const domeM = liteMesh(g.dome, domeMat, keys.length);
+    const waterM = liteMesh(g.quad, waterMat, lakes);
+    scene.add(rockM); scene.add(domeM); scene.add(waterM);
+    liteMeshes.push(
+      { mesh: rockM, mat: rockMat },
+      { mesh: domeM, mat: domeMat },
+      { mesh: waterM, mat: waterMat },
+    );
+    let wi = 0;
+    keys.forEach((key, i) => {
+      const at = liteBodyPlacement(specByKey.get(key));
+      const slots = [
+        { mesh: rockM, slot: i, p: [at.x, at.y, at.z], s: [1, 1, 1] },
+        { mesh: domeM, slot: i, p: [at.x, at.y, at.z], s: [1, 1, 1] },
+      ];
+      for (const q of quads.get(key)) {
+        slots.push({
+          mesh: waterM, slot: wi++,
+          p: [q.x, at.y + LITE_LAKE_LIFT, q.z], s: [q.half * 2, 1, q.half * 2],
+        });
+      }
+      liteSlots.set(key, slots);
+    });
+  }
+  liteBuiltSeed = seed;
+}
+
+// Lazy lite build: the shared impostor meshes only exist after a moon-boot
+// prewarm — any other entry (overworld boot, travel, New World) stages lite
+// tiers with no meshes behind setLiteBodyVisible (a silent no-op). Building
+// on first need covers every path; the guard is two comparisons once built.
+export function ensureLiteProxies(scene, specs, seed) {
+  if (liteBuiltSeed === seed && liteMeshes.length) return;
+  buildLiteProxies(scene, specs, seed);
+}
+
+function writeLiteSlot(mesh, slot, p, s) {
+  _liteP.set(p[0], p[1], p[2]);
+  _liteS.set(s[0], s[1], s[2]);
+  _liteM.compose(_liteP, _liteQ, _liteS);
+  mesh.setMatrixAt(slot, _liteM);
+  mesh.instanceMatrix.needsUpdate = true;
+}
+
+// Show or hide a body's lite instances (zero-scale park). Full-tier bodies
+// stay parked (their exact proxy owns the view); wiped bodies stay parked
+// until re-touched. Redundant calls are free (no buffer re-upload).
+export function setLiteBodyVisible(key, visible) {
+  if (liteShown.get(key) === visible) return;
+  liteShown.set(key, visible);
+  const slots = liteSlots.get(key);
+  if (!slots) return;
+  for (const { mesh, slot, p, s } of slots) {
+    if (visible) writeLiteSlot(mesh, slot, p, s);
+    else mesh.setMatrixAt(slot, _liteZero);
+  }
+  for (const { mesh } of slots) mesh.instanceMatrix.needsUpdate = true;
+}
+
+export function setLiteOpacity(f) {
+  for (const { mesh, mat } of liteMeshes) {
+    mat.opacity = f;
+    mesh.visible = f > 0.003;
+  }
+}
+
+function dropLiteProxies() {
+  if (liteScene) {
+    // Geometries are shared across the palette meshes: dispose unique ones.
+    const geos = new Set();
+    for (const { mesh, mat } of liteMeshes) {
+      liteScene.remove(mesh);
+      geos.add(mesh.geometry);
+      mat.dispose();
+    }
+    for (const g of geos) g.dispose();
+  }
+  liteMeshes.length = 0;
+  liteSlots.clear();
+  liteShown.clear();
+  liteScene = null;
+  liteBuiltSeed = null;
 }

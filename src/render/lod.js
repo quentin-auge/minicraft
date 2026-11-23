@@ -1,7 +1,8 @@
-// Celestial LOD state machine: meshes for in-range/touched bodies, procedural
-// 3D proxies for the far rest, so the scene object count stays flat no matter
-// how many planets the sky holds. Below the Moon fade band it only stages
-// proxies (no queue, no dispose — the legacy streaming owns the ground).
+// Celestial LOD state machine: meshes for in-range/touched bodies, exact
+// proxies for the near rest, shared instanced impostors for the far rest,
+// so the scene object count stays flat no matter how many planets the sky
+// holds. Below the Moon fade band it only stages proxies (no queue, no
+// dispose — the legacy streaming owns the ground).
 // The proxy shows until its body
 // is fully meshed (covering the block-generation pop-in), then crossfades
 // out over the voxels AT THE MESH RANGE — celestial meshes are region
@@ -12,8 +13,8 @@
 // contact and cheat flybys never see near-plane streaks).
 // Voxels are untouched (the store owns them) — only meshes are disposed and
 // rebuilt through the existing budgeted celestial queue.
-// Decisions come from the pure lodAction/departureStep in planets.js; this module applies
-// the side effects with per-frame budgets: on disposal the meshes stay
+// Decisions come from the pure lodAction/departureStep/proxyTierFor in planets.js;
+// this module applies the side effects with per-frame budgets: on disposal the meshes stay
 // until the proxy fades back in over them (mirror of the arrival reveal —
 // leaving never snaps), reveal-timed fade-out on convergence, both at the
 // same speed so the two directions read identically. The
@@ -25,17 +26,24 @@
 // (a few dozen material writes, no chunk scans).
 import {
   bodySpecs, bodyTouched, bodyWiped, lodAction, MESH_DIST, MESH_OUT, REVEAL_TIME, departureStep,
-  CELESTIAL_FADE_Y,
+  CELESTIAL_FADE_Y, proxyTierFor,
 } from "../world/planets.js";
 import { bodyChunkCenters, bodyChunkKeys } from "../world/moon.js";
 import { regionByKey } from "./regions.js";
 import { isChunkMeshed, queueCelestialChunks, dropChunkMesh, purgeChunkQueues } from "./mesher.js";
-import { ensureProxy, setProxyVisible, setProxyOpacity, resetProxies } from "./proxies.js";
+import {
+  ensureProxy, hasProxy, dropFullProxy, setProxyVisible, setProxyOpacity, resetProxies,
+  buildLiteProxies, ensureLiteProxies, setLiteBodyVisible, setLiteOpacity,
+} from "./proxies.js";
 
 // Whole-body dispose completions per frame: one body is ~118 chunk
 // disposes, all in the same frame (all-or-nothing per body, so no
 // half-meshed planet ever shows without its proxy).
 const DISPOSE_BODIES_PER_FRAME = 4;
+// Full-proxy builds per decide: approaching bodies upgrade from lite to
+// full here — the lite instances keep covering meanwhile, so a spent
+// budget only delays an invisible swap, never pops.
+const FULL_BUILDS_PER_DECIDE = 2;
 // Cover fade-in (meshes missing — pop-in cover, fast) vs blend fade-in
 // (meshes held — symmetric with the reveal, 1/REVEAL_TIME, so arrival and
 // departure read identically at any speed). A slow cover would ramp over
@@ -58,26 +66,24 @@ export function resetLod() {
   resetProxies();
 }
 
-// Boot prewarm: build every body's proxy and mark its entry displayed
-// (fade = target = 1), so a ?startdim=moon entry reveals a complete sky —
-// no planet pops in after Play. The first decide() post-entry takes over:
-// in-range meshed bodies crossfade out over their voxels, far bodies stay
-// at 1 (cover target). Batched behind one time budget (default 8 ms per
-// frame) instead of one yield per body, so the menu stays alive while the
-// boot no longer pays ~200 frames: the final state is identical.
-export async function prewarmProxies(scene, seed, yieldFrame, budgetMs = 8) {
-  let t0 = performance.now();
+// Boot prewarm: build every body's lite instances and the Moon's full
+// proxy, so a ?startdim=moon entry reveals a complete sky — no planet pops
+// in after Play. In-range bodies upgrade to FULL on the first decide()
+// (lite covering the budgeted builds meanwhile, so convergence never
+// pops); far bodies need nothing more. One synchronous pass: lite slots
+// are microseconds per body, the single full build is the old cost.
+export async function prewarmProxies(scene, seed) {
+  buildLiteProxies(scene, bodySpecs(seed), seed);
   for (const spec of bodySpecs(seed)) {
-    ensureProxy(scene, spec, seed);
-    const e = entryFor(spec);
-    e.fade = 1;
-    e.target = 1;
-    e.pending = false;
-    if (performance.now() - t0 >= budgetMs) {
-      await yieldFrame();
-      t0 = performance.now();
-    }
+    if (!bodyWiped(seed, spec.key)) setLiteBodyVisible(spec.key, true);
   }
+  const moon = bodySpecs(seed)[0];
+  ensureProxy(scene, moon, seed);
+  const e = entryFor(moon);
+  e.tier = "full";
+  e.fade = 1;
+  e.target = 1;
+  e.pending = false;
 }
 
 function entryFor(spec) {
@@ -106,26 +112,26 @@ function decide(scene, px, py, pz, seed, qx = px, qy = py, qz = pz) {
   // legacy streaming owns the ground alone down there (the spawn columns
   // share the Moon's XZ footprint while chunk keys are column-wide).
   const cold = py < CELESTIAL_FADE_Y;
-  let disposed = 0;
+  let disposed = 0, fullBuilds = 0;
   for (const spec of specs) {
-    const e = entryFor(spec);
-    if (!bodyWiped(seed, spec.key)) {
-      e.wipedDone = false; // re-armed: a later wipe drops again
-    } else if (!cold) {
-      // Wiped body: the drain already left every chunk final — filtered in
-      // place or rebuilt from carved voxels, so only the band voxels are
-      // gone — so only queued builds are purged, never the rendered meshes.
-      // Dropping those too used to tear out live voxels sharing the
-      // column-wide chunk key (e.g. clouds under a wiped moon) with no
-      // requeue while standing still. Once per entry — later ticks only hold
-      // the zeroed fade. Re-touching the body clears the flag and normal
-      // queue/cover logic resumes from fade 0; tickLod hides the proxy via
-      // the zeroed fade below.
-      if (!e.wipedDone) {
-        for (const k of e.keys) purgeChunkQueues(k);
-        e.wipedDone = true;
+    const isMoon = spec.key === "moon";
+    // Wiped bodies hold no proxy at all: lite stays parked and any staged
+    // entry is dropped — the drain left every chunk final, so only queued
+    // builds purge (stateless: wipes are rare, a 10 Hz purge of an empty
+    // queue is a Map walk). Re-touch resumes the normal path below.
+    if (bodyWiped(seed, spec.key)) {
+      if (!cold) {
+        setLiteBodyVisible(spec.key, false);
+        const ew = cache.get(spec.key);
+        if (ew) {
+          for (const k of ew.keys) purgeChunkQueues(k);
+          setProxyVisible(spec.key, false);
+          dropFullProxy(spec.key);
+          cache.delete(spec.key);
+        } else {
+          for (const k of bodyChunkKeys(spec)) purgeChunkQueues(k);
+        }
       }
-      e.fade = 0; e.target = 0; e.queued = false; e.pending = false;
       continue;
     }
     const qdx = spec.cx - qx, qdz = spec.cz - qz;
@@ -134,14 +140,61 @@ function decide(scene, px, py, pz, seed, qx = px, qy = py, qz = pz) {
     const rdx = spec.cx - px, rdz = spec.cz - pz;
     const rdy = (spec.top + spec.bottom) / 2 - py;
     const distReal = Math.hypot(rdx, rdy, rdz);
-    let hasMesh = false, fullMesh = true;
+    const touched = bodyTouched(seed, spec.key);
+    const prev = cache.get(spec.key);
+    let tier = proxyTierFor(distReal, prev?.tier ?? "lite", { touched, isMoon });
+    if (tier === "lite" && prev && (prev.pending || prev.queued)) {
+      // Departure in flight: hold FULL until the existing release/dispose
+      // machinery finishes its drop — downgrading now would orphan queued
+      // or Cover-held meshes with no entry left to release them.
+      tier = "full";
+    }
+    if (tier === "lite") {
+      // Far bodies need no entry and no chunk scans: untouched and beyond
+      // every mesh range means no meshes can exist (touched bodies are
+      // always FULL tier), so every LOD action below resolves statically
+      // and the shared lite instances own the view. The meshes exist only
+      // after a moon-boot prewarm — any other entry builds them here on
+      // first need (one-time cost, two-comparison guard afterwards).
+      ensureLiteProxies(scene, specs, seed);
+      setLiteBodyVisible(spec.key, true);
+      if (prev) {
+        setProxyVisible(spec.key, false);
+        dropFullProxy(spec.key);
+        cache.delete(spec.key);
+      }
+      continue;
+    }
+    // FULL tier: stage the exact proxy while the queue/release/departure
+    // machinery below runs unchanged. The lite instances park (the exact
+    // proxy owns the view); a spent build budget only delays an invisible
+    // swap — lite keeps covering meanwhile, so convergence never pops.
+    const e = prev ?? entryFor(spec);
+    e.tier = "full";
+    if (!prev) {
+      // Fresh entry: the proxy shows immediately at full strength — it
+      // reads exactly like the lite instances it replaces (sub-pixel
+      // deltas), so the swap never dips. The cover logic below takes over
+      // from there (voxel convergence, departure).
+      e.fade = 1;
+      e.target = 1;
+    }
+    if (!hasProxy(spec.key)) {
+      if (fullBuilds < FULL_BUILDS_PER_DECIDE) {
+        ensureProxy(scene, spec, seed);
+        fullBuilds++;
+      } else {
+        continue;
+      }
+    }
+    setLiteBodyVisible(spec.key, false);
+    let hasMesh = false, fullMesh = false;
     for (const k of e.keys) {
       if (isChunkMeshed(k)) hasMesh = true;
       else fullMesh = false;
     }
     e.fullMesh = fullMesh;
     if (fullMesh) e.queued = false;
-    const touched = bodyTouched(seed, spec.key);
     const aQ = lodAction({
       dist: distLead, range: MESH_DIST, out: MESH_OUT,
       touched, hasMesh, fullMesh,
@@ -181,7 +234,6 @@ function decide(scene, px, py, pz, seed, qx = px, qy = py, qz = pz) {
         e.target = 1;
       }
     }
-    ensureProxy(scene, spec, seed);
   }
 }
 
@@ -193,6 +245,9 @@ export function tickLod(scene, px, py, pz, seed, dt, qx = px, qy = py, qz = pz) 
   }
   const moonFade = regionByKey("moon").factor({ y: py });
   const planetFade = regionByKey("planets").factor({ y: py });
+  // The far sky shares one opacity: per-palette materials, no per-body
+  // work — the cache loop below only ever sees FULL-tier + Moon entries.
+  setLiteOpacity(planetFade);
   // Speed-adaptive crossfades, arrival and departure at the same rate:
   // at rest the full REVEAL_TIME hides the swap; at 480 b/s the same fade
   // would drag a ~700-block veil behind the swap. Scale both directions

@@ -405,3 +405,135 @@ export function buildProxyData(spec, seed) {
   });
   return { rock: rockOut, dome: domeOut, water: waterOut };
 }
+
+// Lite proxy tier: shared instanced impostors for far bodies — one rock
+// disc + rim band, one analytic dome blob, one flat quad per lake. Same
+// silhouette as the full proxy (disc radius R+2 covers cap strips + rim
+// wall, dome mirrors ring() exactly, quads cover the lake mask with
+// margin), same palette textures via per-palette materials — but no
+// per-body geometry: past PROXY_FULL_DIST every delta (texture detail,
+// riser skirts, exact shorelines) is sub-pixel. Three-free like the rest:
+// positions/normals/colors/uvs arrays (uvs at the full's world-block
+// density — the engine samples the collapsed palette mean) + plain
+// placements the engine turns into instance matrices.
+export const LITE_DOME_LON = 24;
+export const LITE_DOME_LAT = 6;
+export const LITE_DISC_SEG = 48;
+export const LITE_LAKE_LIFT = 0.05;
+export const LITE_LAKE_MARGIN = 2; // covers noise (±0.9) + sine teeth (±0.7)
+export const LITE_DISC_PAD = 2; // disc radius covers cap strips + rim wall
+
+function pushTriLite(out, a, b, c, n, uva, uvb, uvc) {
+  out.positions.push(a[0], a[1], a[2], b[0], b[1], b[2], c[0], c[1], c[2]);
+  for (let k = 0; k < 3; k++) out.normals.push(n[0], n[1], n[2]);
+  for (let k = 0; k < 3; k++) out.colors.push(1, 1, 1);
+  out.uvs.push(uva[0], uva[1], uvb[0], uvb[1], uvc[0], uvc[1]);
+}
+
+function pushTriLiteN(out, a, b, c, na, nb, nc, uva, uvb, uvc) {
+  out.positions.push(a[0], a[1], a[2], b[0], b[1], b[2], c[0], c[1], c[2]);
+  out.normals.push(na[0], na[1], na[2], nb[0], nb[1], nb[2], nc[0], nc[1], nc[2]);
+  for (let k = 0; k < 3; k++) out.colors.push(DOME_TINT[0], DOME_TINT[1], DOME_TINT[2]);
+  out.uvs.push(uva[0], uva[1], uvb[0], uvb[1], uvc[0], uvc[1]);
+}
+
+function liteBucket() {
+  return { positions: [], normals: [], colors: [], uvs: [] };
+}
+
+// Rock impostor in cap-plane local coords (y = 0 at the cap): flat disc +
+// vertical rim band down the slab depth. Winding mirrors the full cap
+// (up) and wall (outward); UVs run at the same world-block density as the
+// full cap (the collapsed palette texture averages them out at range).
+export function buildLiteRock(R, thick = 5) {
+  const out = liteBucket();
+  const RR = R + LITE_DISC_PAD, SEG = LITE_DISC_SEG;
+  for (let i = 0; i < SEG; i++) {
+    const a0 = (i / SEG) * Math.PI * 2, a1 = ((i + 1) / SEG) * Math.PI * 2;
+    const p0 = [RR * Math.cos(a0), 0, RR * Math.sin(a0)];
+    const p1 = [RR * Math.cos(a1), 0, RR * Math.sin(a1)];
+    pushTriLite(out, [0, 0, 0], p1, p0, [0, 1, 0], [0, 0], [p1[0], p1[2]], [p0[0], p0[2]]);
+    const t0 = [p0[0], 0, p0[2]], t1 = [p1[0], 0, p1[2]];
+    const b0 = [p0[0], -thick, p0[2]], b1 = [p1[0], -thick, p1[2]];
+    const am = (a0 + a1) / 2, n = [Math.cos(am), 0, Math.sin(am)];
+    const u0 = a0 * RR, u1 = a1 * RR;
+    pushTriLite(out, t0, t1, b1, n, [u0, 0], [u1, 0], [u1, -thick]);
+    pushTriLite(out, t0, b1, b0, n, [u0, 0], [u1, -thick], [u0, -thick]);
+  }
+  return out;
+}
+
+// Dome blob: the same analytic hemisphere as the full dome (same ring and
+// normal formulas, same tint), fewer segments. Local coords: y = 0 at the
+// cap plane, so y = −1 − R·sin t matches the full dome exactly.
+export function buildLiteDome(R, thick = 5) {
+  const out = liteBucket();
+  const t0 = Math.asin(Math.min(1, thick / R));
+  const ring = (t, p) => {
+    const cp = Math.cos(t);
+    return [R * cp * Math.cos(p), -1 - R * Math.sin(t), R * cp * Math.sin(p)];
+  };
+  const nrm = (t, p) => [Math.cos(t) * Math.cos(p), -Math.sin(t), Math.cos(t) * Math.sin(p)];
+  const domeUv = (p, t) => [(p / (Math.PI * 2)) * (Math.PI * 2 * R), ((t - t0) * R)];
+  const LON = LITE_DOME_LON, LAT = LITE_DOME_LAT;
+  for (let la = 0; la < LAT - 1; la++) {
+    const ta = t0 + ((Math.PI / 2 - t0) * la) / LAT;
+    const tb = t0 + ((Math.PI / 2 - t0) * (la + 1)) / LAT;
+    for (let lo = 0; lo < LON; lo++) {
+      const p0 = (lo / LON) * Math.PI * 2, p1 = ((lo + 1) / LON) * Math.PI * 2;
+      const A = ring(ta, p0), B = ring(ta, p1);
+      const C = ring(tb, p0), D = ring(tb, p1);
+      const uA = domeUv(p0, ta), uB = domeUv(p1, ta);
+      const uC = domeUv(p0, tb), uD = domeUv(p1, tb);
+      pushTriLiteN(out, A, B, C, nrm(ta, p0), nrm(ta, p1), nrm(tb, p0), uA, uB, uC);
+      pushTriLiteN(out, B, D, C, nrm(ta, p1), nrm(tb, p1), nrm(tb, p0), uB, uD, uC);
+    }
+  }
+  {
+    const tPole = t0 + ((Math.PI / 2 - t0) * (LAT - 1)) / LAT;
+    const P0 = [0, -1 - R, 0];
+    for (let lo = 0; lo < LON; lo++) {
+      const p0 = (lo / LON) * Math.PI * 2, p1 = ((lo + 1) / LON) * Math.PI * 2;
+      const R0 = ring(tPole, p0), R1 = ring(tPole, p1);
+      pushTriLiteN(out, P0, R0, R1, [0, -1, 0], nrm(tPole, p0), nrm(tPole, p1),
+        [P0[0], P0[2]], [R0[0], R0[2]], [R1[0], R1[2]]);
+    }
+  }
+  return out;
+}
+
+// Unit lake quad (1×1, centered, up-facing): the engine scales it per lake.
+// Local UVs — the collapsed palette texture averages them out at range.
+export function buildLiteQuad() {
+  const out = liteBucket();
+  const A = [-0.5, 0, -0.5], B = [0.5, 0, -0.5];
+  const C = [0.5, 0, 0.5], D = [-0.5, 0, 0.5];
+  pushTriLite(out, A, C, B, [0, 1, 0], [-0.5, -0.5], [0.5, 0.5], [0.5, -0.5]);
+  pushTriLite(out, A, D, C, [0, 1, 0], [-0.5, -0.5], [-0.5, 0.5], [0.5, 0.5]);
+  return out;
+}
+
+// Lake placements for the lite water instances: center + half-size covering
+// the whole lake mask (radius + noise + sine teeth) with margin.
+export function liteLakeQuads(spec, seed) {
+  return bodyLakeParams(spec, seed).map(({ cx, cz, cr }) => ({ x: cx, z: cz, half: cr + LITE_LAKE_MARGIN }));
+}
+
+// Lite slot grouping (pure): per (color, radius, thickness) group, the body
+// keys in spec order — stable per seed, so slots survive rebuilds. The Moon
+// never takes a lite slot (always FULL tier).
+export function liteGroups(specs) {
+  const byKey = new Map();
+  for (const spec of specs) {
+    if (spec.key === "moon") continue;
+    const gk = spec.color + "|" + spec.r + "|" + (spec.thick ?? 5);
+    if (!byKey.has(gk)) byKey.set(gk, { color: spec.color, r: spec.r, thick: spec.thick ?? 5, keys: [] });
+    byKey.get(gk).keys.push(spec.key);
+  }
+  return [...byKey.values()];
+}
+
+// Cap-plane placement for the lite rock/dome instances (absolute coords).
+export function liteBodyPlacement(spec) {
+  return { x: spec.cx, y: spec.top + 1, z: spec.cz };
+}
