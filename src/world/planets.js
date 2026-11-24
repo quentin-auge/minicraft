@@ -5,7 +5,7 @@
 // on it); planets stream in lazily in the background (see main.js), so
 // startup pays for one body only. Planet colors are a seeded draw per index;
 // positions are a seeded shell sample (deterministic per world seed).
-import { MOON, MOON_WATER, PLANET_ROCKS, PLANET_WATERS } from "../core/blocks.js";
+import { AIR, MOON, MOON_WATER, PLANET_ROCKS, PLANET_WATERS, WATER } from "../core/blocks.js";
 import { hash2 } from "../core/noise.js";
 import {
   WORLD_RADIUS, colOcc, colTopIdx, worlds, key,
@@ -504,6 +504,16 @@ export function voronoiBodyAt(x, y, z, seed = activeSeed) {
     }
   }
   return best;
+}
+
+// Hotbar water for a celestial aim (three-free, headless-tested): below the
+// reveal plain water owns the slot; inside it a real aimed voxel reads its
+// Voronoi cell's water, a geometric far/proxy body pick carries the body and
+// reads that body's own water, and a bare aim defaults to Moon water.
+export function celestialWaterFor(hit, revealed) {
+  if (!revealed) return WATER;
+  if (hit && hit.id !== AIR) return voronoiBodyAt(hit.x, hit.y, hit.z).water;
+  return hit?.body?.water ?? MOON_WATER;
 }
 
 // Voxel re-pick budget after a geometric body hit at ray distance t: the

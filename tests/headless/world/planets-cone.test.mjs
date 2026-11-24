@@ -15,6 +15,7 @@ import {
   PLANET_SAFETY_R, nextBodyToStream,
   setPlanetSeed, isBodyGone, anyBodyAlive, markBodiesDirty, resetPlanets, markBodyBuilt,
   voronoiBodyAt, isCelestialBand, noteBodyWiped, bodyWiped, noteBodyInteract, bodyTouched,
+  celestialWaterFor,
   rayBodyHit, bodyRepickBudget, bodySurfaceCell,
   CELESTIAL_FADE_Y, CELESTIAL_FADE_END, celestialRevealFactor,
   ANCHOR_Y, SKY_LEAD, SKY_START, SKY_END, SKY_FADE_WIDTH, BLACK_BUFFER, FOG_FAR,
@@ -368,7 +369,8 @@ const SEEDS = [1, 2, 7, 42, 31337];
 // 11. Hotbar celestial rule: below the reveal plain water owns the slot;
 // inside the reveal the flower slot reads glowstone and the water slot
 // defaults to Moon water, a real aimed voxel taking the water of its
-// Voronoi cell (any block kind — the cell is positional). The reveal alone
+// Voronoi cell (any block kind — the cell is positional) and a geometric
+// far/proxy body pick taking that body's own water. The reveal alone
 // drives both slots: wiped bodies change nothing.
 {
   const seed = 7;
@@ -376,24 +378,25 @@ const SEEDS = [1, 2, 7, 42, 31337];
   const moon = bodyByKey("moon");
   const p0 = bodyByKey("p0");
   const skyFor = (camY) => celestialRevealFactor(camY) > 0;
-  const waterFor = (camY, hit) => {
-    const revealed = skyFor(camY);
-    if (!revealed) return WATER;
-    if (hit && hit.id !== AIR) return voronoiBodyAt(hit.x, hit.y, hit.z).water;
-    return MOON_WATER;
-  };
+  const waterFor = (camY, hit) => celestialWaterFor(hit, skyFor(camY));
   assert.equal(skyFor(CELESTIAL_FADE_Y - 1), false, "below the reveal: flower slot stays flower");
   assert.equal(skyFor(CELESTIAL_FADE_END), true, "inside the reveal: flower slot reads glowstone");
   assert.equal(waterFor(CELESTIAL_FADE_Y - 1, null), WATER, "below the reveal reads plain water");
   assert.equal(waterFor(20, { x: p0.cx, y: p0.top, z: p0.cz, id: p0.rock }), WATER, "planet voxel below the reveal stays plain water");
   assert.equal(waterFor(CELESTIAL_FADE_END, null), MOON_WATER, "reveal with no aim reads moon water");
-  assert.equal(waterFor(CELESTIAL_FADE_END, { x: 0, y: 0, z: 0, id: AIR }), MOON_WATER, "geometric-only pick keeps moon water");
+  assert.equal(waterFor(CELESTIAL_FADE_END, { x: 0, y: 0, z: 0, id: AIR }), MOON_WATER, "bare geometric pick keeps moon water");
   const pc = { x: p0.cx, y: Math.floor((p0.top + p0.bottom) / 2), z: p0.cz };
   assert.equal(waterFor(CELESTIAL_FADE_END, { ...pc, id: p0.rock }) , p0.water, "aimed planet rock reads planet water");
   assert.equal(waterFor(CELESTIAL_FADE_END, { ...pc, id: DIRT }), p0.water, "placed block in the cell reads planet water");
   assert.equal(
+    waterFor(CELESTIAL_FADE_END, { ...pc, id: AIR, body: p0 }),
+    p0.water, "geometric far-body pick reads planet water");
+  assert.equal(
     waterFor(CELESTIAL_FADE_END, { x: moon.cx, y: Math.floor((moon.top + moon.bottom) / 2), z: moon.cz, id: moon.rock }),
     MOON_WATER, "aimed moon rock reads moon water");
+  assert.equal(
+    waterFor(CELESTIAL_FADE_END, { x: moon.cx, y: Math.floor((moon.top + moon.bottom) / 2), z: moon.cz, id: AIR, body: moon }),
+    MOON_WATER, "geometric moon pick reads moon water");
   // Wiped sky: no body holds voxels, yet the reveal still owns both slots.
   resetWorld("over");
   resetPlanets();

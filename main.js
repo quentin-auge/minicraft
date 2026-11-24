@@ -30,7 +30,7 @@ import { initPrecip, tickSnow } from "./src/fx/precip.js";
 import { MOON_MIN_Y, MOON_SURFACE_Y, MOON_R, generateMoon, generateMoonUnderRows, restoreBodyLakeWells, joinMoonLakeWater, markMoonBuilt, moonReady, moonChunkCenters, generateBody, generateBodySurface, generateBodySurfaceRows, generateBodyUnderRows, joinBodyLakeWaterStart, joinBodyLakeWaterSlice, bodyChunkCenters, bodyChunkKeys, findMoonSpawn, takeBodyFill, purgeUnsupportedKeeps, skyConverged } from "./src/world/moon.js";
 import {
   bodySpecs, bodyReady, markBodyBuilt, moonSpec, nextBodyToStream,
-  voronoiBodyAt, CELESTIAL_WATERS, CELESTIAL_STREAM_Y,
+  celestialWaterFor, CELESTIAL_WATERS, CELESTIAL_STREAM_Y,
   rayBodyHit, bodyMeshWant, celestialRevealFactor, FOG_FAR,
 } from "./src/world/planets.js";
 import { tickLod, resetLod, prewarmProxies } from "./src/render/lod.js";
@@ -1784,15 +1784,16 @@ function loop(now) {
       }
     }
     tickPortals(sdt, true);
-    // No aiming in flight: no highlight, no target (chain strokes are
-    // skipped below on the same gate).
-    const hit = rocketFlying()
+    // Aiming runs in flight too: the hotbar water follows the planet aimed
+    // through the cockpit. Editing and mob grabs stay inert, and no aim box
+    // is drawn while the rocket flies.
+    const hit = rocketEditingBlocked()
       ? null
-      : (rocketEditingBlocked() ? null : updateTarget(camera, selectedId()));
+      : updateTarget(camera, selectedId());
     // Aim box: real voxels only (shouldShowHighlight) — a geometric body
     // pick is empty space, actionable (remote place, grapple, body TNT)
     // but never drawn. A single white box: mineable/buildable at once.
-    let showHit = shouldShowHighlight(hit);
+    let showHit = !rocketFlying() && shouldShowHighlight(hit);
     if (showHit) {
       highlight.visible = true;
       highlight.position.set(hit.x + 0.5, hit.y + 0.5, hit.z + 0.5);
@@ -1801,13 +1802,12 @@ function loop(now) {
       highlight.visible = false;
     }
     // Celestial water: below the reveal plain water owns the slot; inside
-    // the reveal the default is Moon water, and a real aimed voxel takes
-    // the water of its Voronoi cell (wiped or living bodies alike — the
-    // cells are positional). Geometric-only picks (id AIR) keep the Moon
-    // default. Moon dimensions only.
+    // the reveal a real aimed voxel takes the water of its Voronoi cell
+    // (wiped or living bodies alike — the cells are positional) and a
+    // geometric far/proxy body pick takes that body's own water. A bare
+    // aim keeps the Moon default. Moon dimensions only.
     const revealed = dimHasMoon(dim) && celestialRevealFactor(camera.position.y) > 0;
-    const waterTarget = !revealed ? WATER
-      : (hit && hit.id !== AIR ? voronoiBodyAt(hit.x, hit.y, hit.z).water : MOON_WATER);
+    const waterTarget = celestialWaterFor(hit, revealed);
     if (waterTarget !== lastSkyWater) {
       const items = getItems();
       if (waterTarget === WATER) {
