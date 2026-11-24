@@ -188,7 +188,11 @@ function decide(scene, px, py, pz, seed, qx = px, qy = py, qz = pz) {
       }
     }
     setLiteBodyVisible(spec.key, false);
-    let hasMesh = false, fullMesh = false;
+    // fullMesh starts optimistic: the scan below only ever clears it on a
+    // missing chunk. (Initialized to false, the cover below could never
+    // resolve into a release and the intact proxy would hide edited voxels
+    // — including blast craters — at every range past the shell fade.)
+    let hasMesh = false, fullMesh = e.keys.length > 0;
     for (const k of e.keys) {
       if (isChunkMeshed(k)) hasMesh = true;
       else fullMesh = false;

@@ -1,5 +1,7 @@
 // LOD rules: mesh-want predicate and per-body transitions (three-free).
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import {
   PLANET_R, MESH_DIST, REVEAL_TIME,
   lodAction, departureStep, bodyMeshWant, bodyCenter, bodyDist,
@@ -115,3 +117,17 @@ function bodyByKey0() {
     { pending: false, target: 0, drop: false }, "release hands meshes the frame");
 }
 console.log("PASS lod-rules");
+
+// Full-mesh scan init (lod.js needs three, so the wiring is asserted on
+// source, headroom.test.mjs pattern): the scan must start optimistic and
+// only clear on a missing chunk — initialized to false, the cover could
+// never resolve into a release and the intact proxy would hide edited
+// voxels (blast craters included) at every range past the shell fade.
+{
+  const lodSrc = readFileSync(fileURLToPath(new URL("../../../src/render/lod.js", import.meta.url)), "utf8");
+  assert.ok(lodSrc.includes("let hasMesh = false, fullMesh = e.keys.length > 0;"),
+    "scan starts optimistic (non-empty key set reads full)");
+  assert.ok(lodSrc.includes("else fullMesh = false;"),
+    "scan only clears on a missing chunk");
+  console.log("PASS lod-fullmesh-init");
+}

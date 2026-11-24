@@ -35,7 +35,7 @@ import { flyOn } from "../player/fly.js";
 import { spawnBurst, spawnBurstBatch, spawnFlash, spawnFlashBatch, spawnFireballBatch, sharedFlashGeo, initBandShell, updateBandShell, hideBandShell, spawnDense, denseCount, noteDenseSpawn, resetDenseFx, flushDense } from "./particles.js";
 import { PALETTES } from "./palettes.js";
 import { clearGlowstoneAt } from "../world/glowstone.js";
-import { MOON_MIN_Y, noteMoonDirty, deferMoonDirty, resetMoonDirty, beginMoonGoneScan, pumpMoonGoneScan, moonGoneScanActive } from "../world/moon.js";
+import { MOON_MIN_Y, moonDimHas, noteMoonDirty, deferMoonDirty, resetMoonDirty, beginMoonGoneScan, pumpMoonGoneScan, moonGoneScanActive } from "../world/moon.js";
 import { clearFlowerAt } from "../world/flowers.js";
 import { clearReactionAt } from "../world/reactions.js";
 import { notePoolEdit } from "../render/poollights.js";
@@ -2055,6 +2055,21 @@ function carveNormalBlast(cx, cy, cz, kind, touched) {
   }
 }
 
+// LOD keep rule (same as the ultra band path): blasted bodies keep their
+// real meshes at any range, so craters survive departure instead of hiding
+// under the intact proxy. Moon dims only — elsewhere these coordinates own
+// no bodies. Members link within R/2 of each other, so sampling the pool
+// members covers void-spanning chained pools; the ignition cell covers solo
+// blasts.
+function noteBlastBodies(cells) {
+  if (!moonDimHas(dim)) return;
+  const seed = activeBodySeed();
+  for (const [x, y, z] of cells) {
+    const b = planetBodyAtPlaced(x, y, z);
+    if (b) noteBodyInteract(seed, b.key);
+  }
+}
+
 function explode(cx, cy, cz, kind, refresh) {
   if (kind.band) {
     return explodeBand(cx, cy, cz, kind, refresh);
@@ -2069,6 +2084,7 @@ function explode(cx, cy, cz, kind, refresh) {
   const touched = [];
   removeSprite(cx + "," + cy + "," + cz, kind);
   spawnBlastFx(cx, cy, cz, kind);
+  noteBlastBodies([[cx, cy, cz]]);
   carveNormalBlast(cx, cy, cz, kind, touched);
   purgeBlastLiquids(touched);
   notePoolEdit();
@@ -2353,6 +2369,9 @@ function explodePool(cx, cy, cz, kind) {
       if (d > Rfx) Rfx = d;
     }
     Rfx = Math.min(MEGA_UNION_SHELL_R, Rfx);
+    // Pin every body this pool touches (members plus ignition): the LOD
+    // keep rule above, applied to the whole footprint.
+    noteBlastBodies(members.map((m) => [m.x, m.y, m.z]).concat([[cx, cy, cz]]));
     // Member hash so "inside the pool" checks stay local (O(neighbours)
     // instead of O(members) per victim).
     const mgrid = new Map();
