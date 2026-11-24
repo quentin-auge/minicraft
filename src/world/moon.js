@@ -430,19 +430,32 @@ const JOIN_DIRS = [[0, -1, 0], [1, 0, 0], [-1, 0, 0], [0, 0, 1], [0, 0, -1]];
 // Full 6-way set for the sealed check below: a trapped component that still
 // escapes upward is hollow-linked, not sealed.
 const SEAL_DIRS = [...JOIN_DIRS, [0, 1, 0]];
-// One lake of the join per call (sliced twin of the loop below): same
-// snapshot, peel, flood, and verdict code — factored so the hook flight,
-// the chain stroke, and the main-loop slicer can all pay it one lake at
-// a time instead of one synchronous spike per body.
-function joinLakeOne(spec, seed, setBlock, readBlock, ctx, lake) {
+// Lake-join time budget per slicer call (ms): one slice advances as many
+// join phases as fit — snapshot, peel sweeps, scan bands — so a tall moon
+// lake never eats a 30 ms frame. Verdicts stay bit-identical: traversal
+// order and the shared grid are unchanged, only the resume points are new.
+const JOIN_PHASE_MS = 8;
+// Lake-join snapshot: sparse occupancy read into a grid, plus the resume
+// state the phase pumps below advance (peel cursor, scan cursor, open
+// flood stack, accumulators). One snapshot per lake per pass — the driver
+// rebuilds it when it moves to the next lake, so passes never reuse a
+// stale grid, and the lake resumes across calls (begin + phase pumps
+// below), so one call costs a few ms instead of a whole lake.
+function beginLakeJoin(spec, readBlock, ctx, lake) {
   const { y0, y1, R2, base, WATER, ROCK } = ctx;
   const { cx, cz, cr } = lake;
-  let filled = 0, purged = 0;
   const x0 = cx - cr - 6, x1 = cx + cr + 6;
   const z0 = cz - cr - 6, z1 = cz + cr + 6;
   const sx = x1 - x0 + 1, sy = y1 - y0 + 1, sz = z1 - z0 + 1;
   const grid = new Uint8Array(sx * sy * sz);
-  const gi = (x, y, z) => ((x - x0) * sz + (z - z0)) * sy + (y - y0);
+  const st = {
+    x0, x1, z0, z1, y0, y1, sx, sy, sz, grid,
+    openM: new Uint8Array(sx * sy * sz), openWork: [],
+    peelX: x0, peelZ: z0, peelDone: false,
+    scanX: x0, scanY: y0, scanZ: z0, scanDone: false, draining: false,
+    filled: 0, purged: 0, op: 0,
+    specCx: spec.cx, specCz: spec.cz, R2, base, WATER, ROCK,
+  };
   // Sparse snapshot through the column-occupancy index: the grid
   // defaults to open air (zeros), so only non-air cells need a voxel
   // read — ~10x fewer reads than the full box scan for the same
@@ -456,77 +469,116 @@ function joinLakeOne(spec, seed, setBlock, readBlock, ctx, lake) {
       for (const y of set) {
         if (y < y0 || y > y1) continue;
         const id = readBlock(x, y, z);
-        grid[gi(x, y, z)] = id === AIR ? 0 : id === WATER ? 1 : 2;
+        grid[lakeGi(st, x, y, z)] = id === AIR ? 0 : id === WATER ? 1 : 2;
       }
     }
   }
-  const inBox = (x, y, z) => x >= x0 && x <= x1 && y >= y0 && y <= y1 && z >= z0 && z <= z1;
-  const atCell = (x, y, z) => {
-    if (inBox(x, y, z)) return grid[gi(x, y, z)];
-    const id = readBlock(x, y, z);
-    return id === AIR ? 0 : id === WATER ? 1 : 2;
-  };
-  // Rock-tooth peel: a solid cell with water on all four sides is
-  // a shoreline tooth, so its whole column becomes lake water, from the
-  // sphere bottom (same formula as the lake fill) to the surface.
-  // Shore rock always keeps a solid neighbour, so it never peels.
-  let moved = true;
-  while (moved) {
-    moved = false;
-    for (let x = x0; x <= x1 && !moved; x++)
-      for (let z = z0; z <= z1 && !moved; z++) {
+  return st;
+}
+const lakeGi = (st, x, y, z) => ((x - st.x0) * st.sz + (z - st.z0)) * st.sy + (y - st.y0);
+function lakeInBox(st, x, y, z) {
+  return x >= st.x0 && x <= st.x1 && y >= st.y0 && y <= st.y1 && z >= st.z0 && z <= st.z1;
+}
+function lakeAtCell(st, readBlock, x, y, z) {
+  if (lakeInBox(st, x, y, z)) return st.grid[lakeGi(st, x, y, z)];
+  const id = readBlock(x, y, z);
+  return id === AIR ? 0 : id === st.WATER ? 1 : 2;
+}
+function markOpenLake(st, x, y, z) {
+  if (!lakeInBox(st, x, y, z) || st.grid[lakeGi(st, x, y, z)] !== 0 || st.openM[lakeGi(st, x, y, z)]) return;
+  st.openM[lakeGi(st, x, y, z)] = 1;
+  st.openWork.push([x, y, z]);
+}
+// Open-region flood, resumable: the work stack lives in state, so a slice
+// can stop mid-cascade and resume with the same order. Bounded by the box
+// (every cell is marked once), like the synchronous twin.
+function drainOpenLake(st, readBlock, deadline) {
+  const work = st.openWork;
+  while (work.length) {
+    const [px, py, pz] = work.pop();
+    // Reverse moves: cells stepping into (px, py, pz) sideways or down.
+    if (lakeAtCell(st, readBlock, px + 1, py, pz) === 0) markOpenLake(st, px + 1, py, pz);
+    if (lakeAtCell(st, readBlock, px - 1, py, pz) === 0) markOpenLake(st, px - 1, py, pz);
+    if (lakeAtCell(st, readBlock, px, py, pz + 1) === 0) markOpenLake(st, px, py, pz + 1);
+    if (lakeAtCell(st, readBlock, px, py, pz - 1) === 0) markOpenLake(st, px, py, pz - 1);
+    if (lakeAtCell(st, readBlock, px, py + 1, pz) === 0) markOpenLake(st, px, py + 1, pz);
+    if ((st.op++ & 255) === 0 && performance.now() > deadline) return false;
+  }
+  return true;
+}
+// Rock-tooth peel pump, resumable: one fixpoint sweep per state, restarting
+// from the box origin after a peel (original semantics). Resume re-scans
+// the saved column from its top — sound because a column with no peel this
+// sweep performed reads only (a peel aborts the sweep outright).
+function pumpLakePeel(st, spec, setBlock, readBlock, deadline) {
+  if (st.peelDone) return true;
+  let cx = st.peelX, cz = st.peelZ;
+  for (;;) {
+    let moved = false;
+    for (let x = cx; x <= st.x1 && !moved; x++) {
+      for (let z = x === cx ? cz : st.z0; z <= st.z1 && !moved; z++) {
         const dx = x - spec.cx, dz = z - spec.cz;
         const d2 = dx * dx + dz * dz;
-        if (d2 > R2) continue;
-        const h = Math.floor(Math.sqrt(R2 - d2));
+        if (d2 > st.R2) continue;
+        const h = Math.floor(Math.sqrt(st.R2 - d2));
         if (h === 0) continue;
-        const bottom = base - h;
-        for (let y = y0; y <= y1; y++) {
-          if (grid[gi(x, y, z)] !== 2) continue;
+        const bottom = st.base - h;
+        for (let y = st.y0; y <= st.y1; y++) {
+          if (st.grid[lakeGi(st, x, y, z)] !== 2) continue;
           if (
-            atCell(x + 1, y, z) !== 1 || atCell(x - 1, y, z) !== 1 ||
-            atCell(x, y, z + 1) !== 1 || atCell(x, y, z - 1) !== 1
+            lakeAtCell(st, readBlock, x + 1, y, z) !== 1 || lakeAtCell(st, readBlock, x - 1, y, z) !== 1 ||
+            lakeAtCell(st, readBlock, x, y, z + 1) !== 1 || lakeAtCell(st, readBlock, x, y, z - 1) !== 1
           ) continue;
-          for (let cy = bottom; cy <= base; cy++) {
-            if (grid[gi(x, cy, z)] !== 1) {
-              if (inBox(x, cy, z)) grid[gi(x, cy, z)] = 1;
-              setBlock(x, cy, z, WATER);
+          for (let cy = bottom; cy <= st.base; cy++) {
+            if (st.grid[lakeGi(st, x, cy, z)] !== 1) {
+              if (lakeInBox(st, x, cy, z)) st.grid[lakeGi(st, x, cy, z)] = 1;
+              setBlock(x, cy, z, st.WATER);
             }
           }
-          purged++;
+          st.purged++;
           moved = true;
           break;
         }
+        if (!moved && (st.op++ & 127) === 0 && performance.now() > deadline) {
+          st.peelX = x; st.peelZ = z;
+          return false;
+        }
       }
+    }
+    if (!moved) {
+      st.peelDone = true;
+      return true;
+    }
+    cx = st.x0; cz = st.z0;
+  }
+}
+// Scan pump: the open-mark scan with sealed verdicts, resumable across
+// calls (see the cursor contract above). One fixpoint sweep per state.
+function pumpLakeScan(st, spec, setBlock, readBlock, deadline) {
+  if (st.scanDone) return true;
+  // Finish a suspended open-region cascade before resuming the scan: the
+  // work stack is order-preserving, so the resumed flood marks exactly
+  // what the continuous run would have marked.
+  if (st.draining) {
+    if (!drainOpenLake(st, readBlock, deadline)) return false;
+    st.draining = false;
   }
   // Sound-open marks: forward propagation only (a cell is open when one
   // of its flood moves lands on open air), never flood sharing.
-  const openM = new Uint8Array(sx * sy * sz);
-  const openWork = [];
-  const markOpen = (x, y, z) => {
-    if (!inBox(x, y, z) || grid[gi(x, y, z)] !== 0 || openM[gi(x, y, z)]) return;
-    openM[gi(x, y, z)] = 1;
-    openWork.push([x, y, z]);
-  };
-  const drainOpen = () => {
-    while (openWork.length) {
-      const [px, py, pz] = openWork.pop();
-      // Reverse moves: cells stepping into (px, py, pz) sideways or down.
-      if (atCell(px + 1, py, pz) === 0) markOpen(px + 1, py, pz);
-      if (atCell(px - 1, py, pz) === 0) markOpen(px - 1, py, pz);
-      if (atCell(px, py, pz + 1) === 0) markOpen(px, py, pz + 1);
-      if (atCell(px, py, pz - 1) === 0) markOpen(px, py, pz - 1);
-      if (atCell(px, py + 1, pz) === 0) markOpen(px, py + 1, pz);
-    }
-  };
-  for (let x = x0; x <= x1; x++)
-    for (let z = z0; z <= z1; z++)
-      for (let y = y0; y <= y1; y++) {
-        if (grid[gi(x, y, z)] !== 0 || openM[gi(x, y, z)]) continue;
+  let x = st.scanX, y = st.scanY, z = st.scanZ;
+  for (; x <= st.x1; x++) {
+    for (; z <= st.z1; z++) {
+      for (; y <= st.y1; y++) {
+        // Persist-then-process: resume re-checks at most one candidate,
+        // and the pre-checks below make that a no-op (grid written or
+        // open-marked by the completed pass).
+        st.scanX = x; st.scanY = y; st.scanZ = z;
+        if ((st.op++ & 63) === 0 && performance.now() > deadline) return false;
+        if (st.grid[lakeGi(st, x, y, z)] !== 0 || st.openM[lakeGi(st, x, y, z)]) continue;
         if (
-          atCell(x + 1, y, z) !== 1 && atCell(x - 1, y, z) !== 1 &&
-          atCell(x, y + 1, z) !== 1 && atCell(x, y - 1, z) !== 1 &&
-          atCell(x, y, z + 1) !== 1 && atCell(x, y, z - 1) !== 1
+          lakeAtCell(st, readBlock, x + 1, y, z) !== 1 && lakeAtCell(st, readBlock, x - 1, y, z) !== 1 &&
+          lakeAtCell(st, readBlock, x, y + 1, z) !== 1 && lakeAtCell(st, readBlock, x, y - 1, z) !== 1 &&
+          lakeAtCell(st, readBlock, x, y, z + 1) !== 1 && lakeAtCell(st, readBlock, x, y, z - 1) !== 1
         ) continue;
         const seenF = new Set([key(x, y, z)]);
         const cells = [];
@@ -545,7 +597,7 @@ function joinLakeOne(spec, seed, setBlock, readBlock, ctx, lake) {
               open = true;
               break;
             }
-            if (atCell(nx, ny, nz) !== 0) continue;
+            if (lakeAtCell(st, readBlock, nx, ny, nz) !== 0) continue;
             const kk = key(nx, ny, nz);
             if (seenF.has(kk)) continue;
             seenF.add(kk);
@@ -553,8 +605,10 @@ function joinLakeOne(spec, seed, setBlock, readBlock, ctx, lake) {
           }
         }
         if (open) {
-          markOpen(x, y, z);
-          drainOpen();
+          markOpenLake(st, x, y, z);
+          st.draining = true;
+          if (!drainOpenLake(st, readBlock, deadline)) return false;
+          st.draining = false;
           continue;
         }
         // Sealed check: a trapped component that still escapes upward is
@@ -577,28 +631,44 @@ function joinLakeOne(spec, seed, setBlock, readBlock, ctx, lake) {
               sealed = false;
               break;
             }
-            if (atCell(nx, ny, nz) !== 0) continue;
+            if (lakeAtCell(st, readBlock, nx, ny, nz) !== 0) continue;
             const kk = key(nx, ny, nz);
             if (seenS.has(kk)) continue;
             seenS.add(kk);
             sstack.push([nx, ny, nz]);
           }
         }
-        const fillId = sealed ? WATER : ROCK;
+        const fillId = sealed ? st.WATER : st.ROCK;
         const fillGrid = sealed ? 1 : 2;
         for (const [fx, fy, fz] of cells) {
-          if (inBox(fx, fy, fz)) grid[gi(fx, fy, fz)] = fillGrid;
+          if (lakeInBox(st, fx, fy, fz)) st.grid[lakeGi(st, fx, fy, fz)] = fillGrid;
           setBlock(fx, fy, fz, fillId);
         }
-        filled += cells.length;
+        st.filled += cells.length;
       }
-  return [filled, purged];
+      y = st.y0;
+    }
+    z = st.z0;
+  }
+  st.scanDone = true;
+  return true;
 }
 
-// Sliced lake join driver: one lake per call, same 20-pass fixpoint as the
-// synchronous twin below. Returns true when the join is fully done.
+// Sliced lake join driver: same 20-pass fixpoint as the synchronous twin
+// below. Each call advances the current lake as many phases (peel, scan)
+// as fit the time budget, then resumes next call — one call costs a few
+// ms instead of a whole lake. Returns true when the join is fully done.
 export function joinBodyLakeWaterStart() {
-  return { pass: 0, li: 0, filled: 0, purged: 0 };
+  return { pass: 0, li: 0, filled: 0, purged: 0, cur: null };
+}
+// One lake to completion through the phase pumps (same verdicts as the
+// sliced driver — the pumps share its state and order).
+function pumpLakeJoin(st, spec, setBlock, readBlock, deadline) {
+  if (!st.peelDone && !pumpLakePeel(st, spec, setBlock, readBlock, deadline)) return false;
+  st.peelDone = true;
+  if (!st.scanDone && !pumpLakeScan(st, spec, setBlock, readBlock, deadline)) return false;
+  st.scanDone = true;
+  return true;
 }
 export function joinBodyLakeWaterSlice(spec, seed, setBlock, readBlock, st) {
   const R = spec.r ?? MOON_R;
@@ -606,9 +676,20 @@ export function joinBodyLakeWaterSlice(spec, seed, setBlock, readBlock, st) {
   const bottom0 = spec.bottom ?? MOON_MIN_Y;
   const lakes = bodyLakeParams(spec, seed);
   if (!lakes.length) return true;
-  const ctx = { y0: bottom0 - 1, y1: base + 1, R2: R * R, base, WATER: spec.water, ROCK: spec.rock };
-  const [f, p] = joinLakeOne(spec, seed, setBlock, readBlock, ctx, lakes[st.li]);
-  st.filled += f; st.purged += p;
+  if (!st.cur || st.cur.li !== st.li || st.cur.pass !== st.pass) {
+    const ctx = { y0: bottom0 - 1, y1: base + 1, R2: R * R, base, WATER: spec.water, ROCK: spec.rock };
+    st.cur = beginLakeJoin(spec, readBlock, ctx, lakes[st.li]);
+    st.cur.li = st.li;
+    st.cur.pass = st.pass;
+  }
+  const deadline = performance.now() + JOIN_PHASE_MS;
+  for (;;) {
+    if (pumpLakeJoin(st.cur, spec, setBlock, readBlock, deadline)) break;
+    return false;
+  }
+  st.filled += st.cur.filled;
+  st.purged += st.cur.purged;
+  st.cur = null;
   if (++st.li >= lakes.length) {
     if (!st.filled && !st.purged) return true;
     if (++st.pass >= 20) return true;

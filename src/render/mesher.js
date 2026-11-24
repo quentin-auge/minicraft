@@ -967,6 +967,20 @@ export function queueCelestialChunks(coords) {
   queueCelestialKeys(celestialPending, new Set(chunkQueue), (ck) => chunkMeshes.has(ck), coords);
 }
 
+// Split celestial refresh: built chunks queue through the budgeted refresh
+// drain instead of remeshing synchronously (same halo mapping and same
+// prune-exempt celestial queue for the unbuilt ones as
+// refreshBuiltQueueCelestial below — only the built path changes pace).
+export function queueBuiltRefresh(coords) {
+  const unbuilt = [];
+  for (const c of coords) {
+    const ck = chunkOf(c[0]) + "_" + chunkOf(c[2]);
+    if (chunkMeshes.has(ck)) queueRefreshBlocks([c]);
+    else unbuilt.push(c);
+  }
+  if (unbuilt.length) queueCelestialChunks(unbuilt);
+}
+
 // Split celestial refresh: already-built chunks (the visible neighborhood —
 // e.g. the Moon shell under the spawn) remesh synchronously so they read
 // whole immediately, while unbuilt chunks converge through the budgeted

@@ -41,7 +41,7 @@ import { resetFlowerMemory, clearFlowerDim, setFlowerSeed } from "./src/world/fl
 import { tickReactions, resetReactionMemory, clearReactionsDim } from "./src/world/reactions.js";
 import { initReactionFx, tickReactionFx, clearReactionFx } from "./src/render/reactions.js";
 import { initPoolLights, tickPoolLights, resetPoolLightMemory, notePoolEdit } from "./src/render/poollights.js";
-import { initRenderer, rebuildAll, maybeStream, streamChunks, drainChunkQueue, drainCelestial, isChunkMeshed, beginDispose, disposeSome, refreshBlocks, queueRefreshBlocks, queueRefreshKeys, queueCelestialChunks, refreshBuiltQueueCelestial, takeSuspendedBuilt, setRegionFade, setRegionLiquidFog, setSkyFree, nearestMissingDist, tickChunkFades, pinChunks, isChunkBuilt, chunkVersion, UNLOAD_MARGIN, FADE_CHUNKS, FADE_CHUNKS_FAST, celestialPendingSize, hasPendingChunks, CELESTIAL_DRAIN_MAX } from "./src/render/mesher.js";
+import { initRenderer, rebuildAll, maybeStream, streamChunks, drainChunkQueue, drainCelestial, isChunkMeshed, beginDispose, disposeSome, refreshBlocks, queueRefreshBlocks, queueRefreshKeys, queueCelestialChunks, refreshBuiltQueueCelestial, queueBuiltRefresh, takeSuspendedBuilt, setRegionFade, setRegionLiquidFog, setSkyFree, nearestMissingDist, tickChunkFades, pinChunks, isChunkBuilt, chunkVersion, UNLOAD_MARGIN, FADE_CHUNKS, FADE_CHUNKS_FAST, celestialPendingSize, hasPendingChunks, CELESTIAL_DRAIN_MAX } from "./src/render/mesher.js";
 import { setHaloSuspended } from "./src/render/halobake.js";
 import { initChainProxy, proxyNote, proxyCull, proxyClear } from "./src/render/chainproxy.js";
 import { applyRegions } from "./src/render/regions.js";
@@ -990,11 +990,13 @@ async function fillBodyUnder(seed, spec) {
   if (bodyFilling || ready()) return;
   bodyFilling = spec.key;
   try {
-    const R = spec.r ?? MOON_R, STEP = 16;
+    const R = spec.r ?? MOON_R, STEP = isMoon ? 4 : 16;
     const x0 = spec.cx - R, x1 = spec.cx + R + 1;
     // The Moon's surface is eager; planet surfaces stream in here instead,
     // one 16-row slice per frame (sub-ms) so the whole sky converges inside
-    // a rocket ascent at a steady 60 fps — never a 32-row burst.
+    // a rocket ascent at a steady 60 fps — never a 32-row burst. The Moon's
+    // own under-rows run at 4 rows instead: its columns are 100+ blocks
+    // tall (surface + hollow shell), so a 16-row slice costs ~20 ms.
     if (!isMoon) {
       for (let x = x0; x < x1; x += STEP) {
         if (!dimHasMoon(dim) || getSeed() !== seed || building || !worldReady || ready()) return;
@@ -1013,9 +1015,9 @@ async function fillBodyUnder(seed, spec) {
     // survive), so without this a sealed well would persist forever; stale
     // fill versions land here exactly once via the readiness gate above.
     restoreBodyLakeWells(spec, seed, setBlock, getBlock);
-    // Sliced lake join (one lake per frame): the sync fixpoint would hitch a
-    // frame per body, and the background now completes all ten planets one
-    // by one at 60 fps.
+    // Sliced lake join in time-budgeted phases (~8 ms per frame): the sync
+    // fixpoint would hitch a frame per body, and the background now
+    // completes all ten planets one by one at 60 fps.
     const joinSt = joinBodyLakeWaterStart();
     let joinGuard = 4096;
     for (;;) {
@@ -1029,12 +1031,13 @@ async function fillBodyUnder(seed, spec) {
     // support decides; the centers refresh below covers the cleared cells.
     purgeUnsupportedKeeps(spec, seed, setBlock, getBlock);
     // Nearest-first so the pop residue reads as a focus pull, not random
-    // tiles (insertion order is the drain order). Built chunks (the visible
-    // neighborhood, e.g. the Moon shell under the spawn) remesh synchronously
-    // so they read whole immediately — three per frame, never eight (at
-    // 120 Hz+ an 8-chunk sync slice alone eats the frame); unbuilt ones
-    // converge through the budgeted celestial queue — never the window
-    // queue (which would trigger the behind-budget loan in maybeStream).
+    // tiles (insertion order is the drain order). The spawn neighborhood
+    // remeshes synchronously, one center per frame — a tall moon chunk
+    // costs ~20 ms on an integrated GPU, so three no longer fits a frame;
+    // everything beyond rides the budgeted refresh queue through
+    // queueBuiltRefresh (same halo mapping, same prune-exempt celestial
+    // queue for the unbuilt ones — only the built path changes pace). The
+    // LOD holds the proxy until convergence, so the paced tail is invisible.
     const centers = bodyChunkCenters(spec);
     const cx0 = camera.position.x, cz0 = camera.position.z;
     centers.sort((a, b) =>
@@ -1043,13 +1046,19 @@ async function fillBodyUnder(seed, spec) {
     // Meshes for wanted bodies only: out-of-range bodies keep their proxy
     // until the player approaches (the LOD tick queues them then). Voxels
     // above are complete either way.
+    const NEAR_SYNC_CENTERS = 9;
     const wantMesh = bodyMeshWant(seed, spec.key, camera.position.x, camera.position.y, camera.position.z);
+    let ri = 0;
     if (wantMesh) {
-      for (let i = 0; i < centers.length; i += 3) {
+      for (; ri < centers.length && ri < NEAR_SYNC_CENTERS; ri++) {
         if (!dimHasMoon(dim) || getSeed() !== seed || building || !worldReady) return;
-        refreshBuiltQueueCelestial(centers.slice(i, i + 3));
+        refreshBuiltQueueCelestial([centers[ri]]);
         await new Promise((r) => requestAnimationFrame(r));
       }
+    }
+    if (ri < centers.length) {
+      if (!dimHasMoon(dim) || getSeed() !== seed || building || !worldReady) return;
+      queueBuiltRefresh(centers.slice(ri));
     }
   } finally {
     bodyFilling = null;
