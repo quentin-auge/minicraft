@@ -105,7 +105,7 @@ export function ensureProxy(scene, spec, seed) {
     // releases it — no pop-in mosaic while chunks build or un-cull — and
     // the release crossfade is a true over-blend (opaque mesh drawn first,
     // proxy composited above it) instead of a depth-fight damier. Real
-    // occlusion is untouched: stars and trailing planets sit orders of
+    // occlusion is untouched: trailing planets sit orders of
     // magnitude past a 2-step bias, and genuinely protruding voxel bumps
     // still render (they are the true surface in front).
     polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2,

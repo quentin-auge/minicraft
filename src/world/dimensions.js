@@ -59,7 +59,7 @@ export const DIMENSIONS = [
     env: null, // overworld keeps the compiled-in day sky/fog (null = default)
     // Overworld-only properties: the moon body (generation, low-grav zone,
     // moon snow, moon-band hotbar), band-sliced ultra wipes, black-above-
-    // the-clouds sky with stars (via the null env default).
+    // the-clouds sky (via the null env default).
     moon: true,
     ultra: { bands: true },
     skyGrapple: false,

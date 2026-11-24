@@ -35,7 +35,8 @@ const smooth = (t) => {
 const MOON_WATER_FLOOR = new THREE.Color(0x2e3236);
 
 // Shared celestial reveal: rock crossfades sky-colour→texture while staying
-// opaque (depth-writing) so stars never show through the emerging body; the
+// opaque (depth-writing) so the black sky never shows through the emerging
+// body; the
 // opaque outside water sheets mirror the rock off a dark-grey tint floor
 // (never pure black at distance), and the inside/pocket sheets keep their
 // generic opacity with the same tint. Identical for the Moon and the planets.

@@ -9,7 +9,7 @@ import {
   bodyPadContains, bodySurfaceDist, bodyAtCell, nearestBody,
   planetBodyAt, planetBodyAtPlaced,
 } from "../../../src/world/planets.js";
-import { spaceSpeedMul, SPACE_MUL, SPACE_BUFFER, SPACE_RAMP } from "../../../src/world/spacezone.js";
+import { spaceSpeedMul, spaceMul, SPACE_MUL, SPACE_BUFFER, SPACE_RAMP } from "../../../src/world/spacezone.js";
 
 setDimension("over");
 const SEED = 7;
@@ -77,7 +77,7 @@ const near = (a, b, eps = 1e-6) => Math.abs(a - b) <= eps;
 
 // 5. spaceSpeedMul from the Moon column: inert below the surface, 1 in the
 // buffer, smooth mid-ramp, full boost past the ramp, monotonic. The Moon
-// owns the zenith column (every planet sits 8000+ blocks out in XZ).
+// owns the zenith column (every planet sits 25000+ blocks out in XZ).
 {
   assert.deepEqual(
     { mul: SPACE_MUL, buffer: SPACE_BUFFER, ramp: SPACE_RAMP },
@@ -87,21 +87,21 @@ const near = (a, b, eps = 1e-6) => Math.abs(a - b) <= eps;
   assert.equal(spaceSpeedMul(0, MOON_SURFACE_Y, 0), 1, "surface 1");
   assert.equal(spaceSpeedMul(0, MOON_SURFACE_Y + 199, 0), 1, "inside the buffer 1");
   const mid = spaceSpeedMul(0, MOON_SURFACE_Y + 200 + 300, 0);
-  assert.ok(mid > 1 && mid < 6, `mid-ramp partial (${mid.toFixed(2)})`);
-  assert.equal(spaceSpeedMul(0, MOON_SURFACE_Y + 200 + 600 + 1, 0), 6, "past the ramp full boost");
+  assert.ok(mid > 1 && mid < spaceMul(), `mid-ramp partial (${mid.toFixed(2)})`);
+  assert.equal(spaceSpeedMul(0, MOON_SURFACE_Y + 200 + 600 + 1, 0), spaceMul(), "past the ramp full boost");
   let prev = 1;
   for (let d = 0; d <= 1000; d += 25) {
     const f = spaceSpeedMul(0, MOON_SURFACE_Y + d, 0);
     assert.ok(f >= prev - 1e-12, `monotonic at ${d}`);
-    assert.ok(f >= 1 && f <= 6, `bounded at ${d}`);
+    assert.ok(f >= 1 && f <= spaceMul(), `bounded at ${d}`);
     prev = f;
   }
-  assert.equal(spaceSpeedMul(5000, MOON_SURFACE_Y, 0), 6, "far sideways full boost");
+  assert.equal(spaceSpeedMul(5000, MOON_SURFACE_Y, 0), spaceMul(), "far sideways full boost");
   console.log("PASS spacezone-curve-moon");
 }
 
 // 6. spaceSpeedMul with a planet: the buffer belongs to the nearest body
-// (bodies sit 10 diameters apart, so p0 owns its own column).
+// (bodies sit 50 diameters apart, so p0 owns its own column).
 {
   const p0 = bodyByKey("p0");
   assert.ok(p0, "a planet exists");
@@ -109,6 +109,6 @@ const near = (a, b, eps = 1e-6) => Math.abs(a - b) <= eps;
   assert.equal(spaceSpeedMul(p0.cx, p0.top + 100, p0.cz), 1, "100 above p0 still 1");
   assert.equal(spaceSpeedMul(p0.cx, p0.top, p0.cz), 1, "p0 surface 1");
   assert.equal(nearestBody(p0.cx, p0.top + 200 + 600 + 5, p0.cz).spec.key, "p0", "805 above p0 still owned by p0");
-  assert.equal(spaceSpeedMul(p0.cx, p0.top + 200 + 600 + 5, p0.cz), 6, "past the p0 ramp full boost");
+  assert.equal(spaceSpeedMul(p0.cx, p0.top + 200 + 600 + 5, p0.cz), spaceMul(), "past the p0 ramp full boost");
   console.log("PASS spacezone-curve-planets");
 }

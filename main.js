@@ -51,7 +51,7 @@ import { initHelp, openHelp } from "./src/ui/help.js";
 import { toggleDebug, tickDebug } from "./src/ui/debug.js";
 import { setLiquidFogOverride } from "./src/core/textures.js";
 import { tickWaterFog, eyeMediumId } from "./src/render/waterfog.js";
-import { initSky, tickSky } from "./src/render/sky.js";
+import { tickSky } from "./src/render/sky.js";
 import { initAmbient, tickAmbient, exitAmbient } from "./src/fx/ambient.js";
 import { resetNetherDimension } from "./src/world/nether.js";
 import {
@@ -153,7 +153,6 @@ initRenderer(scene);
 initChainProxy(scene);
 initFx(scene);
 initReactionFx(scene);
-initSky(scene);
 initPrecip(scene);
 initTNTFx(scene);
 initHomingTnt(scene);

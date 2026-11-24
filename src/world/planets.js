@@ -30,11 +30,11 @@ export const MOON_SURFACE_Y = MOON_MIN_Y + MOON_R;
 export const MOON_CENTER_Y = Math.floor((MOON_MIN_Y + MOON_SURFACE_Y) / 2);
 export const PLANET_R = MOON_R;
 export const PLANET_THICK = MOON_THICK;
-export const BAND_R0 = 8000;
-export const BAND_R1 = 40000;
+export const BAND_R0 = 25000;
+export const BAND_R1 = 75000;
 export const BAND_MIN_EL_DEG = 2;
-export const BAND_MIN_SEP_RATIO = 10;
-export const BAND_COUNT = 200;
+export const BAND_MIN_SEP_RATIO = 50;
+export const BAND_COUNT = 500;
 // Planet band floor: the lowest a planet bottom can sit under the band (inner
 // radius at minEl, minus the half-height dome), clamped to the Moon surface
 // — every consumer (regions, the Moon ultra cap, the hotbar split, and the
