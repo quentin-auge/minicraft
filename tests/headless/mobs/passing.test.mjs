@@ -43,8 +43,8 @@ function buildPath(cells, extraWalls = []) {
     const [x, z] = key.split(",").map(Number);
     for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
       if (ps.has(`${x + dx},${z + dz}`)) continue;
-      // These rigs test mouths into the field; closed tracks have their
-      // own repeated-return suite in narrow.test.mjs.
+      // These rigs test mouths into the field; closed tracks run no
+      // repeated-return suite (crossing rigs live here instead).
       const neighbours = [[1, 0], [-1, 0], [0, 1], [0, -1]]
         .filter(([ax, az]) => ps.has(`${x + ax},${z + az}`));
       if (neighbours.length === 1 && neighbours[0][0] === -dx && neighbours[0][1] === -dz) continue;

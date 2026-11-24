@@ -150,59 +150,6 @@ let promptEl = null;
 let countdownEl = null;
 let promptText = "";
 
-// Temporary vessel-box debug (?bb=1, session-fixed like ?color=1):
-// translucent blue boxes around every parked vessel, the pad creation zone
-// and the flying ship. Never fires in headless (no THREE import there).
-const showVesselBoxes = typeof location !== "undefined" && new URLSearchParams(location.search).get("bb") === "1";
-const bbBoxGeo = new THREE.BoxGeometry(1, 1, 1);
-const bbEdgeGeo = new THREE.EdgesGeometry(bbBoxGeo);
-const bbFillMat = new THREE.MeshBasicMaterial({ color: 0x3388ff, transparent: true, opacity: 0.18, depthWrite: false });
-const bbEdgeMat = new THREE.LineBasicMaterial({ color: 0x3388ff, transparent: true, opacity: 0.9 });
-const bbMeshes = new Map();
-function tickVesselBoxes() {
-  if (!showVesselBoxes || !sceneRef) return;
-  const seen = new Set();
-  const draw = (id, x0, y0, z0, x1, y1, z1) => {
-    seen.add(id);
-    let g = bbMeshes.get(id);
-    if (!g) {
-      g = new THREE.Group();
-      g.add(new THREE.Mesh(bbBoxGeo, bbFillMat));
-      g.add(new THREE.LineSegments(bbEdgeGeo, bbEdgeMat));
-      sceneRef.add(g);
-      bbMeshes.set(id, g);
-    }
-    // Cell-inclusive bounds plus a hair, so no face is exactly coplanar
-    // with the terrain and nothing fights it.
-    const pad = 0.004;
-    g.position.set((x0 + x1 + 1) / 2, (y0 + y1 + 1) / 2, (z0 + z1 + 1) / 2);
-    g.scale.set(x1 - x0 + 1 + pad, y1 - y0 + 1 + pad, z1 - z0 + 1 + pad);
-    g.visible = true;
-  };
-  if (dim === "over") {
-    for (const p of listPads()) {
-      const b = takeoffBox(p);
-      if (!b) continue;
-      draw("pad-" + p.id, b.x0, b.y0, b.z0, b.x1, b.y1, b.z1);
-    }
-    for (const v of listVessels()) {
-      if (v.status !== "parked") continue;
-      const b = vesselWorldBox(v);
-      draw("v-" + v.id, b.x0, b.y0, b.z0, b.x1, b.y1, b.z1);
-    }
-    if ((piloting && (phase === "countdown" || phase === "flight")) || phase === "landing") {
-      const ox = Math.floor(origin.x), oy = Math.floor(origin.y), oz = Math.floor(origin.z);
-      draw("fly", ox + vesselBox.x0, oy + vesselBox.y0, oz + vesselBox.z0,
-        ox + vesselBox.x1, oy + vesselBox.y1, oz + vesselBox.z1);
-    }
-  }
-  for (const [id, g] of bbMeshes) {
-    if (seen.has(id)) continue;
-    sceneRef.remove(g);
-    bbMeshes.delete(id);
-  }
-}
-
 let phase = "parked"; // parked | countdown | flight | landing
 let piloting = false;
 let siteVersion = -1;
@@ -771,7 +718,6 @@ export function tickRocket(dt) {
     // Leaving the dimension drops any pending wall impacts.
     carveFaces.length = 0;
     chordWas = chordHeld();
-    tickVesselBoxes();
     return;
   }
   if (!syncSite()) {
@@ -779,7 +725,6 @@ export function tickRocket(dt) {
     updateCountdown();
     carveFaces.length = 0;
     chordWas = chordHeld();
-    tickVesselBoxes();
     return;
   }
   if (moving?.group) moving.group.visible = phase !== "parked";
@@ -807,7 +752,6 @@ export function tickRocket(dt) {
   updatePrompt();
   updateCountdown();
   flushCarveFaces();
-  tickVesselBoxes();
 }
 
 // One batched blast per frame over the walls the ascent tore open.
