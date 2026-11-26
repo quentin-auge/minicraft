@@ -441,6 +441,11 @@ export function rocketFlying() {
   return piloting && phase === "flight";
 }
 
+// Hull speed in blocks/s (magnitude of the flight velocity), for the debug HUD.
+export function rocketSpeed() {
+  return rvel.length();
+}
+
 // Eye clamp for the pilot's camera while flying: trails the eye against the
 // hull motion (the pre-space-boost feel, capped in length), then pulls it
 // back out of hull solids — so the eye never enters the hull, not even the

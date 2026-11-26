@@ -90,7 +90,7 @@ import {
 import { setMobExtraSolid } from "./src/mobs/step.js";
 import {
   initRocket, resetRocket, tickRocket, rocketTakesOver,
-  rocketEditingBlocked, rocketSolidAt, rocketFlying, rocketClampEye, carryRiders,
+  rocketEditingBlocked, rocketSolidAt, rocketFlying, rocketSpeed, rocketClampEye, carryRiders,
 } from "./src/vehicles/rocket.js";
 import { initHomingTnt, fireHomingTnt, tickHomingTnt, clearHomingTnt } from "./src/mobs/homing.js";
 import { enterEndMobs, clearEndMobs, clearEndermenDim, tickEndMobs, notifyEndermanVoxelChange, teleportBlastEndermen, dragonHealth, setDragonVictoryHook, setMobSeed } from "./src/mobs/end.js";
@@ -1574,7 +1574,7 @@ function loop(now) {
     renderer.render(scene, camera);
     return;
   }
-  tickDebug(dt, pos.x, pos.y, pos.z, "");
+  tickDebug(dt, pos.x, pos.y, pos.z, " | v = " + Math.round(rocketFlying() ? rocketSpeed() : vel.length()));
   if (simActive) {
     simTime += sdt;
     tickFx(sdt);

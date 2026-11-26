@@ -39,7 +39,7 @@ import { fileURLToPath } from "node:url";
   console.log("PASS rocketflight-debris-box");
 }
 
-// --- flight caps: soft decay both sides, no snap, proportional brake ---
+// --- flight caps: soft decay both sides, no snap, proportional brake, v HUD ---
 {
   const src = readFileSync(fileURLToPath(new URL("../../../src/vehicles/rocket.js", import.meta.url)), "utf8");
   assert.ok(!src.includes("if (rvel.y > cap) rvel.y = cap;"), "no hard snap survives");
@@ -55,8 +55,10 @@ import { fileURLToPath } from "node:url";
   assert.ok(src.includes("landingDistBox(origin.x, yBottom, origin.z, vesselBox)"), "descent reads the bbox body gap");
   assert.ok(src.includes("gapBelowFootprint(getBlock, origin.x, yBottom, origin.z, vesselBox, SPACE_BUFFER)"), "descent scans voxels under the footprint");
   assert.ok(src.includes("spaceFactorFromDist(Math.min(bodyGap, voxGap))"), "descent caps on the nearest surface, body or voxel");
-  assert.ok(!src.includes("rocketSpeed"), "no speed readout survives in the flight loop");
-  console.log("PASS rocketflight-softcap");
+  assert.ok(src.includes("export function rocketSpeed()"), "hull speed is exported for the HUD");
+  const main = readFileSync(fileURLToPath(new URL("../../../main.js", import.meta.url)), "utf8");
+  assert.ok(main.includes('" | v = " + Math.round(rocketFlying() ? rocketSpeed() : vel.length())'), "the debug HUD always shows the scalar speed");
+  console.log("PASS rocketflight-softcap-hud");
 }
 
 console.log("rocket-flight.test.mjs: ok");

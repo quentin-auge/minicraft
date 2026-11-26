@@ -1,6 +1,7 @@
 // Debug HUD, ported from master: `=` toggles a small `fps N | x X  y Y  z Z`
-// readout (integer block coords), plus an optional trailing `extra` string
-// (the live rocket boost: `| boost xK.K  cap N`, while a rocket is flying).
+// readout (integer block coords), plus a trailing `extra` string from the
+// caller — the live scalar speed (`| v = N` blocks/s, velocity magnitude,
+// always on: hull speed while flying, player speed otherwise).
 // FPS is an exponential moving average (alpha 0.2, deliberately faster than
 // master's 0.05) of instantaneous FPS, refreshed at most every 0.25 s: a
 // post-entry hitch must read as recovered within ~0.3 s, not as a
