@@ -2,6 +2,7 @@
 // spheres, integrated and auto-disposed by tickFx. TNT countdown and
 // explosion is the first specialization; future effects reuse these spawners.
 import * as THREE from "three";
+import { BLOCK_DEBRIS_UNLIT } from "../core/blocks.js";
 
 let sceneRef = null;
 const bursts = [];
@@ -15,6 +16,14 @@ const FX_ATTACK = 0.25;
 
 export function initFx(scene) {
   sceneRef = scene;
+}
+
+// Base velocity inheritance (three-free, pure): added to every spawned
+// particle velocity so a cloud born on a moving body drifts with it instead
+// of hanging in world space. Null/undefined reads as zero (shipped behavior).
+export function applyBaseVel(vx, vy, vz, baseVel) {
+  const bx = baseVel?.[0] ?? 0, by = baseVel?.[1] ?? 0, bz = baseVel?.[2] ?? 0;
+  return [vx + bx, vy + by, vz + bz];
 }
 
 // The cone basis for a launch axis: the axis itself and two vectors
@@ -57,6 +66,9 @@ export function spawnBurst(o) {
     renderOrder = undefined,
     // Optional normalized launch axis. spread is the cone half-angle in radians.
     direction = null, spread = 0.35,
+    // Base velocity inheritance: added to every particle so the cloud
+    // drifts with its moving emitter (see applyBaseVel).
+    baseVel = null,
   } = o;
   let axis = null, right = null, upAxis = null, cosSpread = Math.cos(spread);
   if (direction) {
@@ -87,16 +99,28 @@ export function spawnBurst(o) {
       const sideX = right.x * Math.cos(th) + upAxis.x * Math.sin(th);
       const sideY = right.y * Math.cos(th) + upAxis.y * Math.sin(th);
       const sideZ = right.z * Math.cos(th) + upAxis.z * Math.sin(th);
-      vel[i * 3] = (axis.x * cosPh + sideX * sinPh) * s;
-      vel[i * 3 + 1] = (axis.y * cosPh + sideY * sinPh) * s + up;
-      vel[i * 3 + 2] = (axis.z * cosPh + sideZ * sinPh) * s;
+      const [ivx, ivy, ivz] = applyBaseVel(
+        (axis.x * cosPh + sideX * sinPh) * s,
+        (axis.y * cosPh + sideY * sinPh) * s + up,
+        (axis.z * cosPh + sideZ * sinPh) * s,
+        baseVel,
+      );
+      vel[i * 3] = ivx;
+      vel[i * 3 + 1] = ivy;
+      vel[i * 3 + 2] = ivz;
     } else {
       const th = Math.random() * Math.PI * 2;
       const ph = Math.acos(2 * Math.random() - 1);
       const s = speedMin + Math.random() * (speedMax - speedMin);
-      vel[i * 3] = s * Math.sin(ph) * Math.cos(th);
-      vel[i * 3 + 1] = s * Math.cos(ph) + up;
-      vel[i * 3 + 2] = s * Math.sin(ph) * Math.sin(th);
+      const [ivx, ivy, ivz] = applyBaseVel(
+        s * Math.sin(ph) * Math.cos(th),
+        s * Math.cos(ph) + up,
+        s * Math.sin(ph) * Math.sin(th),
+        baseVel,
+      );
+      vel[i * 3] = ivx;
+      vel[i * 3 + 1] = ivy;
+      vel[i * 3 + 2] = ivz;
     }
     if (palette) {
       const pc = palette[(Math.random() * palette.length) | 0];
@@ -146,6 +170,8 @@ export function spawnBurstBatch(o) {
     color = [1, 0.6, 0.15], variance = [0, 0.4, 0.2],
     speedMin = 4, speedMax = 12, up = 3, foreground = false,
     directions = null, spread = 0.45,
+    // Base velocity inheritance, as in spawnBurst.
+    baseVel = null,
     // Spawn ball: the particles start spread through this radius instead of
     // on the center (same as the single burst's fill ball).
     fillRadius = 0,
@@ -197,16 +223,28 @@ export function spawnBurstBatch(o) {
       const sideX = right.x * Math.cos(th) + upAxis.x * Math.sin(th);
       const sideY = right.y * Math.cos(th) + upAxis.y * Math.sin(th);
       const sideZ = right.z * Math.cos(th) + upAxis.z * Math.sin(th);
-      vel[i * 3] = (axis.x * cosPh + sideX * sinPh) * s;
-      vel[i * 3 + 1] = (axis.y * cosPh + sideY * sinPh) * s + up;
-      vel[i * 3 + 2] = (axis.z * cosPh + sideZ * sinPh) * s;
+      const [ivx, ivy, ivz] = applyBaseVel(
+        (axis.x * cosPh + sideX * sinPh) * s,
+        (axis.y * cosPh + sideY * sinPh) * s + up,
+        (axis.z * cosPh + sideZ * sinPh) * s,
+        baseVel,
+      );
+      vel[i * 3] = ivx;
+      vel[i * 3 + 1] = ivy;
+      vel[i * 3 + 2] = ivz;
     } else {
       const th = Math.random() * Math.PI * 2;
       const ph = Math.acos(2 * Math.random() - 1);
       const s = speedMin + Math.random() * (speedMax - speedMin);
-      vel[i * 3] = s * Math.sin(ph) * Math.cos(th);
-      vel[i * 3 + 1] = s * Math.cos(ph) + up;
-      vel[i * 3 + 2] = s * Math.sin(ph) * Math.sin(th);
+      const [ivx, ivy, ivz] = applyBaseVel(
+        s * Math.sin(ph) * Math.cos(th),
+        s * Math.cos(ph) + up,
+        s * Math.sin(ph) * Math.sin(th),
+        baseVel,
+      );
+      vel[i * 3] = ivx;
+      vel[i * 3 + 1] = ivy;
+      vel[i * 3 + 2] = ivz;
     }
     if (palette) {
       const pc = palette[(Math.random() * palette.length) | 0];
@@ -585,16 +623,27 @@ export function flushDense() {
 // Instanced voxel debris: a small pool of bursts, cheap at 384 boxes each.
 // One burst at a time swallowed every blast that landed inside the first
 // one's live window — a rocket carving a shaft frame after frame threw its
-// debris once and then nothing for half a second. The pool keeps a few
-// bursts alive at once, so each blast shows its own cubes.
-const DEBRIS_POOL_SIZE = 3;
+// debris once and then nothing for half a second. The pool keeps six bursts
+// alive at once per family (a full-speed scrape holds ~6 ticks of
+// volume-scaled bursts), so each blast shows its own cubes.
+const DEBRIS_POOL_SIZE = 6;
 const DEBRIS_BOXES = 384;
-let debrisPool = []; // [{ mesh, vel, spin, rot, birth, life, n, active, count }]
+// Two debris pools by source family (one material per InstancedMesh): the
+// lit pool shades with the scene like ordinary voxels, the unlit pool reads
+// like the self-lit sources (moon/planet rock emissive, glowstone) with no
+// fog fade, exactly as they do. Cubes route per block id at spawn.
+let debrisLitPool = []; // [{ mesh, vel, spin, rot, birth, life, n, active, count, follow }]
+let debrisUnlitPool = [];
+const allDebrisPools = () => [...debrisLitPool, ...debrisUnlitPool];
 
-function makeDebrisBurst() {
+function makeDebrisBurst(unlit) {
   const n = DEBRIS_BOXES;
   const geo = new THREE.BoxGeometry(0.5, 0.5, 0.5);
-  const mat = new THREE.MeshLambertMaterial({ color: 0xffffff });
+  // Shaded white sculpts ordinary cubes; unlit white reads the self-lit
+  // families true under any light, with no fog fade like their sources.
+  const mat = unlit
+    ? new THREE.MeshBasicMaterial({ color: 0xffffff, fog: false })
+    : new THREE.MeshLambertMaterial({ color: 0xffffff });
   const mesh = new THREE.InstancedMesh(geo, mat, n);
   mesh.frustumCulled = false;
   mesh.visible = false;
@@ -604,56 +653,125 @@ function makeDebrisBurst() {
   for (let i = 0; i < n; i++) mesh.setMatrixAt(i, dummy.matrix);
   mesh.instanceMatrix.needsUpdate = true;
   sceneRef.add(mesh);
-  return { mesh, vel: new Float32Array(n * 3), spin: new Float32Array(n * 2), rot: new Float32Array(n * 2), birth: 0, life: 0, n, active: false, count: 0 };
+  return { mesh, vel: new Float32Array(n * 3), spin: new Float32Array(n * 2), rot: new Float32Array(n * 2), birth: 0, life: 0, n, active: false, count: 0, follow: false };
 }
 
 export function spawnDebris(o) {
   if (!sceneRef) return;
-  const { x, y, z, R, count = 260, life = 1.6 } = o;
-  if (!debrisPool.length) {
-    for (let i = 0; i < DEBRIS_POOL_SIZE; i++) debrisPool.push(makeDebrisBurst());
+  const { x, y, z, R, count = 260, life = 1.6, baseVel = null, colors = null, ids = null, centers = null, follow = false } = o;
+  if (!debrisLitPool.length) {
+    for (let i = 0; i < DEBRIS_POOL_SIZE; i++) debrisLitPool.push(makeDebrisBurst(false));
+    for (let i = 0; i < DEBRIS_POOL_SIZE; i++) debrisUnlitPool.push(makeDebrisBurst(true));
   }
-  // A free slot first, else the oldest live burst gives way.
-  let debris = debrisPool.find((d) => !d.active);
-  if (!debris) {
-    debris = debrisPool[0];
-    for (const d of debrisPool) if (d.birth < debris.birth) debris = d;
-  }
-  const m = Math.min(count, debris.n);
+  // A free slot first, else the oldest live burst gives way — per pool.
+  const takeBurst = (pool) => {
+    let debris = pool.find((d) => !d.active);
+    if (!debris) {
+      debris = pool[0];
+      for (const d of pool) if (d.birth < debris.birth) debris = d;
+    }
+    return debris;
+  };
+  let lit = null, unlit = null, li = 0, ui = 0;
+  const m = Math.min(count, DEBRIS_BOXES);
+  // Multi-center spawn: cubes spread per center (i % centers.length) so one
+  // burst covers a whole carved surface instead of one ball. Tints and pool
+  // routing then read per center (parallel to it), not per cube.
+  const multi = Array.isArray(centers) && centers.length > 0;
   const dummy = new THREE.Object3D();
   const c = new THREE.Color();
   for (let i = 0; i < m; i++) {
+    const ci = multi ? i % centers.length : -1;
+    const id = multi
+      ? (ids?.length ? ids[ci % ids.length] : null)
+      : (ids?.length ? ids[i % ids.length] : null);
+    let debris, idx;
+    if (id != null && BLOCK_DEBRIS_UNLIT.has(id)) {
+      if (!unlit) unlit = takeBurst(debrisUnlitPool);
+      debris = unlit; idx = ui++;
+    } else {
+      if (!lit) lit = takeBurst(debrisLitPool);
+      debris = lit; idx = li++;
+    }
+    if (idx >= debris.n) continue;
     const th = Math.random() * Math.PI * 2;
     const ph = Math.acos(2 * Math.random() - 1);
     const rr = R * 0.5 * Math.cbrt(Math.random());
-    dummy.position.set(x + rr * Math.sin(ph) * Math.cos(th), y + rr * Math.cos(ph), z + rr * Math.sin(ph) * Math.sin(th));
+    const ox = multi ? centers[ci][0] : x, oy = multi ? centers[ci][1] : y, oz = multi ? centers[ci][2] : z;
+    dummy.position.set(ox + rr * Math.sin(ph) * Math.cos(th), oy + rr * Math.cos(ph), oz + rr * Math.sin(ph) * Math.sin(th));
     const s = 10 + Math.random() * 22;
-    debris.vel[i * 3] = s * Math.sin(ph) * Math.cos(th);
-    debris.vel[i * 3 + 1] = Math.abs(s * Math.cos(ph)) + 14 + Math.random() * 10;
-    debris.vel[i * 3 + 2] = s * Math.sin(ph) * Math.sin(th);
-    debris.spin[i * 2] = (Math.random() - 0.5) * 12;
-    debris.spin[i * 2 + 1] = (Math.random() - 0.5) * 12;
-    debris.rot[i * 2] = Math.random() * Math.PI;
-    debris.rot[i * 2 + 1] = Math.random() * Math.PI;
-    dummy.rotation.set(debris.rot[i * 2], debris.rot[i * 2 + 1], 0);
+    const [ivx, ivy, ivz] = applyBaseVel(
+      s * Math.sin(ph) * Math.cos(th),
+      Math.abs(s * Math.cos(ph)) + 14 + Math.random() * 10,
+      s * Math.sin(ph) * Math.sin(th),
+      baseVel,
+    );
+    debris.vel[idx * 3] = ivx;
+    debris.vel[idx * 3 + 1] = ivy;
+    debris.vel[idx * 3 + 2] = ivz;
+    debris.spin[idx * 2] = (Math.random() - 0.5) * 12;
+    debris.spin[idx * 2 + 1] = (Math.random() - 0.5) * 12;
+    debris.rot[idx * 2] = Math.random() * Math.PI;
+    debris.rot[idx * 2 + 1] = Math.random() * Math.PI;
+    dummy.rotation.set(debris.rot[idx * 2], debris.rot[idx * 2 + 1], 0);
     dummy.updateMatrix();
-    debris.mesh.setMatrixAt(i, dummy.matrix);
-    const g = 0.25 + Math.random() * 0.3;
-    debris.mesh.setColorAt(i, c.setRGB(g + 0.25, g * 0.8, g * 0.6));
+    debris.mesh.setMatrixAt(idx, dummy.matrix);
+    // The destroyed wall's own color when provided, with a light jitter so
+    // stacked cubes of one wall still vary; gray fallback otherwise. Per
+    // center in multi-center mode (each face keeps its own wall), per cube
+    // otherwise.
+    const tint = multi
+      ? (colors?.length ? colors[ci % colors.length] : null)
+      : (colors?.length ? colors[i % colors.length] : null);
+    if (tint) {
+      const j = () => (Math.random() - 0.5) * 0.08;
+      debris.mesh.setColorAt(idx, c.setRGB(
+        Math.min(1, Math.max(0, tint[0] + j())),
+        Math.min(1, Math.max(0, tint[1] + j())),
+        Math.min(1, Math.max(0, tint[2] + j())),
+      ));
+    } else {
+      const g = 0.25 + Math.random() * 0.3;
+      debris.mesh.setColorAt(idx, c.setRGB(g + 0.25, g * 0.8, g * 0.6));
+    }
   }
-  debris.mesh.instanceMatrix.needsUpdate = true;
-  if (debris.mesh.instanceColor) debris.mesh.instanceColor.needsUpdate = true;
-  debris.birth = denseFire.time;
-  debris.life = life;
-  debris.active = true;
-  debris.count = m;
-  debris.ox = x; debris.oy = y; debris.oz = z;
-  debris.mesh.visible = true;
+  for (const debris of [lit, unlit]) {
+    if (!debris) continue;
+    debris.mesh.instanceMatrix.needsUpdate = true;
+    if (debris.mesh.instanceColor) debris.mesh.instanceColor.needsUpdate = true;
+    debris.birth = denseFire.time;
+    debris.life = life;
+    debris.active = true;
+    debris.count = debris === lit ? li : ui;
+    debris.follow = follow;
+    debris.mesh.visible = true;
+  }
+}
+// Rigid vessel follow for carve debris: translates every live cube of the
+// follow-flagged bursts by the vessel's per-tick delta, so the cloud rides
+// the ship instead of diverging from it under accel. Zero-delta skips (no
+// upload); the integration loop below still owns gravity and spin.
+export function shiftFollowDebris(dx, dy, dz) {
+  if (!dx && !dy && !dz) return;
+  for (const debris of allDebrisPools()) {
+    if (!debris.active || !debris.follow) continue;
+    for (let i = 0; i < debris.count; i++) {
+      debris.mesh.getMatrixAt(i, _dm);
+      _dd.position.setFromMatrixPosition(_dm);
+      _dd.position.x += dx;
+      _dd.position.y += dy;
+      _dd.position.z += dz;
+      _dd.rotation.set(debris.rot[i * 2], debris.rot[i * 2 + 1], 0);
+      _dd.updateMatrix();
+      debris.mesh.setMatrixAt(i, _dd.matrix);
+    }
+    debris.mesh.instanceMatrix.needsUpdate = true;
+  }
 }
 const _dd = new THREE.Object3D();
 const _dm = new THREE.Matrix4();
 export function tickDenseFx(dt) {
-  if (!densePoolsLive && !debrisPool.some((d) => d.active)) {
+  if (!densePoolsLive && !allDebrisPools().some((d) => d.active)) {
     // Still advance clocks so births stay valid once pools exist.
     for (const p of DENSE_POOLS) p.time += dt;
     return;
@@ -668,7 +786,7 @@ export function tickDenseFx(dt) {
     for (const p of DENSE_POOLS) p.pts.visible = false;
     lastDenseEnd = -1;
   }
-  for (const debris of debrisPool) {
+  for (const debris of allDebrisPools()) {
     if (!debris.active) continue;
     const age = denseFire.time - debris.birth;
     if (age > debris.life) {
@@ -742,12 +860,12 @@ export function resetDenseFx() {
     if (p.pts.material.uniforms) p.pts.material.uniforms.uTime.value = 0;
   }
   lastDenseEnd = -1;
-  if (debrisPool.length) for (const d of debrisPool) { d.active = false; d.mesh.visible = false; }
+  for (const d of allDebrisPools()) { d.active = false; d.mesh.visible = false; }
 }
 
 export function spawnFlash(o) {
   if (!sceneRef) return;
-  const { x, y, z, color = 0xffdd77, life = 0.28, size = 1, growth = 4.2, maxRadius = null, speed = 30, retractSpeed = null, doubleside = false, fogOff = false } = o;
+  const { x, y, z, color = 0xffdd77, life = 0.28, size = 1, growth = 4.2, maxRadius = null, speed = 30, retractSpeed = null, doubleside = false, fogOff = false, baseVel = null } = o;
   if (maxRadius !== null) {
     // Fireball: expands to maxRadius at constant speed, then retracts at
     // retractSpeed (default: same as expand, symmetric). Bigger fireballs
@@ -773,7 +891,8 @@ export function spawnFlash(o) {
   );
   mesh.position.set(x, y, z);
   sceneRef.add(mesh);
-  flashes.push({ mesh, life, max: life, size, growth });
+  const bv = baseVel ?? [0, 0, 0];
+  flashes.push({ mesh, life, max: life, size, growth, vel: [bv[0] ?? 0, bv[1] ?? 0, bv[2] ?? 0] });
 }
 
 // Per-crater expanding shells share one low-poly sphere draw call and one
@@ -821,7 +940,7 @@ export function spawnFireballBatch(o) {
 // one draw call instead of one Mesh each. Grows in place, fades as a unit.
 export function spawnFlashBatch(o) {
   if (!sceneRef) return;
-  const { centers, color = 0xffdd77, life = 0.28, size = 1, growth = 4.2, renderOrder = undefined } = o;
+  const { centers, color = 0xffdd77, life = 0.28, size = 1, growth = 4.2, renderOrder = undefined, baseVel = null } = o;
   if (!centers.length) return;
   const mesh = new THREE.InstancedMesh(
     sharedFlashGeo(),
@@ -840,7 +959,8 @@ export function spawnFlashBatch(o) {
   }
   mesh.instanceMatrix.needsUpdate = true;
   sceneRef.add(mesh);
-  flashes.push({ mesh, life, max: life, size, growth, instanced: true, centers, dummy });
+  const bv = baseVel ?? [0, 0, 0];
+  flashes.push({ mesh, life, max: life, size, growth, instanced: true, centers, dummy, vel: [bv[0] ?? 0, bv[1] ?? 0, bv[2] ?? 0] });
 }
 
 export function tickFx(dt) {
@@ -888,8 +1008,10 @@ export function tickFx(dt) {
       f.mesh.material.opacity = age < f.growTime ? 0.95 : 0.95 * Math.max(0, f.life / retract);
     } else if (f.instanced) {
       const s = f.size * (0.4 + t * f.growth);
+      const vx = f.vel?.[0] ?? 0, vy = f.vel?.[1] ?? 0, vz = f.vel?.[2] ?? 0;
       for (let j = 0; j < f.centers.length; j++) {
         const c = f.centers[j];
+        c[0] += vx * dt; c[1] += vy * dt; c[2] += vz * dt;
         f.dummy.position.set(c[0], c[1], c[2]);
         f.dummy.scale.setScalar(s);
         f.dummy.updateMatrix();
@@ -907,6 +1029,9 @@ export function tickFx(dt) {
       f.mesh.material.opacity = age < f.tGrow ? 0.95 : 0.95 * Math.max(0, f.life / f.tShrink);
     } else {
       const s = f.size * (0.4 + t * f.growth);
+      f.mesh.position.x += (f.vel?.[0] ?? 0) * dt;
+      f.mesh.position.y += (f.vel?.[1] ?? 0) * dt;
+      f.mesh.position.z += (f.vel?.[2] ?? 0) * dt;
       f.mesh.scale.set(s, s, s);
       f.mesh.material.opacity = 0.95 * (f.life / f.max);
     }

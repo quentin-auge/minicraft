@@ -16,7 +16,9 @@ import {
   fxScale, speedFactor, resolveLayer, validateRocketFx, exposedFaces,
   landingRingPoints, coneSpreadK, coneBaseMul,
   CAM_LAG_TAU, CAM_LAG_MAX, CAM_LAG_STEPS, camLagOffset, pullEyeFree,
+  CARVE_DEBRIS_HALF, CARVE_IMPACT_VARIANTS, CARVE_IMPACT_VARIANT_ORDER, CARVE_IMPACT_VARIANT_DEFAULT,
 } from "../../../src/fx/rocketfx.js";
+import { BLOCK_DEBRIS_COLORS, BLOCK_DEBRIS_UNLIT, srgbToLinear } from "../../../src/core/blocks.js";
 
 const near = (a, b) => Math.abs(a - b) < 1e-9;
 
@@ -154,17 +156,10 @@ const near = (a, b) => Math.abs(a - b) < 1e-9;
 // --- the layer resolution ---------------------------------------------------
 {
   const impact = ROCKET_FX_EFFECTS.impact;
-  const dust = impact.layers.find((l) => l.place === "faces" && l.kind === "burst");
   const debris = impact.layers.find((l) => l.kind === "debris");
   const ring = impact.layers.find((l) => l.place === "planeRing");
 
   // The scale factors multiply the layer's props.
-  const plain = resolveLayer(dust, {});
-  assert.equal(plain.count, 6, "the dust keeps its count");
-  assert.ok(near(plain.size, 0.45), "the dust keeps its size");
-  const scaled = resolveLayer(dust, { scale: fxScale("impact", 1) });
-  assert.equal(scaled.count, 9, "a max-speed dive throws half again the dust");
-  assert.ok(near(scaled.size, 0.63), "and fatter grains");
   assert.ok(near(resolveLayer(debris, { scale: fxScale("impact", 1) }).radius, 1.6 * 1.4), "the debris spread grows with the blast");
   assert.ok(near(resolveLayer(ring, { scale: fxScale("impact", 1) }).radius, 0.7 * 1.4), "the shock ring widens with the blast");
 
@@ -181,11 +176,22 @@ const near = (a, b) => Math.abs(a - b) < 1e-9;
   // the tremble and the touchdown share one smoke family.
   assert.ok(!("spool" in ROCKET_FX_EFFECTS), "the ignition spool effect is gone");
 
-  // The hull dust counts the torn volume, then scales, then clamps.
-  const carve = ROCKET_FX_EFFECTS.carve.layers[0];
-  assert.equal(resolveLayer(carve, { amount: 24 }).count, 10, "two dozen cells add two particles");
-  assert.equal(resolveLayer(carve, { amount: 2400 }).count, 60, "the hull dust stays capped");
-  assert.equal(resolveLayer(carve, { amount: 2400, scale: fxScale("impact", 1) }).count, 60, "the cap survives the scaling");
+  // The hull rock dust is gone: the impact's voxel cubes alone carry the
+  // destroyed wall's colors — no second wall-colored cloud competes.
+  assert.ok(!("carve" in ROCKET_FX_EFFECTS), "no hull dust effect survives");
+
+  // The impact layers carry variant tags; every tag answers a variant.
+  assert.deepEqual(impact.layers.map((l) => l.tag), ["fire", "debris", "ring"], "impact layers carry variant tags");
+  for (const [key, variant] of Object.entries(CARVE_IMPACT_VARIANTS)) {
+    assert.equal(variant.key, key, `${key} carries its registry key`);
+    for (const tag of variant.tags) {
+      assert.ok(impact.layers.some((l) => l.tag === tag), `${key}: tag ${tag} names an impact layer`);
+    }
+  }
+  assert.deepEqual(CARVE_IMPACT_VARIANT_ORDER, ["fireCubesRing", "debrisOnly"], "E cycles the full look and cubes alone");
+  assert.equal(CARVE_IMPACT_VARIANT_DEFAULT, "fireCubesRing", "fire + cubes + ring ship");
+  assert.deepEqual(CARVE_IMPACT_VARIANTS.fireCubesRing.tags, ["fire", "debris", "ring"], "the default plays fire, cubes and ring");
+  assert.deepEqual(CARVE_IMPACT_VARIANTS.debrisOnly.tags, ["debris"], "the spare variant plays cubes alone");
 }
 
 // --- the reactor cones -----------------------------------------------------
@@ -556,6 +562,122 @@ const near = (a, b) => Math.abs(a - b) < 1e-9;
   assert.ok(mainSrc.includes("updateCamera(simActive ? dt : 0);\n  updateBossBar();"), "the camera refreshes post-sim");
   assert.ok(mainSrc.includes("rocketClampEye(camera.position)"), "the loop clamps the eye");
   assert.ok(!mainSrc.includes("isLagPresetCode"), "no lag key binding survives");
+}
+
+// --- the carve look: fixed cruise, wall colors, vessel drift --------------------
+{
+  const rocketSrc = readFileSync(fileURLToPath(new URL("../../../src/vehicles/rocket.js", import.meta.url)), "utf8");
+  assert.ok(!rocketSrc.includes("rocketMul"), "no rocket speed multiplier survives");
+  assert.ok(!rocketSrc.includes("setRocketMul"), "no rocket multiplier setter survives");
+  assert.ok(!rocketSrc.includes("function maxSpeed()"), "no cap accessor survives");
+  assert.ok(!rocketSrc.includes("function boostSpeed()"), "no boost accessor survives");
+  assert.ok(!rocketSrc.includes("function accelBase()"), "no accel accessor survives");
+  assert.ok(rocketSrc.includes("const CARVE_FX_FACTOR = 1;"), "the carve look is a fixed factor");
+  assert.ok(rocketSrc.includes('playFx("impact", { faces,'), "fire, ring and debris anchor on the same tick of shaft");
+  assert.ok(rocketSrc.includes("carveBlockIds.push(id);"), "the destroyed ids ride alongside the faces");
+  assert.ok(rocketSrc.includes("BLOCK_DEBRIS_COLORS[id]"), "the wall colors resolve through the registry");
+  assert.ok(!rocketSrc.includes("carveFire"), "no bow-fire variable survives");
+  assert.ok(!rocketSrc.includes("DEBRIS_GAINS"), "no brightness cursor survives");
+  assert.ok(!rocketSrc.includes("cycleDebrisGain"), "no brightness stepper survives");
+  assert.ok(!rocketSrc.includes("debrisGain"), "no brightness gain survives");
+  assert.ok(!rocketSrc.includes("cycleDebrisBox"), "no box-size stepper survives");
+  assert.ok(!rocketSrc.includes('playFx("carve"'), "no hull dust call survives");
+  assert.ok(!rocketSrc.includes("CARVE_DUST_MIN_CELLS"), "no hull dust budget survives");
+  assert.ok(!rocketSrc.includes("skyFactor"), "no exposure hack skews the match");
+  assert.ok(rocketSrc.includes("srgbToLinear(c[0]) * m"), "tints convert once to linear working space");
+  assert.ok(rocketSrc.includes("BLOCK_DEBRIS_UNLIT.has(id) ? 0.9 : 1"), "self-lit families sit on their emissive floor");
+  assert.equal(srgbToLinear(0), 0, "black stays black");
+  assert.equal(srgbToLinear(1), 1, "white stays white");
+  assert.ok(srgbToLinear(0.5) > 0.2 && srgbToLinear(0.5) < 0.23, "mid gray decodes to linear");
+  assert.ok(srgbToLinear(0.59) < 0.59 && srgbToLinear(0.59) > 0.2, "red wall texel reads darker in linear");
+  assert.ok(!rocketSrc.includes("vividColor"), "no saturation shifts the hues");
+  const impact = ROCKET_FX_EFFECTS.impact;
+  const bow = impact.layers.find((l) => l.place === "bowFront");
+  assert.ok(bow, "the impact leads with a fixed bow fire");
+  assert.equal(bow.kind, "burst", "the bow fire is particles only");
+  assert.equal(bow.count, 60, "the bow fire ships the wide ball, behind the cubes");
+  assert.equal(bow.foreground, false, "the bow fire stays depth-tested behind the cubes");
+  assert.ok(bow.life <= 2, "short life for a per-frame emitter");
+  assert.ok(!("scale" in bow) && !("ramp" in bow), "fixed numbers, no speed input");
+  assert.ok(!("firePreset" in impact), "no fire preset flag survives");
+  const specSrc = readFileSync(fileURLToPath(new URL("../../../src/fx/rocketfx.js", import.meta.url)), "utf8");
+  assert.ok(!specSrc.includes("CARVE_FIRE_PRESETS"), "no bow-fire registry survives");
+  assert.ok(!specSrc.includes("CARVE_FIRE_ORDER"), "no bow-fire order survives");
+  assert.ok(specSrc.includes('place: "bowFront"'), "a bow geometry exists");
+  assert.ok(specSrc.includes('bowFront: { props: ["lead"], sprays: true }'), "the bow geometry is declared");
+  assert.ok(rocketSrc.includes("factor: CARVE_FX_FACTOR,"), "the impact ignores speed");
+  assert.ok(rocketSrc.includes("gainedColors(ids)"), "the impact reads the wall colors");
+  assert.ok(rocketSrc.includes("function gainedColors(ids)"), "one helper colors every wall");
+  assert.ok(rocketSrc.includes("vel: [rvel.x, rvel.y, rvel.z],"), "the impact drifts with the vessel");
+  assert.ok(!rocketSrc.includes("amount: cleared.length,"), "no torn-volume dust survives");
+  assert.equal(CARVE_DEBRIS_HALF, 3, "the debris box ships at 3");
+  assert.ok(!specSrc.includes("CARVE_DEBRIS_HALVES"), "no box-size presets survive");
+  assert.ok(!rocketSrc.includes("function boxEnclosed()"), "no enclosure gate: every carve tick emits");
+  assert.ok(rocketSrc.includes("CARVE_FACE_FRAME_CAP = 192"), "one frame holds one tick of shaft");
+  assert.ok(rocketSrc.includes("debrisCount = Math.min(DEBRIS_CHUNK * 2, faces.length * DEBRIS_PER_FACE)"), "cubes scale with emitted faces");
+  assert.ok(!rocketSrc.includes("f.x += dx"), "no centroid rebase: debris stay at the true intersections");
+  assert.ok(rocketSrc.includes("variant: CARVE_IMPACT_VARIANT_DEFAULT"), "the flush plays the fixed shipped look");
+  assert.ok(!rocketSrc.includes("cycleImpactVariant"), "no variant cycling survives");
+  assert.ok(!rocketSrc.includes("impactVariantName"), "no variant readout survives");
+  assert.ok(rocketSrc.includes("CARVE_IMPACT_VARIANT_DEFAULT"), "a shipped variant is the default");
+  const impactSrc = readFileSync(fileURLToPath(new URL("../../../src/fx/rocketimpact.js", import.meta.url)), "utf8");
+  assert.ok(impactSrc.includes("CARVE_IMPACT_VARIANTS[ctx.variant]?.tags"), "the engine resolves the selected variant");
+  assert.ok(impactSrc.includes("!tags || !l.tag || tags.has(l.tag)"), "untagged layers always play");
+  assert.ok(!impactSrc.includes("fireLayers"), "no fire layer splice survives");
+  assert.ok(impactSrc.includes("baseVel: ctx?.vel ?? null,"), "bursts and flashes keep the emitter velocity");
+  assert.ok(impactSrc.includes("baseVel: null,"), "the debris skips base velocity under follow (no double-count)");
+  assert.ok(impactSrc.includes("ctx.debrisFaces ?? ctx.faces"), "the debris covers the traversal sample");
+  assert.ok(impactSrc.includes("ctx?.debrisCount"), "the debris budget scales with emitted faces");
+  assert.ok(impactSrc.includes("Math.min(384, remaining)"), "past one pool burst the debris splits in chunks");
+  assert.ok(impactSrc.includes("colors: ctx?.faceColors ?? ctx?.colors ?? null,"), "the engine forwards the per-face wall colors");
+  assert.ok(impactSrc.includes("ids: ctx?.faceIds ?? ctx?.ids ?? null,"), "the engine forwards the per-face block ids");
+  assert.ok(impactSrc.includes("centers,"), "the debris spreads over every exposed face");
+  assert.ok(impactSrc.includes("follow: true,"), "the debris burst pins to the vessel");
+  assert.ok(rocketSrc.includes("shiftFollowDebris(origin.x - shiftPrev.x, origin.y - shiftPrev.y, origin.z - shiftPrev.z);"), "every flight tick carries the live debris");
+  assert.ok(rocketSrc.includes("ids,"), "the flush passes the ids alongside the colors");
+  assert.ok(rocketSrc.includes("out.push(null);"), "unmapped ids stay parallel, gray fallback downstream");
+  assert.ok(impactSrc.includes("layer.wallColors ? (ctx.colors ?? []).filter(Boolean) : null"), "wall-colors layers read the destroyed blocks");
+  assert.ok(impactSrc.includes("bowFront(ctx, layer)"), "the bow fire leads the debris");
+  const parts = readFileSync(fileURLToPath(new URL("../../../src/fx/particles.js", import.meta.url)), "utf8");
+  assert.ok(parts.includes("export function applyBaseVel(vx, vy, vz, baseVel)"), "the velocity helper is exported");
+  assert.ok(parts.includes("baseVel = null,"), "every spawner accepts a base velocity");
+  assert.ok(parts.includes("f.mesh.position.x += (f.vel?.[0] ?? 0) * dt;"), "the flash shell drifts too");
+  assert.ok(parts.includes("colors[i % colors.length]"), "each debris cube reads its own wall color");
+  assert.ok(rocketSrc.includes("averageBlockColor(id) ?? BLOCK_DEBRIS_COLORS[id]"), "measured texels first, registry fallback");
+  const texSrc = readFileSync(fileURLToPath(new URL("../../../src/core/textures.js", import.meta.url)), "utf8");
+  assert.ok(texSrc.includes("export function averageBlockColor(id)"), "the measured wall color is exported");
+  assert.ok(texSrc.includes('typeof document === "undefined"'), "headless falls back to the registry");
+  assert.ok(parts.includes("DEBRIS_POOL_SIZE = 6"), "the pool holds a six-tick scrape window");
+  const burstFn = parts.slice(parts.indexOf("function makeDebrisBurst("), parts.indexOf("export function spawnDebris(o)"));
+  assert.ok(burstFn.includes("new THREE.MeshLambertMaterial({ color: 0xffffff })"), "the lit pool shades ordinary cubes");
+  assert.ok(burstFn.includes("new THREE.MeshBasicMaterial({ color: 0xffffff, fog: false })"), "the unlit pool matches the self-lit sources");
+  assert.ok(parts.includes("BLOCK_DEBRIS_UNLIT.has(id)"), "each cube routes by its source family");
+  assert.ok(parts.includes("debrisLitPool") && parts.includes("debrisUnlitPool"), "two debris pools, one material each");
+  assert.ok(BLOCK_DEBRIS_UNLIT.has(19), "moon debris skips the shade");
+  for (const id of [29, 31, 33, 35, 37, 39, 41]) assert.ok(BLOCK_DEBRIS_UNLIT.has(id), `planet rock ${id} skips the shade`);
+  assert.ok(BLOCK_DEBRIS_UNLIT.has(20), "glowstone debris skips the shade");
+  assert.ok(!BLOCK_DEBRIS_UNLIT.has(3), "stone debris keeps its shaded relief");
+  assert.deepEqual(BLOCK_DEBRIS_COLORS[3], [0.55, 0.55, 0.55], "stone reads gray");
+  assert.deepEqual(BLOCK_DEBRIS_COLORS[10], [0.75, 0.22, 0.17], "tnt reads red");
+  for (const [id, rgb] of Object.entries(BLOCK_DEBRIS_COLORS)) {
+    assert.ok(rgb.length === 3 && rgb.every((v) => v >= 0 && v <= 1), `color ${id} is a unit rgb triple`);
+  }
+  const main = readFileSync(fileURLToPath(new URL("../../../main.js", import.meta.url)), "utf8");
+  assert.ok(!main.includes("rocketflymul"), "no rocket multiplier param survives");
+  assert.ok(!main.includes("setRocketMul"), "no rocket multiplier wiring survives");
+  assert.ok(!main.includes("cycleDebrisGain"), "no brightness cursor wiring survives");
+  assert.ok(!main.includes("debrisGainName"), "no brightness HUD survives");
+  assert.ok(!main.includes("cycleDebrisBox"), "no box-size wiring survives");
+  assert.ok(!main.includes("cycleImpactVariant"), "no variant cursor survives");
+  assert.ok(!main.includes("impactVariantName"), "no variant readout survives");
+  assert.ok(!main.includes("rocketBoostInfo"), "no boost readout survives");
+  assert.ok(!main.includes("| boost"), "no boost HUD suffix survives");
+  const fly = readFileSync(fileURLToPath(new URL("../../../src/player/fly.js", import.meta.url)), "utf8");
+  assert.ok(!fly.includes("?rocketflymul="), "no rocket multiplier pointer survives");
+  const keys = readFileSync(fileURLToPath(new URL("../../../src/player/keys.js", import.meta.url)), "utf8");
+  assert.ok(!keys.includes("isDebrisGainCycleCode"), "no brightness key survives");
+  assert.ok(!keys.includes("isDebrisBoxCycleCode"), "no box-size key survives");
+  assert.ok(!keys.includes("isImpactVariantCycleCode"), "no variant key survives");
 }
 
 console.log("rocketfx.test.mjs: ok");

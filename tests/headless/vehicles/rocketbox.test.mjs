@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { AIR, DIRT, FLOWER, STONE, WATER } from "../../../src/core/blocks.js";
 import { sweptBoxCells } from "../../../src/world/rocketpad.js";
-import { footprintTouches, stopBelow, bodyOverlapCells } from "../../../src/vehicles/rocketbox.js";
+import { footprintTouches, stopBelow, gapBelowFootprint, debrisSpawnBox, bodyOverlapCells } from "../../../src/vehicles/rocketbox.js";
 
 const vbox = (x1 = 0, y1 = 0, z1 = 0) => ({ x0: 0, x1, y0: 0, y1, z0: 0, z1 });
 
@@ -142,6 +142,47 @@ function stubMaps(cells = []) {
   // Short mob body (h 1): single row.
   assert.deepEqual(bodyOverlapCells(10.5, 20, 10.5, 0.32, 1), [[10, 20, 10]], "1-high body reads one row");
   console.log("PASS rocketbox-body-overlap");
+}
+
+// --- vertical gap below the footprint: min over columns, capped at maxD -
+{
+  const one = vbox();
+  // Hull bottom at 30: ground top at 20 → gap 9 (bottom 30 minus top 21).
+  assert.equal(gapBelowFootprint(stubMaps([[10, 20, 10, STONE]]).getBlock, 10, 30, 10, one, 50), 9, "flat ground gap exact");
+  // Contact row (support directly below) reads a sub-1 gap, like stopBelow.
+  assert.ok(gapBelowFootprint(stubMaps([[10, 29, 10, DIRT]]).getBlock, 10, 30.2, 10, one, 50) < 1, "support row reads near-contact");
+  // Liquids and flowers count, air never does.
+  assert.equal(gapBelowFootprint(stubMaps([[10, 20, 10, WATER]]).getBlock, 10, 30, 10, one, 50), 9, "liquid counts");
+  assert.equal(gapBelowFootprint(stubMaps().getBlock, 10, 30, 10, one, 50), Infinity, "open sky reads void");
+  // A surface past maxD is invisible; the default cap is 50.
+  assert.equal(gapBelowFootprint(stubMaps([[10, 20, 10, STONE]]).getBlock, 10, 100, 10, one, 50), Infinity, "surface past maxD ignored");
+  assert.equal(gapBelowFootprint(stubMaps([[10, 20, 10, STONE]]).getBlock, 10, 100, 10, one), Infinity, "default cap is 50");
+  // Wide hull: the highest column wins; a hole column never hides the rest.
+  const wide = vbox(2, 0, 0);
+  const g = stubMaps([[10, 20, 10, STONE], [12, 25, 10, STONE]]).getBlock;
+  assert.equal(gapBelowFootprint(g, 10, 30, 10, wide, 50), 4, "highest column wins");
+  const hole = stubMaps([[10, 20, 10, STONE]]).getBlock;
+  assert.equal(gapBelowFootprint(hole, 10, 30, 10, wide, 50), 9, "hole columns read void, min kept");
+  // Fractional bottom: gap stays float-exact.
+  assert.equal(gapBelowFootprint(stubMaps([[10, 20, 10, STONE]]).getBlock, 10, 30.5, 10, one, 50), 9.5, "fractional bottom exact");
+  console.log("PASS rocketbox-gap-below");
+}
+
+// --- debris spawn box: union of the hull and the tuned half-extent -------
+{
+  // 1-block hull, pilot inside: the tuned box wins on every axis.
+  assert.deepEqual(debrisSpawnBox(vbox(), 10, 20, 10, 10.5, 20.2, 10.5, 1.5),
+    { x0: -2, x1: 2, y0: -2, y1: 2, z0: -2, z1: 2 }, "1-block hull inherits the tuned cube");
+  // Big hull: untouched (union keeps the hull where it already covers).
+  assert.deepEqual(debrisSpawnBox(vbox(6, 6, 6), 10, 20, 10, 13.5, 23.2, 13.5, 1.5),
+    { x0: 0, x1: 6, y0: 0, y1: 6, z0: 0, z1: 6 }, "big hull keeps its own volume");
+  // Thin hull, pilot off-center: the union stretches only where needed.
+  assert.deepEqual(debrisSpawnBox({ x0: 0, x1: 0, y0: 0, y1: 4, z0: 0, z1: 0 }, 10, 20, 10, 10.5, 20.2, 10.5, 1.5),
+    { x0: -2, x1: 2, y0: -2, y1: 4, z0: -2, z1: 2 }, "thin mast stretches XZ, keeps its height");
+  // Zero half-extent: the vessel box alone.
+  assert.deepEqual(debrisSpawnBox(vbox(2, 2, 2), 10, 20, 10, 11.5, 21.2, 11.5, 0),
+    { x0: 0, x1: 2, y0: 0, y1: 2, z0: 0, z1: 2 }, "zero half-extent reads the hull");
+  console.log("PASS rocketbox-debris-box");
 }
 
 console.log("rocketbox.test.mjs: ok");

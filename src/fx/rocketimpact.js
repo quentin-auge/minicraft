@@ -9,7 +9,7 @@
 // (see src/render/orders.js), so the rocket's own effects never sit under
 // the world's transparent bands.
 import { spawnBurst, spawnBurstBatch, spawnFlashBatch, spawnDebris, coneBasis } from "./particles.js";
-import { ROCKET_FX_EFFECTS, ROCKET_FX_HALOS, ROCKET_FX_HALO_KEYS, ROCKET_FX_REACTOR_DIAMETERS, ROCKET_FX_DEFAULT_DIAMETER, ROCKET_FX_REACTOR_DEPTHS, ROCKET_FX_DEFAULT_DEPTH, ROCKET_FX_PALETTE, fxScale, resolveLayer, landingRingPoints, coneSpreadK, coneBaseMul } from "./rocketfx.js";
+import { ROCKET_FX_EFFECTS, ROCKET_FX_HALOS, ROCKET_FX_HALO_KEYS, ROCKET_FX_REACTOR_DIAMETERS, ROCKET_FX_DEFAULT_DIAMETER, ROCKET_FX_REACTOR_DEPTHS, ROCKET_FX_DEFAULT_DEPTH, ROCKET_FX_PALETTE, CARVE_IMPACT_VARIANTS, fxScale, resolveLayer, landingRingPoints, coneSpreadK, coneBaseMul } from "./rocketfx.js";
 import { ORDERS } from "../render/orders.js";
 
 // Where a layer's particles start and which way they spray.
@@ -22,15 +22,33 @@ const PLACEMENTS = {
       dirs: faces.map((f) => [f.nx, f.ny, f.nz]),
     };
   },
-  // The centroid of the exposed faces: the debris burst plays there, since
-  // the debris pool is a single global burst.
+  // One debris center per exposed face of the tick of shaft, so the
+  // cubes cover the whole carved surface in its true colors. Falls back to
+  // the anchor faces when no debris sample rides along.
   faceCentroid(ctx) {
+    const faces = ctx.debrisFaces ?? ctx.faces ?? [];
+    if (!faces.length) return { centers: [], dirs: null };
+    return { centers: faces.map((f) => [f.x, f.y, f.z]), dirs: null };
+  },
+  // Ahead of the debris along the flight direction: the face centroid
+  // pushed forward by the layer's lead, spraying along the motion so the
+  // fire licks ahead of the cubes that follow through it. Falls back to
+  // straight up when the emitter is at rest.
+  bowFront(ctx, layer) {
     const faces = ctx.faces ?? [];
     if (!faces.length) return { centers: [], dirs: null };
     let cx = 0, cy = 0, cz = 0;
     for (const f of faces) { cx += f.x; cy += f.y; cz += f.z; }
     const n = faces.length;
-    return { centers: [[cx / n, cy / n, cz / n]], dirs: null };
+    cx /= n; cy /= n; cz /= n;
+    const v = ctx.vel ?? [0, 0, 0];
+    const s = Math.hypot(v[0], v[1], v[2]);
+    const dir = s > 1e-6 ? [v[0] / s, v[1] / s, v[2] / s] : [0, 1, 0];
+    const lead = layer.lead ?? 1.5;
+    return {
+      centers: [[cx + dir[0] * lead, cy + dir[1] * lead, cz + dir[2] * lead]],
+      dirs: [dir],
+    };
   },
   // A ring lying in the plane of the dominant contact normal, so a wall hit
   // spreads its ring across the wall instead of along the ground.
@@ -137,7 +155,9 @@ const PLACEMENTS = {
 // How a layer's props reach the particle backend.
 const RENDERERS = {
   // An expanding flash shell, one instance per center in a single draw.
-  flash(layer, props, place) {
+  // `ctx.vel` drifts the shell with its moving emitter (see particles.js
+  // baseVel); absent reads as world-anchored.
+  flash(layer, props, place, ctx) {
     spawnFlashBatch({
       centers: place.centers,
       color: ROCKET_FX_PALETTE[layer.color],
@@ -145,16 +165,23 @@ const RENDERERS = {
       size: props.size,
       growth: props.growth,
       renderOrder: ORDERS.VEHICLE_FX,
+      baseVel: ctx?.vel ?? null,
     });
   },
   // A particle cloud: one batched draw for many centers, a single cloud
-  // when there is one center and no direction to spray along.
-  burst(layer, props, place) {
+  // when there is one center and no direction to spray along. `ctx.vel`
+  // drifts the cloud with its moving emitter.
+  burst(layer, props, place, ctx) {
     // A layer either paints one flat colour or picks a palette entry per
-    // particle; the palette role names which.
-    const paint = layer.palette
-      ? { palette: ROCKET_FX_PALETTE[layer.palette] }
-      : { color: ROCKET_FX_PALETTE[layer.color] };
+    // particle; the palette role names which. A wall-colors layer reads the
+    // destroyed blocks instead (see ctx.colors), falling back to its own
+    // paint when the pass tore nothing mapped.
+    const wall = layer.wallColors ? (ctx.colors ?? []).filter(Boolean) : null;
+    const paint = wall?.length
+      ? { palette: wall }
+      : layer.palette
+        ? { palette: ROCKET_FX_PALETTE[layer.palette] }
+        : { color: ROCKET_FX_PALETTE[layer.color] };
     // The divergent nozzle disc multiplies the centers per thruster: keep
     // the particle budget constant by dealing the count across sub-centers.
     let count = props.count;
@@ -186,6 +213,7 @@ const RENDERERS = {
       // centers reads as a continuous volume instead of separate specks.
       fillRadius: props.fillRadius ?? 0,
       renderOrder: ORDERS.VEHICLE_FX,
+      baseVel: ctx?.vel ?? null,
       ...paint,
     };
     if (!dirs && centers.length === 1) {
@@ -195,15 +223,34 @@ const RENDERERS = {
     }
     spawnBurstBatch({ ...common, centers, directions: dirs });
   },
-  // Instanced voxel debris thrown off the impact.
-  debris(layer, props, place) {
-    const c = place.centers[0];
-    spawnDebris({
-      x: c[0], y: c[1], z: c[2],
-      R: props.radius,
-      count: props.count,
-      life: props.life,
-    });
+  // Instanced voxel debris thrown off every exposed face, at the true face
+  // positions (bbox–obstacle intersections — never rebased). `faceColors`
+  // tints each face's cubes with its own destroyed block (absent reads the
+  // backend gray), `faceIds` routes each cube to the pool matching its
+  // source family. `follow` pins the burst to the vessel: the cloud rides
+  // the ship instead of diverging from it under accel — so no base velocity
+  // at spawn (it would double-count the ride: integration plus shift).
+  debris(layer, props, place, ctx) {
+    const centers = place.centers.length > 1 ? place.centers : null;
+    const single = place.centers[0];
+    // Volume-scaled burst: the caller budgets cubes per emitted face; split
+    // past one pool burst (384 boxes) so a fast tick still lands whole.
+    let remaining = Math.max(1, Math.round(ctx?.debrisCount ?? props.count));
+    while (remaining > 0) {
+      const count = Math.min(384, remaining);
+      remaining -= count;
+      spawnDebris({
+        x: single[0], y: single[1], z: single[2],
+        R: props.radius,
+        count,
+        life: props.life,
+        baseVel: null,
+        colors: ctx?.faceColors ?? ctx?.colors ?? null,
+        ids: ctx?.faceIds ?? ctx?.ids ?? null,
+        centers,
+        follow: true,
+      });
+    }
   },
 };
 
@@ -213,12 +260,27 @@ const RENDERERS = {
 //   factor     the normalized input the effect's curve reads (0 .. 1)
 //   diameter   the key of the chosen reactor diameter
 //   depth      the key of the chosen reactor depth
-//   faces      the walls a carve exposed (the face placements)
+//   faces      the anchor faces (fire lead, ring plane, debris fallback)
+//   debrisFaces the tick-of-shaft faces the debris covers (parallel to
+//              faceColors/faceIds); falls back to `faces`
+//   faceColors per-face wall colors (parallel to `debrisFaces`), for the debris
+//   faceIds    per-face block ids (parallel to `debrisFaces`), for the debris
+//              pool routing by source family
+//   debrisCount the volume-scaled debris budget (cubes), split past one pool
+//              burst
 //   nozzles    the thruster positions (the nozzle placement)
 //   x, y, z    the hull's min corner; halfW/halfD its footprint
 //   hullHeight how tall the hull is (the shell climbs it)
 //   ramp       the ramp inputs a layer names (level, progress)
 //   amount     the torn volume, for the layers that count it
+//   colors     the destroyed wall's colors, for the wall-colors layers
+//   ids        the destroyed block ids, parallel to colors, for the debris
+//              pool routing by source family
+//   vel        the emitter velocity the cloud drifts with (carve follows
+//              the vessel instead of hanging in world space)
+//   variant    the E-cycled impact variant key (see CARVE_IMPACT_VARIANTS):
+//              only the layers carrying one of its tags play (untagged
+//              layers always play)
 //
 // Returns the factors the effect's curve resolved, so the caller can read
 // the landing's shake out of the very numbers the cloud was built with.
@@ -232,7 +294,10 @@ export function playFx(key, ctx = {}) {
   // The landing's surrounding cloud is the single shipped halo: its layers
   // play after the effect's own, with the same scale.
   const halo = effect.halo ? ROCKET_FX_HALOS[ROCKET_FX_HALO_KEYS[0]] : null;
-  const layers = halo ? [...effect.layers, ...halo.layers] : effect.layers;
+  // The E-cycled impact variant: only the layers carrying one of its tags
+  // play, so the pilot tunes fire+cubes+ring against cubes alone.
+  const tags = ctx.variant ? new Set(CARVE_IMPACT_VARIANTS[ctx.variant]?.tags ?? []) : null;
+  const layers = [...effect.layers.filter((l) => !tags || !l.tag || tags.has(l.tag)), ...(halo ? halo.layers : [])];
   // The tuned numbers, read once per effect: the smoke envelope's
   // density/height/lifetime, the diameter slopes and the depth lifetime.
   // One struct, no per-layer re-reads.
@@ -280,7 +345,7 @@ export function playFx(key, ctx = {}) {
         flare: props.flare ?? null, baseRadius: props.baseRadius ?? null,
       });
     }
-    RENDERERS[layer.kind](layer, props, place);
+    RENDERERS[layer.kind](layer, props, place, ctx);
   }
   return scale;
 }

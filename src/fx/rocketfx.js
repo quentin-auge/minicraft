@@ -44,8 +44,8 @@ export const ROCKET_FX_PALETTE = {
 // cloud's counts, the cloud's grain and the shake's amount by the same
 // number — so a change to one is a change to the others.
 export const ROCKET_FX_CURVES = {
-  // The blast: counts 0.5 .. 1.5, sizes 0.6 .. 1.4, so a slow bore throws
-  // pebbles while a max-speed dive throws a wall.
+  // The blast: counts 0.5 .. 1.5, sizes 0.6 .. 1.4 at the fixed cruise
+  // factor — the carve always reads the cruise wall.
   impact: {
     count: [0.5, 1.5],
     size: [0.6, 1.4],
@@ -186,6 +186,13 @@ export function coneBaseMul(spreadMul, baseSlope = 0.35) {
 // its nozzles to the side's middle. The pad rocket (7 wide) never merges.
 export const ROCKET_FX_DEFAULT_MERGE = 2;
 
+// The carve debris spawn box: the FX spawn volume is the union of the
+// vessel box and a cube of this half-extent around the player — any hull
+// thinner than it still shows its carve all around the pilot instead of
+// inside the camera. Big hulls keep theirs. Hardcoded, not tuned. Kept as
+// the shared min-volume rule (see debrisSpawnBox in rocketbox.js).
+export const CARVE_DEBRIS_HALF = 3;
+
 // The effect registry. Every layer names its renderer and its geometry and
 // carries every number the renderer reads: the engine holds no tuning of
 // its own, so the whole look is this file.
@@ -194,46 +201,48 @@ export const ROCKET_FX_DEFAULT_MERGE = 2;
 // above the hull base where the effect anchors (the touchdown dust sits on
 // the ground, the hull dust a body-height up).
 export const ROCKET_FX_EFFECTS = {
-  // The walls a carve exposed: a flash shell, a dust cone, one voxel-debris
-  // burst at the face centroid, and a shock ring lying in the plane of the
-  // dominant contact normal, so a wall hit throws its ring across the wall.
+  // The walls a carve exposed: a fixed bow fire ahead of the nose, one
+  // voxel-debris burst per exposed face in the destroyed walls' own colors,
+  // and a shock ring lying in the plane of the dominant contact normal, so
+  // a wall hit throws its ring across the wall. The fire leads, the debris
+  // follows through it, all at the true face positions (bbox–obstacle
+  // intersections). Each layer carries a variant tag (`tag`); the E-cycled
+  // `CARVE_IMPACT_VARIANTS` (fire+cubes+ring shipping, cubes-only spare)
+  // pick which tags play.
   impact: {
     key: "impact",
     label: "Debris + shock",
     curve: "impact",
     layers: [
       {
-        kind: "flash",
-        place: "faces",
-        color: "flash",
-        life: 0.2,
-        size: 0.2,
-        growth: 3.2,
-        scale: { size: "size", growth: "size" },
-      },
-      {
-        // Soft non-additive dust cone, wider than the flash.
+        // Fixed bow fire ahead of the debris: a wide fireball thrown at the
+        // bow, particle-only so the wall-colored debris stays readable.
+        // Fixed numbers (no speed input anywhere), the emitter velocity
+        // alone drifts it with the vessel. Depth-tested, behind the cubes.
         kind: "burst",
-        place: "faces",
-        color: "dust",
-        count: 6,
+        place: "bowFront",
+        tag: "fire",
+        palette: "embers",
+        count: 60,
         life: 0.9,
-        size: 0.45,
-        gravity: 9,
-        speedMin: 1,
-        speedMax: 5,
-        spread: 1.1,
-        up: 0,
-        additive: false,
+        size: 0.55,
+        gravity: 4,
+        speedMin: 8,
+        speedMax: 20,
+        spread: 0.7,
+        up: 2,
+        lead: 1.5,
+        fillRadius: 1.5,
+        additive: true,
         foreground: false,
-        variance: [0.12, 0.12, 0.12],
-        scale: { count: "count", size: "size" },
       },
       {
-        // Instanced voxel debris thrown off the face. The debris cubes keep
-        // the backend's own rock colour, so the palette does not reach them.
+        // Instanced voxel debris thrown off every exposed face, tinted per
+        // face with the destroyed wall's own colors (see
+        // ctx.faceColors/ctx.faceIds in rocketimpact.js).
         kind: "debris",
         place: "faceCentroid",
+        tag: "debris",
         count: 120,
         life: 1.0,
         radius: 1.6,
@@ -244,6 +253,7 @@ export const ROCKET_FX_EFFECTS = {
         // across the surface, then detaching from it.
         kind: "burst",
         place: "planeRing",
+        tag: "ring",
         palette: "embers",
         count: 4,
         life: 0.55,
@@ -297,38 +307,6 @@ export const ROCKET_FX_EFFECTS = {
         dirScale: 1.1,
         span: 0.6,
         scale: { count: "count", size: "size", span: "height", life: "duration", up: "height" },
-      },
-    ],
-  },
-
-  // The hull's own rock dust: the volume the rocket tore loose, scaled with
-  // the speed it tore it at. The count follows the torn volume (one extra
-  // particle per twelve cleared cells), the grain follows the blast radius.
-  carve: {
-    key: "carve",
-    label: "Hull rock dust",
-    curve: "impact",
-    origin: { y: 1.5 },
-    layers: [
-      {
-        kind: "burst",
-        place: "point",
-        color: "dust",
-        count: 8,
-        countMin: 1,
-        countMax: 60,
-        amountPer: 12,
-        life: 0.55,
-        size: 0.35,
-        gravity: 8,
-        speedMin: 2,
-        speedMax: 7,
-        up: 1,
-        spread: 0.35,
-        additive: false,
-        foreground: false,
-        variance: [0.2, 0.2, 0.2],
-        scale: { count: "count", size: "size" },
       },
     ],
   },
@@ -413,6 +391,16 @@ export const ROCKET_FX_EFFECTS = {
   },
 };
 
+// The E-cycled carve impact variants (HUD readout): each names the layer
+// tags that play — untagged layers (none in `impact` today) always play.
+// `fireCubes` ships: voxel cubes plus the bow fire, nothing else.
+export const CARVE_IMPACT_VARIANTS = {
+  fireCubesRing: { key: "fireCubesRing", label: "Fire + cubes + ring", tags: ["fire", "debris", "ring"] },
+  debrisOnly: { key: "debrisOnly", label: "Cubes only", tags: ["debris"] },
+};
+export const CARVE_IMPACT_VARIANT_ORDER = ["fireCubesRing", "debrisOnly"];
+export const CARVE_IMPACT_VARIANT_DEFAULT = "fireCubesRing";
+
 // The factors of a curve at a normalized input t (0 .. 1): the count, size,
 // span, lifetime and shake the layers scale by. The intensity knob scales
 // every factor alike, so the cloud and the shake move together by the same
@@ -483,8 +471,8 @@ export function pullEyeFree(ex, ey, ez, px, py, pz, isSolid, steps = CAM_LAG_STE
 // The order matters: the ramp grows the base (the thrust level adds
 // particles and jet speed), Y tunes the smoke's height/density before
 // any speed scaling, the amount term adds the torn volume to the
-// count, and the scale factors multiply the result — so the blast grows
-// with the speed the hull carries.
+// count, and the scale factors multiply the result — the carve reads a
+// fixed cruise scale.
 export function resolveLayer(layer, { scale = {}, ramp = 0, amount = 0, smokeY = null } = {}) {
   const props = { ...layer };
   if (layer.ramp) {
@@ -564,7 +552,7 @@ const FACE_DIRS = [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 
 // buckets, so the sides of the bored shaft each keep a share of the budget
 // instead of one side crowding the others out.
 export function exposedFaces(cells, isSolidAt, opts = {}) {
-  const { maxFaces = 24, maxCells = 2400, skipBelow = true } = opts;
+  const { maxFaces = 24, maxCells = 2400, skipBelow = true, idOf = null } = opts;
   const buckets = [[], [], [], [], [], []];
   if (!cells || !cells.length) return [];
   const n = Math.min(cells.length, maxCells);
@@ -580,6 +568,9 @@ export function exposedFaces(cells, isSolidAt, opts = {}) {
         y: c[1] + 0.5 + dir[1] * 0.35,
         z: c[2] + 0.5 + dir[2] * 0.35,
         nx: -dir[0], ny: -dir[1], nz: -dir[2],
+        // The cleared cell's own block id, when the caller maps it — the
+        // debris tints each face with its own wall.
+        id: idOf ? (idOf(c[0], c[1], c[2]) ?? null) : null,
       });
     }
   }
@@ -615,6 +606,7 @@ export const FX_LAYER_KINDS = {
 export const FX_PLACES = {
   faces: { props: [], sprays: true },
   faceCentroid: { props: [], sprays: false },
+  bowFront: { props: ["lead"], sprays: true },
   planeRing: { props: ["radius", "steps", "nudge"], sprays: true },
   hullShell: { props: ["pad", "steps", "rows", "dirY", "dirScale", "span"], sprays: true },
   nozzles: { props: ["baseRadius", "flare"], sprays: true },
@@ -713,5 +705,15 @@ export function validateRocketFx() {
   if (!Number.isInteger(ROCKET_FX_DEFAULT_MERGE) || ROCKET_FX_DEFAULT_MERGE < 1) {
     problems.push("the merge threshold is missing or not a positive integer");
   }
+  const impactTags = new Set((ROCKET_FX_EFFECTS.impact?.layers ?? []).map((l) => l.tag).filter(Boolean));
+  for (const [key, variant] of Object.entries(CARVE_IMPACT_VARIANTS)) {
+    if (variant.key !== key) problems.push(`impactVariant.${key}: the key does not match its registry key`);
+    if (!Array.isArray(variant.tags) || !variant.tags.length) problems.push(`impactVariant.${key}: tags is not a non-empty array`);
+    for (const tag of variant.tags ?? []) {
+      if (!impactTags.has(tag)) problems.push(`impactVariant.${key}: unknown impact tag ${tag}`);
+    }
+  }
+  if (CARVE_IMPACT_VARIANT_ORDER.some((k) => !(k in CARVE_IMPACT_VARIANTS))) problems.push("the impact variant order names an unknown variant");
+  if (!(CARVE_IMPACT_VARIANT_DEFAULT in CARVE_IMPACT_VARIANTS)) problems.push("the default impact variant names no known variant");
   return problems;
 }

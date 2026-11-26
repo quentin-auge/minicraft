@@ -14,24 +14,24 @@
 // overlapping farm mobs ride along and fade with the hull.
 import * as THREE from "three";
 import {
-  AIR, GLASS, GLOWSTONE, FLOWER, THRUSTER, BLOCK_INFO, isLiquid, isSolidId, isTntLike,
+  AIR, GLASS, GLOWSTONE, FLOWER, THRUSTER, BLOCK_INFO, BLOCK_DEBRIS_COLORS, BLOCK_DEBRIS_UNLIT, srgbToLinear, isLiquid, isSolidId, isTntLike,
 } from "../core/blocks.js";
 import {
   dim, getBlock, setBlock, isSolid, isCellProtected, protectCell,
   unprotectCell, WORLD_RADIUS, key,
 } from "../core/store.js";
-import { materialsFor } from "../core/textures.js";
+import { materialsFor, averageBlockColor } from "../core/textures.js";
 import { ROCKET_SPEC, rocketSite, rideBoardable, pickUnderFeet, takeoffAllowed, resetVessels, listVessels, vesselWorldBox, refreshAllVessels, stealCellsFromVessels, sweptBoxCells, flightCarveBox, shipBounds, registerVessel, updateVessel, removeVessel, resetPads, listPads, takeoffBox } from "../world/rocketpad.js";
 import { registerVehicleType } from "./registry.js";
-import { footprintTouches, stopBelow, bodyOverlapCells } from "./rocketbox.js";
+import { footprintTouches, stopBelow, gapBelowFootprint, bodyOverlapCells } from "./rocketbox.js";
 import {
   pos, vel, keys, yaw, pitch, jumpingNow, setOnGround, WALK, PLAYER_HW, PLAYER_H,
 } from "../player/physics.js";
 import { isUp, isDown, isLeft, isRight, isSprint, isConfirm } from "../player/keys.js";
 import { FLY, flyOn } from "../player/fly.js";
 import { clearGlowstoneAt, noteGlowstonePlace, noteGlowstonePlaceShared, glowVariantAt } from "../world/glowstone.js";
-import { MOON_MIN_Y, markMoonDirty } from "../world/moon.js";
-import { spaceSpeedMul } from "../world/spacezone.js";
+import { MOON_MIN_Y, MOON_SURFACE_Y, markMoonDirty } from "../world/moon.js";
+import { spaceSpeedMul, spaceFactorFromDist, landingDistBox, SPACE_BUFFER } from "../world/spacezone.js";
 import { clearFlowerAt, noteFlowerPlace, noteFlowerPlaceShared, flowerVariantAt, flowerAngleAt } from "../world/flowers.js";
 import { FLOWER_GEOS, flightFlowerMat } from "../render/flowers.js";
 import { clearReactionAt } from "../world/reactions.js";
@@ -41,8 +41,9 @@ import { rideSigFromKey } from "../world/portalfills.js";
 import { severHook } from "../player/hook.js";
 import { refreshBlocks, queueRefreshBlocks } from "../render/mesher.js";
 import { ORDERS } from "../render/orders.js";
-import { exposedFaces, speedFactor, countdownFactor, fxScale, camLagOffset, pullEyeFree } from "../fx/rocketfx.js";
+import { exposedFaces, speedFactor, countdownFactor, fxScale, camLagOffset, pullEyeFree, CARVE_IMPACT_VARIANT_DEFAULT } from "../fx/rocketfx.js";
 import { playFx } from "../fx/rocketimpact.js";
+import { shiftFollowDebris } from "../fx/particles.js";
 import { REACTOR_SETUP, mergeReactors } from "./reactors.js";
 import { dimTntTiersUnlocked, dimFloorY } from "../world/dimensions.js";
 import { isTntTierUnlocked } from "../world/tntunlock.js";
@@ -88,6 +89,10 @@ const TRAUMA_DECAY = 1.4;
 // the camera follows the ramp instead of pinning at the cap early.
 const TREMOR_TRACK = TRAUMA_DECAY * 0.12;
 const ACCEL = 26;
+// Opposition brake rate (1/s): extra thrust when pushing against the motion
+// (Up while falling, Down while climbing), so a void-speed inversion takes
+// ~1 s while the base caps barely feel it.
+const BRAKE_K = 1.5;
 // Liftoff burn: the old instant 5.2 kick as a real 0.2 s push at ACCEL, so
 // the exhaust burns exactly while the hull accelerates off the pad.
 const LAUNCH_BURN = 0.2;
@@ -95,16 +100,22 @@ const LAUNCH_BURN = 0.2;
 const THRUST_RAMP = 8;
 const MAX_SPEED = FLY * 3;
 const BOOST_SPEED = FLY * 6;
+// Absolute vertical ceiling in the void: the boosted void cap would read
+// ~1125 at the shipped band, it is clipped to 1000 instead.
+const VOID_CAP = 1000;
 const H_SMOOTH = 8;
 const BOOST_RAMP = 3;
 const CARVE_MAX = 2400;
 // Impact FX budget per frame: the surfaces the rocket tears open, sampled so
-// every side of the swept shaft keeps a share.
+// every side of the swept shaft keeps a share. The per-collect budget feeds
+// each carve substep; the frame cap holds one frame of shaft (stride-thinned
+// past it so early and late substeps keep a share) and the debris budget
+// below turns it into cubes.
 const CARVE_FACE_BUDGET = 24;
-const CARVE_FACE_FRAME_CAP = 48;
-// The hull's own rock dust starts once the carve has torn this many cells:
-// below it the dust would be more noise than the blast it follows.
-const CARVE_DUST_MIN_CELLS = 6;
+const CARVE_FACE_FRAME_CAP = 192;
+// Fixed impact look: the carve always plays the shipped tagged layers
+// (fire + cubes + ring) at the base cruise wall, at any flight speed.
+const CARVE_FX_FACTOR = 1;
 // Camera shake for the rocket's beats. The ignition kick lands once, the
 // tremor and the touchdown shake both come out of the landing curve, so
 // they always match the cloud of that moment (see src/fx/rocketfx.js).
@@ -180,10 +191,6 @@ const COUNTDOWN_FADE = [
 ];
 let fadeSegs = [];
 let boostF = 0;
-// Live speed-zone readout for the debug HUD: the space multiplier and the
-// resulting vertical cap of the current flight tick.
-let liveSpaceF = 1;
-let liveCap = 0;
 // A new launch needs the chord released first: a pilot who never lets go of
 // SHIFT+ENTER must not relaunch the rocket the instant a landing animation
 // ends. A fresh press DURING the animation still counts: the freeze latches
@@ -213,6 +220,10 @@ let takeoffFrame = 0;
 
 const origin = new THREE.Vector3();
 const rvel = new THREE.Vector3();
+// Vessel pose at the previous flight tick: live carve debris rides the
+// per-tick delta, so the cloud stays glued to the ship under accel.
+const shiftPrev = new THREE.Vector3();
+let shiftInit = false;
 // Pilot offset captured at boarding (pos - origin): the pin keeps the pilot
 // at this exact spot relative to the hull for the whole sequence, so
 // boarding from anywhere in the ride box never teleports the player.
@@ -269,12 +280,11 @@ export function resetRocket() {
   takeoffArmed = true;
   takeoffQueued = false;
   chordWas = false;
+  shiftInit = false;
   hullFade = 0;
   clearFade();
   rvel.set(0, 0, 0);
   boostF = 0;
-  liveSpaceF = 1;
-  liveCap = 0;
   siteVersion = -1;
   landingTarget.set(0, 0, 0);
   defaultVesselBox();
@@ -429,13 +439,6 @@ export function rocketEditingBlocked() {
 
 export function rocketFlying() {
   return piloting && phase === "flight";
-}
-
-// Live speed-zone readout for the debug HUD: the deep-space multiplier and
-// the resulting vertical cap of the current flight tick, null otherwise.
-export function rocketBoostInfo() {
-  if (dim !== "over" || !rocketFlying()) return null;
-  return { spaceF: liveSpaceF, boostF, cap: liveCap };
 }
 
 // Eye clamp for the pilot's camera while flying: trails the eye against the
@@ -749,6 +752,7 @@ export function tickRocket(dt) {
     updateCountdown();
     // Leaving the dimension drops any pending wall impacts.
     carveFaces.length = 0;
+    carveBlockIds.length = 0;
     chordWas = chordHeld();
     return;
   }
@@ -756,6 +760,7 @@ export function tickRocket(dt) {
     setPrompt("");
     updateCountdown();
     carveFaces.length = 0;
+    carveBlockIds.length = 0;
     chordWas = chordHeld();
     return;
   }
@@ -795,14 +800,42 @@ export function tickRocket(dt) {
   flushCarveFaces();
 }
 
-// One batched blast per frame over the walls the ascent tore open.
+// One batched blast per frame over the walls the ascent tore open, at the
+// true face positions (bbox–obstacle intersections — never rebased). Every
+// frame with a carve emits: the burst covers the whole tick of shaft at once,
+// volume-scaled (fixed cubes per face) so a fast tick reads as dense as a
+// slow one. The live bursts ride the vessel delta (see shiftFollowDebris),
+// so the cloud stays visible at any speed or accel instead of lagging down
+// the shaft the fast ticks bore.
+// Cubes per emitted face, pooled in 384-box bursts (see particles.js)
+// — 192 faces read as 768 cubes in at most two bursts.
+const DEBRIS_PER_FACE = 4;
+const DEBRIS_CHUNK = 384;
 function flushCarveFaces() {
-  if (!carveFaces.length) return;
-  const faces = carveFaces;
+  const debrisFaces = carveFaces;
   carveFaces = [];
-  // The blast grows with the speed the hull carries: a slow bore throws
-  // pebbles, a max-speed dive throws a wall of debris.
-  playFx("impact", { faces, factor: speedFactor(rvel.length(), BOOST_SPEED) });
+  if (!debrisFaces.length) { carveBlockIds.length = 0; return; }
+  // Stride-thin to the cap so the oldest and newest walls both keep a share.
+  let faces = debrisFaces;
+  while (faces.length > CARVE_FACE_FRAME_CAP) faces = faces.filter((_, i) => i % 2 === 0);
+  // The destroyed wall's own colors, capped to the debris pool depth. Ids
+  // ride alongside so the engine can route each cube to the pool that
+  // matches its source family.
+  const ids = carveBlockIds.slice(-384);
+  const colors = gainedColors(ids);
+  carveBlockIds.length = 0;
+  // Per-face tints: every face's cubes read its own cleared wall (parallel
+  // arrays), so the burst covers the whole surface in its true colors.
+  const faceIds = faces.map((f) => f.id ?? null);
+  const faceColors = gainedColors(faceIds);
+  // Volume-scaled burst: a fixed cube budget per face, so a fast tick reads
+  // as dense as a slow one instead of thinning out with the carved volume.
+  const debrisCount = Math.min(DEBRIS_CHUNK * 2, faces.length * DEBRIS_PER_FACE);
+  // Fixed cruise look at any speed: the same carve look standing still,
+  // cruising, or boosted. The cloud rides the vessel
+  // delta, so it never diverges from the ship under accel.
+  // Fire, ring and debris all anchor on the same tick of shaft.
+  playFx("impact", { faces, factor: CARVE_FX_FACTOR, vel: [rvel.x, rvel.y, rvel.z], colors, ids, debrisFaces: faces, faceColors, faceIds, debrisCount, variant: CARVE_IMPACT_VARIANT_DEFAULT });
 }
 
 function startCountdown(offer) {
@@ -1298,10 +1331,23 @@ function tickFlight(dt) {
   if (Math.abs(boostF - boostTarget) < 0.001) boostF = boostTarget;
   // Deep space flies faster: the cap grows away from every body and eases
   // back to the base caps inside the planet buffer (see spacezone.js).
-  const spaceF = spaceSpeedMul(origin.x, origin.y, origin.z);
-  const cap = (MAX_SPEED + (BOOST_SPEED - MAX_SPEED) * boostF) * spaceF;
-  liveSpaceF = spaceF;
-  liveCap = cap;
+  // Climb/cruise reads the 3D surface distance at the point; descent
+  // (vy < 0) reads the min vertical gap from the bbox bottom over the whole
+  // footprint — analytic bodies plus the voxel scan below (any surface:
+  // terrain, builds, body caps) — so a descent eases back toward the local
+  // cap as soon as one column closes within the band, and never slows past
+  // a flank.
+  // Below the Moon surface the zone is inert (no scan, base caps).
+  let spaceF;
+  if (rvel.y < 0 && origin.y >= MOON_SURFACE_Y) {
+    const yBottom = origin.y + vesselBox.y0;
+    const bodyGap = landingDistBox(origin.x, yBottom, origin.z, vesselBox);
+    const voxGap = gapBelowFootprint(getBlock, origin.x, yBottom, origin.z, vesselBox, SPACE_BUFFER);
+    spaceF = spaceFactorFromDist(Math.min(bodyGap, voxGap));
+  } else {
+    spaceF = spaceSpeedMul(origin.x, origin.y, origin.z);
+  }
+  const cap = Math.min((MAX_SPEED + (BOOST_SPEED - MAX_SPEED) * boostF) * spaceF, VOID_CAP);
   if (piloting) {
     // Heading steers at a speed slaved to the climb: |vy|, weighted by
     // the look pitch (level gaze = full, straight up/down = zero). The
@@ -1321,12 +1367,23 @@ function tickFlight(dt) {
     const k = Math.min(1, H_SMOOTH * dt);
     rvel.x += (_hv.x - rvel.x) * k;
     rvel.z += (_hv.z - rvel.z) * k;
-    // Vertical stays acceleration-driven with the ramped cap.
+    // Vertical stays acceleration-driven with the ramped cap, plus an
+    // opposition brake proportional to the speed: holding the thrust
+    // against the motion inverts fast even at void speed (~1 s from 800),
+    // while staying near-invisible around the base caps.
     const accel = ACCEL * (1 + boostF);
     let upAccel = 0;
     let downAccel = 0;
-    if (isUp(keys)) { rvel.y += accel * dt; upAccel = accel; }
-    if (isDown(keys)) { rvel.y -= accel * dt; downAccel = accel; }
+    if (isUp(keys)) {
+      const opp = rvel.y < 0 ? BRAKE_K * -rvel.y : 0;
+      rvel.y += (accel + opp) * dt;
+      upAccel = accel;
+    }
+    if (isDown(keys)) {
+      const opp = rvel.y > 0 ? BRAKE_K * rvel.y : 0;
+      rvel.y -= (accel + opp) * dt;
+      downAccel = accel;
+    }
     // The liftoff is a real push, not a kick: the engines stay lit while
     // the hull accelerates off the pad, and the camera rumbles with the
     // burn — the landing fade in reverse, decaying as the push ends.
@@ -1349,8 +1406,13 @@ function tickFlight(dt) {
     thrustLevel = 0;
     brakeLevel = 0;
   }
-  if (rvel.y > cap) rvel.y = cap;
-  if (rvel.y < -cap) rvel.y = -cap;
+  // No snap anywhere: overspeed decays at engine rate on both sides, so
+  // pure flight keeps its speed. Descent keeps its local cap (base 30/60
+  // inside the 50-block band) as the asymptote. Horizontal stays free: XZ
+  // is slaved to |vy| with no cap of its own.
+  const dec = ACCEL * (1 + boostF) * dt;
+  if (rvel.y > cap) rvel.y = Math.max(cap, rvel.y - dec);
+  if (rvel.y < -cap) rvel.y = Math.min(-cap, rvel.y + dec);
 
   // Step the swept hull so fast moves never tunnel through a landing pad.
   // Unified rule: the whole bbox carves, every substep and every direction
@@ -1438,6 +1500,14 @@ function tickFlight(dt) {
   }
   if (carvedAny) refreshAllVessels(getBlock, shipExclusions());
 
+  // Rigid debris follow: live carve bursts ride the vessel's per-tick delta,
+  // so the cloud stays glued to the ship instead of diverging from it under
+  // accel. Zero-delta ticks skip (parked, held, countdown).
+  if (!shiftInit) { shiftPrev.copy(origin); shiftInit = true; }
+  else {
+    shiftFollowDebris(origin.x - shiftPrev.x, origin.y - shiftPrev.y, origin.z - shiftPrev.z);
+    shiftPrev.copy(origin);
+  }
   if (moving?.group) moving.group.position.copy(origin);
   // The exhaust jet under the nozzles, streaming while the engines push —
   // up-burn and braking alike, always downward.
@@ -1631,25 +1701,14 @@ function carveBoxAt(o, b) {
         if (floor != null && y === floor) continue;
         if (isTntLike(id)) tntHit = true;
         clearVesselCell(x, y, z, id);
-        cleared.push([x, y, z]);
+        cleared.push([x, y, z, id]);
+        carveBlockIds.push(id);
         if (--budget <= 0) { rvel.set(0, 0, 0); exhausted = true; break outer; }
       }
   if (!cleared.length) return { cleared, exhausted };
   if (tntHit) clearTNTBox(x0, y0, z0, x1, y1, z1);
   notePortalEdits(cleared);
   queueRefreshBlocks(cleared);
-  // Rock dust at the ship: the volume the vessel tore loose, scaled with
-  // the speed it tore it at.
-  if (cleared.length > CARVE_DUST_MIN_CELLS) {
-    const v = vesselBox;
-    playFx("carve", {
-      x: o.x + v.x0, y: o.y + v.y0, z: o.z + v.z0,
-      halfW: (v.x1 - v.x0 + 1) * 0.5,
-      halfD: (v.z1 - v.z0 + 1) * 0.5,
-      amount: cleared.length,
-      factor: speedFactor(rvel.length(), BOOST_SPEED),
-    });
-  }
   // The rock this pass tore open: its exposed faces are the walls the
   // rocket just burst through, and they carry the explosive FX.
   collectCarveFaces(cleared);
@@ -1664,16 +1723,56 @@ function carveAt(o, descending = false) {
 }
 
 // Impact faces found by the carve passes of this frame, flushed once per
-// tick so a fast ascent stays a handful of batched draw calls.
+// tick so a fast ascent stays a handful of batched draw calls. The destroyed
+// block ids ride alongside for the debris tint, capped per flush.
 let carveFaces = [];
+let carveBlockIds = [];
+
+// The destroyed wall's ids as wall colors, capped to the debris pool
+// depth. The array stays parallel to the ids (unmapped stay null, gray
+// fallback downstream) so the engine can route each cube to the pool that
+// matches its source family.
+function gainedColors(ids) {
+  const out = [];
+  for (const id of ids) {
+    // Measured average texel first, hand-tuned registry as fallback: both
+    // authored in sRGB, converted once to the linear working space so the
+    // debris matches the sampled wall instead of reading ~2x too bright.
+    const c = averageBlockColor(id) ?? BLOCK_DEBRIS_COLORS[id];
+    if (!c) {
+      out.push(null);
+      continue;
+    }
+    // Self-lit families sit on their emissive floor (0.9, like their
+    // materials) instead of the full measured mean.
+    const m = BLOCK_DEBRIS_UNLIT.has(id) ? 0.9 : 1;
+    out.push([
+      Math.min(1, srgbToLinear(c[0]) * m),
+      Math.min(1, srgbToLinear(c[1]) * m),
+      Math.min(1, srgbToLinear(c[2]) * m),
+    ]);
+    if (out.length >= 384) break;
+  }
+  return out;
+}
 
 // Find the shaft walls the carve just exposed: a cleared cell whose
-// neighbour is still solid is a face the rocket burst through.
+// neighbour is still solid is a face the rocket burst through. Each face
+// carries its cleared cell's block id (3-tuples read null), so the debris
+// tints every face with its own wall.
 function collectCarveFaces(cells) {
-  if (carveFaces.length >= CARVE_FACE_FRAME_CAP) return;
-  const faces = exposedFaces(cells, isSolid, { maxFaces: CARVE_FACE_BUDGET });
+  const byCell = new Map();
+  for (const c of cells) {
+    if (c.length > 3) byCell.set(c[0] + "," + c[1] + "," + c[2], c[3]);
+  }
+  const faces = exposedFaces(cells, isSolid, {
+    maxFaces: CARVE_FACE_BUDGET,
+    idOf: (x, y, z) => byCell.get(x + "," + y + "," + z) ?? null,
+  });
   for (const f of faces) {
-    if (carveFaces.length >= CARVE_FACE_FRAME_CAP) break;
+    if (carveFaces.length >= CARVE_FACE_FRAME_CAP) {
+      carveFaces = carveFaces.filter((_, i) => i % 2 === 0);
+    }
     carveFaces.push(f);
   }
 }

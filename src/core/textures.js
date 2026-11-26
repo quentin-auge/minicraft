@@ -603,6 +603,46 @@ export function materialsFor(id) {
     case HULL_ACCENT: return faceTex(TEX.hull_orange);
     case THRUSTER: return faceTex(TEX.thruster);
     case PAD: return faceTex(TEX.pad);
-    default: return faceTex(TEX.dirt);
+  default: return faceTex(TEX.dirt);
   }
+}
+
+// Measured average texel color per block (browser only): samples the block's
+// own face textures, so debris tints read exactly like the wall instead of a
+// hand-tuned triple. Cached per id; null without a DOM (headless and tests
+// fall back to BLOCK_DEBRIS_COLORS) or when no face map resolves.
+const avgColorCache = new Map();
+export function averageBlockColor(id) {
+  if (typeof document === "undefined") return null;
+  if (avgColorCache.has(id)) return avgColorCache.get(id);
+  let out = null;
+  try {
+    const seen = new Set();
+    const acc = [0, 0, 0];
+    let n = 0;
+    for (const m of materialsFor(id)) {
+      const map = m?.map;
+      if (!map || !map.image || seen.has(map)) continue;
+      seen.add(map);
+      const c2d = map.image.getContext("2d");
+      if (!c2d) continue;
+      const { width, height } = map.image;
+      if (!width || !height) continue;
+      const data = c2d.getImageData(0, 0, width, height).data;
+      let r = 0, g = 0, b = 0, w = 0;
+      for (let i = 0; i < data.length; i += 4) {
+        const a = data[i + 3] / 255;
+        if (a <= 0) continue;
+        r += (data[i] / 255) * a; g += (data[i + 1] / 255) * a; b += (data[i + 2] / 255) * a;
+        w += a;
+      }
+      if (!w) continue;
+      acc[0] += r / w; acc[1] += g / w; acc[2] += b / w; n++;
+    }
+    out = n ? [acc[0] / n, acc[1] / n, acc[2] / n] : null;
+  } catch {
+    out = null;
+  }
+  avgColorCache.set(id, out);
+  return out;
 }

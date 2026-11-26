@@ -18,6 +18,29 @@ export function footprintTouches(getBlock, ox, oz, vbox, row) {
   return false;
 }
 
+// Vertical gap below the bbox over the whole footprint: for each footprint
+// column, the distance from the float bottom down to the top of the highest
+// non-air cell within maxD below (same non-air rule as the contact tests —
+// solids, liquids and flowers all count). Returns the min over columns,
+// Infinity when no column finds a surface in range. The flight loop reads it
+// on descent so the cap eases back ahead of contact, not on it.
+export function gapBelowFootprint(getBlock, ox, oyBottom, oz, vbox, maxD = 50) {
+  const fx = Math.floor(ox), fz = Math.floor(oz);
+  const base = Math.floor(oyBottom);
+  let best = Infinity;
+  for (let lx = vbox.x0; lx <= vbox.x1; lx++)
+    for (let lz = vbox.z0; lz <= vbox.z1; lz++) {
+      const x = fx + lx, z = fz + lz;
+      for (let d = 1; d <= maxD; d++) {
+        if (getBlock(x, base - d, z) !== AIR) {
+          const gap = oyBottom - (base - d + 1);
+          if (gap < best) best = gap;
+          break;
+        }
+      }
+    }
+  return best;
+}
 // Stop rule: >= 1 footprint cell with a != air block directly under the
 // bbox bottom. Priority over the carve — the ship poses on first contact
 // instead of crushing what it would land on. Ascent-exempt by the caller
@@ -26,9 +49,27 @@ export function stopBelow(getBlock, ox, oy, oz, vbox) {
   return footprintTouches(getBlock, ox, oz, vbox, Math.floor(oy + vbox.y0) - 1);
 }
 
-// Integer cells intersecting a body AABB (feet px,py,pz, half-width hw,
-// height h) — the exact overlap rule behind `intersectsPlayer`
-// (player/edit.js), shared so the landing clearance carves the same set
+// Debris spawn box (three-free): the union of the vessel box and a cube of
+// half-extent `half` around the player's cell — any hull thinner than the
+// debris box still spawns its carve all around the pilot instead of inside
+// the camera, big hulls keep their own volume. Hull-local cells, floored
+// like the swept box.
+export function debrisSpawnBox(vbox, ox, oy, oz, px, py, pz, half) {
+  const h = Math.max(0, half);
+  const lx = Math.floor(px - ox), ly = Math.floor(py - oy), lz = Math.floor(pz - oz);
+  const c = Math.ceil(h);
+  return {
+    x0: Math.min(vbox.x0, lx - c),
+    x1: Math.max(vbox.x1, lx + c),
+    y0: Math.min(vbox.y0, ly - c),
+    y1: Math.max(vbox.y1, ly + c),
+    z0: Math.min(vbox.z0, lz - c),
+    z1: Math.max(vbox.z1, lz + c),
+  };
+}
+// The exact overlap rule behind `intersectsPlayer` (player/edit.js),
+// shared so the landing clearance carves the same set the physics would
+// collide with. Strict inequalities: a body face exactly
 // the physics would collide with. Strict inequalities: a body face exactly
 // on a cell border does not enter that cell.
 export function bodyOverlapCells(px, py, pz, hw, h) {

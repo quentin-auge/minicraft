@@ -9,7 +9,7 @@ import {
   bodyPadContains, bodySurfaceDist, bodyAtCell, nearestBody,
   planetBodyAt, planetBodyAtPlaced,
 } from "../../../src/world/planets.js";
-import { spaceSpeedMul, spaceMul, SPACE_MUL, SPACE_BUFFER, SPACE_RAMP } from "../../../src/world/spacezone.js";
+import { spaceSpeedMul, spaceMul, spaceFactorFromDist, takeoffDist, landingDistBox, SPACE_MUL, SPACE_BUFFER, SPACE_RAMP } from "../../../src/world/spacezone.js";
 
 setDimension("over");
 const SEED = 7;
@@ -81,14 +81,14 @@ const near = (a, b, eps = 1e-6) => Math.abs(a - b) <= eps;
 {
   assert.deepEqual(
     { mul: SPACE_MUL, buffer: SPACE_BUFFER, ramp: SPACE_RAMP },
-    { mul: 6, buffer: 200, ramp: 600 }, "shipped constants");
+    { mul: 6, buffer: 50, ramp: 600 }, "shipped constants");
   assert.equal(spaceSpeedMul(0, 10, 0), 1, "ground always 1");
   assert.equal(spaceSpeedMul(0, MOON_SURFACE_Y - 1, 0), 1, "below the surface always 1");
   assert.equal(spaceSpeedMul(0, MOON_SURFACE_Y, 0), 1, "surface 1");
-  assert.equal(spaceSpeedMul(0, MOON_SURFACE_Y + 199, 0), 1, "inside the buffer 1");
-  const mid = spaceSpeedMul(0, MOON_SURFACE_Y + 200 + 300, 0);
+  assert.equal(spaceSpeedMul(0, MOON_SURFACE_Y + 49, 0), 1, "inside the buffer 1");
+  const mid = spaceSpeedMul(0, MOON_SURFACE_Y + 50 + 300, 0);
   assert.ok(mid > 1 && mid < spaceMul(), `mid-ramp partial (${mid.toFixed(2)})`);
-  assert.equal(spaceSpeedMul(0, MOON_SURFACE_Y + 200 + 600 + 1, 0), spaceMul(), "past the ramp full boost");
+  assert.equal(spaceSpeedMul(0, MOON_SURFACE_Y + 50 + 600 + 1, 0), spaceMul(), "past the ramp full boost");
   let prev = 1;
   for (let d = 0; d <= 1000; d += 25) {
     const f = spaceSpeedMul(0, MOON_SURFACE_Y + d, 0);
@@ -105,10 +105,36 @@ const near = (a, b, eps = 1e-6) => Math.abs(a - b) <= eps;
 {
   const p0 = bodyByKey("p0");
   assert.ok(p0, "a planet exists");
-  assert.equal(nearestBody(p0.cx, p0.top + 100, p0.cz).spec.key, "p0", "100 above p0 owned by p0");
-  assert.equal(spaceSpeedMul(p0.cx, p0.top + 100, p0.cz), 1, "100 above p0 still 1");
+  assert.equal(nearestBody(p0.cx, p0.top + 50, p0.cz).spec.key, "p0", "50 above p0 owned by p0");
+  assert.equal(spaceSpeedMul(p0.cx, p0.top + 25, p0.cz), 1, "25 above p0 still 1");
   assert.equal(spaceSpeedMul(p0.cx, p0.top, p0.cz), 1, "p0 surface 1");
-  assert.equal(nearestBody(p0.cx, p0.top + 200 + 600 + 5, p0.cz).spec.key, "p0", "805 above p0 still owned by p0");
-  assert.equal(spaceSpeedMul(p0.cx, p0.top + 200 + 600 + 5, p0.cz), spaceMul(), "past the p0 ramp full boost");
+  assert.equal(nearestBody(p0.cx, p0.top + 50 + 600 + 5, p0.cz).spec.key, "p0", "655 above p0 still owned by p0");
+  assert.equal(spaceSpeedMul(p0.cx, p0.top + 50 + 600 + 5, p0.cz), spaceMul(), "past the p0 ramp full boost");
   console.log("PASS spacezone-curve-planets");
+}
+
+// 7. Bbox descent distance: min analytic gap over the footprint columns —
+// a hull past the rim reads void even at cap altitude, so a descent past
+// a flank never slows down. Combined with the voxel gap through the shared
+// ramp helper (flight loop takes the min of both).
+{
+  const one = { x0: 0, x1: 0, y0: 0, y1: 0, z0: 0, z1: 0 };
+  assert.equal(landingDistBox(0, MOON_SURFACE_Y + 100, 0, one), 100, "footprint vertical gap exact");
+  assert.equal(landingDistBox(0, MOON_SURFACE_Y, 0, one), 0, "bbox bottom on the cap reads 0");
+  assert.equal(landingDistBox(MOON_R + 10, MOON_SURFACE_Y + 100, 0, one), Infinity, "past the rim no landing body");
+  assert.equal(landingDistBox(MOON_R + 10, MOON_SURFACE_Y + 25, 0, one), Infinity, "single column past the rim reads void");
+  // Wide hull straddling the rim: the inside column wins.
+  const wide = { x0: 0, x1: 20, y0: 0, y1: 0, z0: 0, z1: 0 };
+  assert.equal(landingDistBox(MOON_R - 5, MOON_SURFACE_Y + 25, 0, wide), 25, "straddling hull reads the inside column");
+  assert.equal(landingDistBox(MOON_R + 1, MOON_SURFACE_Y + 25, 0, wide), Infinity, "fully outside hull reads void");
+  const p0 = bodyByKey("p0");
+  assert.equal(landingDistBox(p0.cx + p0.r + 10, p0.top + 25, p0.cz, one), Infinity, "descent past a planet flank reads void");
+  assert.ok(takeoffDist(p0.cx + p0.r + 10, p0.top + 50, p0.cz) < Infinity, "takeoff still sees the 3D flank");
+  // Shared ramp: a voxel gap under the band pins the factor at 1 even when
+  // the analytic gap reads void (descent past a flank over a built tower).
+  assert.equal(spaceFactorFromDist(25), 1, "voxel gap inside the band reads 1");
+  assert.ok(spaceFactorFromDist(50 + 300) > 1, "mid-ramp voxel gap reads partial");
+  assert.equal(spaceFactorFromDist(Infinity), spaceMul(), "void gap reads full boost");
+  assert.equal(spaceFactorFromDist(Math.min(Infinity, 25)), 1, "min(void body, 25 voxel) eases back");
+  console.log("PASS spacezone-landing-footprint");
 }

@@ -90,7 +90,7 @@ import {
 import { setMobExtraSolid } from "./src/mobs/step.js";
 import {
   initRocket, resetRocket, tickRocket, rocketTakesOver,
-  rocketEditingBlocked, rocketSolidAt, rocketFlying, rocketBoostInfo, rocketClampEye, carryRiders,
+  rocketEditingBlocked, rocketSolidAt, rocketFlying, rocketClampEye, carryRiders,
 } from "./src/vehicles/rocket.js";
 import { initHomingTnt, fireHomingTnt, tickHomingTnt, clearHomingTnt } from "./src/mobs/homing.js";
 import { enterEndMobs, clearEndMobs, clearEndermenDim, tickEndMobs, notifyEndermanVoxelChange, teleportBlastEndermen, dragonHealth, setDragonVictoryHook, setMobSeed } from "./src/mobs/end.js";
@@ -1574,11 +1574,7 @@ function loop(now) {
     renderer.render(scene, camera);
     return;
   }
-  // Live rocket boost for the debug HUD: the deep-space multiplier and the
-  // resulting cap while flying.
-  const _boost = rocketBoostInfo();
-  tickDebug(dt, pos.x, pos.y, pos.z,
-    _boost ? ` | boost x${_boost.spaceF.toFixed(1)}  cap ${Math.round(_boost.cap)}` : "");
+  tickDebug(dt, pos.x, pos.y, pos.z, "");
   if (simActive) {
     simTime += sdt;
     tickFx(sdt);
