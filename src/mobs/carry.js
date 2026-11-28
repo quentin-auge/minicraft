@@ -100,6 +100,34 @@ export function resetMobMotion(mob) {
   mob.stepping = false;
 }
 
+// Ride intent handoff (rocket riders): the freeze owns the whole trip, but
+// the mob must walk on after the landing stamp as if the trip never happened.
+// Only portable, position-based intent is carried over — goal and roam
+// commit. A stale wait is never served (resume is prompt, see below).
+// Everything bound to voxel topology (lane, follow line, passages, narrow
+// agreements, nav plans, blast arcs, liquid regimes) is dropped by
+// resetMobMotion and renegotiated live. Three-free.
+export function saveRideState(mob) {
+  if (!mob) return null;
+  const copyXZ = (t) => (t ? { ...t } : null);
+  return {
+    target: copyXZ(mob.target),
+    wanderT: typeof mob.wanderT === "number" && Number.isFinite(mob.wanderT) ? mob.wanderT : 0,
+    roam: mob.roam ? { ...mob.roam, target: copyXZ(mob.roam.target), tgt: copyXZ(mob.roam.tgt) } : null,
+  };
+}
+
+// Restore a saved ride intent after the landing stamp: reset the
+// geometry-bound state first, then hand back the portable intent. Prompt
+// resume wins over serving a stale wait: a restored goal walks at once, an
+// idler re-picks immediately instead of standing still.
+export function restoreRideState(mob, saved) {
+  resetMobMotion(mob);
+  if (!mob || !saved) return;
+  if (saved.target) mob.target = { ...saved.target };
+  if (saved.roam) mob.roam = { ...saved.roam, target: saved.roam.target ? { ...saved.roam.target } : saved.roam.target, tgt: saved.roam.tgt ? { ...saved.roam.tgt } : saved.roam.tgt };
+  mob.wanderT = 0;
+}
 // Release entry: the same reset, plus unfreezing the movers, plus the
 // type's own release hook when it declares one. With a release yaw the mob
 // keeps facing the release direction and walks that way (target 6 m ahead,

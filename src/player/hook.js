@@ -430,6 +430,29 @@ export function setMobAlpha(mob, alpha) {
   });
 }
 
+// Continuous hull-coupled fade for the held mob during rocket sequences.
+// Companion to setMobAlpha: the discrete owner above establishes the ghost
+// clones (and the transparent flag) once; this only writes opacity while the
+// shared fade curve runs, so no shader recompile happens mid-flight.
+// mob._alpha tracks the last written value, so the discrete owner resumes
+// exactly when the curve ends. Falls back to setMobAlpha when no ghost
+// clones exist yet (never mutates shared materials).
+export function setMobAlphaFaded(mob, alpha) {
+  const root = mob?.root;
+  if (!root) return;
+  if (mob._alpha === alpha) return;
+  if (!root.userData.ghostCloned) {
+    setMobAlpha(mob, alpha);
+    return;
+  }
+  mob._alpha = alpha;
+  root.traverse((obj) => {
+    if (!obj.isMesh || !obj.material || obj.userData.halo) return;
+    const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
+    for (const m of mats) m.opacity = alpha;
+  });
+}
+
 // Mob liveness: still alive in this dimension. A mob that dies or changes
 // dim mid-flight severs the hook (retract, no placement) like a mined block.
 function mobAlive(h) {

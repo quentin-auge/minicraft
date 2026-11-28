@@ -279,7 +279,7 @@ export function liquidPeerCapY(mob, peers = null) {
   const need = mob.hw * 2 + SEP_GAP;
   let best = null;
   for (const o of peers) {
-    if (o === mob || !o.alive || o._carried) continue;
+    if (o === mob || !o.alive || o._carried || o._riding) continue;
     if (o.pos.y + 0.05 < mob.pos.y + mob.h) continue;
     const dx = o.pos.x - mob.pos.x, dz = o.pos.z - mob.pos.z;
     if (dx * dx + dz * dz > need * need) continue;
@@ -297,7 +297,7 @@ export function liquidCapsAnyone(mob, peers = null) {
   if (!peers) return false;
   const need = mob.hw * 2 + SEP_GAP;
   for (const o of peers) {
-    if (o === mob || !o.alive || o._carried) continue;
+    if (o === mob || !o.alive || o._carried || o._riding) continue;
     if (o.pos.y + (o.h ?? mob.h) > mob.pos.y + 0.05) continue;
     const dx = o.pos.x - mob.pos.x, dz = o.pos.z - mob.pos.z;
     if (dx * dx + dz * dz > need * need) continue;
@@ -465,7 +465,7 @@ export function liquidShaftLoad(mob, px, pz, peers = null) {
   const need = mob.hw * 2 + SEP_GAP;
   let n = 0;
   for (const o of peers) {
-    if (o === mob || !o.alive || o._carried) continue;
+    if (o === mob || !o.alive || o._carried || o._riding) continue;
     if (o.liquid == null) continue;
     const dx = o.pos.x - px, dz = o.pos.z - pz;
     if (dx * dx + dz * dz > need * need) continue;

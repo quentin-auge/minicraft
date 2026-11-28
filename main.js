@@ -22,7 +22,7 @@ import {
 import * as player from "./src/player/physics.js";
 import { flyOn, setFly, setFlyMul, updateFly } from "./src/player/fly.js";
 import { updateTarget, breakTarget, placeAtSelection, breakBlockAt, pickBlock, pickCelestialBody, tryPlace, currentBlock, flushChainBatch, purgeFloatingLiquidsAround, takeLiquidCells, endChainStroke, clearChainStroke } from "./src/player/edit.js";
-import { fireHookTarget, fireSkyHook, grapplePick, mobGrabTarget, mobReleaseTarget, cancelHook, severHook, updateHook, hookActive, hookFillActive, hookHeldSwim, hookAnchor, tickHookFx, setMobAlpha, HELD_ALPHA } from "./src/player/hook.js";
+import { fireHookTarget, fireSkyHook, grapplePick, mobGrabTarget, mobReleaseTarget, cancelHook, severHook, updateHook, hookActive, hookFillActive, hookHeldSwim, hookAnchor, tickHookFx, setMobAlpha, setMobAlphaFaded, HELD_ALPHA } from "./src/player/hook.js";
 import { initRope } from "./src/player/rope.js";
 import { tickTNT, initTNTFx, resetTNTMemory, clearRegularTntDim, onExplode, onMegaPool, onCrater, onLiquidPurge, shakeSpecFor, bandActive, drainBlastRemesh, queueBlastRefresh, megaImminent, megaCarveActive, megaFxActive, MEGA_BLAST_T, MEGA_BLAST_TIME_SCALE, ultraFxSpec, useBodyTnt } from "./src/fx/tnt.js";
 import { initFx, tickFx, tickDenseFx, denseFxActive, prewarmDenseFx, prewarmBursts, spawnDense, flushDense, noteDenseSpawn } from "./src/fx/particles.js";
@@ -89,7 +89,7 @@ import {
 } from "./src/player/keys.js";
 import { setMobExtraSolid } from "./src/mobs/step.js";
 import {
-  initRocket, resetRocket, tickRocket, rocketTakesOver,
+  initRocket, resetRocket, tickRocket, rocketTakesOver, mobFadeOp,
   rocketEditingBlocked, rocketSolidAt, rocketFlying, rocketSpeed, rocketClampEye, carryRiders,
 } from "./src/vehicles/rocket.js";
 import { initHomingTnt, fireHomingTnt, tickHomingTnt, clearHomingTnt } from "./src/mobs/homing.js";
@@ -376,8 +376,9 @@ function updateCamera(dt = 0) {
     camera.position.y += Math.sin(st * 71.9) * 0.6 * sh;
     camera.position.z += Math.sin(st * 59.7 + 2.1) * 0.6 * sh;
   }
-  // Rocket speed lag (flight only): the eye trails the hull with speed,
-  // clamped so it never enters the hull — the pre-space-boost feel, capped.
+  // Rocket eye breathing (flight only): the eye dips/rises with the
+  // climb/sink for the accel/decel feel, clamped so it never enters the
+  // hull — no horizontal trail, so the pilot turns in place at any speed.
   rocketClampEye(camera.position);
 }
 
@@ -1680,7 +1681,8 @@ function loop(now) {
     // Held-mob pose: pinned in front of the eye every sim frame while held
     // (hook flights position the mob themselves; held is null then), kept
     // at the master held alpha (after displacement-color, which reassigns
-    // paintable materials every tick).
+    // paintable materials every tick). While the rocket takes over, the held
+    // mob fades on the shared hull curve instead, aligned with the vessel.
     const heldPose = heldMob();
     if (heldPose) {
       camera.getWorldDirection(_hookDir);
@@ -1689,7 +1691,8 @@ function loop(now) {
         { x: _hookDir.x, y: _hookDir.y, z: _hookDir.z },
         player.yaw,
       );
-      setMobAlpha(heldPose, HELD_ALPHA);
+      if (rocketTakesOver()) setMobAlphaFaded(heldPose, HELD_ALPHA * mobFadeOp());
+      else setMobAlpha(heldPose, HELD_ALPHA);
     }
     // Per-dimension floor, bounded dims only (overworld: below -20 means out
     // of the world, so respawn). respawnY: null (TNT sky) means no floor: the

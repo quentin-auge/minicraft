@@ -466,7 +466,7 @@ function teleportEnderman(mob, camera, exclude = null) {
   // the ≥10 m standoff below keeps arrivals off the player anyway, so only
   // this probe keeps arrivals body-free.
   const peers = [...listFarmMobs(), ...mobs].filter(
-    (m) => m !== mob && m.alive && !m._carried && (m.dim ?? "over") === dimName && m.pos,
+    (m) => m !== mob && m.alive && !m._carried && !m._riding && (m.dim ?? "over") === dimName && m.pos,
   );
   let n = 0;
   const rand = () => mobHash(teleportNonce, n++, 9410);
@@ -520,7 +520,10 @@ function tryTeleport(mob, camera, exclude = null) {
 export function teleportBlastEndermen(dimName, camera, blast) {
   const { caught, exclude } = blastPredicates(blast);
   for (const mob of mobs) {
-    if (!mob.alive || mob.type !== "enderman" || isCarried(mob)) continue;
+    // A held enderman never teleports: the grab hook owns its frame. A hull
+    // rider never teleports either: the countdown pins it and the stamp
+    // frees it, so the whole trip reads frozen.
+    if (!mob.alive || mob.type !== "enderman" || isCarried(mob) || mob._riding) continue;
     if (mob.dim !== dimName) continue;
     if (!caught(mob.pos.x, mob.pos.y, mob.pos.z)) continue;
     tryTeleport(mob, camera, exclude);
@@ -708,7 +711,8 @@ export function notifyEndermanVoxelChange(changed, camera, dimName = null) {
   if (!changed || !changed.length || !sceneRef) return;
   for (const mob of mobs) {
     // A held enderman never teleports: the grab hook owns its frame.
-    if (!mob.alive || mob.type !== "enderman" || isCarried(mob)) continue;
+    // Riders are frozen hull-side for the whole trip (see rocket.js).
+    if (!mob.alive || mob.type !== "enderman" || isCarried(mob) || mob._riding) continue;
     if (dimName ? mob.dim !== dimName : mob.dim !== "end") continue;
     let relevant = false;
     const yLo = Math.floor(mob.pos.y) - 1, yHi = Math.floor(mob.pos.y + mob.h);
@@ -747,6 +751,7 @@ function tickEnderman(mob, dt, camera, ctx = null) {
   }
   // Pre-contact dodge: a mob or the player about to collide teleports the
   // Enderman out just before contact (band-capped; a full band holds).
+  // Frozen riders never dodge: the hull pin owns their frame until the stamp.
   if (ctx && bandOf(mob.dim, mob.pos.y) !== "none") {
     const self = {
       pos: mob.pos, yaw: mob.yaw, hw: mob.hw,
@@ -754,7 +759,7 @@ function tickEnderman(mob, dt, camera, ctx = null) {
       alive: true, dim: mob.dim, type: "enderman", speed: 0,
     };
     const seen = shouldDodge({
-      self, peers: ctx.mobs ?? [], player: ctx.player ?? null,
+      self, peers: (ctx.mobs ?? []).filter((m) => !m._riding), player: ctx.player ?? null,
       playerHw: PLAYER_HW, mobRank,
     });
     if (seen.dodge) {
@@ -823,7 +828,9 @@ export function tickEndMobs(dt, camera, dimName = null, ctx = null) {
     if (!mob.alive) continue;
     if (dimName && mob.root) mob.root.visible = mob.dim === dimName;
     if (dimName && mob.dim !== dimName) continue;
-    if (isCarried(mob)) continue; // grab hook owns the frame: frozen mid-hold
+    // The grab hook owns held frames; the hull pin owns riders (frozen
+    // statues from the countdown start to the landing stamp).
+    if (isCarried(mob) || mob._riding) continue;
     mobType(mob.type)?.tick?.(mob, dt, camera, ctx);
   }
 }

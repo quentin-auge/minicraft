@@ -76,7 +76,7 @@ const src = (rel) => readFileSync(fileURLToPath(new URL("../../../src/" + rel, i
   const rocket = src("vehicles/rocket.js");
   assert.match(rocket, /c\.depthWrite = false/, "rider clone stays depthless");
   assert.match(rocket, /o\.renderOrder = ORDERS\.VEHICLE/, "riders ride the vehicle band");
-  assert.match(rocket, /pairs\.push\(\[o, o\.material, c, o\.renderOrder\]\)/, "ride saves the mesh order");
+  assert.match(rocket, /pairs\.push\(\[o, o\.material, c, o\.renderOrder, c\.opacity \?\? 1\]\)/, "ride saves the mesh order and its base opacity");
   assert.match(rocket, /mesh\.renderOrder = order/, "unride restores the mesh order");
   assert.ok(
     ORDERS.VEHICLE > ORDERS.LIQUID_INSIDE,

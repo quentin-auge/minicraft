@@ -48,9 +48,8 @@ import { REACTOR_SETUP, mergeReactors } from "./reactors.js";
 import { dimTntTiersUnlocked, dimFloorY } from "../world/dimensions.js";
 import { isTntTierUnlocked } from "../world/tntunlock.js";
 import { villageFrames } from "../world/village.js";
-import { listFarmMobs } from "../mobs/farm.js";
 import { allMobs } from "../mobs/registry.js";
-import { isCarried, staysHullPinned, landingBlockers, tallestBlockerTop, boxFree } from "../mobs/carry.js";
+import { isCarried, staysHullPinned, resetMobMotion, saveRideState, restoreRideState, landingBlockers, tallestBlockerTop, boxFree } from "../mobs/carry.js";
 
 registerVehicleType({ key: "rocket", name: "Rocket", carriesMobs: true });
 
@@ -183,11 +182,13 @@ let launchBurn = 0;
 let plumeT = 0;
 let hullFade = 0;
 // Fade segments, consumed in order: { from, to, t, dur, ease? }. The
-// countdown runs an accelerating 1 s phase (`ease: "in"`) then a linear 1 s
-// phase; solo tweens (landing, cancel) enqueue one segment.
+// countdown fades in two halves of the countdown (accelerating `ease: "in"`
+// half, then linear), so the shared hull + mob fade lands exactly at liftoff
+// instead of sitting finished a second early; solo tweens (landing, cancel)
+// enqueue one segment.
 const COUNTDOWN_FADE = [
-  { to: 0.5, dur: 1.0, ease: "in" },
-  { to: 1, dur: 1.0 },
+  { to: 0.5, dur: COUNTDOWN / 2, ease: "in" },
+  { to: 1, dur: COUNTDOWN / 2 },
 ];
 let fadeSegs = [];
 let boostF = 0;
@@ -446,13 +447,14 @@ export function rocketSpeed() {
   return rvel.length();
 }
 
-// Eye clamp for the pilot's camera while flying: trails the eye against the
-// hull motion (the pre-space-boost feel, capped in length), then pulls it
-// back out of hull solids — so the eye never enters the hull, not even the
-// floor of a 1-block ship. Mutates the eye in place, no-op outside flight.
+// Eye clamp for the pilot's camera while flying: breathes the eye vertically
+// with the climb/sink (the accel/decel feel, capped in length), then pulls
+// it back out of hull solids — so the eye never enters the hull, not even
+// the floor of a 1-block ship. No horizontal trail: the pilot turns in
+// place, whatever the speed. Mutates the eye in place, no-op outside flight.
 export function rocketClampEye(eye) {
   if (dim !== "over" || !rocketFlying()) return eye;
-  const off = camLagOffset(rvel.x, rvel.y, rvel.z);
+  const off = camLagOffset(0, rvel.y, 0);
   if (off.x === 0 && off.y === 0 && off.z === 0) return eye;
   const px = eye.x, py = eye.y, pz = eye.z;
   const p = pullEyeFree(px + off.x, py + off.y, pz + off.z, px, py, pz,
@@ -579,14 +581,35 @@ export function rocketBreakExtra(hit) {
 }
 
 // --- mob riders -------------------------------------------------------------
-// Farm mobs overlapping the moving hull ride it: frozen statues pinned at
-// their exact boarding spot relative to the hull (no self-motion at all —
-// the mover tick is skipped for riders, so nothing can drift them or wedge
-// them into a wall). Their cloned materials fade with the hull and restore
-// on release.
+// Live mobs overlapping the moving hull ride it (farm livestock and Endermen
+// alike; the dragon never boards): frozen statues pinned at their exact
+// boarding spot relative to the hull (no self-motion at all — the mover tick
+// is skipped for riders, so nothing can drift them or wedge them into a
+// wall). Teleport and homing skip riders too, so the pin holds from the
+// countdown start until the landing stamp. Their cloned materials fade with
+// the hull on the shared mobFadeOp curve (the held mob follows the same
+// curve through setMobAlphaFaded) and restore on release.
+// Shared fade driver: hull, riders and the held mob all read this one curve,
+// so mobs go transparent in and out aligned with the vessel instead of ahead
+// of it — the fade-out lands at liftoff, the fade-in with the landing.
+export function mobFadeOp() {
+  return 1 - hullFade * 0.5;
+}
 function rideFade(mob) {
-  const op = 1 - hullFade * 0.5;
-  for (const [mesh] of riders.get(mob) ?? []) mesh.material.opacity = op;
+  const op = mobFadeOp();
+  // Each pair keeps its base opacity (a halo reads 0.22, a hide 1): the fade
+  // scales it instead of overwriting it.
+  for (const [mesh, , , , base] of riders.get(mob) ?? []) mesh.material.opacity = (base ?? 1) * op;
+}
+
+// Pin a rider to the hull frame: exact boarding spot, frozen heading, no
+// velocity. Reads neither the player nor the camera, so the pin never
+// drifts with the pilot.
+function pinRider(mob, ox, oy, oz) {
+  mob.pos.set(ox + mob._rideLocal.x, oy + mob._rideLocal.y, oz + mob._rideLocal.z);
+  mob.yaw = mob._rideYaw;
+  mob.yawTarget = mob._rideYaw;
+  if (mob.root) mob.root.rotation.y = mob._rideYaw;
 }
 
 function ride(mob) {
@@ -596,7 +619,19 @@ function ride(mob) {
     mob._riding = true;
     mob._rideLocal = mob.pos.clone().sub(origin);
     mob._rideYaw = mob.yaw;
-    mob.vel.set(0, 0, 0);
+    // Hand over the pre-boarding intent first (goal + roam commit): the wipe
+    // below freezes the ride, and the release hands it back so the mob walks
+    // on as if the trip never happened.
+    mob._rideSaved = saveRideState(mob);
+    // Drop any in-flight state (blast arc, liquid regime, lane/plan): the
+    // frozen ride owns the whole trip, and the release below restarts clean.
+    resetMobMotion(mob);
+    mob._blast = null;
+    mob.liquid = null;
+    mob._liquidRearmT = 0;
+    mob._liquidCapY = null;
+    mob._plan = null;
+    if (mob.vel?.set) mob.vel.set(0, 0, 0);
     mob.target = null;
     mob.wanderT = Infinity;
     mob.yawTarget = mob.yaw;
@@ -613,7 +648,7 @@ function ride(mob) {
         // the vehicle band (drawn after the liquid sheets), so the water
         // behind a transparent rider survives instead of erasing.
         c.depthWrite = false;
-        pairs.push([o, o.material, c, o.renderOrder]);
+        pairs.push([o, o.material, c, o.renderOrder, c.opacity ?? 1]);
         o.material = c;
         o.renderOrder = ORDERS.VEHICLE;
       }
@@ -635,8 +670,19 @@ function unride(mob) {
   delete mob._riding;
   delete mob._rideLocal;
   delete mob._rideYaw;
-  // Resume wandering on the next tick.
-  mob.wanderT = 0;
+  // Same unfreeze as the pilot at the landing stamp: drop the geometry-bound
+  // state, then hand back the pre-boarding intent — the mob walks on instead
+  // of idling. Geometry that moved with the ship renegotiates live.
+  restoreRideState(mob, mob._rideSaved);
+  delete mob._rideSaved;
+  mob._blast = null;
+  mob.liquid = null;
+  mob._liquidRearmT = 0;
+  mob._liquidCapY = null;
+  mob._plan = null;
+  // Endermen teleport back on: forget any stare/dodge timing frozen mid-ride.
+  if (mob.lookTime != null) mob.lookTime = 0;
+  if (mob.angryTime != null) mob.angryTime = 0;
 }
 
 function releaseAllRiders() {
@@ -650,8 +696,11 @@ export function carryRiders() {
   }
   const ox = origin.x, oy = origin.y, oz = origin.z;
   const seen = new Set();
-  for (const mob of listFarmMobs()) {
+  // Every live overworld mob boards alike (livestock and Endermen); the
+  // dragon never rides. Hook-owned mobs stay in hand by design.
+  for (const mob of allMobs()) {
     if (mob.dim !== "over" || !mob.alive) continue;
+    if (mob.type === "dragon") continue;
     if (riders.has(mob)) {
       // Grab-hold wins over hull-pin: a rider that gets grabbed is
       // released to the hold pose (the hook owns its frame from the
@@ -659,10 +708,7 @@ export function carryRiders() {
       if (!staysHullPinned(mob)) { unride(mob); continue; }
       // Pinned: exact boarding spot, frozen heading, vel already zero.
       seen.add(mob);
-      mob.pos.set(ox + mob._rideLocal.x, oy + mob._rideLocal.y, oz + mob._rideLocal.z);
-      mob.yaw = mob._rideYaw;
-      mob.yawTarget = mob._rideYaw;
-      mob.root.rotation.y = mob._rideYaw;
+      pinRider(mob, ox, oy, oz);
       rideFade(mob);
       continue;
     }
@@ -682,12 +728,6 @@ export function carryRiders() {
     if (!boxFree(hullSolidAtWorld, mob.pos.x, mob.pos.y, mob.pos.z, mob.hw ?? 0.32, mob.h ?? 1)) continue;
     seen.add(mob);
     ride(mob);
-    // Frozen for the ride: no self-propulsion (restored to a fresh wander
-    // on release).
-    mob.vel.set(0, 0, 0);
-    mob.target = null;
-    mob.wanderT = Infinity;
-    mob.yawTarget = mob.yaw;
   }
   for (const [mob] of riders) if (!seen.has(mob)) unride(mob);
 }
@@ -885,6 +925,10 @@ function startCountdown(offer) {
     { from: 0, to: COUNTDOWN_FADE[0].to, t: 0, dur: COUNTDOWN_FADE[0].dur, ease: COUNTDOWN_FADE[0].ease },
     { from: COUNTDOWN_FADE[0].to, to: COUNTDOWN_FADE[1].to, t: 0, dur: COUNTDOWN_FADE[1].dur },
   ];
+  // The tick hid the model while parked but the snapshot already cleared the
+  // voxels above: unhide now so the ship never flickers a frame open at the
+  // countdown start.
+  if (moving?.group) moving.group.visible = true;
   pinPilot();
   shake(SHAKE.ignition);
 }

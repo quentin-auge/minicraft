@@ -556,7 +556,7 @@ const near = (a, b) => Math.abs(a - b) < 1e-9;
   // applies it after the sim move (no stale frame under a fast hull).
   const rocket3 = readFileSync(fileURLToPath(new URL("../../../src/vehicles/rocket.js", import.meta.url)), "utf8");
   assert.ok(rocket3.includes("export function rocketClampEye(eye)"), "the eye clamp is exported");
-  assert.ok(rocket3.includes("camLagOffset(rvel.x, rvel.y, rvel.z)"), "the clamp trails the live velocity");
+  assert.ok(rocket3.includes("camLagOffset(0, rvel.y, 0)"), "the clamp breathes vertically only: no positional swing on turns");
   assert.ok(rocket3.includes("pullEyeFree("), "the clamp pulls back out of hull solids");
   const mainSrc = readFileSync(fileURLToPath(new URL("../../../main.js", import.meta.url)), "utf8");
   assert.ok(mainSrc.includes("updateCamera(simActive ? dt : 0);\n  updateBossBar();"), "the camera refreshes post-sim");

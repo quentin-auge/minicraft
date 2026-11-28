@@ -11,6 +11,7 @@ import {
   CARRY_DIST, CARRY_DOWN, heldMob, holdMob, latchMob, severCarry, isCarried,
   staysHullPinned,
   holdFeet, tickHeld, boxFree, findReleaseSpot, releasePeerFree, settleReleased,
+  saveRideState, restoreRideState, resetMobMotion,
   grabHaulProtected, resolveBlockLanding, applyMobGap, mobReleaseSpot,
 } from "../../../src/mobs/carry.js";
 import { registerMobType, registerMobSource, allMobs, mobType } from "../../../src/mobs/registry.js";
@@ -95,6 +96,49 @@ const rider = { _riding: true, vel: { set() {} } };
 assert.equal(staysHullPinned(rider), true);
 latchMob(rider);
 assert.equal(staysHullPinned(rider), false, "latch hands the frame to the hook");
+
+// --- ride intent handoff: the trip freezes, the goal survives ----------
+{
+  const mkMob = () => ({
+    pos: { x: 1, y: 2, z: 3, set(x, y, z) { this.x = x; this.y = y; this.z = z; } },
+    vel: { set() {} },
+    target: { x: 9, z: -4 }, wanderT: 30,
+    roam: { mode: "commit", heading: 1.2, target: { x: 9, z: -4 }, tgt: { x: 9, z: -4 }, t: 1, span: 6 },
+    lane: { axis: 0 }, _blast: { x: 1, y: 2, z: 3 }, liquid: { phase: "enter" },
+  });
+  // Boarding snapshot: portable intent carried over, nothing else.
+  const m = mkMob();
+  const saved = saveRideState(m);
+  assert.deepEqual(saved.target, { x: 9, z: -4 }, "goal saved");
+  assert.equal(saved.wanderT, 30, "idle timing measured");
+  assert.equal(saved.roam.heading, 1.2, "roam commit saved");
+  // The trip wipes everything (ride + unride both reset first).
+  resetMobMotion(m);
+  m._blast = null; m.liquid = null;
+  assert.equal(m.target, null);
+  assert.equal(m.roam, null);
+  // Landing release: geometry-bound state stays dropped, intent walks on.
+  restoreRideState(m, saved);
+  assert.deepEqual(m.target, { x: 9, z: -4 }, "goal restored verbatim");
+  assert.equal(m.roam.heading, 1.2, "roam commit restored");
+  assert.equal(m.wanderT, 0, "no stale wait served: it walks away");
+  assert.equal(m.lane, null, "topology-bound lane stays dropped");
+  assert.deepEqual(m.target, saved.target, "restored goal is a copy");
+  assert.notEqual(m.target, saved.target, "no aliasing back into the handoff");
+  // An idler re-picks immediately instead of standing still.
+  const idle = mkMob();
+  idle.target = null; idle.roam = null; idle.wanderT = 12;
+  restoreRideState(idle, saveRideState(idle));
+  assert.equal(idle.target, null);
+  assert.equal(idle.wanderT, 0, "idler re-picks at once");
+  // Null-safe: unknown mobs and missing handoffs reset clean.
+  assert.equal(saveRideState(null), null);
+  const bare = mkMob();
+  restoreRideState(bare, null);
+  assert.equal(bare.target, null);
+  assert.ok(bare.wanderT >= 2 && bare.wanderT <= 5, "missing handoff resets clean with a fresh wait");
+  console.log("PASS carry-ride-handoff");
+}
 
 // --- boxFree / findReleaseSpot on a stub voxel set ---
 const solid = new Set(["0,0,0"]);

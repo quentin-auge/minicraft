@@ -15,7 +15,9 @@
 // rotation.y semantics, 0 = facing +z local (head at +z); the mover mirrors
 // it onto root.rotation.y. _carried freezes a mob: every tick loop skips
 // carried mobs through isCarried() (carry.js), and no system moves them
-// (homing, separation, enderman teleport).
+// (homing, separation, enderman teleport). _riding freezes a mob the same
+// way while it is pinned to a vehicle hull (countdown start to landing
+// stamp): every tick loop and teleport path skips riders too.
 const MOB_DEFAULTS = {
   capabilities: { walk: false, jump: false, float: false, swim: false, flying: false, homingTnt: false, grabbable: false },
   homingTntShots: 3,

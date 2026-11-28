@@ -396,4 +396,78 @@ const descendTick = (peers, o, vyIn) => {
   console.log("PASS landing-glide-wiring");
 }
 
+// --- enderman-sized riders: same veto skips, same pin ---------------------
+// Endermen (hw 0.248, h 2.16 after the 0.8 scale) ride the hull exactly like
+// livestock: pinned riders never block the stamp, free ones do, and the
+// release restarts them clean at the same unfreeze as the pilot.
+{
+  const enderman = (x, y, z, extra = {}) => ({ pos: { x, y, z }, hw: 0.248, h: 2.16, alive: true, dim: "over", type: "enderman", ...extra });
+  assert.equal(landingBlockers([enderman(11, 20, 11, { _riding: true })], "over", box).length, 0, "riding enderman never blocks");
+  assert.equal(landingBlockers([enderman(11, 20, 11)], "over", box).length, 1, "free enderman inside blocks");
+  assert.equal(tallestBlockerTop([enderman(11, 20, 11, { _riding: true })], "over", box), -Infinity, "riding enderman skipped from the margin floor");
+  assert.ok(tallestBlockerTop([enderman(11, 20, 11)], "over", box) > 20, "free enderman holds the floor");
+  console.log("PASS landing-enderman-riders");
+}
+
+// --- wiring pins: every kind rides, teleport frozen, clean release --------
+{
+  const rocketSrc = readFileSync(fileURLToPath(new URL("../../../src/vehicles/rocket.js", import.meta.url)), "utf8");
+  assert.ok(rocketSrc.includes("for (const mob of allMobs())"), "rider sweep covers every mob source, not farm only");
+  assert.ok(rocketSrc.includes('mob.type === "dragon"'), "the dragon never boards");
+  assert.ok(rocketSrc.includes("function pinRider(mob, ox, oy, oz)"), "one pin helper, no player/camera read");
+  assert.ok(rocketSrc.includes("mob._blast = null"), "boarding and release drop any stale blast arc");
+  assert.ok(rocketSrc.includes("(base ?? 1) * op"), "the fade scales the base opacity (halos survive)");
+  assert.ok(rocketSrc.includes("if (mob.lookTime != null) mob.lookTime = 0;"), "release forgets frozen stare timing");
+  assert.ok(!rocketSrc.includes('from "../mobs/farm.js"'), "no farm-only rider source left");
+  const endSrc = readFileSync(fileURLToPath(new URL("../../../src/mobs/end.js", import.meta.url)), "utf8");
+  assert.ok(endSrc.includes("if (isCarried(mob) || mob._riding) continue;"), "end ticks skip riders");
+  assert.ok(endSrc.includes("!m._carried && !m._riding"), "teleport arrival peers skip riders");
+  assert.ok(endSrc.includes("isCarried(mob) || mob._riding) continue;"), "blast/voxel teleports skip riders");
+  assert.ok(endSrc.includes("(ctx.mobs ?? []).filter((m) => !m._riding)"), "dodge ignores frozen riders");
+  const homingSrc = readFileSync(fileURLToPath(new URL("../../../src/mobs/homing.js", import.meta.url)), "utf8");
+  assert.ok(homingSrc.includes("|| mob._riding ||"), "homing never targets riders");
+  const liquidSrc = readFileSync(fileURLToPath(new URL("../../../src/mobs/liquidcolumn.js", import.meta.url)), "utf8");
+  assert.ok(liquidSrc.includes("o._carried || o._riding) continue;"), "liquid-column peer gates skip riders");
+  console.log("PASS landing-rider-wiring");
+}
+
+// --- aligned fade: hull, riders and the held mob share one curve -------
+// The countdown fade spans the whole countdown (two halves), so the fade-out
+// lands exactly at liftoff; riders read it through mobFadeOp, the held mob
+// through a recompile-free follower, and the ship unhides the same tick the
+// voxels clear (no one-frame flicker at the countdown start).
+{
+  const rocketSrc = readFileSync(fileURLToPath(new URL("../../../src/vehicles/rocket.js", import.meta.url)), "utf8");
+  assert.ok(rocketSrc.includes("export function mobFadeOp()"), "one shared fade driver");
+  assert.ok(rocketSrc.includes("const op = mobFadeOp();"), "riders read the shared curve");
+  assert.equal(rocketSrc.split("dur: COUNTDOWN / 2").length - 1, 2, "both fade halves span the countdown");
+  assert.ok(rocketSrc.includes("if (moving?.group) moving.group.visible = true;"), "ship unhidden at the countdown start");
+  const hookSrc = readFileSync(fileURLToPath(new URL("../../../src/player/hook.js", import.meta.url)), "utf8");
+  assert.ok(hookSrc.includes("export function setMobAlphaFaded"), "held mob follows the curve");
+  const faded = hookSrc.slice(hookSrc.indexOf("export function setMobAlphaFaded"), hookSrc.indexOf("export function severHook"));
+  assert.ok(faded.includes("m.opacity = alpha;"), "continuous fade writes opacity");
+  assert.ok(!faded.includes("needsUpdate"), "continuous fade never recompiles mid-flight");
+  const mainSrc = readFileSync(fileURLToPath(new URL("../../../main.js", import.meta.url)), "utf8");
+  assert.ok(mainSrc.includes("setMobAlphaFaded(heldPose, HELD_ALPHA * mobFadeOp())"), "held alpha coupled while the rocket takes over");
+  console.log("PASS landing-fade-aligned");
+}
+
+// --- ride intent handoff: board saves, release restores -----------------
+// A rider walks on after the landing stamp with its pre-boarding goal
+// instead of idling: ride() snapshots the portable intent before the freeze
+// wipe, unride() resets the geometry-bound state then hands the intent back
+// (idlers re-pick at once) and drops the handoff.
+{
+  const rocketSrc = readFileSync(fileURLToPath(new URL("../../../src/vehicles/rocket.js", import.meta.url)), "utf8");
+  assert.ok(rocketSrc.includes("mob._rideSaved = saveRideState(mob)"), "boarding snapshots portable intent");
+  assert.ok(rocketSrc.indexOf("mob._rideSaved = saveRideState(mob)") < rocketSrc.indexOf("resetMobMotion(mob);"), "snapshot precedes the freeze wipe");
+  assert.ok(rocketSrc.includes("restoreRideState(mob, mob._rideSaved)"), "release hands the intent back");
+  assert.ok(rocketSrc.includes("delete mob._rideSaved;"), "no stale handoff lingers");
+  assert.ok(!rocketSrc.includes("Resume wandering on the next tick"), "release no longer idles on a fresh wait");
+  const carrySrc = readFileSync(fileURLToPath(new URL("../../../src/mobs/carry.js", import.meta.url)), "utf8");
+  assert.ok(carrySrc.includes("export function saveRideState"), "handoff saver is shared");
+  assert.ok(carrySrc.includes("export function restoreRideState"), "handoff restorer is shared");
+  console.log("PASS landing-ride-handoff");
+}
+
 console.log("landing-mobs.test.mjs: ok");
